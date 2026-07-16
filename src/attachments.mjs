@@ -1,6 +1,6 @@
 import { basename } from 'node:path';
 
-export const MAX_IMAGE_ATTACHMENTS = 6;
+export const MAX_IMAGE_ATTACHMENTS = 99;
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 export const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 export const MAX_TASK_REQUEST_BYTES = 30 * 1024 * 1024;

@@ -237,9 +237,12 @@
           </section>
 
           <fieldset id="terminal-panel" class="terminal-fieldset" role="tabpanel" aria-labelledby="provider-codex">
-            <legend id="terminal-legend">Run in terminal</legend>
-            <button id="session-refresh-button" class="text-button" type="button">Refresh</button>
+            <div class="terminal-heading-row">
+              <div id="terminal-legend" class="terminal-legend">Run in terminal</div>
+              <button id="session-refresh-button" class="text-button" type="button">Refresh</button>
+            </div>
             <p id="session-message" class="field-help" role="status">Finding connected Codex terminals.</p>
+            <label id="idle-terminal-route" class="idle-terminal-route"><input id="prefer-idle-terminal" type="checkbox"> Use an idle Relay when available</label>
             <input id="thread-id" name="threadId" type="hidden">
             <div id="terminal-list" class="terminal-list" role="radiogroup" aria-label="Connected Codex terminals"></div>
           </fieldset>
@@ -269,7 +272,11 @@
           <label class="prompt-field" for="task-prompt">
             <span class="prompt-label-row">
               <span id="prompt-label">Task prompt</span>
-              <small id="prompt-shortcut"><kbd>Enter</kbd> queue · <kbd>Ctrl</kbd> + <kbd>Enter</kbd> run next · <kbd>Shift</kbd> + <kbd>Enter</kbd> new line</small>
+              <small id="prompt-shortcut">
+                <span class="prompt-shortcut-item"><span class="prompt-shortcut-keys"><kbd>Enter</kbd></span><span>Queue</span></span>
+                <span class="prompt-shortcut-item"><span class="prompt-shortcut-keys"><kbd>Ctrl</kbd><i>+</i><kbd>Enter</kbd></span><span>Run now</span></span>
+                <span class="prompt-shortcut-item"><span class="prompt-shortcut-keys"><kbd>Shift</kbd><i>+</i><kbd>Enter</kbd></span><span>New line</span></span>
+              </small>
             </span>
             <textarea id="task-prompt" name="prompt" required rows="8" aria-describedby="prompt-shortcut" placeholder="Describe the outcome, constraints, and how the agent should verify the work."></textarea>
           </label>
@@ -280,7 +287,7 @@
                 <span id="attachment-heading">Reference images</span>
                 <small id="attachment-route">Sent to the selected AI with the prompt.</small>
               </div>
-              <span id="attachment-count">0 / 6</span>
+              <span id="attachment-count">0 / 99</span>
             </div>
             <label id="attachment-dropzone" class="attachment-dropzone" for="image-input" tabindex="0">
               <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
@@ -291,7 +298,7 @@
               </span>
             </label>
             <div id="attachment-list" class="attachment-list" aria-live="polite"></div>
-            <p class="attachment-limits">Up to 6 images, 5 MB each, 20 MB total.</p>
+            <p class="attachment-limits">Up to 99 images, 5 MB each, 20 MB total.</p>
           </section>
 
           <div class="form-footer">

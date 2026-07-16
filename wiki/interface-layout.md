@@ -8,6 +8,8 @@ type: architecture
 
 The Relay UI follows the supplied `Relay.html` reference at its 1680 by 1180 desktop target. The main visual system uses bundled local copies of Instrument Sans, Source Serif 4, and JetBrains Mono, blue interaction states, white rounded panels, and a navy execution console.
 
+The Electron window enforces a 100 percent page zoom and blocks Command or Control zoom shortcuts. The compact reference dimensions assume normal zoom; allowing the window to retain a 200 percent zoom makes project cards and every neighboring control appear twice their intended size.
+
 ## Workspace columns
 
 The wide desktop workspace contains Composer, Task queue, and Task activity panels. Two keyboard-focusable separators surround Task queue. Dragging either separator resizes the queue boundary while preserving minimum usable widths for all three panels.
@@ -30,7 +32,9 @@ Column preferences are stored in `localStorage` under `relay.panelWidths`. The d
 
 The header status modules use explicit foreground colors because legacy status rules also support the dark visual treatment. On the current white header, labels use muted slate, values use dark navy, and running, paused, and offline states receive blue, amber, and red accents. Keep these overrides scoped beneath `.app-header` and after the legacy rules so a background change cannot leave white status text on a white panel.
 
-Each module uses a two-row CSS grid. The label spans both grid columns, while the state dot and value occupy the second row as one centered unit. The dot must remain in normal grid flow rather than being absolutely positioned, otherwise values with different widths appear inconsistently aligned.
+Each module uses a two-row CSS grid. The label spans both grid columns, while the state dot and value occupy the second row as one centered unit. The dot must remain in normal grid flow rather than being absolutely positioned, otherwise values with different widths appear inconsistently aligned. On wide desktop layouts, the complete status capsule is absolutely centered within `.app-header` so unequal logo and action widths cannot shift it. Responsive layouts retain normal flow.
+
+The desktop capsule uses compact 8px uppercase labels and 11px monospace values. Its fixed 488px four-segment grid gives Sessions extra room for the explicit `Codex n · Claude n` value while keeping Connection, Queue, and Running narrow. This mirrors the preferred compact reference and avoids ambiguous provider glyphs in the status summary.
 
 ## Execution ledger
 
@@ -54,6 +58,8 @@ Expanded terminal disclosures persist across live polling and filter rerenders. 
 The All filter includes Codex reasoning summaries while they stream. Relay consumes `item/reasoning/summaryTextDelta`, accumulates each summary part by item ID, and publishes `item/updated` snapshots that the browser folds into one live reasoning entry. Reasoning remains excluded from Highlights to keep that view compact. Relay intentionally displays only the model-provided summary stream, not private hidden chain-of-thought.
 
 Task reference images render as compact 64px square thumbnails, falling to 56px on narrow screens. Filenames and file sizes remain available through the image link and accessible image alternative, while only the sequence number overlays the thumbnail.
+
+The composer accepts up to 99 reference images per task. The independent safety limits remain 5 MB per image and 20 MB total, so the higher count supports collections of small screenshots without increasing the maximum request payload.
 
 > [!important]
 > Keep scrolling separated between `.task-detail-scroll` and `.event-list`. Restoring scrolling on `.detail-panel` makes the terminal move away from the bottom and breaks the monitoring layout.
@@ -80,8 +86,15 @@ The terminal window grid controls inside connection help use a two-level layout.
 
 On macOS, each grid launch inspects the bounds of currently open Terminal.app windows and places the new window in the first unoccupied cell. Closing a terminal therefore frees that exact cell for the next launch. The launcher's in-memory rotating slot remains a fallback when Terminal window inspection is unavailable or every cell is occupied.
 
+Codex and Claude share the same grid and slot sequence. Provider selection changes only the launched command. Terminal.app receives the selected bounds immediately, then Relay reapplies them to the captured new window after a short startup delay because full-screen terminal clients such as Claude can resize their window during initialization.
+
+Native terminal launches are serialized inside `ProjectLauncher`. This is required even when browser requests arrive concurrently: slot inspection, window creation, and slot reservation must complete as one launch operation, otherwise several requests can observe the same empty cell and overlap. On macOS, the AppleScript captures the new front window's numeric ID immediately after `do script` and uses that stable ID for both bounds assignments. A delayed bounds assignment must never target the dynamically changing front window.
+
 > [!important]
 > Do not use only a monotonically advancing slot counter for Terminal.app. It cannot observe closed windows and eventually creates gaps or overlaps after normal close-and-reopen use.
+
+> [!important]
+> Do not remove the per-launch queue or replace the captured Terminal window ID with `front window`. Both changes reintroduce overlap when multiple launches are requested together.
 
 > [!note]
 > Keep the column and row controls at stable compact widths on desktop. The monitor selector is the only field that should grow because display names and resolutions vary.
@@ -90,7 +103,17 @@ On macOS, each grid launch inspects the bounds of currently open Terminal.app wi
 
 Connected terminal cards use two information rows. The workspace name and status form the primary row; the task preview and terminal metadata share the secondary row. Icons and selection marks stay compact so a connected session does not dominate the composer vertically.
 
+Codex terminal cards are labeled **Relay 1**, **Relay 2**, and so on within the current project scope. They are also drop targets for queued task cards. The terminal section uses one compact heading row for its title and refresh action, followed by the status text and idle-routing checkbox without the previous oversized fieldset spacing.
+
+Relay cards derive their visible activity from task ownership rather than relying only on the provider thread title. A running direct task shows its task number and prompt, Turbo participants identify planner or worker role, an idle terminal with assigned work shows its waiting count and next task, and a free terminal says it is ready. The state badge follows this derived running, queued, or idle state.
+
 > [!note]
 > Keep preview and metadata independently truncated. Long prompts, paths, and session identifiers must not widen the card or force an extra line.
+
+## Task card footers
+
+Task cards use one compact footer row below a single divider. The left side combines model, explicit effort or `default`, optional image count, and workspace. The right side combines the status dot, live or final duration, and a `DD Mon HH:mm` timestamp. Completed durations omit a redundant `Took` prefix. Do not restore separate execution and workspace rows.
+
+Task states use one final semantic palette at the end of the stylesheet cascade: running is amber, queued is slate-blue, complete is green, failed and interrupted are red, and cancelled is neutral gray. Both the badge and footer dot follow the same state. Keep this correction after legacy task-card rules so Running and Queued cannot collapse into the same color again.
 
 #relay #ui #layout #resizing #design

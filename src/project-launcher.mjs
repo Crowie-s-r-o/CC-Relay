@@ -99,6 +99,7 @@ export class ProjectLauncher {
     this.platform = platform;
     this.diagnostic = diagnostic;
     this.gridSlots = new Map();
+    this.launchQueue = Promise.resolve();
   }
 
   async listDisplays() {
@@ -181,6 +182,12 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
   }
 
   async launch(path, provider, requestedLayout = null) {
+    const launch = this.launchQueue.then(() => this.launchNow(path, provider, requestedLayout));
+    this.launchQueue = launch.catch(() => {});
+    return launch;
+  }
+
+  async launchNow(path, provider, requestedLayout = null) {
     this.ensureSupported();
     const project = validateProjectPath(path);
     const command = this.platform === 'win32'
@@ -217,7 +224,10 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       return { ...project, provider, command, layout, display: display || null, slot, bounds };
     }
     const boundsCommand = bounds
-      ? `\nset bounds of front window to {${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}}`
+      ? `\nset launchedWindowId to id of front window
+set bounds of window id launchedWindowId to {${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}}
+delay 0.4
+set bounds of window id launchedWindowId to {${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}}`
       : '';
     const script = `tell application "Terminal"\nactivate\ndo script ${JSON.stringify(command)}${boundsCommand}\nend tell`;
     await this.run('osascript', ['-e', script]);

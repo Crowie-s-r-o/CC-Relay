@@ -9,7 +9,7 @@ export class TaskQueue extends EventEmitter {
     this.database = database;
     this.artifacts = artifacts;
     this.runner = runner;
-    this.activeTaskId = null;
+    this.activeTasks = new Map();
     this.scheduling = false;
     this.stopping = false;
     this.retryDelayMs = retryDelayMs;
@@ -22,9 +22,11 @@ export class TaskQueue extends EventEmitter {
   }
 
   status() {
+    const activeTaskIds = [...this.activeTasks.keys()];
     return {
       paused: this.database.isPaused(),
-      activeTaskId: this.activeTaskId,
+      activeTaskId: activeTaskIds[0] || null,
+      activeTaskIds,
     };
   }
 
@@ -86,12 +88,12 @@ export class TaskQueue extends EventEmitter {
       return;
     }
 
-    if (task.status !== 'running' || this.activeTaskId !== taskId) {
+    if (task.status !== 'running' || !this.activeTasks.has(taskId)) {
       throw new Error('Only queued or running tasks can be cancelled.');
     }
 
     this.database.addEvent(taskId, 'queue', 'Cancellation requested.');
-    if (!this.runner.cancel()) {
+    if (!this.runner.cancel(taskId)) {
       throw new Error('The AI process is no longer running.');
     }
     this.changed(taskId);
@@ -149,6 +151,21 @@ export class TaskQueue extends EventEmitter {
     return tasks;
   }
 
+  assign(taskId, thread) {
+    const task = this.database.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    if (task.status !== 'queued') throw new Error('Only queued tasks can be assigned to another terminal.');
+    const updated = this.database.updateTask(taskId, {
+      thread_id: thread.id,
+      thread_name: thread.title,
+      thread_source: thread.source,
+    });
+    this.artifacts.updateTaskAssignment(updated);
+    this.database.addEvent(taskId, 'queue', `Task assigned to ${thread.title}.`);
+    this.changed(taskId);
+    return updated;
+  }
+
   schedule() {
     if (this.scheduling || this.stopping || this.database.isPaused()) {
       return;
@@ -159,29 +176,44 @@ export class TaskQueue extends EventEmitter {
         await this.runNext();
       } finally {
         this.scheduling = false;
-        if (
-          this.activeTaskId === null
-          && !this.stopping
-          && !this.database.isPaused()
-          && this.database.nextQueuedTask()
-        ) {
+        if (!this.stopping && !this.database.isPaused() && this.runnableTasks().length > 0) {
           this.schedule();
         }
       }
     });
   }
 
+  isConcurrentCodexTask(task) {
+    return task?.mode === 'execute' && task.provider === 'codex';
+  }
+
+  runnableTasks() {
+    if (this.database.isPaused()) return [];
+    const queued = this.database.listTasks().filter((task) => task.status === 'queued');
+    const active = [...this.activeTasks.values()];
+    if (active.some((task) => !this.isConcurrentCodexTask(task))) return [];
+    if (queued[0] && !this.isConcurrentCodexTask(queued[0])) {
+      return active.length === 0 ? [queued[0]] : [];
+    }
+    const busyThreads = new Set(active.map((task) => task.thread_id));
+    const runnable = [];
+    for (const task of queued) {
+      if (!this.isConcurrentCodexTask(task)) break;
+      if (busyThreads.has(task.thread_id)) continue;
+      busyThreads.add(task.thread_id);
+      runnable.push(task);
+    }
+    return runnable;
+  }
+
   async runNext() {
-    if (this.activeTaskId !== null || this.database.isPaused()) {
-      return;
-    }
+    const tasks = this.runnableTasks();
+    if (tasks.length === 0) return;
+    await Promise.all(tasks.map((task) => this.runTask(task)));
+  }
 
-    const task = this.database.nextQueuedTask();
-    if (!task) {
-      return;
-    }
-
-    this.activeTaskId = task.id;
+  async runTask(task) {
+    this.activeTasks.set(task.id, task);
     this.database.updateTask(task.id, {
       status: 'running',
       started_at: now(),
@@ -254,9 +286,10 @@ export class TaskQueue extends EventEmitter {
         this.scheduleAutoRetry(task.id);
       }
     } finally {
-      this.activeTaskId = null;
+      this.activeTasks.delete(task.id);
       this.changed(task.id);
-      this.emit('idle');
+      this.emit('taskIdle', task.id);
+      if (this.activeTasks.size === 0) this.emit('idle');
     }
   }
 
@@ -265,14 +298,16 @@ export class TaskQueue extends EventEmitter {
     for (const taskId of this.retryTimers.keys()) {
       this.clearAutoRetry(taskId);
     }
-    if (this.activeTaskId === null) {
+    if (this.activeTasks.size === 0) {
       return;
     }
 
-    const taskId = this.activeTaskId;
-    this.database.addEvent(taskId, 'system', 'Relay shutdown requested.');
+    const taskIds = [...this.activeTasks.keys()];
+    for (const taskId of taskIds) {
+      this.database.addEvent(taskId, 'system', 'Relay shutdown requested.');
+    }
     const idle = new Promise((resolve) => this.once('idle', resolve));
-    this.runner.cancel();
+    for (const taskId of taskIds) this.runner.cancel(taskId);
     const timeout = new Promise((resolve) => {
       const timer = setTimeout(resolve, 3000);
       timer.unref();

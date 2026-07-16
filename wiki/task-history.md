@@ -44,8 +44,23 @@ The selected tasks must share the selected Codex terminal's workspace. Their ima
 
 ## Priority submission shortcut
 
-Ctrl+Enter submits the composer as a priority task. Relay assigns it a queue position before every task that is still waiting. It starts immediately when the queue is idle, or becomes next when another task is already running. It never interrupts active work. Enter keeps normal append-to-queue behavior, and Shift+Enter inserts a newline.
+The shortcut label is **Run now**. Ctrl+Enter submits the composer as a priority task. Relay assigns it a queue position before every task that is still waiting and starts it immediately on an available Relay. If its assigned Relay is already active, it waits without interrupting that work. Enter keeps normal append-to-queue behavior, and Shift+Enter inserts a newline. The three shortcut hints render as separately spaced groups rather than one dot-separated sentence.
 
 The client sends `runNow: true`, `TaskQueue.enqueue()` records a priority event, and `RelayDatabase.createTask()` chooses a position below the current minimum queued position. This applies consistently to Execute, Plan council, and Forward-planning turbo.
+
+## Terminal assignment
+
+Queued Codex execute tasks can move to another connected terminal in the same workspace. Each task card exposes an **Assign** control when another eligible terminal exists, and the same task can be dragged onto a numbered Relay terminal card. Running, completed, Plan council, Turbo, and Claude tasks cannot be reassigned.
+
+The server validates the task status, provider, mode, live terminal connection, and normalized workspace path before changing `thread_id`, `thread_name`, and `thread_source`. It also updates the persisted task artifact and records a queue event.
+
+> [!important]
+> Reassignment never moves work to another workspace and never interrupts a running task.
+
+The composer offers **Use an idle Relay when available** above the terminal list. This preference is stored under `relay.preferIdleTerminal`. For direct Codex execution, the selected terminal remains the route when it is idle. When it is active, Relay uses the first idle Codex terminal in the current workspace.
+
+Direct Codex tasks execute concurrently across distinct Relay terminals and sequentially within each terminal. Claude execution, Plan council, and Turbo remain exclusive queue entries because their runners manage provider-wide or multi-terminal state. An exclusive entry at the head of the waiting queue starts only after active direct Codex tasks finish, and later direct tasks do not jump past it.
+
+Queue status exposes both the backward-compatible `activeTaskId` and the complete `activeTaskIds` list. Cancellation is addressed by task ID so stopping work on one Relay does not interrupt another Relay.
 
 #relay #tasks #history #persistence #sqlite

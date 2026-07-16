@@ -74,7 +74,7 @@ test('project launcher opens Terminal with a quoted project command', async () =
   }
 });
 
-test('project launcher advances macOS Terminal windows through the selected grid', async () => {
+test('project launcher advances mixed Codex and Claude windows through one shared grid', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-grid-'));
   const calls = [];
   let inspectionCount = 0;
@@ -99,12 +99,55 @@ test('project launcher advances macOS Terminal windows through the selected grid
   try {
     const layout = { enabled: true, columns: 3, rows: 3, display: 0 };
     const first = await launcher.launch(directory, 'codex', layout);
-    const second = await launcher.launch(directory, 'codex', layout);
+    const second = await launcher.launch(directory, 'claude', layout);
     assert.equal(first.slot, 0);
     assert.equal(second.slot, 1);
     assert.deepEqual(first.bounds, { left: 0, top: 25, right: 400, bottom: 325 });
-    assert.match(calls[2][1][1], /set bounds of front window to \{0, 25, 400, 325\}/);
-    assert.match(calls[5][1][1], /set bounds of front window to \{400, 25, 800, 325\}/);
+    assert.equal(second.provider, 'claude');
+    assert.match(second.command, /dangerously-skip-permissions$/);
+    assert.match(calls[2][1][1], /set launchedWindowId to id of front window/);
+    assert.match(calls[2][1][1], /set bounds of window id launchedWindowId to \{0, 25, 400, 325\}/);
+    assert.match(calls[5][1][1], /set bounds of window id launchedWindowId to \{400, 25, 800, 325\}/);
+    assert.match(calls[5][1][1], /delay 0\.4/);
+    assert.match(calls[5][1][1], /dangerously-skip-permissions/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher serializes concurrent launches so each window reserves a different cell', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-concurrent-grid-'));
+  const placedBounds = [];
+  let visibleWindows = [];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    run: async (_file, args) => {
+      if (args[0] === '-l' && args.at(-1).includes('NSScreen')) {
+        return { stdout: JSON.stringify([{ name: 'Studio Display', x: 0, y: 25, width: 1200, height: 900, primary: true }]) };
+      }
+      if (args[0] === '-l') return { stdout: JSON.stringify(visibleWindows) };
+      const match = args[1].match(/set bounds of window id launchedWindowId to \{(\d+), (\d+), (\d+), (\d+)\}/);
+      assert.ok(match);
+      const bounds = {
+        left: Number(match[1]),
+        top: Number(match[2]),
+        right: Number(match[3]),
+        bottom: Number(match[4]),
+      };
+      placedBounds.push(bounds);
+      visibleWindows = [...visibleWindows, bounds];
+      return { stdout: '' };
+    },
+  });
+  try {
+    const layout = { enabled: true, columns: 3, rows: 1, display: 0 };
+    const launches = await Promise.all([
+      launcher.launch(directory, 'codex', layout),
+      launcher.launch(directory, 'claude', layout),
+      launcher.launch(directory, 'codex', layout),
+    ]);
+    assert.deepEqual(launches.map(({ slot }) => slot), [0, 1, 2]);
+    assert.deepEqual(placedBounds.map(({ left }) => left), [0, 400, 800]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

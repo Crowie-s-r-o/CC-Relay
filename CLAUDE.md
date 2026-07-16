@@ -164,7 +164,7 @@ Adding a new task must not switch the activity panel away from the task the user
 
 ### Image attachments
 
-Users can attach up to six PNG, JPEG, or WebP images.
+Users can attach up to 99 PNG, JPEG, or WebP images.
 
 - Maximum 5 MB per image.
 - Maximum 20 MB total.

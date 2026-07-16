@@ -640,13 +640,15 @@ export class CodexAppServer extends EventEmitter {
         throw new CodexAppServerError('Task cancelled.', { cancelled: true });
       }
       const sandbox = task.read_only ? 'read-only' : 'workspace-write';
+      const resumeParams = {
+        threadId: task.thread_id,
+        approvalPolicy: 'never',
+        sandbox,
+        config: { allow_login_shell: false },
+      };
+      let freshThread = false;
       try {
-        await this.request('thread/resume', {
-          threadId: task.thread_id,
-          approvalPolicy: 'never',
-          sandbox,
-          config: { allow_login_shell: false },
-        });
+        await this.request('thread/resume', resumeParams);
         activeTurn.subscribed = true;
         this.diagnostic('task.codex.thread.resumed', { taskId: task.id, threadId: task.thread_id });
       } catch (error) {
@@ -657,6 +659,7 @@ export class CodexAppServer extends EventEmitter {
           taskId: task.id,
           threadId: task.thread_id,
         });
+        freshThread = true;
       }
       const started = await this.request('turn/start', {
         threadId: task.thread_id,
@@ -680,6 +683,25 @@ export class CodexAppServer extends EventEmitter {
       const active = this.activeTurns.get(task.thread_id);
       active.turnId = started.turn.id;
       this.diagnostic('task.codex.turn.started', { taskId: task.id, threadId: task.thread_id, turnId: active.turnId });
+      if (freshThread) {
+        try {
+          await this.request('thread/resume', resumeParams);
+          active.subscribed = true;
+          this.diagnostic('task.codex.thread.subscribed_after_start', {
+            taskId: task.id,
+            threadId: task.thread_id,
+            turnId: active.turnId,
+          });
+        } catch (error) {
+          active.onStderr(`Could not subscribe to live output for the new Codex thread: ${error.message}`);
+          this.diagnostic('task.codex.thread.subscribe_after_start_failed', {
+            taskId: task.id,
+            threadId: task.thread_id,
+            turnId: active.turnId,
+            error: error.message,
+          });
+        }
+      }
       if (active.cancelRequested) {
         this.interruptActiveTurn(active);
       }

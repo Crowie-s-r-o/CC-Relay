@@ -4,7 +4,7 @@ export class RelayRunner {
     this.claude = claude;
     this.planCouncil = planCouncil;
     this.turbo = turbo;
-    this.activeRunner = null;
+    this.activeRunners = new Map();
   }
 
   async run(task, callbacks) {
@@ -15,15 +15,23 @@ export class RelayRunner {
       : task.provider === 'claude'
         ? this.claude
         : this.codex;
-    this.activeRunner = runner;
+    this.activeRunners.set(task.id, runner);
     try {
       return await runner.run(task, callbacks);
     } finally {
-      this.activeRunner = null;
+      this.activeRunners.delete(task.id);
     }
   }
 
-  cancel() {
-    return this.activeRunner?.cancel() || false;
+  cancel(taskId = null) {
+    if (taskId != null) {
+      const runner = this.activeRunners.get(taskId);
+      return runner?.cancel(taskId) || false;
+    }
+    let cancelled = false;
+    for (const [activeTaskId, runner] of this.activeRunners) {
+      cancelled = runner.cancel(activeTaskId) || cancelled;
+    }
+    return cancelled;
   }
 }

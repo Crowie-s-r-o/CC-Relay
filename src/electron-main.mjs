@@ -45,6 +45,14 @@ async function createWindow() {
     return { action: 'deny' };
   });
   await mainWindow.loadURL(RELAY_URL);
+  await mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
+  mainWindow.webContents.setZoomFactor(1);
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const zoomShortcut = (input.meta || input.control) && ['+', '=', '-', '0'].includes(input.key);
+    if (!zoomShortcut) return;
+    event.preventDefault();
+    mainWindow.webContents.setZoomFactor(1);
+  });
 }
 
 const lock = app.requestSingleInstanceLock();

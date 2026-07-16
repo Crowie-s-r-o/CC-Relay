@@ -8,6 +8,21 @@ type: architecture
 
 Pinned projects in `public/app.js` are selectable workspace cards. The active path is persisted in `localStorage` under `relay.activeProjectPath`.
 
+Project launch buttons follow the compact reference: 30px high, regular-weight monospace labels, thin 6px-radius borders, neutral white styling for Codex, and a restrained warm tint for Claude. The selected project uses a single-pixel blue outline with no elevated shadow. Keep these rules in the late cascade correction section of `public/style.css`, where they can override the older generic project-button surfaces.
+
+> [!note]
+> The Claude launch button uses separate icon and label spans. Its orange foreground is owned by `.project-launch-claude`, while `.project-launch-icon` explicitly inherits that color. Keep the button as an inline flex row so the Claude glyph remains visible and aligned with the orange label.
+
+> [!important]
+> Unselected project cards must retain the Claude provider colors. The final cascade includes an explicit `.project-chip:not(.selected) .project-launch-claude:not(:disabled)` rule so inactive cards do not make an available Claude action look disabled.
+
+> [!important]
+> Do not enlarge these controls to match the primary action buttons. They are secondary inline launch shortcuts inside a compact project card.
+
+Each project card includes a live activity line derived from persisted tasks in that exact workspace. Status priority is running, queued, latest failure or interruption, then idle. Running summaries include the active task number and compact prompt plus any waiting count; idle summaries retain the last completed task number. Queue and task events already trigger the normal client refresh, so this line requires no separate polling channel.
+
+The visible project path shows only its final two directory names separated by ` / `. For example, `/Users/patrikkelemen/WebstormProjects/relay` renders as `WebstormProjects / relay`. The complete path remains in the card title and continues to drive all workspace matching.
+
 The active project scopes:
 
 - Connected Codex and Claude sessions
@@ -44,8 +59,13 @@ The macOS **Launch terminal** action opens a real Terminal.app window and starts
 
 Fresh Codex remote threads are visible through `thread/read` before their first rollout is persisted. Calling `thread/resume` during that window fails with `no rollout found for thread id`. Relay treats only that exact failure as a fresh-thread case and proceeds with `turn/start`; established threads still use `thread/resume` so their existing context and subscription behavior are preserved.
 
+After `turn/start` succeeds for a fresh thread, Relay immediately calls `thread/resume` again. The first successful turn has now created the rollout, so this second resume subscribes Relay's app-server connection to live notifications. Without the post-start resume, the native terminal displays progress but Task Activity receives no item events and remains nearly empty until polling observes the final result. The successful subscription is released with `thread/unsubscribe` when the task finishes.
+
 > [!note]
 > A connected, idle thread is not necessarily resumable. The first turn creates its rollout. Do not reject a newly launched terminal solely because `thread/resume` cannot find one yet.
+
+> [!important]
+> Do not rely only on completion polling for a fresh terminal's first task. Polling recovers the final result but cannot populate the live execution ledger.
 
 > [!important]
 > UI wording can be misleading: **Terminal output** means task activity output, while **Launch terminal** means opening an external native terminal.

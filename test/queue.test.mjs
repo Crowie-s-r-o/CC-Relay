@@ -26,7 +26,7 @@ function thread(id, cwd) {
   return { id, title: `Session ${id}`, source: 'cli', cwd };
 }
 
-test('queue never runs more than one task at a time', async () => {
+test('queue runs different Codex terminals concurrently', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-queue-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
   const artifacts = new ArtifactStore(join(directory, 'tasks'));
@@ -60,8 +60,64 @@ test('queue never runs more than one task at a time', async () => {
 
     await waitFor(() => database.getTask(second.id).status === 'complete');
     assert.equal(database.getTask(first.id).status, 'complete');
-    assert.equal(maximumActive, 1);
+    assert.equal(maximumActive, 2);
     assert.deepEqual(order, ['First', 'Second']);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('queue keeps tasks for one Codex terminal sequential', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-queue-one-terminal-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  let active = 0;
+  let maximumActive = 0;
+  const runner = {
+    async run(task) {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      active -= 1;
+      return { finalResponse: task.title, sessionId: task.thread_id, exitCode: 0 };
+    },
+    cancel() { return false; },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner });
+  try {
+    queue.pause();
+    const first = queue.enqueue({ title: 'First', prompt: 'One', thread: thread('one', directory) });
+    const second = queue.enqueue({ title: 'Second', prompt: 'Two', thread: thread('one', directory) });
+    queue.resume();
+    await waitFor(() => database.getTask(second.id).status === 'complete');
+    assert.equal(database.getTask(first.id).status, 'complete');
+    assert.equal(maximumActive, 1);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('queued tasks can be assigned to another terminal', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-queue-assign-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { run() {}, cancel() { return false; } },
+  });
+  try {
+    queue.pause();
+    const task = queue.enqueue({ title: 'Move me', prompt: 'Work', thread: thread('one', directory) });
+    const assigned = queue.assign(task.id, thread('two', directory));
+    assert.equal(assigned.thread_id, 'two');
+    assert.equal(assigned.thread_name, 'Session two');
+    assert.match(readFileSync(join(directory, 'tasks', String(task.id), 'task.md'), 'utf8'), /Thread: `two`/);
+    assert.equal(database.listEvents(task.id).at(-1).message, 'Task assigned to Session two.');
+    database.updateTask(task.id, { status: 'running' });
+    assert.throws(() => queue.assign(task.id, thread('three', directory)), /Only queued tasks/);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

@@ -122,7 +122,7 @@ The activity panel shows live stage progress, the expandable first draft and rev
 
 ## Image attachments
 
-Choose, drop, or paste up to six PNG, JPEG, or WebP images in the composer. Each image may be up to 5 MB and the task may contain up to 20 MB total. Relay validates the declared type and file signature before it stores anything.
+Choose, drop, or paste up to 99 PNG, JPEG, or WebP images in the composer. Each image may be up to 5 MB and the task may contain up to 20 MB total. Relay validates the declared type and file signature before it stores anything.
 
 Images are written under the task artifact directory before the task can start. Codex Execute tasks send them as native local image inputs. Claude Execute and both Claude Plan council stages receive local paths with a scoped attachment directory and explicit instructions to inspect them through Read. The Codex review receives native local image inputs. The task activity panel shows the persisted image contact sheet and opens full images through a task-scoped local route.
 
@@ -140,7 +140,7 @@ Select two or more waiting task cards and choose **Run in parallel**. Relay repl
 
 Turbo uses the selected Codex terminal as a read-only planner and dispatches its validated JSON dependency graph across other Codex terminals connected to the same workspace. Choose the planner and worker models, efforts, and worker count in the composer. Relay starts dependency-ready tasks concurrently and reuses workers until the graph is complete. Defaults prefer Sol high for planning and Luna high for execution with three workers.
 
-All selected tasks must belong to the chosen Claude session's workspace. Existing image attachments are copied into the combined task before the original task artifacts are removed. The normal six-image and 20 MB total limits still apply. Relay itself continues to run one queue slot at a time.
+All selected tasks must belong to the chosen Claude session's workspace. Existing image attachments are copied into the combined task before the original task artifacts are removed. The normal 99-image and 20 MB total limits still apply.
 
 ## Personal Codex plugin
 

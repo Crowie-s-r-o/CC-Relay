@@ -33,6 +33,15 @@ export class ArtifactStore {
     );
   }
 
+  updateTaskAssignment(task) {
+    const path = join(this.taskDirectory(task.id), 'task.md');
+    if (!existsSync(path)) return;
+    const content = readFileSync(path, 'utf8')
+      .replace(/^Thread: `.*`$/m, `Thread: \`${task.thread_id}\``)
+      .replace(/^Session: .*$/m, `Session: ${task.thread_name}`);
+    writeFileSync(path, content, 'utf8');
+  }
+
   appendRawEvent(taskId, event) {
     const directory = this.taskDirectory(taskId);
     mkdirSync(directory, { recursive: true });

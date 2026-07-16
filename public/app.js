@@ -19,7 +19,7 @@ const EFFORT_DESCRIPTIONS = {
   ultra: 'Maximum reasoning with proactive delegation.',
 };
 
-const MAX_IMAGE_ATTACHMENTS = 6;
+const MAX_IMAGE_ATTACHMENTS = 99;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -92,6 +92,8 @@ const state = {
   submitting: false,
   prioritySubmit: false,
   draggedTaskId: null,
+  assigningTaskId: null,
+  preferIdleTerminal: localStorage.getItem('relay.preferIdleTerminal') === 'true',
   parallelTaskIds: new Set(),
   attachments: [],
   eventFilter: 'highlights',
@@ -163,6 +165,8 @@ const elements = {
   terminalList: document.querySelector('#terminal-list'),
   sessionMessage: document.querySelector('#session-message'),
   sessionRefreshButton: document.querySelector('#session-refresh-button'),
+  preferIdleTerminal: document.querySelector('#prefer-idle-terminal'),
+  idleTerminalRoute: document.querySelector('#idle-terminal-route'),
   connectionHelp: document.querySelector('#connection-help'),
   connectionHelpTitle: document.querySelector('#connection-help-title'),
   connectionHelpCopy: document.querySelector('#connection-help-copy'),
@@ -310,6 +314,10 @@ function normalizedPath(path) {
   return String(path || '').replace(/[\\/]+$/, '').replaceAll('\\', '/');
 }
 
+function compactProjectPath(path) {
+  return normalizedPath(path).split('/').filter(Boolean).slice(-2).join(' / ');
+}
+
 function sameProjectPath(left, right) {
   return normalizedPath(left) === normalizedPath(right);
 }
@@ -375,17 +383,55 @@ function renderProjects() {
     elements.projectList.innerHTML = '<span class="project-empty">Pin a folder for one-click terminal launch</span>';
     return;
   }
-  elements.projectList.innerHTML = state.projects.map((project) => `
-    <article class="project-chip ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
+  elements.projectList.innerHTML = state.projects.map((project) => {
+    const activity = projectActivity(project.path);
+    return `
+    <article class="project-chip ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}" data-activity="${activity.state}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
       <span class="project-pin" aria-hidden="true">${escapeHtml(project.name.slice(0, 1).toUpperCase())}</span>
-      <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(project.path)}</small></span>
+      <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(compactProjectPath(project.path))}</small><span class="project-activity"><i aria-hidden="true"></i>${escapeHtml(activity.label)}</span></span>
       <span class="project-launchers">
         <button class="project-launch project-launch-codex" type="button" data-project-action="launch" data-provider="codex" aria-label="Launch Codex in ${escapeHtml(project.name)}"><span aria-hidden="true">&gt;_</span> Codex</button>
-        <button class="project-launch project-launch-claude" type="button" data-project-action="launch" data-provider="claude" aria-label="Launch Claude in ${escapeHtml(project.name)}"><span aria-hidden="true">✳</span> Claude</button>
+        <button class="project-launch project-launch-claude" type="button" data-project-action="launch" data-provider="claude" aria-label="Launch Claude in ${escapeHtml(project.name)}"><span class="project-launch-icon" aria-hidden="true">✳</span><span>Claude</span></button>
         <button class="project-unpin" type="button" data-project-action="delete" aria-label="Unpin ${escapeHtml(project.name)}">×</button>
       </span>
     </article>
-  `).join('');
+  `;
+  }).join('');
+}
+
+function projectActivity(path) {
+  const tasks = state.tasks.filter((task) => sameProjectPath(task.repo_path, path));
+  const running = tasks.filter((task) => task.status === 'running');
+  const queued = tasks.filter((task) => task.status === 'queued');
+  if (running.length > 0) {
+    const task = running[0];
+    return {
+      state: 'running',
+      label: `${running.length} running${queued.length ? ` · ${queued.length} waiting` : ''} · #${task.id} ${compactText(task.prompt, 34)}`,
+    };
+  }
+  if (queued.length > 0) return { state: 'queued', label: `${queued.length} task${queued.length === 1 ? '' : 's'} waiting` };
+  const latest = tasks.reduce((current, task) => !current || task.id > current.id ? task : current, null);
+  if (latest && ['failed', 'interrupted'].includes(latest.status)) {
+    return { state: 'error', label: `Needs attention · Task #${latest.id} ${latest.status}` };
+  }
+  return { state: 'idle', label: latest?.status === 'complete' ? `Idle · Last completed #${latest.id}` : 'Idle' };
+}
+
+function relayActivity(thread) {
+  const direct = state.tasks.find((task) => task.status === 'running' && task.thread_id === thread.id);
+  if (direct) return { state: 'running', label: `Task #${direct.id} · ${compactText(direct.prompt, 72)}` };
+  const turbo = state.tasks.find((task) => task.status === 'running' && task.mode === 'turbo' && (
+    task.turbo?.plannerThreadId === thread.id
+    || task.turbo?.workers?.some((worker) => worker.threadId === thread.id)
+  ));
+  if (turbo) {
+    const planner = turbo.turbo?.plannerThreadId === thread.id;
+    return { state: 'running', label: `${planner ? 'Turbo planner' : 'Turbo worker'} · Task #${turbo.id}` };
+  }
+  const queued = state.tasks.filter((task) => task.status === 'queued' && task.thread_id === thread.id);
+  if (queued.length > 0) return { state: 'queued', label: `${queued.length} assigned · Next #${queued[0].id} ${compactText(queued[0].prompt, 54)}` };
+  return { state: thread.status === 'idle' ? 'idle' : thread.status, label: thread.status === 'idle' ? 'Idle · Ready for work' : compactText(thread.title || thread.preview, 72) };
 }
 
 async function loadProjects() {
@@ -655,6 +701,15 @@ function formatTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value));
+}
+
+function formatCardTime(value) {
+  if (!value) return '';
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(value));
+  const part = (type) => parts.find((item) => item.type === type)?.value || '';
+  return `${part('day')} ${part('month')} ${part('hour')}:${part('minute')}`;
 }
 
 function workspaceName(path) {
@@ -1185,6 +1240,18 @@ function executionLabel(task) {
   return `${model} · ${effort}`;
 }
 
+function taskCardExecutionLabel(task) {
+  const base = task.mode === 'execute'
+    ? `${task.model || 'session model'} · ${task.effort || 'default'}`
+    : executionLabel(task);
+  const attachments = task.attachments?.length ? ` · ${task.attachments.length} image${task.attachments.length === 1 ? '' : 's'}` : '';
+  return `${base}${attachments} · ${workspaceName(task.repo_path)}`;
+}
+
+function taskCardDurationLabel(task) {
+  return taskDurationLabel(task).replace(/^Took /, '');
+}
+
 function agentBadgeMarkup(task, sizeClass) {
   if (task.mode === 'plan') {
     return `
@@ -1502,7 +1569,7 @@ function renderStatus() {
     return;
   }
 
-  const { codex, claude, paused, activeTaskId } = state.status;
+  const { codex, claude, paused, activeTaskId, activeTaskIds = [] } = state.status;
   const codexReady = Boolean(codex.available && codex.authenticated && codex.appServer?.connected);
   const claudeReady = Boolean(claude?.available && claude?.authenticated);
   const relayReady = codexReady || claudeReady;
@@ -1531,7 +1598,7 @@ function renderStatus() {
     : 'Check AI login and Relay server';
 
   setModuleState(elements.statusTerminals, connectedCount > 0 ? 'online' : 'idle');
-  elements.statusTerminalsValue.textContent = `>_ ${codexCount} · ✳ ${claudeCount}`;
+  elements.statusTerminalsValue.textContent = `Codex ${codexCount} · Claude ${claudeCount}`;
   const selectedThread = state.threads.find((thread) => thread.id === state.selectedThreadId);
   elements.statusTerminalsDetail.textContent = selectedThread
     ? workspaceName(selectedThread.cwd)
@@ -1548,7 +1615,9 @@ function renderStatus() {
   elements.statusActiveValue.textContent = runningTask ? `Task ${runningTask.id}` : 'Idle';
   elements.statusActiveDetail.textContent = runningTask
     ? compactText(runningTask.prompt, 54)
-    : activeTaskId ? `Preparing task ${activeTaskId}` : 'Ready for the next task';
+    : activeTaskIds.length > 0
+      ? `Preparing ${activeTaskIds.length} active task${activeTaskIds.length === 1 ? '' : 's'}`
+      : activeTaskId ? `Preparing task ${activeTaskId}` : 'Ready for the next task';
 
   elements.queueSummary.textContent = paused
     ? `${queuedCount} task${queuedCount === 1 ? '' : 's'} waiting while paused`
@@ -1578,6 +1647,12 @@ function renderTasks() {
   elements.taskList.innerHTML = visibleTasks.map((task) => {
     const queueIndex = queuedIds.indexOf(task.id);
     const queued = queueIndex !== -1;
+    const assignable = queued && task.mode === 'execute' && task.provider === 'codex';
+    const assignmentTargets = assignable ? state.threads.filter((thread) => (
+      threadProvider(thread) === 'codex'
+      && sameProjectPath(thread.cwd, task.repo_path)
+      && thread.id !== task.thread_id
+    )) : [];
     const reorderControls = queued ? `
       <span class="queue-reorder" aria-label="Reorder queued task">
         <button type="button" data-move="up" aria-label="Move task ${task.id} up" ${queueIndex === 0 ? 'disabled' : ''}>↑</button>
@@ -1601,16 +1676,20 @@ function renderTasks() {
             <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
           </span>
           <span class="task-top-actions">
+            ${assignmentTargets.length ? `<button class="task-assign-button" type="button" data-show-assignment aria-expanded="${state.assigningTaskId === task.id}">Assign</button>` : ''}
             ${reorderControls}
             <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
           </span>
         </div>
         <p class="task-prompt">${escapeHtml(task.prompt)}</p>
-        <div class="task-execution">${escapeHtml(executionLabel(task))}${task.attachments?.length ? ` · ${task.attachments.length} image${task.attachments.length === 1 ? '' : 's'}` : ''}</div>
+        ${state.assigningTaskId === task.id ? `
+          <div class="task-assignment-options" aria-label="Assign task ${task.id} to another Relay">
+            ${assignmentTargets.map((thread) => `<button type="button" data-assign-thread="${escapeHtml(thread.id)}">Relay ${relayNumber(thread)} <span>${escapeHtml(thread.status)}</span></button>`).join('')}
+          </div>
+        ` : ''}
         <div class="task-footer">
-          <span>${escapeHtml(workspaceName(task.repo_path))}</span>
-          <span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</span>
-          <time>${escapeHtml(formatTime(task.created_at))}</time>
+          <span class="task-footer-execution">${escapeHtml(taskCardExecutionLabel(task))}</span>
+          <span class="task-footer-timing"><span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</span><time>· ${escapeHtml(formatCardTime(task.created_at))}</time></span>
         </div>
       </article>
     `;
@@ -1640,6 +1719,19 @@ function renderTasks() {
       });
     }
 
+    card.querySelector('[data-show-assignment]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const taskId = Number(card.dataset.taskId);
+      state.assigningTaskId = state.assigningTaskId === taskId ? null : taskId;
+      renderTasks();
+    });
+    for (const button of card.querySelectorAll('[data-assign-thread]')) {
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        assignTaskToThread(Number(card.dataset.taskId), button.dataset.assignThread);
+      });
+    }
+
     const parallelCheck = card.querySelector('.parallel-task-check');
     parallelCheck?.addEventListener('change', () => {
       const taskId = Number(card.dataset.taskId);
@@ -1650,6 +1742,10 @@ function renderTasks() {
 
     if (card.dataset.status === 'queued') {
       card.addEventListener('dragstart', (event) => {
+        if (event.target.closest('button, input')) {
+          event.preventDefault();
+          return;
+        }
         state.draggedTaskId = Number(card.dataset.taskId);
         event.dataTransfer.effectAllowed = 'move';
         event.dataTransfer.setData('text/plain', card.dataset.taskId);
@@ -1684,6 +1780,50 @@ function renderTasks() {
         }
       });
     }
+  }
+}
+
+function relayNumber(thread) {
+  const relays = state.threads.filter((item) => threadProvider(item) === 'codex');
+  const index = relays.findIndex((item) => item.id === thread.id);
+  return index === -1 ? '?' : index + 1;
+}
+
+function submissionThreadId() {
+  if (!state.preferIdleTerminal || state.taskMode !== 'execute' || state.selectedProvider !== 'codex') {
+    return state.selectedThreadId;
+  }
+  const selectedThread = state.threads.find((thread) => thread.id === state.selectedThreadId);
+  const routePath = state.activeProjectPath || selectedThread?.cwd;
+  const eligible = state.threads.filter((thread) => (
+    threadProvider(thread) === 'codex'
+    && (!routePath || sameProjectPath(thread.cwd, routePath))
+  ));
+  const selected = eligible.find((thread) => thread.id === state.selectedThreadId);
+  if (selected?.status === 'idle') return selected.id;
+  return eligible.find((thread) => thread.status === 'idle')?.id || state.selectedThreadId;
+}
+
+function canAssignTaskToThread(taskId, threadId) {
+  const task = state.tasks.find((item) => item.id === taskId);
+  const thread = state.threads.find((item) => item.id === threadId);
+  return task?.status === 'queued'
+    && task.mode === 'execute'
+    && task.provider === 'codex'
+    && threadProvider(thread || {}) === 'codex'
+    && sameProjectPath(task.repo_path, thread?.cwd);
+}
+
+async function assignTaskToThread(taskId, threadId) {
+  try {
+    await api(`/api/tasks/${taskId}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ threadId }),
+    });
+    state.assigningTaskId = null;
+    await load();
+  } catch (error) {
+    window.alert(error.message);
   }
 }
 
@@ -1729,7 +1869,7 @@ function refreshTaskDurations() {
   for (const element of elements.taskList.querySelectorAll('[data-task-duration]')) {
     const task = tasksById.get(Number(element.dataset.taskDuration));
     if (task) {
-      element.textContent = taskDurationLabel(task);
+      element.textContent = taskCardDurationLabel(task);
     }
   }
 }
@@ -2032,6 +2172,8 @@ function selectProvider(provider, { focus = false } = {}) {
 function renderThreads() {
   const visibleThreads = projectThreads();
   const isClaude = state.selectedProvider === 'claude';
+  elements.idleTerminalRoute.hidden = isClaude || state.taskMode !== 'execute';
+  elements.preferIdleTerminal.checked = state.preferIdleTerminal;
   const directClaudeEnabled = isDirectClaudeEnabled();
   const launcherEnabled = state.status?.capabilities?.projectLauncher === true;
   elements.launchTerminalButton.disabled = !launcherEnabled;
@@ -2091,6 +2233,7 @@ function renderThreads() {
   elements.terminalList.innerHTML = visibleThreads.map((thread) => {
     const selected = thread.id === state.selectedThreadId;
     const provider = threadProvider(thread);
+    const activity = relayActivity(thread);
     return `
       <button
         class="terminal-option ${selected ? 'selected' : ''}"
@@ -2103,10 +2246,10 @@ function renderThreads() {
         <span class="terminal-choice" aria-hidden="true"><span></span></span>
         <span class="terminal-copy">
           <span class="terminal-primary">
-            <strong>${escapeHtml(provider === 'claude' ? thread.title : workspaceName(thread.cwd))}</strong>
-            <span class="terminal-state state-${escapeHtml(thread.status)}">${escapeHtml(thread.status)}</span>
+            <strong>${escapeHtml(provider === 'claude' ? thread.title : `Relay ${relayNumber(thread)} · ${workspaceName(thread.cwd)}`)}</strong>
+            <span class="terminal-state state-${escapeHtml(activity.state)}">${escapeHtml(activity.state)}</span>
           </span>
-          <span class="terminal-preview">${escapeHtml(compactText(provider === 'claude' ? `${workspaceName(thread.cwd)} · ${thread.preview}` : thread.title || thread.preview, 92))}</span>
+          <span class="terminal-preview">${escapeHtml(provider === 'claude' && activity.state === 'idle' ? `${workspaceName(thread.cwd)} · ${activity.label}` : activity.label)}</span>
           <span class="terminal-meta">${escapeHtml(thread.source)}${thread.pid ? ` · PID ${escapeHtml(thread.pid)}` : ''} · ${escapeHtml(thread.id.slice(0, 8))} · ${escapeHtml(thread.cwd)}</span>
         </span>
       </button>
@@ -2115,6 +2258,21 @@ function renderThreads() {
 
   for (const option of elements.terminalList.querySelectorAll('.terminal-option')) {
     option.addEventListener('click', () => applyThreadSelection(option.dataset.threadId));
+    option.addEventListener('dragover', (event) => {
+      if (!canAssignTaskToThread(state.draggedTaskId, option.dataset.threadId) || isClaude) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'move';
+      option.classList.add('task-drop-target');
+    });
+    option.addEventListener('dragleave', () => option.classList.remove('task-drop-target'));
+    option.addEventListener('drop', (event) => {
+      event.preventDefault();
+      option.classList.remove('task-drop-target');
+      const taskId = state.draggedTaskId || Number(event.dataTransfer.getData('text/plain'));
+      if (canAssignTaskToThread(taskId, option.dataset.threadId)) {
+        assignTaskToThread(taskId, option.dataset.threadId);
+      }
+    });
     option.addEventListener('keydown', (event) => {
       if (!['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key)) {
         return;
@@ -2212,7 +2370,8 @@ elements.form.addEventListener('submit', async (event) => {
   elements.formMessage.textContent = '';
   const runNow = state.prioritySubmit;
   state.prioritySubmit = false;
-  if (!state.selectedThreadId) {
+  const routedThreadId = submissionThreadId();
+  if (!routedThreadId) {
     elements.formMessage.textContent = 'Choose a connected AI session first.';
     return;
   }
@@ -2232,7 +2391,7 @@ elements.form.addEventListener('submit', async (event) => {
   const requestBody = state.taskMode === 'plan'
     ? {
       mode: 'plan',
-      threadId: state.selectedThreadId,
+      threadId: routedThreadId,
       prompt: formData.get('prompt'),
       authorProvider: 'claude',
       authorModel: state.planSettings.authorModel,
@@ -2246,7 +2405,7 @@ elements.form.addEventListener('submit', async (event) => {
     : state.taskMode === 'turbo'
       ? {
         mode: 'turbo',
-        threadId: state.selectedThreadId,
+        threadId: routedThreadId,
         prompt: formData.get('prompt'),
         plannerModel: state.turboSettings.plannerModel,
         plannerEffort: state.turboSettings.plannerEffort || null,
@@ -2259,7 +2418,7 @@ elements.form.addEventListener('submit', async (event) => {
       : {
       mode: 'execute',
       provider: state.selectedProvider,
-      threadId: state.selectedThreadId,
+      threadId: routedThreadId,
       prompt: formData.get('prompt'),
       model: execution.model,
       effort: execution.effort || null,
@@ -2384,6 +2543,10 @@ elements.parallelClearButton.addEventListener('click', () => {
 });
 elements.parallelRunButton.addEventListener('click', runParallelBatch);
 elements.sessionRefreshButton.addEventListener('click', loadThreads);
+elements.preferIdleTerminal.addEventListener('change', () => {
+  state.preferIdleTerminal = elements.preferIdleTerminal.checked;
+  localStorage.setItem('relay.preferIdleTerminal', String(state.preferIdleTerminal));
+});
 elements.addProjectButton.addEventListener('click', () => chooseProject(false));
 elements.addLaunchProjectButton.addEventListener('click', () => chooseProject(true));
 elements.projectList.addEventListener('click', async (event) => {

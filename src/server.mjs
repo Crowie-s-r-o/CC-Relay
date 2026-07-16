@@ -622,6 +622,24 @@ export const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'POST' && /^\/api\/tasks\/\d+\/assign$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const task = database.getTask(taskId);
+      if (!task) throw new Error('Task not found.');
+      if (task.mode !== 'execute' || task.provider !== 'codex') {
+        throw new Error('Only queued Codex tasks can be assigned to another terminal.');
+      }
+      const body = await readJson(request);
+      const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+      const thread = threadId ? await codexAppServer.readConnectedThread(threadId) : null;
+      if (!thread) throw new Error('That Codex terminal is no longer connected. Refresh and try again.');
+      if (resolve(task.repo_path) !== resolve(thread.cwd)) {
+        throw new Error('Tasks can only move between terminals in the same workspace.');
+      }
+      sendJson(response, 200, { task: queue.assign(taskId, thread) });
+      return;
+    }
+
     if (request.method === 'DELETE' && /^\/api\/tasks\/\d+$/.test(pathname)) {
       const taskId = taskIdFromPath(pathname);
       if (!queue.delete(taskId)) {

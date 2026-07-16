@@ -88,7 +88,7 @@ class FakeWebSocket extends EventTarget {
         },
       });
     } else if (message.method === 'thread/resume') {
-      if (this.missingRollout) {
+      if (this.missingRollout && !this.turnStarted) {
         this.respond({
           id: message.id,
           error: { message: `no rollout found for thread id ${THREAD_ID}` },
@@ -280,7 +280,7 @@ test('polling completes a turn when its completion notification is missed', asyn
   }
 });
 
-test('a freshly launched terminal can run its first turn before a rollout exists', async () => {
+test('a freshly launched terminal subscribes to live output after its first turn creates a rollout', async () => {
   const received = [];
   const diagnostics = [];
   const client = new CodexAppServer({
@@ -302,8 +302,10 @@ test('a freshly launched terminal can run its first turn before a rollout exists
 
     assert.equal(result.finalResponse, 'Task finished.');
     assert.equal(received.some((message) => message.method === 'turn/start'), true);
-    assert.equal(received.some((message) => message.method === 'thread/unsubscribe'), false);
+    assert.equal(received.filter((message) => message.method === 'thread/resume').length, 2);
+    assert.equal(received.some((message) => message.method === 'thread/unsubscribe'), true);
     assert.equal(diagnostics.some(({ event }) => event === 'task.codex.thread.fresh'), true);
+    assert.equal(diagnostics.some(({ event }) => event === 'task.codex.thread.subscribed_after_start'), true);
   } finally {
     client.close();
   }
