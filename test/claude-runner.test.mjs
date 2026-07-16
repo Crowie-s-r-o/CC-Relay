@@ -1,0 +1,95 @@
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import test from 'node:test';
+import { ClaudeRunner, parseClaudeResult } from '../src/claude-runner.mjs';
+
+test('Claude JSON output extracts only the final result', () => {
+  const output = JSON.stringify([
+    { type: 'system', subtype: 'init', session_id: 'session-one' },
+    { type: 'assistant', message: { content: [{ type: 'text', text: 'Drafting' }] } },
+    {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: '# Final plan',
+      session_id: 'session-one',
+      modelUsage: { 'claude-opus-test': {} },
+    },
+  ]);
+
+  assert.deepEqual(parseClaudeResult(output), {
+    text: '# Final plan',
+    sessionId: 'session-one',
+    model: 'claude-opus-test',
+  });
+});
+
+test('Claude JSON output rejects failed result messages', () => {
+  assert.throws(() => parseClaudeResult(JSON.stringify({
+    type: 'result',
+    subtype: 'error_during_execution',
+    is_error: true,
+    result: 'Model unavailable',
+  })), /Model unavailable/);
+});
+
+test('Claude runner uses subscription CLI in safe read-only plan mode', async () => {
+  let invocation;
+  let input = '';
+  const spawnProcess = (command, args, options) => {
+    invocation = { command, args, options };
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.stdin.on('data', (chunk) => { input += chunk.toString(); });
+    child.kill = () => true;
+    queueMicrotask(() => {
+      child.stdout.end(JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        result: '# Plan',
+        session_id: 'session-plan',
+      }));
+      child.emit('close', 0, null);
+    });
+    return child;
+  };
+  const runner = new ClaudeRunner({ spawnProcess });
+  const events = [];
+  const result = await runner.run('Inspect and plan.', {
+    cwd: '/tmp/project',
+    model: 'opus',
+    effort: 'max',
+    attachmentPaths: ['/tmp/relay-images/one.png', '/tmp/relay-images/two.jpg'],
+    onEvent: (event) => events.push(event),
+    onStderr: () => {},
+  });
+
+  assert.equal(invocation.command, 'claude');
+  assert.equal(invocation.options.cwd, '/tmp/project');
+  assert.deepEqual(invocation.options.stdio, ['pipe', 'pipe', 'pipe']);
+  assert.equal(invocation.args.includes('--safe-mode'), true);
+  assert.equal(invocation.args.includes('--no-session-persistence'), true);
+  assert.deepEqual(
+    invocation.args.slice(invocation.args.indexOf('--permission-mode'), invocation.args.indexOf('--permission-mode') + 2),
+    ['--permission-mode', 'plan'],
+  );
+  assert.deepEqual(
+    invocation.args.slice(invocation.args.indexOf('--model'), invocation.args.indexOf('--model') + 2),
+    ['--model', 'opus'],
+  );
+  assert.deepEqual(
+    invocation.args.slice(invocation.args.indexOf('--effort'), invocation.args.indexOf('--effort') + 2),
+    ['--effort', 'max'],
+  );
+  assert.deepEqual(
+    invocation.args.slice(invocation.args.indexOf('--add-dir'), invocation.args.indexOf('--add-dir') + 2),
+    ['--add-dir', '/tmp/relay-images'],
+  );
+  assert.equal(input, 'Inspect and plan.');
+  assert.equal(result.text, '# Plan');
+  assert.equal(events.length, 2);
+});

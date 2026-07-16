@@ -1,0 +1,18 @@
+{
+  "name": "relay-queue",
+  "version": "0.1.0",
+  "description": "Manage a local sequential Codex task queue.",
+  "author": {
+    "name": "Local developer"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Relay Queue",
+    "shortDescription": "Manage a local sequential Codex queue.",
+    "longDescription": "Browse Relay-connected Codex terminals and list, add, pause, resume, retry, or cancel tasks in the local Relay queue.",
+    "developerName": "Local developer",
+    "category": "Productivity",
+    "capabilities": ["Read", "Write"],
+    "defaultPrompt": "Show me the Relay task queue."
+  }
+}

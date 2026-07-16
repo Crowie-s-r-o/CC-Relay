@@ -1,0 +1,20 @@
+appId: com.relay.queue
+productName: Relay
+asar: true
+files:
+  - src/**/*
+  - public/**/*
+  - package.json
+mac:
+  category: public.app-category.developer-tools
+  target:
+    - dmg
+    - zip
+win:
+  target:
+    - nsis
+    - portable
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+artifactName: Relay-${version}-${os}-${arch}.${ext}
