@@ -3,10 +3,22 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+
+function writeFileAtomically(filePath, content) {
+  const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, content, { encoding: 'utf8', flag: 'wx' });
+    renameSync(temporaryPath, filePath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
 
 export class ArtifactStore {
   constructor(rootPath) {
@@ -18,17 +30,25 @@ export class ArtifactStore {
     return join(this.rootPath, String(taskId));
   }
 
+  planPath(taskId) {
+    return join(this.taskDirectory(taskId), 'plan.md');
+  }
+
   initializeTask(task) {
     const directory = this.taskDirectory(task.id);
     mkdirSync(directory, { recursive: true });
     const execution = task.mode === 'plan'
       ? `Mode: plan council\n\nAuthor: ${task.author_provider} / ${task.author_model} / ${task.author_effort}\n\nReviewer: ${task.reviewer_provider} / ${task.reviewer_model} / ${task.reviewer_effort}`
       : task.mode === 'turbo'
-        ? `Mode: forward-planning turbo\n\nPlanner: ${task.turbo?.plannerModel} / ${task.turbo?.plannerEffort}\n\nWorkers: ${task.turbo?.workerCount} / ${task.turbo?.workerModel} / ${task.turbo?.workerEffort}`
-      : `Mode: execute\n\nProvider: ${task.provider || 'codex'}\n\nModel: ${task.model || 'session default'}\n\nEffort: ${task.effort || 'model default'}`;
+        ? `Mode: forward-planning turbo\n\nPlanner: ${task.turbo?.plannerModel} / ${task.turbo?.plannerEffort}\n\nWorkers: ${task.turbo?.workerCount} / ${task.turbo?.workerModel} / ${task.turbo?.workerEffort}${(task.turbo?.council?.enabled || task.turbo?.councilEnabled) ? `\n\nCouncil: ${(task.turbo?.council?.order || ['codex', 'claude']).map((provider) => provider === 'claude' ? 'Claude' : 'Codex').join(' → ')}\nAuthor: ${task.turbo?.council?.authorModel || 'configured model'} / ${task.turbo?.council?.authorEffort || 'model default'}\nReviewer: ${task.turbo?.council?.reviewerModel || 'configured model'} / ${task.turbo?.council?.reviewerEffort || 'model default'}\nCouncil status: pending` : ''}`
+      : `Mode: execute\n\nProvider: ${task.provider || 'codex'}\n\nModel: ${task.model || 'session default'}\n\nEffort: ${task.effort || 'model default'}\n\nContext: resume selected session`;
+    const attachments = Array.isArray(task.attachments) ? task.attachments : [];
+    const attachmentSection = attachments.length > 0
+      ? `\n\n## Reference images\n\n${attachments.map((item) => `- ${item.name} (${item.mimeType}, ${item.size} bytes)`).join('\n')}`
+      : '';
     writeFileSync(
       join(directory, 'task.md'),
-      `# ${task.title}\n\n${execution}\n\nThread: \`${task.thread_id}\`\n\nSession: ${task.thread_name}\n\nWorking directory: \`${task.repo_path}\`\n\n## Task\n\n${task.prompt}\n`,
+      `# ${task.title}\n\n${execution}${task.continued_from_task_id ? `\n\nContinues task: #${task.continued_from_task_id}` : ''}\n\nThread: \`${task.thread_id}\`\n\nSession: ${task.thread_name}\n\nWorking directory: \`${task.repo_path}\`\n\n## Task\n\n${task.prompt}${attachmentSection}\n`,
       'utf8',
     );
   }
@@ -48,16 +68,21 @@ export class ArtifactStore {
     appendFileSync(join(directory, 'events.jsonl'), `${JSON.stringify(event)}\n`, 'utf8');
   }
 
-  writeAttachments(taskId, attachments) {
+  stageAttachments(taskId, attachments, existingAttachments = []) {
     if (!attachments.length) {
       return [];
     }
     const taskDirectory = this.taskDirectory(taskId);
     const directory = join(taskDirectory, 'attachments');
     mkdirSync(directory, { recursive: true });
+    const highestNumber = existingAttachments.reduce((highest, attachment) => {
+      const match = String(attachment?.id || '').match(/^image-(\d+)$/);
+      return match ? Math.max(highest, Number(match[1])) : highest;
+    }, 0);
     const metadata = attachments.map((attachment, index) => {
-      const id = `image-${index + 1}`;
-      const fileName = `${String(index + 1).padStart(2, '0')}.${attachment.extension}`;
+      const number = highestNumber + index + 1;
+      const id = `image-${number}`;
+      const fileName = `${String(number).padStart(2, '0')}.${attachment.extension}`;
       const path = join(directory, fileName);
       writeFileSync(path, attachment.data);
       return {
@@ -69,56 +94,42 @@ export class ArtifactStore {
         path,
       };
     });
+    return metadata;
+  }
+
+  documentAttachments(taskId, metadata, heading = 'Reference images') {
+    if (!metadata.length) return;
+    const taskDirectory = this.taskDirectory(taskId);
     appendFileSync(
       join(taskDirectory, 'task.md'),
-      `\n## Reference images\n\n${metadata.map((item) => `- ${item.name} (${item.mimeType}, ${item.size} bytes)`).join('\n')}\n`,
+      `\n## ${heading}\n\n${metadata.map((item) => `- ${item.name} (${item.mimeType}, ${item.size} bytes)`).join('\n')}\n`,
       'utf8',
     );
+  }
+
+  discardAttachments(metadata) {
+    for (const attachment of metadata) {
+      if (typeof attachment?.path === 'string') rmSync(attachment.path, { force: true });
+    }
+  }
+
+  writeAttachments(taskId, attachments) {
+    const metadata = this.stageAttachments(taskId, attachments);
+    this.documentAttachments(taskId, metadata);
     return metadata;
   }
 
   writePlan(taskId, plan) {
     const directory = this.taskDirectory(taskId);
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`, 'utf8');
-    const stageStatus = plan.stages
-      .map((stage) => `- ${stage.label}: ${stage.status}`)
-      .join('\n');
-    const attachmentList = plan.attachments?.length
-      ? plan.attachments.map((attachment) => `- ${attachment.name}: \`${attachment.path}\``).join('\n')
-      : '_No reference images._';
-    const markdown = `# Two-agent implementation plan
-
-Status: ${plan.status}
-
-## Council
-
-- Author: ${plan.author.provider} / ${plan.author.model} / ${plan.author.effort}
-- Reviewer: ${plan.reviewer.provider} / ${plan.reviewer.model} / ${plan.reviewer.effort}
-
-${stageStatus}
-
-## Original brief
-
-${plan.brief}
-
-## Reference images
-
-${attachmentList}
-
-## Claude draft
-
-${plan.draft || '_Waiting for the first draft._'}
-
-## Codex review
-
-${plan.review || '_Waiting for the independent review._'}
-
-## Final revised plan
-
-${plan.finalPlan || '_Waiting for the final revision._'}
-`;
-    writeFileSync(join(directory, 'plan.md'), markdown, 'utf8');
+    writeFileAtomically(join(directory, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`);
+    const finalPlan = typeof plan.finalPlan === 'string' ? plan.finalPlan.trim() : '';
+    if (plan.status === 'complete' && finalPlan) {
+      writeFileAtomically(this.planPath(taskId), `${finalPlan}\n`);
+      rmSync(join(directory, 'result.md'), { force: true });
+    } else {
+      rmSync(this.planPath(taskId), { force: true });
+    }
   }
 
   readPlan(taskId) {
@@ -153,13 +164,17 @@ ${plan.finalPlan || '_Waiting for the final revision._'}
     writeFileSync(join(directory, 'error.txt'), `${error.trim()}\n`, 'utf8');
   }
 
-  clearOutcome(taskId) {
+  clearOutcome(taskId, { preservePlan = false, preserveTurboPlan = false } = {}) {
     const directory = this.taskDirectory(taskId);
     rmSync(join(directory, 'result.md'), { force: true });
     rmSync(join(directory, 'error.txt'), { force: true });
-    rmSync(join(directory, 'plan.json'), { force: true });
-    rmSync(join(directory, 'plan.md'), { force: true });
-    rmSync(join(directory, 'turbo-plan.json'), { force: true });
+    if (!preservePlan) {
+      rmSync(join(directory, 'plan.json'), { force: true });
+      rmSync(this.planPath(taskId), { force: true });
+    }
+    if (!preserveTurboPlan) {
+      rmSync(join(directory, 'turbo-plan.json'), { force: true });
+    }
   }
 
   deleteTask(taskId) {

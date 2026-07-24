@@ -37,3 +37,24 @@ test('Relay runner routes execution to the selected AI provider', async () => {
   assert.equal((await runner.run({ mode: 'turbo', provider: 'codex' })).finalResponse, 'Turbo result');
   assert.deepEqual(calls, ['claude', 'codex', 'plan', 'turbo']);
 });
+
+test('Relay runner exposes Turbo preparation separately and scopes cancellation', async () => {
+  const calls = [];
+  let release;
+  const turbo = {
+    async prepare(task) {
+      calls.push(`prepare:${task.id}`);
+      await new Promise((resolve) => { release = resolve; });
+      return { status: 'ready' };
+    },
+    async run(task) { calls.push(`run:${task.id}`); return { finalResponse: 'done' }; },
+    cancel(taskId) { calls.push(`cancel:${taskId}`); return true; },
+  };
+  const runner = new RelayRunner({ turbo });
+  const preparation = runner.prepare({ id: 12, mode: 'turbo' }, {});
+  assert.deepEqual(calls, ['prepare:12']);
+  assert.equal(runner.cancel(12), true);
+  release();
+  await preparation;
+  assert.deepEqual(calls, ['prepare:12', 'cancel:12']);
+});

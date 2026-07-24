@@ -1,10 +1,14 @@
 import { execFile as execFileCallback } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
+import { TerminalRuntimeResolver, normalizeTerminalTty } from './terminal-runtime-resolver.mjs';
 
 const execFile = promisify(execFileCallback);
-export const CODEX_RELAY_COMMAND = 'codex --dangerously-bypass-approvals-and-sandbox --remote ws://127.0.0.1:4769';
+const TERMINAL_CLOSE_TIMEOUT_MS = 10_000;
+const SHARED_CODEX_ENDPOINT = 'ws://127.0.0.1:4769';
+export const CODEX_RELAY_COMMAND = `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${SHARED_CODEX_ENDPOINT}`;
 export const CLAUDE_RELAY_COMMAND = 'claude --dangerously-skip-permissions';
 
 export function shellQuote(value) {
@@ -13,6 +17,29 @@ export function shellQuote(value) {
 
 export function powershellQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+export function cmdQuote(value) {
+  return `"${String(value).replaceAll('"', '""')}"`;
+}
+
+function terminalTtyName(value) {
+  const tty = normalizeTerminalTty(value);
+  if (!tty?.startsWith('/dev/')) return null;
+  const name = tty.slice('/dev/'.length);
+  return /^[a-zA-Z0-9._-]+$/.test(name) ? name : null;
+}
+
+export function codexRelayCommand(path, quote = shellQuote, endpoint = SHARED_CODEX_ENDPOINT) {
+  return `codex --dangerously-bypass-approvals-and-sandbox --cd ${quote(path)} --remote ${endpoint}`;
+}
+
+export function claudeRelayCommand(sessionId = null, quote = shellQuote, binary = 'claude') {
+  // Pin the exact resolved binary so the interactive terminal runs the same
+  // claude Relay discovered, instead of relying on shell PATH order. The bare
+  // 'claude' default stays unquoted for backward compatibility.
+  const bin = binary && binary !== 'claude' ? quote(binary) : 'claude';
+  return `${bin} --dangerously-skip-permissions${sessionId ? ` --session-id ${quote(sessionId)}` : ''}`;
 }
 
 export function normalizeTerminalLayout(layout) {
@@ -85,21 +112,259 @@ export function validateProjectPath(path) {
   return { path: resolved, name: basename(resolved) || resolved };
 }
 
-export function terminalCommand(path, provider) {
+export function terminalCommand(path, provider, { claudeSessionId = null, codexEndpoint = SHARED_CODEX_ENDPOINT, claudeBinary = 'claude' } = {}) {
   if (!['codex', 'claude'].includes(provider)) {
     throw new Error(`Unsupported AI provider: ${provider}`);
   }
-  const command = provider === 'codex' ? CODEX_RELAY_COMMAND : CLAUDE_RELAY_COMMAND;
+  const command = provider === 'codex'
+    ? codexRelayCommand(path, shellQuote, codexEndpoint)
+    : claudeRelayCommand(claudeSessionId, shellQuote, claudeBinary);
   return `cd ${shellQuote(path)} && ${command}`;
 }
 
 export class ProjectLauncher {
-  constructor({ run = execFile, platform = process.platform, diagnostic = () => {} } = {}) {
+  constructor({
+    run = execFile,
+    platform = process.platform,
+    diagnostic = () => {},
+    ensureCodexReady = async () => {},
+    reserveCodexLaunch = () => null,
+    codexClientForThread = () => null,
+    runtimeResolver = null,
+    createId = randomUUID,
+    now = Date.now,
+    recoveryRetryMs = 15_000,
+    claudeBinary = 'claude',
+  } = {}) {
     this.run = run;
     this.platform = platform;
     this.diagnostic = diagnostic;
+    this.claudeBinary = claudeBinary;
+    this.ensureCodexReady = ensureCodexReady;
+    this.reserveCodexLaunch = reserveCodexLaunch;
+    this.createId = createId;
+    this.now = now;
+    this.recoveryRetryMs = recoveryRetryMs;
+    this.runtimeResolver = runtimeResolver || new TerminalRuntimeResolver({
+      run,
+      platform,
+      codexClientForThread,
+      diagnostic,
+    });
     this.gridSlots = new Map();
     this.launchQueue = Promise.resolve();
+    this.ownedTerminalWindowIds = new Set();
+    this.ownedTerminalProcessIds = new Set();
+    this.ownedTerminals = new Map();
+    this.recoveryRetryAt = new Map();
+    this.closing = false;
+  }
+
+  trackOwnedTerminal({
+    launchId = this.createId(),
+    provider,
+    path,
+    terminalWindowId = null,
+    terminalProcessId = null,
+    terminalTty = null,
+    runtimeProcessId = null,
+    closeOnShutdown = true,
+    ownershipSource = 'launch',
+    cancelWorkspaceReservation = null,
+  }) {
+    if (!terminalWindowId && !terminalProcessId) return null;
+    const duplicate = [...this.ownedTerminals.values()].find((terminal) => (
+      (terminalWindowId && terminal.terminalWindowId === terminalWindowId)
+      || (terminalProcessId && terminal.terminalProcessId === terminalProcessId)
+    ));
+    if (duplicate && duplicate.launchId !== launchId) {
+      throw new Error('That native terminal is already bound to another Relay session.');
+    }
+    this.ownedTerminals.set(launchId, {
+      launchId,
+      provider,
+      path,
+      threadId: null,
+      terminalWindowId,
+      terminalProcessId,
+      terminalTty,
+      runtimeProcessId,
+      closeOnShutdown,
+      ownershipSource,
+      cancelWorkspaceReservation,
+    });
+    if (closeOnShutdown && terminalWindowId) this.ownedTerminalWindowIds.add(terminalWindowId);
+    if (closeOnShutdown && terminalProcessId) this.ownedTerminalProcessIds.add(terminalProcessId);
+    return launchId;
+  }
+
+  forgetTrackedTerminal(launchId) {
+    const terminal = this.ownedTerminals.get(launchId);
+    if (!terminal) return false;
+    this.ownedTerminals.delete(launchId);
+    if (terminal.threadId) this.recoveryRetryAt.delete(terminal.threadId);
+    if (terminal.closeOnShutdown && terminal.terminalWindowId) {
+      this.ownedTerminalWindowIds.delete(terminal.terminalWindowId);
+    }
+    if (terminal.closeOnShutdown && terminal.terminalProcessId) {
+      this.ownedTerminalProcessIds.delete(terminal.terminalProcessId);
+    }
+    return true;
+  }
+
+  releaseLaunchReservation(launchId) {
+    const terminal = this.ownedTerminals.get(launchId);
+    const cancel = terminal?.cancelWorkspaceReservation;
+    if (typeof cancel !== 'function') return false;
+    terminal.cancelWorkspaceReservation = null;
+    try {
+      cancel();
+    } catch (error) {
+      this.diagnostic('terminal.launch.reservation_release_failed', {
+        launchId,
+        error: error.message,
+      });
+    }
+    return true;
+  }
+
+  bindOwnedTerminal(launchId, thread) {
+    const terminal = this.ownedTerminals.get(launchId);
+    if (!terminal) {
+      throw new Error('That terminal launch is not owned by this Relay instance.');
+    }
+    const threadId = typeof thread?.id === 'string' ? thread.id.trim() : '';
+    if (!threadId || !['codex', 'claude'].includes(thread?.provider) || typeof thread?.cwd !== 'string') {
+      throw new Error('A connected Codex or Claude session is required to bind the terminal launch.');
+    }
+    const path = validateProjectPath(thread.cwd).path;
+    if (terminal.provider !== thread.provider || terminal.path !== path) {
+      throw new Error('The connected session does not match the launched terminal provider and project.');
+    }
+    const existing = [...this.ownedTerminals.values()].find((item) => (
+      item.threadId === threadId && item.launchId !== launchId
+    ));
+    if (existing) {
+      throw new Error('That connected session is already bound to another terminal launch.');
+    }
+    if (terminal.threadId && terminal.threadId !== threadId) {
+      throw new Error('That terminal launch is already bound to another connected session.');
+    }
+    terminal.threadId = threadId;
+    this.releaseLaunchReservation(launchId);
+    this.diagnostic('terminal.session.bound', {
+      launchId,
+      threadId,
+      provider: terminal.provider,
+      path: terminal.path,
+      ownershipSource: terminal.ownershipSource,
+    });
+    return this.terminalForThread(threadId);
+  }
+
+  async recoverConnectedTerminals(threads) {
+    if (!this.runtimeResolver || !Array.isArray(threads)) return [];
+    const timestamp = this.now();
+    const candidates = threads.filter((thread) => (
+      thread?.id
+      && !this.terminalForThread(thread.id)
+      && (this.recoveryRetryAt.get(thread.id) || 0) <= timestamp
+    ));
+    if (candidates.length === 0) return [];
+    for (const thread of candidates) {
+      this.recoveryRetryAt.set(thread.id, timestamp + this.recoveryRetryMs);
+    }
+
+    let resolved;
+    try {
+      resolved = await this.runtimeResolver.resolve(candidates);
+    } catch (error) {
+      this.diagnostic('terminal.recovery.failed', { error: error.message });
+      return [];
+    }
+
+    const recovered = [];
+    for (const nativeTerminal of resolved) {
+      const thread = candidates.find((item) => item.id === nativeTerminal.threadId);
+      if (!thread || this.terminalForThread(thread.id)) continue;
+      const launchId = `runtime-${this.createId()}`;
+      try {
+        this.trackOwnedTerminal({
+          launchId,
+          provider: thread.provider,
+          path: validateProjectPath(thread.cwd).path,
+          terminalWindowId: nativeTerminal.terminalWindowId,
+          terminalProcessId: nativeTerminal.terminalProcessId,
+          terminalTty: nativeTerminal.terminalTty,
+          runtimeProcessId: nativeTerminal.runtimeProcessId,
+          closeOnShutdown: false,
+          ownershipSource: 'runtime',
+        });
+        this.bindOwnedTerminal(launchId, thread);
+        recovered.push(this.terminalForThread(thread.id));
+        this.diagnostic('terminal.recovery.completed', {
+          launchId,
+          threadId: thread.id,
+          provider: thread.provider,
+          path: thread.cwd,
+          terminalWindowId: nativeTerminal.terminalWindowId,
+          terminalProcessId: nativeTerminal.terminalProcessId,
+          terminalTty: nativeTerminal.terminalTty,
+          runtimeProcessId: nativeTerminal.runtimeProcessId,
+        });
+      } catch (error) {
+        this.forgetTrackedTerminal(launchId);
+        this.diagnostic('terminal.recovery.rejected', {
+          threadId: thread.id,
+          provider: thread.provider,
+          error: error.message,
+        });
+      }
+    }
+    return recovered;
+  }
+
+  async verifyTerminalForThread(thread) {
+    const terminal = [...this.ownedTerminals.values()].find((item) => item.threadId === thread?.id);
+    if (!terminal) return false;
+    if (terminal.ownershipSource !== 'runtime') return true;
+    let resolved;
+    try {
+      resolved = await this.runtimeResolver.resolve([thread]);
+    } catch (error) {
+      this.forgetTrackedTerminal(terminal.launchId);
+      this.diagnostic('terminal.recovery.verification_failed', {
+        threadId: thread.id,
+        error: error.message,
+      });
+      return false;
+    }
+    const current = resolved.find((item) => item.threadId === thread.id);
+    const verified = Boolean(
+      current
+      && current.terminalWindowId === terminal.terminalWindowId
+      && current.terminalTty === terminal.terminalTty
+      && current.runtimeProcessId === terminal.runtimeProcessId
+    );
+    if (!verified) {
+      this.forgetTrackedTerminal(terminal.launchId);
+      this.diagnostic('terminal.recovery.identity_changed', {
+        threadId: thread.id,
+        provider: thread.provider,
+      });
+    }
+    return verified;
+  }
+
+  terminalForThread(threadId) {
+    const terminal = [...this.ownedTerminals.values()].find((item) => item.threadId === threadId);
+    if (!terminal) return null;
+    return {
+      launchId: terminal.launchId,
+      threadId: terminal.threadId,
+      provider: terminal.provider,
+      path: terminal.path,
+    };
   }
 
   async listDisplays() {
@@ -182,6 +447,9 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
   }
 
   async launch(path, provider, requestedLayout = null) {
+    if (this.closing) {
+      throw new Error('Relay is closing and cannot launch another terminal.');
+    }
     const launch = this.launchQueue.then(() => this.launchNow(path, provider, requestedLayout));
     this.launchQueue = launch.catch(() => {});
     return launch;
@@ -190,10 +458,17 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
   async launchNow(path, provider, requestedLayout = null) {
     this.ensureSupported();
     const project = validateProjectPath(path);
-    const command = this.platform === 'win32'
-      ? provider === 'codex' ? CODEX_RELAY_COMMAND : CLAUDE_RELAY_COMMAND
-      : terminalCommand(project.path, provider);
+    if (!['codex', 'claude'].includes(provider)) {
+      throw new Error(`Unsupported AI provider: ${provider}`);
+    }
+    if (provider === 'codex') {
+      this.diagnostic('terminal.launch.waiting_for_codex', { path: project.path });
+      await this.ensureCodexReady();
+      this.diagnostic('terminal.launch.codex_ready', { path: project.path });
+    }
+    const expectedLaunchId = this.createId();
     const layout = normalizeTerminalLayout(requestedLayout);
+    const background = requestedLayout?.background === true;
     const displays = layout ? await this.listDisplays() : [];
     const displayIndex = displays.length ? Math.min(layout?.display || 0, displays.length - 1) : 0;
     const display = displays[displayIndex];
@@ -209,29 +484,264 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
     }
     const bounds = display ? gridBounds(display, layout, slot) : null;
     if (gridKey) this.gridSlots.set(gridKey, (slot + 1) % (layout.rows * layout.columns));
-    this.diagnostic('terminal.launch.requested', { provider, path: project.path, platform: this.platform, layout, slot, bounds });
+    const workspaceReservation = provider === 'codex'
+      ? await this.reserveCodexLaunch(project.path, expectedLaunchId)
+      : null;
+    const cancelWorkspaceReservation = typeof workspaceReservation === 'function'
+      ? workspaceReservation
+      : workspaceReservation?.cancel;
+    const codexEndpoint = workspaceReservation?.endpoint || SHARED_CODEX_ENDPOINT;
+    const command = this.platform === 'win32'
+      ? provider === 'codex'
+        ? codexRelayCommand(project.path, cmdQuote, codexEndpoint)
+        : claudeRelayCommand(expectedLaunchId, cmdQuote, this.claudeBinary)
+      : terminalCommand(project.path, provider, { claudeSessionId: expectedLaunchId, codexEndpoint, claudeBinary: this.claudeBinary });
+    this.diagnostic('terminal.launch.requested', {
+      launchId: expectedLaunchId,
+      provider,
+      path: project.path,
+      platform: this.platform,
+      layout,
+      background,
+      slot,
+      bounds,
+      endpoint: provider === 'codex' ? codexEndpoint : undefined,
+    });
     if (this.platform === 'win32') {
+      const startProcess = `$process = Start-Process -FilePath 'cmd.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList '/k', ${powershellQuote(command)}${background ? " -WindowStyle Minimized" : ''} -PassThru`;
       const placement = bounds ? [
         'Add-Type -TypeDefinition \"using System; using System.Runtime.InteropServices; public class RelayWindow { [DllImport(\\\"user32.dll\\\")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hgt, bool repaint); }\"',
-        `$process = Start-Process -FilePath 'cmd.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList '/k', ${powershellQuote(command)} -PassThru`,
+        startProcess,
         '$null = $process.WaitForInputIdle(5000)',
         'Start-Sleep -Milliseconds 150',
-        `[RelayWindow]::MoveWindow($process.MainWindowHandle, ${bounds.left}, ${bounds.top}, ${bounds.right - bounds.left}, ${bounds.bottom - bounds.top}, $true)`,
-      ].join('; ') : `Start-Process -FilePath 'cmd.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList '/k', ${powershellQuote(command)}`;
+        `$null = [RelayWindow]::MoveWindow($process.MainWindowHandle, ${bounds.left}, ${bounds.top}, ${bounds.right - bounds.left}, ${bounds.bottom - bounds.top}, $true)`,
+        '$process.Id',
+      ].join('; ') : `${startProcess}; $process.Id`;
       const script = placement;
-      await this.run('powershell.exe', ['-NoProfile', '-Command', script]);
-      this.diagnostic('terminal.launch.dispatched', { provider, path: project.path, platform: this.platform });
-      return { ...project, provider, command, layout, display: display || null, slot, bounds };
+      let terminalProcessId = null;
+      try {
+        const { stdout = '' } = await this.run('powershell.exe', ['-NoProfile', '-Command', script]);
+        const parsedProcessId = Number.parseInt(stdout.trim(), 10);
+        if (Number.isInteger(parsedProcessId) && parsedProcessId > 0) {
+          terminalProcessId = parsedProcessId;
+        }
+      } catch (error) {
+        cancelWorkspaceReservation?.();
+        throw error;
+      }
+      const launchId = this.trackOwnedTerminal({
+        launchId: expectedLaunchId,
+        provider,
+        path: project.path,
+        terminalProcessId,
+        cancelWorkspaceReservation,
+      });
+      if (!launchId) cancelWorkspaceReservation?.();
+      this.diagnostic('terminal.launch.dispatched', {
+        launchId,
+        provider,
+        path: project.path,
+        platform: this.platform,
+        terminalProcessId,
+      });
+      return { ...project, provider, command, layout, display: display || null, slot, bounds, launchId, terminalProcessId };
     }
-    const boundsCommand = bounds
-      ? `\nset launchedWindowId to id of front window
-set bounds of window id launchedWindowId to {${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}}
-delay 0.4
-set bounds of window id launchedWindowId to {${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}}`
+    const backgroundCommand = background
+      ? '\nset miniaturized of launchedWindow to true'
       : '';
-    const script = `tell application "Terminal"\nactivate\ndo script ${JSON.stringify(command)}${boundsCommand}\nend tell`;
-    await this.run('osascript', ['-e', script]);
-    this.diagnostic('terminal.launch.dispatched', { provider, path: project.path, platform: this.platform });
-    return { ...project, provider, command, layout, display: display || null, slot, bounds };
+    const windowCaptureCommand = '\nset launchedWindow to first window whose selected tab is launchedTab\nset launchedWindowId to id of launchedWindow';
+    const boundsAssignment = bounds
+      ? `\nset bounds of window id launchedWindowId to {${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}}\ndelay 0.4\nset bounds of window id launchedWindowId to {${bounds.left}, ${bounds.top}, ${bounds.right}, ${bounds.bottom}}`
+      : '';
+    const script = `tell application "Terminal"\n${background ? '' : 'activate\n'}set launchedTab to do script ${JSON.stringify(command)}${windowCaptureCommand}${boundsAssignment}${backgroundCommand}\nreturn launchedWindowId\nend tell`;
+    let terminalWindowId = null;
+    try {
+      const { stdout = '' } = await this.run('osascript', ['-e', script]);
+      const parsedWindowId = Number.parseInt(stdout.trim(), 10);
+      if (Number.isInteger(parsedWindowId) && parsedWindowId > 0) {
+        terminalWindowId = parsedWindowId;
+      }
+    } catch (error) {
+      cancelWorkspaceReservation?.();
+      throw error;
+    }
+    const launchId = this.trackOwnedTerminal({
+      launchId: expectedLaunchId,
+      provider,
+      path: project.path,
+      terminalWindowId,
+      cancelWorkspaceReservation,
+    });
+    if (!launchId) cancelWorkspaceReservation?.();
+    this.diagnostic('terminal.launch.dispatched', {
+      launchId,
+      provider,
+      path: project.path,
+      platform: this.platform,
+      terminalWindowId,
+    });
+    return { ...project, provider, command, layout, display: display || null, slot, bounds, launchId, terminalWindowId };
+  }
+
+  async closeOwnedTerminal(threadId) {
+    if (this.closing) {
+      throw new Error('Relay is closing and cannot change terminal sessions.');
+    }
+    const close = this.launchQueue.then(() => this.closeOwnedTerminalNow(threadId));
+    this.launchQueue = close.catch(() => {});
+    return close;
+  }
+
+  async terminateMacTerminalWindow(terminal) {
+    const expectedTtyCheck = terminal.terminalTty
+      ? `\nif (tty of first tab of targetWindow) is not ${JSON.stringify(terminal.terminalTty)} then error "The recovered terminal identity changed."`
+      : '';
+    const inspectScript = `tell application "Terminal"\nif not (exists window id ${terminal.terminalWindowId}) then error "The terminal window is no longer open."\nset targetWindow to window id ${terminal.terminalWindowId}\nif (count of tabs of targetWindow) is not 1 then error "The terminal now contains multiple tabs."${expectedTtyCheck}\nreturn tty of first tab of targetWindow\nend tell`;
+    const { stdout = '' } = await this.run(
+      'osascript',
+      ['-e', inspectScript],
+      { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+    );
+    const tty = normalizeTerminalTty(stdout);
+    const ttyName = terminalTtyName(tty);
+    if (!tty || !ttyName) {
+      throw new Error('The terminal TTY could not be verified.');
+    }
+
+    try {
+      await this.run(
+        'pkill',
+        ['-KILL', '-t', ttyName, '.*'],
+        { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+      );
+    } catch (error) {
+      if (error?.code !== 1) throw error;
+    }
+
+    const closeScript = `tell application "Terminal"\nif exists window id ${terminal.terminalWindowId} then close window id ${terminal.terminalWindowId} saving no\nend tell`;
+    await this.run('osascript', ['-e', closeScript], { timeout: TERMINAL_CLOSE_TIMEOUT_MS });
+    return tty;
+  }
+
+  async closeOwnedTerminalNow(threadId) {
+    const terminal = [...this.ownedTerminals.values()].find((item) => item.threadId === threadId);
+    if (!terminal) {
+      throw new Error('Relay could not verify an exact native terminal for this session.');
+    }
+    this.diagnostic('terminal.close.requested', {
+      launchId: terminal.launchId,
+      threadId,
+      provider: terminal.provider,
+      path: terminal.path,
+      platform: this.platform,
+      ownershipSource: terminal.ownershipSource,
+    });
+    try {
+      if (this.platform === 'darwin' && terminal.terminalWindowId) {
+        if (terminal.terminalTty && terminal.runtimeProcessId) {
+          const { stdout = '' } = await this.run(
+            'ps',
+            ['-p', String(terminal.runtimeProcessId), '-o', 'tty='],
+            { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+          );
+          if (normalizeTerminalTty(stdout) !== terminal.terminalTty) {
+            throw new Error('The recovered terminal process identity changed.');
+          }
+        }
+        const terminalTty = await this.terminateMacTerminalWindow(terminal);
+        this.diagnostic('terminal.close.processes_terminated', {
+          launchId: terminal.launchId,
+          threadId,
+          terminalWindowId: terminal.terminalWindowId,
+          terminalTty,
+        });
+      } else if (this.platform === 'win32' && terminal.terminalProcessId) {
+        await this.run(
+          'taskkill.exe',
+          ['/PID', String(terminal.terminalProcessId), '/T', '/F'],
+          { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+        );
+      } else {
+        throw new Error('The exact native terminal handle is unavailable.');
+      }
+    } catch (error) {
+      this.diagnostic('terminal.close.failed', {
+        launchId: terminal.launchId,
+        threadId,
+        platform: this.platform,
+        error: error.message,
+      });
+      throw new Error(`Could not close the terminal: ${error.message}`);
+    }
+    this.forgetTrackedTerminal(terminal.launchId);
+    this.recoveryRetryAt.delete(threadId);
+    this.diagnostic('terminal.close.completed', {
+      launchId: terminal.launchId,
+      threadId,
+      provider: terminal.provider,
+      path: terminal.path,
+      platform: this.platform,
+      ownershipSource: terminal.ownershipSource,
+    });
+    return {
+      launchId: terminal.launchId,
+      threadId,
+      provider: terminal.provider,
+      path: terminal.path,
+    };
+  }
+
+  async closeOwnedTerminals() {
+    this.closing = true;
+    await this.launchQueue;
+    const windowIds = [...this.ownedTerminalWindowIds];
+    const processIds = [...this.ownedTerminalProcessIds];
+    for (const launchId of this.ownedTerminals.keys()) {
+      this.releaseLaunchReservation(launchId);
+    }
+    this.diagnostic('terminal.shutdown.requested', {
+      platform: this.platform,
+      windowIds,
+      processIds,
+    });
+    if (this.platform === 'darwin' && windowIds.length > 0) {
+      for (const terminalWindowId of windowIds) {
+        const terminal = [...this.ownedTerminals.values()].find((item) => (
+          item.closeOnShutdown && item.terminalWindowId === terminalWindowId
+        ));
+        if (!terminal) continue;
+        try {
+          await this.terminateMacTerminalWindow(terminal);
+        } catch (error) {
+          this.diagnostic('terminal.shutdown.window_failed', {
+            platform: this.platform,
+            terminalWindowId,
+            error: error.message,
+          });
+        }
+      }
+    }
+    if (this.platform === 'win32') {
+      for (const processId of processIds) {
+        try {
+          await this.run(
+            'taskkill.exe',
+            ['/PID', String(processId), '/T', '/F'],
+            { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+          );
+        } catch (error) {
+          this.diagnostic('terminal.shutdown.process_failed', { platform: this.platform, processId, error: error.message });
+        }
+      }
+    }
+    this.ownedTerminalWindowIds.clear();
+    this.ownedTerminalProcessIds.clear();
+    this.ownedTerminals.clear();
+    this.diagnostic('terminal.shutdown.completed', {
+      platform: this.platform,
+      windowCount: windowIds.length,
+      processCount: processIds.length,
+    });
+    return { windowCount: windowIds.length, processCount: processIds.length };
   }
 }

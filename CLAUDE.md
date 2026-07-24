@@ -77,9 +77,9 @@ claude --dangerously-skip-permissions
 
 The UI must clearly warn that these commands disable protections and should be used only in trusted projects. This unrestricted choice applies to user-launched interactive terminals, not Relay-owned queued turns.
 
-### Execute and Plan council workflows
+### Execute and optional Plan council
 
-The composer has two modes.
+The composer exposes Execute and Forward-planning Turbo as its workflow choices. Plan council is an optional checkbox inside both workflows, not a separate workflow tab.
 
 #### Execute
 
@@ -91,7 +91,7 @@ The composer has two modes.
 - Remember model and effort independently for Codex and Claude while switching tabs.
 - Send the prompt to the selected session.
 
-#### Plan council
+#### Plan council in Execute
 
 Plan council requires two different providers and uses this fixed read-only route:
 

@@ -2,10 +2,13 @@
 
 Relay is a local, sequential AI task queue for subscription-authenticated Codex and Claude Code sessions. It discovers live sessions, sends queued prompts into the selected conversation, and can run a read-only planning council across both providers. Relay does not call the OpenAI or Anthropic APIs directly.
 
+The source is publicly visible so developers can inspect how Relay interacts with authenticated Codex and Claude sessions and local task data. Public visibility does not grant permission to use or copy the code. See [License](#license).
+
 ## What it does
 
 - Persists tasks and state in local SQLite.
 - Lists connected Codex terminals and live Claude Code sessions instead of asking for repository paths.
+- Closes an idle Codex or Claude terminal only after verifying its exact native identity. On macOS, existing one-tab Terminal sessions can be recovered through their live process and TTY without targeting unrelated windows.
 - Supports provider-specific model and reasoning effort selection.
 - Runs exactly one Relay task at a time across all agents.
 - Bundles selected queued tasks into one Claude command that delegates the numbered list to parallel sub-agents.
@@ -17,6 +20,7 @@ Relay is a local, sequential AI task queue for subscription-authenticated Codex 
 - Builds reviewed plans through a Claude author, Codex reviewer, and Claude revision loop.
 - Attaches local reference images to Execute and Plan council tasks.
 - Groups raw AI events into a live terminal panel with command output, tool calls, file changes, messages, filters, follow mode, and copyable logs.
+- Continues direct Codex or Claude tasks from the live terminal panel without changing sessions, models, or effort.
 - Supports pause, resume, cancel, retry, and delete.
 - Stores task prompts, JSONL events, results, and errors under `.data/tasks/`.
 - Includes a personal Codex plugin skill for managing the queue from Codex.
@@ -29,6 +33,8 @@ Relay is a local, sequential AI task queue for subscription-authenticated Codex 
 - Claude Code CLI 2.1.211 or newer, installed and signed in with a Claude subscription for Claude execution and Plan council.
 
 ## Run
+
+The following development instructions are for the copyright holder and people who have received separate written permission. The view-only source license does not grant permission to run Relay.
 
 ```bash
 npm start
@@ -52,18 +58,31 @@ macOS builds produce DMG and ZIP artifacts. Windows builds produce an NSIS insta
 
 Local and CI builds work without signing credentials, but public distribution should add an Apple Developer signing and notarization identity for macOS and a trusted code-signing certificate for Windows. Those credentials are intentionally not stored in this repository.
 
+### Desktop updates and releases
+
+Packaged Relay builds check GitHub for updates once shortly after the desktop window finishes loading. The check is enabled only for packaged macOS builds and installed Windows NSIS builds. `npm run desktop` never checks for updates, and the Windows portable executable remains a manual-download build because it has no installer-managed update path.
+
+When a release is available, Relay shows the current and available versions and waits for an explicit **Download** choice. After the download completes, it offers **Restart and install** or **Later**. Background no-update results and check or download failures stay out of the user's way and are logged only. Restarting first shuts down Relay's embedded server so SQLite and active task state close through the normal graceful-shutdown path.
+
+Releases are created by pushing a matching version tag such as `v0.2.0`. The tag must match the `version` field in `package.json`; the GitHub Actions release job verifies this before publishing. The native macOS and Windows build jobs upload their complete `dist/` directories, and the release job publishes those files to the GitHub release. Expected update metadata and artifacts are:
+
+- macOS: `latest-mac.yml`, DMG, ZIP, and their blockmaps.
+- Windows: `latest.yml`, NSIS installer, portable executable, and installer blockmaps.
+
+macOS update installation requires signed and notarized release builds. Windows installed updates require a trusted signed NSIS build. Portable Windows artifacts remain manual-download only. See [desktop update notes](wiki/desktop-updates.md) for the implementation contract and troubleshooting checklist.
+
 The desktop project picker uses the macOS folder dialog or Windows Forms folder dialog. Terminal launching uses Terminal.app on macOS and a new `cmd.exe` window on Windows. Codex and Claude must be installed and authenticated on the target computer.
 
 In another terminal, start Codex through Relay's shared server:
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox --remote ws://127.0.0.1:4769
+codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769
 ```
 
 To reconnect an existing Codex conversation, pass its session ID:
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox resume --remote ws://127.0.0.1:4769 <session-id>
+codex --dangerously-bypass-approvals-and-sandbox --cd . resume --remote ws://127.0.0.1:4769 <session-id>
 ```
 
 An already-running plain `codex` process cannot be attached retroactively. Restart it with `--remote` so Relay and the terminal share the same app-server.
@@ -84,6 +103,8 @@ Relay starts one persistent local Codex app-server on port `4770`. A localhost W
 
 For Claude, Relay asks the official CLI for its active agent list. It records only session metadata returned by that command: session ID, name, process, workspace, kind, and busy state. Relay waits for a busy session to become idle, then runs `claude -p --resume <session-id>` with streaming JSON output, the selected model and effort, and guarded Auto permission mode. The turn reuses the selected conversation context and is appended to the same Claude transcript.
 
+Direct Claude tasks run concurrently on different session IDs and sequentially within one session. With **Use an idle Relay when available** enabled, Relay can route a normal Claude submission to another unassigned idle Claude session in the same workspace. Restart Relay after upgrading so the renderer can detect the parallel Claude scheduler capability.
+
 Claude does not expose Codex's local app-server protocol. The existing interactive Claude terminal does not redraw a turn produced by a second headless resume process. Relay's Terminal output panel is the live view, and the turn remains part of the same conversation when it is next resumed. This follows Claude Code's supported session behavior without terminal keystroke injection or private protocol access.
 
 The selected thread keeps its own working directory and conversation history. There is no repository path field in Relay.
@@ -91,6 +112,8 @@ The selected thread keeps its own working directory and conversation history. Th
 ### Project launchpad
 
 Pin favorite project folders in the top launchpad. Project cards are workspaces: selecting one scopes the visible sessions, queue, running state, and parallel Claude controls to that folder. Each card has separate Codex and Claude launch buttons. Codex opens a new unrestricted Terminal session connected to Relay; Claude opens an unrestricted CLI session. When a project card is active, **Launch terminal** reuses that folder without showing the folder picker and selects the new session as soon as it connects. **Pin folder** uses the native macOS folder picker, while **Add and launch** pins the folder and immediately opens the provider selected in Execute mode. Relay validates and resolves the chosen directory before launching a fixed command. It does not accept free-form terminal commands.
+
+Each project has its own queue order, pause state, and FIFO barriers. A Plan council or other exclusive task in one project does not block eligible direct Codex work in another project. Provider-wide exclusive tasks are still serialized when they require the same shared runner.
 
 Pinned projects are stored in Relay's local SQLite database. The launcher currently targets macOS Terminal.app and requires a Relay restart after upgrading from a version without this backend capability.
 
@@ -100,7 +123,7 @@ Relay disables login-shell semantics for task commands. This avoids loading inte
 
 Queued Codex prompts and answers appear live in the selected terminal as well as Relay. Both providers wait for a selected busy session to become idle before starting. Avoid entering another prompt in that session while a Relay task is running.
 
-The composer has Execute and Plan council workflows. Execute has separate provider, session, model, and effort controls. Codex choices come from the local app-server model catalog. Claude choices use supported official CLI aliases. Both are validated again when the task is queued. Press Enter in the prompt to add the task to the queue. Press Shift+Enter to insert a new line.
+The composer has Execute and Forward-planning Turbo workflows. Execute has separate provider, session, model, and effort controls, plus an optional Plan council checkbox for creating a reviewed read-only plan instead of direct execution. Forward-planning Turbo has its own optional council pass before workers start. Codex choices come from the local app-server model catalog. Claude choices use supported official CLI aliases. Both are validated again when the task is queued. Press Enter in the prompt to add the task to the queue. Press Shift+Enter to insert a new line.
 
 ## Terminal output
 
@@ -108,9 +131,9 @@ Relay turns the raw provider event protocol into a readable execution trace. Sta
 
 Highlights is the default view and removes low-value protocol noise such as empty reasoning and message transport events. Commands, Messages, and All filters remain available. Follow mode stays pinned to new activity until you scroll away, and Copy log copies the current filtered view. Raw events are still preserved in SQLite and `events.jsonl`.
 
-## Plan council
+## Optional Plan council
 
-Plan council requires two different providers and currently uses this fixed read-only route:
+Plan council is enabled from Execute when a prompt needs a reviewed plan rather than direct execution. It requires two different providers and currently uses this fixed read-only route:
 
 1. Claude Fable or Opus at max effort inspects the selected Codex workspace and writes a first implementation plan.
 2. Codex independently reviews the draft in the selected connected terminal with the chosen Codex model and effort.
@@ -170,3 +193,11 @@ Start a new Codex thread after installation. Invoke the skill as `$relay-queue:r
 ```
 
 The `.data` directory is ignored by Git.
+
+## License
+
+Relay is source-available for inspection only. It is not open-source software.
+
+Copyright (c) 2026 Patrik Kelemen. All rights reserved. You may read the source as displayed by an authorized repository host, but you may not use, run, copy, download, modify, redistribute, incorporate, or derive another project from it without prior written permission.
+
+See [LICENSE](LICENSE) for the complete terms. Contact the copyright holder for a separate commercial, evaluation, or development license.

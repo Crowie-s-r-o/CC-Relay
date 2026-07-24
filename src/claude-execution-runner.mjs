@@ -1,15 +1,38 @@
 import { spawn } from 'node:child_process';
-import { dirname } from 'node:path';
+import { dirname, resolve } from 'node:path';
+import { ClaudeTerminalExecutor } from './claude-terminal-executor.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export class ClaudeExecutionError extends Error {
-  constructor(message, { cancelled = false, exitCode = null } = {}) {
+  constructor(message, {
+    cancelled = false,
+    exitCode = null,
+    missingConversation = false,
+    missingConversationSessionId = null,
+    sessionInUseSessionId = null,
+    retryable = true,
+  } = {}) {
     super(message);
     this.name = 'ClaudeExecutionError';
     this.cancelled = cancelled;
     this.exitCode = exitCode;
+    this.missingConversation = missingConversation;
+    this.missingConversationSessionId = missingConversationSessionId;
+    this.sessionInUseSessionId = sessionInUseSessionId;
+    this.retryable = retryable;
   }
+}
+
+const MISSING_CONVERSATION = /No conversation found with session ID:\s*([^\s]+)/i;
+const SESSION_ID_IN_USE = /Session ID\s+([^\s]+)\s+is already in use/i;
+
+function missingConversationSessionId(value) {
+  return String(value || '').match(MISSING_CONVERSATION)?.[1]?.trim() || null;
+}
+
+function sessionIdInUse(value) {
+  return String(value || '').match(SESSION_ID_IN_USE)?.[1]?.trim() || null;
 }
 
 function resultText(content) {
@@ -130,7 +153,10 @@ export function consumeClaudeStreamMessage(message, context) {
 
   if (message.type === 'result') {
     context.finalResponse = typeof message.result === 'string' ? message.result.trim() : '';
-    context.sessionId = message.session_id || context.sessionId;
+    if (typeof message.session_id === 'string' && message.session_id.trim()) {
+      context.sessionId = message.session_id.trim();
+      context.reportedSessionId = context.sessionId;
+    }
     if (message.is_error || String(message.subtype || '').startsWith('error')) {
       context.error = context.finalResponse || message.error || 'Claude could not complete the task.';
     }
@@ -138,7 +164,7 @@ export function consumeClaudeStreamMessage(message, context) {
   return emitted;
 }
 
-function taskPrompt(task) {
+export function taskPrompt(task) {
   if (!task.attachments?.length) {
     return task.prompt;
   }
@@ -160,23 +186,43 @@ export class ClaudeExecutionRunner {
     spawnProcess = spawn,
     sessions,
     wait = delay,
+    platform = process.platform,
+    resolveTerminal = null,
+    terminalExecutor = null,
   } = {}) {
     this.command = command;
     this.spawnProcess = spawnProcess;
     this.sessions = sessions;
     this.wait = wait;
-    this.active = null;
+    this.platform = platform;
+    this.resolveTerminal = resolveTerminal;
+    this.terminalExecutor = terminalExecutor
+      || new ClaudeTerminalExecutor({ sessions, wait, resolveTerminal });
+    this.activeByTask = new Map();
+    this.activeBySession = new Map();
   }
 
   async waitForIdle(task, active, onEvent) {
     if (!this.sessions) {
-      return;
+      return null;
     }
     let announced = false;
     while (!active.cancelRequested) {
       const session = await this.sessions.readConnectedSession(task.thread_id);
-      if (!session || session.rawStatus !== 'busy') {
-        return;
+      if (!session) {
+        throw new ClaudeExecutionError(
+          'The selected Claude terminal is no longer open. Choose a live Claude session and retry.',
+          { retryable: false },
+        );
+      }
+      if (session.rawStatus !== 'busy') {
+        return session;
+      }
+      if (task.sessionFollowUp) {
+        throw new ClaudeExecutionError(
+          'That Claude terminal became busy. Your follow-up was not queued.',
+          { retryable: false },
+        );
       }
       if (!announced) {
         onEvent({
@@ -190,123 +236,195 @@ export class ClaudeExecutionRunner {
     throw new ClaudeExecutionError('Task cancelled.', { cancelled: true });
   }
 
-  async run(task, { onEvent, onStderr }) {
-    if (this.active) {
-      throw new ClaudeExecutionError('Claude already has an active Relay task.');
+  validateFreshSession(task, active, session) {
+    if (active.cancelRequested) {
+      throw new ClaudeExecutionError('Task cancelled.', { cancelled: true });
     }
-    const active = { child: null, cancelRequested: false };
-    this.active = active;
+    if (!session) {
+      throw new ClaudeExecutionError(
+        'The selected Claude terminal closed before Relay could start its first turn. Reopen it and retry.',
+        { retryable: false },
+      );
+    }
+    if (session.id !== task.thread_id || session.source !== 'Claude interactive') {
+      throw new ClaudeExecutionError(
+        'The selected Claude session is no longer the live interactive terminal Relay opened. Choose that terminal again and retry.',
+        { retryable: false },
+      );
+    }
+    if (
+      typeof session.cwd !== 'string'
+      || !session.cwd.trim()
+      || typeof task.repo_path !== 'string'
+      || !task.repo_path.trim()
+      || resolve(session.cwd) !== resolve(task.repo_path)
+    ) {
+      throw new ClaudeExecutionError(
+        'The selected Claude terminal belongs to a different workspace. Choose a Claude terminal opened for this project and retry.',
+        { retryable: false },
+      );
+    }
+  }
 
-    try {
-      await this.waitForIdle(task, active, onEvent);
-      const attachmentDirectories = [...new Set(
-        (task.attachments || []).map((attachment) => dirname(attachment.path)),
-      )];
-      const model = selectedModel(task.model);
-      const args = [
-        '-p',
-        '--resume',
-        task.thread_id,
-        '--permission-mode',
-        'auto',
-        '--output-format',
-        'stream-json',
-        '--verbose',
-        '--no-chrome',
-        ...attachmentDirectories.flatMap((directory) => ['--add-dir', directory]),
-        ...(model ? ['--model', model] : []),
-        ...(task.effort ? ['--effort', task.effort] : []),
-      ];
-      const child = this.spawnProcess(this.command, args, {
-        cwd: task.repo_path,
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      active.child = child;
-      const context = {
-        cwd: task.repo_path,
-        tools: new Map(),
-        finalResponse: '',
+  async runProcess(
+    task,
+    active,
+    args,
+    { onEvent, onStderr },
+    {
+      model,
+      sessionMode,
+      suppressMissingConversationStderr = false,
+      suppressSessionInUseStderr = false,
+    },
+  ) {
+    const child = this.spawnProcess(this.command, args, {
+      cwd: task.repo_path,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    active.child = child;
+    const context = {
+      cwd: task.repo_path,
+      tools: new Map(),
+      finalResponse: '',
+      sessionId: task.thread_id,
+      reportedSessionId: null,
+      error: null,
+    };
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    const stderrLines = [];
+
+    onEvent({
+      event: {
+        type: 'claude/started',
+        provider: 'claude',
         sessionId: task.thread_id,
-        error: null,
-      };
-      let stdoutBuffer = '';
-      let stderrBuffer = '';
+        sessionMode,
+        model: model || 'session default',
+        effort: task.effort || 'default',
+      },
+      message: sessionMode === 'fresh'
+        ? `Claude started the first Relay turn in ${task.thread_name || task.thread_id}.`
+        : `Claude is resuming ${task.thread_name || task.thread_id}.`,
+    });
 
-      onEvent({
-        event: {
-          type: 'claude/started',
-          provider: 'claude',
-          sessionId: task.thread_id,
-          model: model || 'session default',
-          effort: task.effort || 'default',
-        },
-        message: `Claude resumed ${task.thread_name || task.thread_id}.`,
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    const consumeLine = (line) => {
+      if (!line.trim()) {
+        return;
+      }
+      try {
+        const message = JSON.parse(line);
+        for (const event of consumeClaudeStreamMessage(message, context)) {
+          onEvent(event);
+        }
+      } catch (error) {
+        onStderr(`Could not parse Claude stream event: ${error.message}`);
+      }
+    };
+    const consumeStderr = (line) => {
+      if (!line.trim()) return;
+      stderrLines.push(line.trim());
+      const suppressMissing = suppressMissingConversationStderr
+        && missingConversationSessionId(line) === task.thread_id;
+      const suppressInUse = suppressSessionInUseStderr
+        && sessionIdInUse(line) === task.thread_id;
+      if (!suppressMissing && !suppressInUse) {
+        onStderr(line.trim());
+      }
+    };
+    child.stdout.on('data', (chunk) => {
+      stdoutBuffer += chunk;
+      const lines = stdoutBuffer.split('\n');
+      stdoutBuffer = lines.pop() || '';
+      for (const line of lines) {
+        consumeLine(line);
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrBuffer += chunk;
+      const lines = stderrBuffer.split('\n');
+      stderrBuffer = lines.pop() || '';
+      for (const line of lines) {
+        consumeStderr(line);
+      }
+    });
+    const outcomePromise = new Promise((resolve, reject) => {
+      child.once('error', (error) => {
+        reject(new ClaudeExecutionError(`Could not start Claude Code: ${error.message}`));
       });
-
-      child.stdout.setEncoding('utf8');
-      child.stderr.setEncoding('utf8');
-      const consumeLine = (line) => {
-        if (!line.trim()) {
+      child.once('close', (code, signal) => {
+        consumeLine(stdoutBuffer);
+        consumeStderr(stderrBuffer);
+        if (active.cancelRequested) {
+          reject(new ClaudeExecutionError('Task cancelled.', { cancelled: true, exitCode: code }));
           return;
         }
-        try {
-          const message = JSON.parse(line);
-          for (const event of consumeClaudeStreamMessage(message, context)) {
-            onEvent(event);
-          }
-        } catch (error) {
-          onStderr(`Could not parse Claude stream event: ${error.message}`);
+        const stderrMessage = stderrLines.join('\n').trim();
+        if (code !== 0 || context.error) {
+          const classificationText = [stderrMessage, context.error].filter(Boolean).join('\n');
+          const missingSessionId = missingConversationSessionId(classificationText);
+          const inUseSessionId = sessionIdInUse(classificationText);
+          const message = stderrMessage
+            || context.error
+            || `Claude Code stopped${signal ? ` after ${signal}` : ` with code ${code}`}.`;
+          reject(new ClaudeExecutionError(message, {
+            exitCode: code,
+            missingConversation: Boolean(missingSessionId),
+            missingConversationSessionId: missingSessionId,
+            sessionInUseSessionId: inUseSessionId,
+            retryable: !missingSessionId && !inUseSessionId,
+          }));
+          return;
         }
-      };
-      child.stdout.on('data', (chunk) => {
-        stdoutBuffer += chunk;
-        const lines = stdoutBuffer.split('\n');
-        stdoutBuffer = lines.pop() || '';
-        for (const line of lines) {
-          consumeLine(line);
+        if (!context.finalResponse) {
+          reject(new ClaudeExecutionError('Claude completed without a final text response.', { exitCode: code }));
+          return;
         }
-      });
-      child.stderr.on('data', (chunk) => {
-        stderrBuffer += chunk;
-        const lines = stderrBuffer.split('\n');
-        stderrBuffer = lines.pop() || '';
-        for (const line of lines.filter(Boolean)) {
-          onStderr(line);
-        }
-      });
-      const outcomePromise = new Promise((resolve, reject) => {
-        child.once('error', (error) => {
-          reject(new ClaudeExecutionError(`Could not start Claude Code: ${error.message}`));
-        });
-        child.once('close', (code, signal) => {
-          consumeLine(stdoutBuffer);
-          if (stderrBuffer.trim()) {
-            onStderr(stderrBuffer.trim());
-          }
-          if (active.cancelRequested) {
-            reject(new ClaudeExecutionError('Task cancelled.', { cancelled: true, exitCode: code }));
-            return;
-          }
-          if (code !== 0 || context.error) {
-            reject(new ClaudeExecutionError(
-              context.error || `Claude Code stopped${signal ? ` after ${signal}` : ` with code ${code}`}.`,
-              { exitCode: code },
-            ));
-            return;
-          }
-          if (!context.finalResponse) {
-            reject(new ClaudeExecutionError('Claude completed without a final text response.', { exitCode: code }));
-            return;
-          }
-          resolve({
-            finalResponse: context.finalResponse,
-            sessionId: context.sessionId,
-            exitCode: 0,
-          });
+        resolve({
+          finalResponse: context.finalResponse,
+          sessionId: context.sessionId,
+          reportedSessionId: context.reportedSessionId,
+          exitCode: 0,
         });
       });
-      child.stdin.end(taskPrompt(task));
-      const outcome = await outcomePromise;
+    });
+    child.stdin.end(taskPrompt(task));
+    try {
+      return await outcomePromise;
+    } finally {
+      if (active.child === child) active.child = null;
+    }
+  }
+
+  async run(task, { onEvent, onStderr }) {
+    if (!task.thread_id) {
+      throw new ClaudeExecutionError('Claude execution needs a terminal session ID.', { retryable: false });
+    }
+    const taskKey = task.id ?? task.thread_id;
+    if (this.activeByTask.has(taskKey)) {
+      throw new ClaudeExecutionError('That Claude task is already running.');
+    }
+    if (this.activeBySession.has(task.thread_id)) {
+      throw new ClaudeExecutionError('That Claude session already has an active Relay task.');
+    }
+    const active = {
+      taskId: taskKey,
+      sessionId: task.thread_id,
+      child: null,
+      cancelRequested: false,
+    };
+    this.activeByTask.set(taskKey, active);
+    this.activeBySession.set(task.thread_id, active);
+
+    try {
+      const session = await this.waitForIdle(task, active, onEvent);
+      const terminal = await this.resolveTerminalTarget(session, active);
+      const outcome = terminal
+        ? await this.terminalExecutor.runTurn(task, active, session, terminal, { onEvent, onStderr })
+        : await this.runHeadless(task, active, { onEvent, onStderr });
       onEvent({
         event: {
           type: 'claude/completed',
@@ -317,16 +435,129 @@ export class ClaudeExecutionRunner {
       });
       return outcome;
     } finally {
-      this.active = null;
+      if (this.activeByTask.get(taskKey) === active) this.activeByTask.delete(taskKey);
+      if (this.activeBySession.get(task.thread_id) === active) this.activeBySession.delete(task.thread_id);
     }
   }
 
-  cancel() {
-    if (!this.active) {
-      return false;
+  // Decide whether this turn can run inside the interactive terminal on macOS. Returns the
+  // owned single-tab Terminal.app identity, or null to use the headless path. Any resolution
+  // failure falls back to headless; once a terminal is chosen the runner never falls back,
+  // so a failed injection cannot double-execute the turn.
+  async resolveTerminalTarget(session, active) {
+    if (active.cancelRequested) return null;
+    if (this.platform !== 'darwin') return null;
+    if (typeof this.resolveTerminal !== 'function') return null;
+    try {
+      const terminal = await this.resolveTerminal(session);
+      if (terminal
+        && Number.isInteger(terminal.terminalWindowId)
+        && terminal.terminalWindowId > 0) {
+        return terminal;
+      }
+    } catch {
+      // fall back to the headless path when terminal identity cannot be resolved
     }
-    this.active.cancelRequested = true;
-    this.active.child?.kill('SIGTERM');
-    return true;
+    return null;
+  }
+
+  async runHeadless(task, active, { onEvent, onStderr }) {
+    const attachmentDirectories = [...new Set(
+      (task.attachments || []).map((attachment) => dirname(attachment.path)),
+    )];
+    const model = selectedModel(task.model);
+    const commonArgs = [
+      '-p',
+      '--permission-mode',
+      'auto',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--no-chrome',
+      ...attachmentDirectories.flatMap((directory) => ['--add-dir', directory]),
+      ...(model ? ['--model', model] : []),
+      ...(task.effort ? ['--effort', task.effort] : []),
+    ];
+    let outcome;
+    try {
+      outcome = await this.runProcess(task, active, [
+        ...commonArgs,
+        '--resume',
+        task.thread_id,
+      ], { onEvent, onStderr }, {
+        model,
+        sessionMode: 'resume',
+        suppressMissingConversationStderr: true,
+      });
+    } catch (error) {
+      if (
+        !error.missingConversation
+        || error.missingConversationSessionId !== task.thread_id
+        || active.cancelRequested
+      ) throw error;
+      const freshSession = await this.waitForIdle(task, active, onEvent);
+      this.validateFreshSession(task, active, freshSession);
+      onEvent({
+        event: {
+          type: 'claude/session-initializing',
+          provider: 'claude',
+          sessionId: task.thread_id,
+        },
+        message: `Claude has no saved transcript in ${task.thread_name || task.thread_id} yet. Relay is starting its first turn with the same session ID.`,
+      });
+      try {
+        outcome = await this.runProcess(task, active, [
+          ...commonArgs,
+          '--session-id',
+          task.thread_id,
+        ], { onEvent, onStderr }, {
+          model,
+          sessionMode: 'fresh',
+          suppressSessionInUseStderr: true,
+        });
+      } catch (freshError) {
+        if (freshError.sessionInUseSessionId !== task.thread_id || active.cancelRequested) {
+          throw freshError;
+        }
+        const resumableSession = await this.waitForIdle(task, active, onEvent);
+        this.validateFreshSession(task, active, resumableSession);
+        onEvent({
+          event: {
+            type: 'claude/session-initializing',
+            provider: 'claude',
+            sessionId: task.thread_id,
+          },
+          message: 'Claude saved the transcript during initialization. Relay is resuming the same session.',
+        });
+        outcome = await this.runProcess(task, active, [
+          ...commonArgs,
+          '--resume',
+          task.thread_id,
+        ], { onEvent, onStderr }, { model, sessionMode: 'resume' });
+      }
+      if (outcome.reportedSessionId !== task.thread_id) {
+        throw new ClaudeExecutionError(
+          `Claude did not confirm the selected session ID after its first turn. Expected ${task.thread_id}, received ${outcome.reportedSessionId || 'none'}.`,
+          { retryable: false },
+        );
+      }
+    }
+    return outcome;
+  }
+
+  cancel(taskId = null) {
+    if (taskId !== null && taskId !== undefined) {
+      const active = this.activeByTask.get(taskId) || this.activeBySession.get(taskId);
+      if (!active) return false;
+      active.cancelRequested = true;
+      active.child?.kill('SIGTERM');
+      return true;
+    }
+    const activeTasks = [...new Set(this.activeByTask.values())];
+    for (const active of activeTasks) {
+      active.cancelRequested = true;
+      active.child?.kill('SIGTERM');
+    }
+    return activeTasks.length > 0;
   }
 }

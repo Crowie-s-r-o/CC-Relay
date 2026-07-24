@@ -44,15 +44,42 @@ test('event stream summarizes execution telemetry', () => {
     itemEvent('command-1', 'completed', 'commandExecution'),
     itemEvent('files-1', 'completed', 'fileChange'),
     itemEvent('message-1', 'completed', 'agentMessage'),
+    itemEvent('prompt-1', 'completed', 'userMessage'),
     itemEvent('failed-1', 'completed', 'commandExecution', { item: { status: 'failed' } }),
   ]);
   assert.deepEqual(eventStreamStats(entries), {
     commands: 2,
     files: 1,
-    messages: 1,
+    messages: 2,
     errors: 1,
     running: 0,
+    thinkingTokens: 0,
   });
+});
+
+test('live turn updates appear in the Messages filter but stay out of Highlights', () => {
+  const entries = groupEventEntries([
+    itemEvent('prompt-live', 'completed', 'userMessage', {
+      item: { content: [{ type: 'text', text: 'Correct the current work' }] },
+    }),
+  ]);
+  assert.equal(filterEventEntries(entries, 'messages').length, 1);
+  assert.equal(filterEventEntries(entries, 'highlights').length, 0);
+  assert.equal(eventStreamStats(entries).messages, 1);
+});
+
+test('event stream reports reasoning output tokens from turn completion', () => {
+  const entries = groupEventEntries([{
+    id: 1,
+    kind: 'codex',
+    message: 'Codex turn completed.',
+    created_at: '2026-07-16T10:00:00.000Z',
+    payload: {
+      type: 'turn/completed',
+      tokenUsage: { last: { reasoningOutputTokens: 4321 } },
+    },
+  }]);
+  assert.equal(eventStreamStats(entries).thinkingTokens, 4321);
 });
 
 test('event stream highlight filter removes protocol noise but keeps useful work', () => {
@@ -67,6 +94,26 @@ test('event stream highlight filter removes protocol noise but keeps useful work
   assert.equal(filterEventEntries(entries, 'commands').length, 1);
   assert.equal(filterEventEntries(entries, 'messages').length, 1);
   assert.equal(filterEventEntries(entries, 'all').length, 4);
+});
+
+test('claude/progress heartbeats stay out of Highlights while claude/started remains', () => {
+  const progress = groupEventEntries([{
+    id: 1,
+    kind: 'claude',
+    message: 'Claude is still working in the relay-9 terminal.',
+    created_at: '2026-07-16T10:00:00.000Z',
+    payload: { type: 'claude/progress' },
+  }]);
+  assert.equal(filterEventEntries(progress, 'highlights').length, 0);
+
+  const started = groupEventEntries([{
+    id: 2,
+    kind: 'claude',
+    message: 'Claude is running this turn inside the relay-9 terminal.',
+    created_at: '2026-07-16T10:00:01.000Z',
+    payload: { type: 'claude/started' },
+  }]);
+  assert.equal(filterEventEntries(started, 'highlights').length, 1);
 });
 
 test('event stream folds streamed reasoning summaries into one All entry', () => {

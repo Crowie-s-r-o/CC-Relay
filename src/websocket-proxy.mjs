@@ -31,6 +31,7 @@ export class RelayWebSocketProxy extends EventEmitter {
     this.nextClientId = 1;
     this.server = null;
     this.clients = new Set();
+    this.launchServers = new Set();
     this.startPromise = null;
     this.actualPort = null;
   }
@@ -74,8 +75,70 @@ export class RelayWebSocketProxy extends EventEmitter {
     });
   }
 
-  connectClient(frontend) {
+  async reserveLaunchClient(workspace, launchId, timeoutMs = 30_000) {
+    if (typeof workspace !== 'string' || !workspace || typeof launchId !== 'string' || !launchId) {
+      throw new Error('A workspace and launch ID are required for a dedicated Codex endpoint.');
+    }
+    const server = new this.WebSocketServerClass({ host: this.host, port: 0 });
+    this.launchServers.add(server);
+    await new Promise((resolve, reject) => {
+      const fail = (error) => {
+        server.close();
+        this.launchServers.delete(server);
+        reject(error);
+      };
+      server.once('error', fail);
+      server.once('listening', () => {
+        server.off('error', fail);
+        resolve();
+      });
+    });
+
+    const address = server.address();
+    const endpoint = `ws://${this.host}:${address.port}`;
+    let claimed = false;
+    let cancelled = false;
+    const closeListener = () => {
+      clearTimeout(timer);
+      this.launchServers.delete(server);
+    };
+    const cancel = (event = 'proxy.launch.reservation.cancelled') => {
+      if (cancelled || claimed) return;
+      cancelled = true;
+      clearTimeout(timer);
+      server.close();
+      this.launchServers.delete(server);
+      this.diagnostic(event, { workspace, launchId, endpoint });
+    };
+    const timer = setTimeout(
+      () => cancel('proxy.launch.reservation.expired'),
+      timeoutMs,
+    );
+    timer.unref?.();
+    server.once('close', closeListener);
+    server.on('error', (error) => this.emit('error', error));
+    server.on('connection', (frontend) => {
+      if (claimed || cancelled) {
+        frontend.close();
+        return;
+      }
+      claimed = true;
+      clearTimeout(timer);
+      this.diagnostic('proxy.launch.reservation.claimed', {
+        workspace,
+        launchId,
+        endpoint,
+      });
+      this.connectClient(frontend, { workspace, launchId });
+      server.close();
+    });
+    this.diagnostic('proxy.launch.reservation.created', { workspace, launchId, endpoint });
+    return { endpoint, cancel };
+  }
+
+  connectClient(frontend, reservation = null) {
     const backend = new this.WebSocketClient(this.target);
+    const frontendSocket = frontend?._socket;
     const client = {
       id: this.nextClientId++,
       frontend,
@@ -83,17 +146,28 @@ export class RelayWebSocketProxy extends EventEmitter {
       queued: [],
       pending: new Map(),
       threadId: null,
+      workspace: reservation?.workspace || null,
+      launchId: reservation?.launchId || null,
+      clientPort: Number(frontendSocket?.remotePort) || null,
+      serverPort: Number(frontendSocket?.localPort) || null,
       closed: false,
     };
     this.clients.add(client);
-    this.diagnostic('proxy.client.connected', { clientId: client.id, connectedClients: this.clients.size });
+    this.diagnostic('proxy.client.connected', {
+      clientId: client.id,
+      connectedClients: this.clients.size,
+      workspace: client.workspace,
+      launchId: client.launchId,
+      clientPort: client.clientPort,
+      serverPort: client.serverPort,
+    });
 
     frontend.on('message', (data, isBinary) => {
-      this.inspectClientMessage(client, data, isBinary);
+      const forwarded = this.prepareClientMessage(client, data, isBinary);
       if (backend.readyState === WebSocket.OPEN) {
-        backend.send(data, { binary: isBinary });
+        backend.send(forwarded.data, { binary: forwarded.isBinary });
       } else if (backend.readyState === WebSocket.CONNECTING && client.queued.length < 100) {
-        client.queued.push({ data, isBinary });
+        client.queued.push(forwarded);
       }
     });
     frontend.on('close', () => this.disconnectClient(client));
@@ -114,6 +188,23 @@ export class RelayWebSocketProxy extends EventEmitter {
     });
     backend.on('close', () => this.disconnectClient(client));
     backend.on('error', (error) => this.emit('clientError', error));
+  }
+
+  prepareClientMessage(client, data, isBinary) {
+    const message = parseMessage(data, isBinary);
+    this.inspectClientMessage(client, data, isBinary);
+    if (!client.workspace || message?.method !== 'thread/start') {
+      return { data, isBinary };
+    }
+    const rewritten = {
+      ...message,
+      params: { ...(message.params || {}), cwd: client.workspace },
+    };
+    this.diagnostic('proxy.thread.workspace.applied', {
+      clientId: client.id,
+      workspace: client.workspace,
+    });
+    return { data: JSON.stringify(rewritten), isBinary: false };
   }
 
   inspectClientMessage(client, data, isBinary) {
@@ -151,6 +242,9 @@ export class RelayWebSocketProxy extends EventEmitter {
     if (threadId && client.threadId !== threadId) {
       client.threadId = threadId;
       this.diagnostic('proxy.thread.joined', { clientId: client.id, threadId, method: pending.method });
+      if (client.launchId) {
+        this.emit('terminalThread', { launchId: client.launchId, threadId });
+      }
       this.emit('changed', this.listConnectedThreadIds());
     }
   }
@@ -182,10 +276,36 @@ export class RelayWebSocketProxy extends EventEmitter {
     )];
   }
 
+  launchIdForThread(threadId) {
+    return [...this.clients].find((client) => (
+      !client.closed && client.threadId === threadId && client.launchId
+    ))?.launchId || null;
+  }
+
+  runtimeClientForThread(threadId) {
+    const matches = [...this.clients].filter((client) => (
+      !client.closed
+      && client.threadId === threadId
+      && Number.isInteger(client.clientPort)
+      && client.clientPort > 0
+      && Number.isInteger(client.serverPort)
+      && client.serverPort > 0
+    ));
+    if (matches.length !== 1) return null;
+    return {
+      clientPort: matches[0].clientPort,
+      serverPort: matches[0].serverPort,
+    };
+  }
+
   stop() {
     for (const client of [...this.clients]) {
       this.disconnectClient(client);
     }
+    for (const launchServer of this.launchServers) {
+      launchServer.close();
+    }
+    this.launchServers.clear();
     this.server?.close();
     this.server = null;
     this.actualPort = null;

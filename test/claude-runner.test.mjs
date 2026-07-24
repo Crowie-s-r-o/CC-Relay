@@ -2,7 +2,23 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { ClaudeRunner, parseClaudeResult } from '../src/claude-runner.mjs';
+import { ClaudeRunner, claudeFailureMessage, parseClaudeResult } from '../src/claude-runner.mjs';
+
+test('Claude runner spawns the resolved absolute binary path', () => {
+  let invocation;
+  const spawnProcess = (command, args, options) => {
+    invocation = { command, args, options };
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = () => true;
+    return child;
+  };
+  const runner = new ClaudeRunner({ command: '/Users/tester/.local/bin/claude', spawnProcess });
+  runner.run('Plan.', { cwd: '/tmp/project', model: 'opus', effort: 'max', onEvent: () => {}, onStderr: () => {} });
+  assert.equal(invocation.command, '/Users/tester/.local/bin/claude');
+});
 
 test('Claude JSON output extracts only the final result', () => {
   const output = JSON.stringify([
@@ -32,6 +48,14 @@ test('Claude JSON output rejects failed result messages', () => {
     is_error: true,
     result: 'Model unavailable',
   })), /Model unavailable/);
+});
+
+test('Claude failure output preserves the actionable provider message', () => {
+  const output = JSON.stringify([
+    { type: 'assistant', error: 'authentication_failed', message: { content: [{ type: 'text', text: 'OAuth expired.' }] } },
+    { type: 'result', subtype: 'success', is_error: true, result: 'OAuth session expired and could not be refreshed' },
+  ]);
+  assert.equal(claudeFailureMessage(output), 'OAuth session expired and could not be refreshed');
 });
 
 test('Claude runner uses subscription CLI in safe read-only plan mode', async () => {
@@ -92,4 +116,40 @@ test('Claude runner uses subscription CLI in safe read-only plan mode', async ()
   assert.equal(input, 'Inspect and plan.');
   assert.equal(result.text, '# Plan');
   assert.equal(events.length, 2);
+});
+
+test('Claude runner reports JSON errors from nonzero exits and marks them non-retryable', async () => {
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = () => true;
+    queueMicrotask(() => {
+      child.stdout.end(JSON.stringify({
+        type: 'result',
+        subtype: 'success',
+        is_error: true,
+        result: 'OAuth session expired and could not be refreshed',
+      }));
+      child.emit('close', 1, null);
+    });
+    return child;
+  };
+  const runner = new ClaudeRunner({ spawnProcess });
+  await assert.rejects(
+    runner.run('Plan this.', {
+      cwd: '/tmp/project',
+      model: 'opus',
+      effort: 'max',
+      onEvent: () => {},
+      onStderr: () => {},
+    }),
+    (error) => {
+      assert.equal(error.message, 'OAuth session expired and could not be refreshed');
+      assert.equal(error.exitCode, 1);
+      assert.equal(error.retryable, false);
+      return true;
+    },
+  );
 });

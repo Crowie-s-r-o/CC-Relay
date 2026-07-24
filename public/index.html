@@ -16,27 +16,8 @@
           <p>AI work, one task at a time</p>
         </div>
       </div>
-      <div class="header-status-strip" aria-label="Relay status">
-        <article id="status-relay" class="status-module" data-state="checking">
-          <span class="status-label">Connection</span>
-          <strong id="status-relay-value">Checking</strong>
-          <small id="status-relay-detail">Codex and Claude</small>
-        </article>
-        <article id="status-terminals" class="status-module" data-state="idle">
-          <span class="status-label">Sessions</span>
-          <strong id="status-terminals-value">0 connected</strong>
-          <small id="status-terminals-detail">Waiting for an AI</small>
-        </article>
-        <article id="status-queue" class="status-module" data-state="idle">
-          <span class="status-label">Queue</span>
-          <strong id="status-queue-value">Loading</strong>
-          <small id="status-queue-detail">Reading tasks</small>
-        </article>
-        <article id="status-active" class="status-module" data-state="idle">
-          <span class="status-label">Running</span>
-          <strong id="status-active-value">Idle</strong>
-          <small id="status-active-detail">Ready</small>
-        </article>
+      <div id="header-running-tasks" class="header-running-tasks" aria-label="Running tasks across all projects" aria-live="polite">
+        <div class="header-running-empty"><i aria-hidden="true"></i><span>No tasks running</span></div>
       </div>
       <div class="header-actions">
         <span id="codex-status" class="connection-pill" data-state="checking">
@@ -74,31 +55,23 @@
           <section class="mode-selector" aria-labelledby="mode-selector-label">
             <div class="mode-selector-heading">
               <span id="mode-selector-label">Workflow</span>
-              <small>Choose direct execution, reviewed planning, or multi-terminal turbo.</small>
+              <small>Choose direct work or multi-terminal forward planning.</small>
             </div>
             <div class="mode-tabs" role="tablist" aria-label="Task workflow">
               <button id="mode-execute" class="mode-tab selected" type="button" role="tab" aria-selected="true" aria-controls="execute-config" data-mode="execute">
                 <span class="mode-tab-index">01</span>
                 <span><strong>Execute</strong><small>One agent works the task</small></span>
               </button>
-              <button id="mode-plan" class="mode-tab" type="button" role="tab" aria-selected="false" aria-controls="plan-config" tabindex="-1" data-mode="plan">
-                <span class="mode-tab-index">02</span>
-                <span><strong>Plan council</strong><small>Claude writes, Codex reviews</small></span>
-              </button>
               <button id="mode-turbo" class="mode-tab" type="button" role="tab" aria-selected="false" aria-controls="turbo-config" tabindex="-1" data-mode="turbo">
-                <span class="mode-tab-index">03</span>
+                <span class="mode-tab-index">02</span>
                 <span><strong>Forward-planning turbo</strong><small>Plan once, execute a dependency graph in parallel</small></span>
               </button>
             </div>
           </section>
 
           <section id="execute-config" class="agent-selector" role="tabpanel" aria-labelledby="mode-execute">
-            <div class="agent-selector-heading">
-              <span id="agent-selector-label">Send with</span>
-              <small id="agent-message">Choose an AI, then select its live session.</small>
-            </div>
             <input id="provider-id" name="provider" type="hidden" value="codex">
-            <div class="agent-tabs" role="tablist" aria-label="AI provider">
+            <div class="agent-tabs" hidden aria-hidden="true">
               <button
                 id="provider-codex"
                 class="agent-tab selected"
@@ -134,45 +107,23 @@
               </button>
             </div>
 
-            <div id="execution-controls" class="execution-controls" data-provider="codex" aria-label="Model and reasoning settings">
-              <label class="execution-control" for="model-select">
-                <span class="execution-control-index" aria-hidden="true">M</span>
-                <span class="execution-control-copy">
-                  <span>Model</span>
-                  <small id="model-hint">Loading available models</small>
-                </span>
-                <span class="model-select-shell">
-                  <select id="model-select" name="model" aria-describedby="model-hint"></select>
-                  <span class="model-select-chevron" aria-hidden="true"></span>
-                </span>
-              </label>
-              <div class="execution-control execution-control-effort">
-                <span class="execution-control-index" aria-hidden="true">E</span>
-                <span class="execution-control-copy">
-                  <span>Effort</span>
-                  <small id="effort-hint">Select reasoning depth</small>
-                </span>
-                <div class="effort-slider-shell">
-                  <input id="effort-select" class="effort-slider" name="effort" type="range" min="0" max="0" step="1" value="0" aria-label="Reasoning effort" aria-describedby="effort-hint effort-slider-value">
-                  <div class="effort-slider-meta">
-                    <span id="effort-slider-value">Effort</span>
-                    <span id="effort-slider-steps" class="effort-slider-steps" aria-hidden="true"></span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section id="plan-config" class="council-config" role="tabpanel" aria-labelledby="mode-plan" hidden>
+            <section id="plan-config" class="council-config execute-council-config" aria-labelledby="council-config-title">
             <div class="council-heading">
               <div>
-                <span class="eyebrow">Read-only workflow</span>
-                <h3 id="council-config-title">Two-agent review loop</h3>
+                <span class="eyebrow">Optional review</span>
+                <h3 id="council-config-title">Plan council</h3>
               </div>
               <span class="council-minimum">2 providers</span>
             </div>
 
-            <div class="council-route" aria-label="Claude drafts, Codex reviews, then Claude revises">
+            <div class="plan-council-option">
+              <label class="plan-council-toggle">
+                <input id="plan-council-enabled" type="checkbox" aria-controls="plan-council-route plan-council-readiness">
+                <span><strong>Use Plan council for this prompt</strong><small>Creates a reviewed, read-only plan instead of running the prompt directly.</small></span>
+              </label>
+            </div>
+
+            <div id="plan-council-route" class="council-route" aria-label="Claude drafts, Codex reviews, then Claude revises" hidden>
               <article class="council-node council-node-claude">
                 <div class="council-node-heading">
                   <span class="council-role">01 Author</span>
@@ -215,59 +166,153 @@
               </div>
             </div>
 
-            <div class="council-readiness" aria-live="polite">
+            <div id="plan-council-readiness" class="council-readiness" aria-live="polite" hidden>
               <span id="plan-claude-ready" data-state="checking"><i aria-hidden="true"></i> Claude CLI checking</span>
               <span id="plan-codex-ready" data-state="checking"><i aria-hidden="true"></i> Codex terminal checking</span>
             </div>
+            </section>
           </section>
 
           <section id="turbo-config" class="turbo-config" role="tabpanel" aria-labelledby="mode-turbo" hidden>
             <div class="turbo-heading">
               <div><span class="eyebrow">Multi-terminal workflow</span><h3>Planner and worker fleet</h3></div>
-              <span id="turbo-readiness" class="turbo-readiness">Checking terminals</span>
+              <span id="turbo-readiness" class="turbo-readiness" aria-live="polite">Checking terminals</span>
             </div>
+            <section class="council-config turbo-council-config" aria-labelledby="turbo-council-title">
+              <div class="council-heading">
+                <div>
+                  <span class="eyebrow">Optional review</span>
+                  <h3 id="turbo-council-title">Plan council</h3>
+                </div>
+                <span class="council-minimum">2 providers</span>
+              </div>
+            <div class="plan-council-option turbo-council-toggle-row">
+              <label class="plan-council-toggle">
+                <input id="turbo-council-enabled" type="checkbox" aria-controls="turbo-council-order turbo-council-route">
+                <span><strong>Use Plan council for this prompt</strong><small>Adds a second-provider review before workers begin.</small></span>
+              </label>
+              <button id="turbo-council-help-button" class="turbo-council-help-button" type="button" aria-expanded="false" aria-controls="turbo-council-help" aria-describedby="turbo-council-help" aria-label="Explain Turbo Plan council">?</button>
+              <div id="turbo-council-help" class="turbo-council-help" role="tooltip" hidden>
+                Choose which AI builds the JSON graph first. The second AI independently checks and corrects it before workers start. This adds time and requires a signed-in Claude CLI.
+              </div>
+            </div>
+            <div id="turbo-council-order" class="turbo-council-order" role="group" aria-label="Choose which provider plans first" hidden>
+              <span>Starts with</span>
+              <button type="button" data-council-first="codex" aria-pressed="true">Codex first</button>
+              <button type="button" data-council-first="claude" aria-pressed="false">Claude first</button>
+            </div>
+            <div id="turbo-council-route" class="council-route turbo-council-route" aria-label="Turbo Plan council route" data-first="codex">
+              <article id="turbo-council-codex-step" class="council-node council-node-codex turbo-council-provider turbo-council-provider-codex">
+                <div class="council-node-heading">
+                  <span id="turbo-council-codex-role" class="council-role">01 Author</span>
+                  <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
+                </div>
+                <strong>Codex</strong>
+                <small id="turbo-council-codex-copy">Inspects the project and builds the execution graph.</small>
+                <label><span>Model</span><select id="turbo-planner-model"></select></label>
+                <label><span>Effort</span><select id="turbo-planner-effort"></select></label>
+              </article>
+              <div id="turbo-council-connector" class="council-connector" aria-hidden="true"><span>review</span><b>→</b></div>
+              <article id="turbo-council-review-step" class="council-node council-node-claude turbo-council-provider turbo-council-provider-claude">
+                <div class="council-node-heading">
+                  <span id="turbo-council-claude-role" class="council-role">02 Reviewer</span>
+                  <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
+                </div>
+                <strong>Claude</strong>
+                <small id="turbo-council-claude-copy">Checks dependencies, ownership, risk, and verification.</small>
+                <label><span>Model</span><select id="turbo-council-reviewer-model"></select></label>
+                <label><span>Effort</span><select id="turbo-council-reviewer-effort"></select></label>
+              </article>
+            </div>
+            </section>
             <div class="turbo-settings">
-              <label><span>Planner model</span><select id="turbo-planner-model"></select></label>
-              <label><span>Planner effort</span><select id="turbo-planner-effort"></select></label>
               <label><span>Worker model</span><select id="turbo-worker-model"></select></label>
               <label><span>Worker effort</span><select id="turbo-worker-effort"></select></label>
               <label><span>Worker terminals</span><input id="turbo-worker-count" type="number" min="1" max="8" step="1" value="3"></label>
             </div>
-            <p class="turbo-note">The selected Codex terminal plans in read-only mode. Relay reads its JSON dependency graph and dispatches ready tasks across the other terminals in this workspace.</p>
+            <p id="turbo-note" class="turbo-note">The selected Codex terminal plans in read-only mode. Relay reads its JSON dependency graph and dispatches ready tasks across the other terminals in this workspace.</p>
           </section>
 
           <fieldset id="terminal-panel" class="terminal-fieldset" role="tabpanel" aria-labelledby="provider-codex">
             <div class="terminal-heading-row">
               <div id="terminal-legend" class="terminal-legend">Run in terminal</div>
-              <button id="session-refresh-button" class="text-button" type="button">Refresh</button>
+              <div id="connection-help" class="connection-help">
+                <button id="launch-codex-button" class="button primary compact" type="button">Launch Codex</button>
+                <button id="launch-claude-button" class="button compact launch-claude-button" type="button">Launch Claude</button>
+                <button id="terminal-settings-button" class="button compact terminal-settings-button" type="button" aria-haspopup="dialog" aria-controls="terminal-settings-modal">Settings</button>
+              </div>
             </div>
             <p id="session-message" class="field-help" role="status">Finding connected Codex terminals.</p>
-            <label id="idle-terminal-route" class="idle-terminal-route"><input id="prefer-idle-terminal" type="checkbox"> Use an idle Relay when available</label>
+            <div class="terminal-task-options">
+              <label id="idle-terminal-route" class="terminal-task-option"><input id="prefer-idle-terminal" type="checkbox"> Use an idle Relay when available</label>
+            </div>
             <input id="thread-id" name="threadId" type="hidden">
             <div id="terminal-list" class="terminal-list" role="radiogroup" aria-label="Connected Codex terminals"></div>
+            <div id="terminal-close-row" class="terminal-close-row" data-state="unavailable">
+              <span class="terminal-close-copy">
+                <strong id="terminal-close-label">Close selected terminal</strong>
+                <small id="terminal-close-reason" role="status">Select a terminal to see whether Relay owns its native window.</small>
+              </span>
+              <button id="close-terminal-button" class="button danger compact terminal-close-button" type="button" disabled>Close selected</button>
+            </div>
           </fieldset>
 
-          <details id="connection-help" class="connection-help">
-            <summary id="connection-help-title">Connect another Codex terminal</summary>
-            <p id="connection-help-copy">Start Codex with this command. A terminal already running plain Codex must be restarted.</p>
-            <div id="connection-command-row" class="command-row">
-              <code id="launch-command">codex --dangerously-bypass-approvals-and-sandbox --remote ws://127.0.0.1:4769</code>
+          <div id="execution-controls" class="execution-controls" data-provider="codex" aria-label="Model and reasoning settings">
+            <label class="execution-control" for="model-select">
+              <span class="execution-control-index" aria-hidden="true">M</span>
+              <span class="execution-control-copy">
+                <span>Model</span>
+                <small id="model-hint">Loading available models</small>
+              </span>
+              <span class="model-select-shell">
+                <select id="model-select" name="model" aria-describedby="model-hint"></select>
+                <span class="model-select-chevron" aria-hidden="true"></span>
+              </span>
+            </label>
+            <div class="execution-control execution-control-effort">
+              <span class="execution-control-index" aria-hidden="true">E</span>
+              <span class="execution-control-copy">
+                <span>Effort</span>
+                <small id="effort-hint">Select reasoning depth</small>
+              </span>
+              <div class="effort-slider-shell">
+                <input id="effort-select" class="effort-slider" name="effort" type="range" min="0" max="0" step="1" value="0" aria-label="Reasoning effort" aria-describedby="effort-hint effort-slider-value">
+                <div class="effort-slider-meta">
+                  <span id="effort-slider-value">Effort</span>
+                  <span id="effort-slider-steps" class="effort-slider-steps" aria-hidden="true"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <dialog id="terminal-settings-modal" class="terminal-settings-modal" aria-labelledby="connection-help-title">
+            <div class="terminal-settings-card">
+              <div class="terminal-settings-header">
+                <div>
+                  <h2 id="connection-help-title">Terminal settings</h2>
+                  <p id="connection-help-copy">Start Codex with this command. A terminal already running plain Codex must be restarted.</p>
+                </div>
+                <button id="terminal-settings-close" class="terminal-settings-close" type="button" aria-label="Close terminal settings">×</button>
+              </div>
+              <div id="connection-command-row" class="command-row">
+              <code id="launch-command">codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769</code>
               <button id="copy-command-button" class="button compact" type="button">Copy</button>
-              <button id="launch-terminal-button" class="button primary compact" type="button">Launch terminal</button>
               <button id="copy-diagnostics-button" class="button compact" type="button">Copy diagnostics</button>
               <small class="diagnostics-note">Diagnostics include local paths and session IDs.</small>
-            </div>
-            <div class="terminal-layout-settings" aria-label="Terminal window layout">
-              <div class="terminal-layout-heading">
-                <span>Window layout</span>
-                <label class="terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked> Arrange in a grid</label>
               </div>
-              <label><span>Columns</span><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"></label>
-              <label><span>Rows</span><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"></label>
-              <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
-              <small>Each launch uses the next cell and wraps after the grid is full.</small>
+              <div class="terminal-layout-settings" aria-label="Terminal window layout">
+                <div class="terminal-layout-heading">
+                  <span>Window layout</span>
+                  <label class="terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked> Arrange in a grid</label>
+                </div>
+                <label class="terminal-background-toggle"><input id="terminal-launch-background" type="checkbox"> Launch behind other windows</label>
+                <label><span>Columns</span><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"></label>
+                <label><span>Rows</span><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"></label>
+                <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
+                <small>Background launches are minimized. Grid launches use the next available cell.</small>
+              </div>
             </div>
-          </details>
+          </dialog>
 
           <label class="prompt-field" for="task-prompt">
             <span class="prompt-label-row">
@@ -318,10 +363,33 @@
             <p id="queue-summary">Loading queue</p>
           </div>
           <div class="queue-heading-actions">
-            <button id="task-scope-button" class="text-button" type="button" aria-pressed="true">All history</button>
-            <button id="refresh-button" class="text-button" type="button">Refresh</button>
+            <div class="queue-view-switch" role="group" aria-label="Task view">
+              <button type="button" data-task-view="queue" aria-pressed="true">Queue</button>
+              <button type="button" data-task-view="history" aria-pressed="false">History</button>
+            </div>
+            <button id="task-scope-button" class="queue-heading-button" type="button" aria-label="Task scope: All Relays. Click to change.">All Relays</button>
           </div>
         </div>
+        <section id="history-ledger" class="history-ledger" aria-label="Task history statistics" hidden>
+          <div class="history-toolbar">
+            <div class="history-period-tabs" role="group" aria-label="History period">
+              <button type="button" data-history-period="day" aria-pressed="false">Day</button>
+              <button type="button" data-history-period="week" aria-pressed="true">Week</button>
+              <button type="button" data-history-period="month" aria-pressed="false">Month</button>
+            </div>
+            <div class="history-date-nav">
+              <button id="history-previous" type="button" aria-label="Previous period">←</button>
+              <button id="history-today" type="button">Today</button>
+              <button id="history-next" type="button" aria-label="Next period">→</button>
+            </div>
+          </div>
+          <div class="history-period-heading">
+            <span id="history-period-label"></span>
+            <small id="history-period-caption"></small>
+          </div>
+          <div id="history-metrics" class="history-metrics"></div>
+          <div id="history-activity" class="history-activity" aria-label="Task activity over time"></div>
+        </section>
         <div id="parallel-batch-bar" class="parallel-batch-bar" hidden>
           <span><strong id="parallel-selection-count">0 selected</strong><small>Send one numbered command to the selected Codex terminal</small></span>
           <span id="parallel-session-select" class="parallel-session-target" aria-live="polite"></span>
@@ -364,14 +432,38 @@
             <div id="plan-waiting" class="plan-waiting" role="status">The council is preparing the first draft.</div>
             <details id="plan-draft-section" class="plan-source" hidden>
               <summary><span>Claude draft</span><small>First pass</small></summary>
+              <button class="content-copy-button" type="button" data-copy-content="planDraft" aria-label="Copy Claude draft">Copy</button>
               <div id="plan-draft" class="markdown-document compact"></div>
             </details>
             <details id="plan-review-section" class="plan-source" hidden>
               <summary><span>Codex review</span><small>Independent critique</small></summary>
+              <button class="content-copy-button" type="button" data-copy-content="planReview" aria-label="Copy Codex review">Copy</button>
               <div id="plan-review" class="markdown-document compact"></div>
             </details>
             <article id="plan-final-section" class="plan-final" hidden>
-              <div class="plan-final-heading"><span>Final revised plan</span><small>Implementation-ready</small></div>
+              <div class="plan-final-heading">
+                <span>Final revised plan</span>
+                <span class="plan-final-actions"><small>Implementation-ready</small><button class="content-copy-button" type="button" data-copy-content="planFinal" aria-label="Copy final revised plan">Copy</button></span>
+              </div>
+              <div id="plan-artifact-row" class="plan-artifact-row" hidden>
+                <span>Canonical file</span>
+                <code id="plan-artifact-path"></code>
+                <a id="plan-artifact-link" href="#" target="_blank" rel="noreferrer">Open plan.md</a>
+              </div>
+              <div id="plan-execution-panel" class="plan-execution-panel" hidden>
+                <div class="plan-execution-heading">
+                  <span>Execute reviewed plan</span>
+                  <small>Choose any opened Relay in this workspace</small>
+                </div>
+                <div class="plan-execution-controls">
+                  <label for="plan-execution-relay">
+                    <span>Opened Relay</span>
+                    <select id="plan-execution-relay"></select>
+                  </label>
+                  <button id="plan-execution-button" class="button primary compact" type="button">Execute plan</button>
+                </div>
+                <p id="plan-execution-message" role="status"></p>
+              </div>
               <div id="plan-final" class="markdown-document"></div>
             </article>
           </section>
@@ -382,16 +474,21 @@
               <span id="turbo-preview-status">Planning</span>
             </div>
             <p id="turbo-preview-summary"></p>
-            <div id="turbo-task-graph" class="turbo-task-graph"></div>
+            <div class="turbo-graph-progress">
+              <span id="turbo-graph-progress" data-state="planning">Planning dependency graph</span>
+              <div id="turbo-graph-progressbar" role="progressbar" aria-label="Turbo dependency graph planning in progress" aria-valuemin="0" aria-busy="true" data-indeterminate="true"></div>
+            </div>
+            <div id="turbo-task-graph" class="turbo-task-graph" role="list" aria-label="Turbo execution packages"></div>
           </section>
 
-          <section id="prompt-section" class="detail-section">
-            <div class="detail-section-heading">
-              <h3>Prompt</h3>
-              <span>Input</span>
-            </div>
+          <details id="prompt-section" class="detail-section detail-copy-disclosure">
+            <summary>
+              <span><b>Prompt</b><small id="detail-prompt-preview">Original request</small></span>
+              <i>View</i>
+            </summary>
+            <button class="content-copy-button" type="button" data-copy-content="prompt" aria-label="Copy prompt">Copy</button>
             <pre id="detail-prompt"></pre>
-          </section>
+          </details>
 
           <section id="detail-attachments-section" class="detail-section" hidden>
             <div class="detail-section-heading">
@@ -401,42 +498,96 @@
             <div id="detail-attachments" class="detail-attachments"></div>
           </section>
 
-          <section id="result-section" class="detail-section">
-            <div class="detail-section-heading">
-              <h3>Result</h3>
-              <span>AI response</span>
-            </div>
+          <details id="result-section" class="detail-section detail-copy-disclosure" open>
+            <summary>
+              <span><b>Result</b><small id="detail-result-preview">AI response</small></span>
+              <i>View</i>
+            </summary>
+            <button class="content-copy-button" type="button" data-copy-content="result" aria-label="Copy result">Copy</button>
             <pre id="detail-result"></pre>
-          </section>
+          </details>
           </div>
+
+          <div id="terminal-height-resizer" class="terminal-height-resizer" role="separator" aria-label="Resize task details and terminal" aria-orientation="horizontal" tabindex="0"><span aria-hidden="true"></span></div>
 
           <section class="detail-section events-section" aria-label="Terminal output">
             <div id="event-metrics" class="event-metrics" aria-label="Execution summary"></div>
             <div class="event-toolbar">
               <div id="event-filters" class="event-filters" role="group" aria-label="Filter terminal output">
-                <button type="button" data-event-filter="highlights" aria-pressed="true">Highlights</button>
+                <button type="button" data-event-filter="highlights" aria-pressed="false">Highlights</button>
                 <button type="button" data-event-filter="commands" aria-pressed="false">Commands</button>
                 <button type="button" data-event-filter="messages" aria-pressed="false">Messages</button>
-                <button type="button" data-event-filter="all" aria-pressed="false">All</button>
+                <button type="button" data-event-filter="all" aria-pressed="true">All</button>
               </div>
               <div class="event-tools">
-                <span id="event-session-state" class="event-session-state" data-state="idle">
-                  <i aria-hidden="true"></i>
-                  <span>Waiting</span>
-                </span>
-                <span id="event-summary">No activity</span>
                 <button id="copy-events-button" type="button">Copy log</button>
-                <button id="follow-events-button" type="button" aria-pressed="true">
-                  <i aria-hidden="true"></i>
-                  <span>Following</span>
-                </button>
               </div>
             </div>
             <div id="detail-events" class="event-list" role="log" aria-live="polite" aria-relevant="additions"></div>
+            <form id="task-continuation-form" class="task-continuation" hidden>
+              <div class="task-continuation-context">
+                <span class="task-continuation-glyph" aria-hidden="true">↳</span>
+                <span>
+                  <small>Continue session</small>
+                  <strong id="task-continuation-context">Same Relay · same conversation</strong>
+                </span>
+                <span id="task-continuation-state" class="task-continuation-state" data-state="ready">Ready</span>
+              </div>
+              <div class="task-continuation-entry">
+                <textarea id="task-continuation-input" rows="1" maxlength="12000" aria-label="Write a follow-up for this task" placeholder="Ask a follow-up in this terminal..."></textarea>
+                <label id="task-continuation-attach" class="task-continuation-attach" title="Add PNG, JPEG, or WebP images" aria-label="Add images to this follow-up">
+                  <input id="task-continuation-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+                  <span aria-hidden="true">＋</span>
+                </label>
+                <button id="task-continuation-send" type="submit"><span>Send</span><kbd>Enter</kbd></button>
+              </div>
+              <div id="task-continuation-attachments" class="task-continuation-attachments" hidden>
+                <span id="task-continuation-attachment-count">No images attached</span>
+                <button id="task-continuation-clear-images" type="button" hidden>Clear images</button>
+              </div>
+              <p id="task-continuation-message" role="status"></p>
+            </form>
+            <div class="term-statusbar" aria-label="Terminal session status">
+              <span id="event-session-state" class="event-session-state term-seg" data-state="idle">
+                <i aria-hidden="true"></i>
+                <span>Waiting</span>
+              </span>
+              <span id="term-relay" class="term-seg term-seg-relay" hidden></span>
+              <span id="term-provider" class="term-seg term-seg-provider"></span>
+              <span id="event-summary" class="term-seg term-seg-signals">No activity</span>
+              <span class="term-statusbar-spacer" aria-hidden="true"></span>
+              <button id="follow-events-button" class="term-seg term-seg-follow" type="button" aria-pressed="true">
+                <i aria-hidden="true"></i>
+                <span>Following</span>
+              </button>
+              <span id="term-effort" class="term-seg term-seg-effort" hidden></span>
+              <span id="term-duration" class="term-seg term-seg-duration"></span>
+            </div>
           </section>
         </div>
       </section>
     </main>
+
+    <dialog id="task-edit-modal" class="terminal-settings-modal task-edit-modal" aria-labelledby="task-edit-title">
+      <div class="terminal-settings-card">
+        <div class="terminal-settings-header">
+          <div>
+            <h2 id="task-edit-title">Edit queued task</h2>
+            <p>The request can change only while this task is still waiting to start.</p>
+          </div>
+          <button id="task-edit-close" class="terminal-settings-close" type="button" aria-label="Close task editor">×</button>
+        </div>
+        <div class="task-edit-body">
+          <label for="task-edit-prompt">Task request</label>
+          <textarea id="task-edit-prompt" maxlength="12000" rows="8"></textarea>
+          <p id="task-edit-message" role="status"></p>
+        </div>
+        <div class="task-edit-actions">
+          <button id="task-edit-cancel" class="button compact" type="button">Cancel</button>
+          <button id="task-edit-save" class="button primary compact" type="button">Save changes</button>
+        </div>
+      </div>
+    </dialog>
 
     <script type="module" src="/app.js"></script>
   </body>

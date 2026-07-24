@@ -12,6 +12,18 @@ Task:
 ${task.prompt}`;
 }
 
+function codexReviewPrompt(task, draftPlan, workerCount) {
+  return `You are the Codex reviewer in a two-step Forward-planning Turbo council. Claude already produced the initial JSON graph. Inspect the repository independently, then correct the graph before workers start. Do not edit files or execute the implementation. Work in read-only mode.
+
+Return only the complete corrected JSON object with the same version-1 schema. Preserve useful work, but fix missing dependencies, unsafe ownership overlap, incomplete verification, and coordination gaps. The graph must contain at least ${workerCount} executable tasks and remain safe for ${workerCount} concurrent workers sharing one working tree.
+
+Original task:
+${task.prompt}
+
+Claude draft JSON:
+${JSON.stringify(draftPlan, null, 2)}`;
+}
+
 export function parseTurboPlan(text, workerCount) {
   const source = String(text || '').trim();
   const fenced = source.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1] || source;
@@ -84,50 +96,341 @@ Implement the package, run its verification, and return a concise result includi
 }
 
 export class TurboRunner {
-  constructor({ codex, artifacts = null }) {
+  constructor({ codex, artifacts = null, councilReviewer = null }) {
     this.codex = codex;
     this.artifacts = artifacts;
-    this.activeTaskIds = new Set();
+    this.councilReviewer = councilReviewer;
+    this.activeChildren = new Map();
+    this.preparations = new Map();
+    this.councilParents = new Set();
   }
 
-  async run(task, { onEvent, onStderr }) {
+  councilConfig(task) {
+    const source = task?.turbo?.council || {};
+    const enabled = source.enabled === true || task?.turbo?.councilEnabled === true;
+    const order = Array.isArray(source.order) && source.order.length === 2
+      ? [...source.order]
+      : ['codex', 'claude'];
+    const authorProvider = source.authorProvider || order[0];
+    const reviewerProvider = source.reviewerProvider || order[1];
+    const codexModel = authorProvider === 'codex' ? source.authorModel : source.reviewerModel;
+    const codexEffort = authorProvider === 'codex' ? source.authorEffort : source.reviewerEffort;
+    const claudeModel = authorProvider === 'claude' ? source.authorModel : source.reviewerModel;
+    const claudeEffort = authorProvider === 'claude' ? source.authorEffort : source.reviewerEffort;
+    return {
+      enabled,
+      order,
+      authorProvider,
+      authorModel: source.authorModel || (authorProvider === 'codex' ? task?.turbo?.plannerModel : task?.turbo?.councilReviewerModel) || null,
+      authorEffort: source.authorEffort || (authorProvider === 'codex' ? task?.turbo?.plannerEffort : task?.turbo?.councilReviewerEffort) || null,
+      reviewerProvider,
+      reviewerModel: source.reviewerModel || (reviewerProvider === 'codex' ? task?.turbo?.plannerModel : task?.turbo?.councilReviewerModel) || null,
+      reviewerEffort: source.reviewerEffort || (reviewerProvider === 'codex' ? task?.turbo?.plannerEffort : task?.turbo?.councilReviewerEffort) || null,
+      codexModel: codexModel || task?.turbo?.plannerModel || null,
+      codexEffort: codexEffort || task?.turbo?.plannerEffort || null,
+      claudeModel: claudeModel || task?.turbo?.councilReviewerModel || null,
+      claudeEffort: claudeEffort || task?.turbo?.councilReviewerEffort || null,
+    };
+  }
+
+  councilMatches(plan, config) {
+    if (!config.enabled) return !plan?.council?.enabled;
+    return plan?.council?.enabled === true
+      && plan.council.status === 'complete'
+      && Array.isArray(plan.council.order)
+      && plan.council.order.join(',') === config.order.join(',')
+      && (plan.council.authorProvider || plan.council.order[0]) === config.authorProvider
+      && (plan.council.authorModel || config.authorModel) === config.authorModel
+      && (plan.council.authorEffort || config.authorEffort) === config.authorEffort
+      && plan.council.reviewerProvider === config.reviewerProvider
+      && plan.council.reviewerModel === config.reviewerModel
+      && plan.council.reviewerEffort === config.reviewerEffort;
+  }
+
+  childrenFor(parentTaskId) {
+    if (!this.activeChildren.has(parentTaskId)) this.activeChildren.set(parentTaskId, new Set());
+    return this.activeChildren.get(parentTaskId);
+  }
+
+  trackChild(parentTaskId, childTaskId) {
+    this.childrenFor(parentTaskId).add(childTaskId);
+  }
+
+  untrackChild(parentTaskId, childTaskId) {
+    const children = this.activeChildren.get(parentTaskId);
+    if (!children) return;
+    children.delete(childTaskId);
+    if (children.size === 0) this.activeChildren.delete(parentTaskId);
+  }
+
+  readyPlan(task) {
+    const turbo = task.turbo || {};
+    const council = this.councilConfig(task);
+    const workers = Array.isArray(turbo.workers) ? turbo.workers : [];
+    let plan;
+    try {
+      plan = this.artifacts?.readTurboPlan(task.id);
+    } catch {
+      return null;
+    }
+    if (!plan || plan.status !== 'ready' || !Array.isArray(plan.tasks) || plan.tasks.length < workers.length) return null;
+    if (!this.councilMatches(plan, council)) return null;
+    if (!Array.isArray(plan.workers) || plan.workers.length !== workers.length
+      || workers.some((worker, index) => plan.workers[index]?.threadId !== worker.threadId)) return null;
+    try {
+      const validated = parseTurboPlan(JSON.stringify(plan), workers.length);
+      if (validated.tasks.some((item) => item.status && item.status !== 'pending')) return null;
+      return {
+        ...plan,
+        tasks: validated.tasks.map((item) => ({
+          ...item,
+          status: 'pending',
+          worker: null,
+          workerThreadId: null,
+          workerTitle: null,
+          result: null,
+          error: null,
+        })),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async prepare(task, { onEvent = () => {}, onStderr = () => {} } = {}) {
+    const turbo = task.turbo || {};
+    const workers = Array.isArray(turbo.workers) ? turbo.workers : [];
+    if (workers.length < 1) throw new Error('Turbo mode needs at least one worker terminal.');
+    const existing = this.readyPlan(task);
+    if (existing) return existing;
+    if (this.preparations.has(task.id)) return this.preparations.get(task.id);
+
+    const preparation = this.prepareNow(task, workers, { onEvent, onStderr });
+    this.preparations.set(task.id, preparation);
+    preparation.then(() => {
+      if (this.preparations.get(task.id) === preparation) this.preparations.delete(task.id);
+    }, () => {
+      if (this.preparations.get(task.id) === preparation) this.preparations.delete(task.id);
+    });
+    return preparation;
+  }
+
+  async prepareNow(task, workers, { onEvent, onStderr }) {
+    const turbo = task.turbo || {};
+    const council = this.councilConfig(task);
+    const plannerTaskId = `${task.id}:planner`;
+    const shell = {
+      version: 1,
+      status: 'planning',
+      summary: '',
+      sharedContext: '',
+      planner: { threadId: turbo.plannerThreadId || task.thread_id, model: turbo.plannerModel, effort: turbo.plannerEffort },
+      workers,
+      tasks: [],
+    };
+    if (council.enabled) {
+      shell.council = {
+        enabled: true,
+        order: council.order,
+        authorProvider: council.authorProvider,
+        authorModel: council.authorModel,
+        authorEffort: council.authorEffort,
+        reviewerProvider: council.reviewerProvider,
+        reviewerModel: council.reviewerModel,
+        reviewerEffort: council.reviewerEffort,
+        status: 'pending',
+      };
+    }
+    this.artifacts?.writeTurboPlan(task.id, shell);
+    let currentPlan = shell;
+    const attachmentPaths = (task.attachments || [])
+      .map((attachment) => typeof attachment === 'string' ? attachment : attachment?.path)
+      .filter(Boolean);
+    const decoratePlan = (plan, status) => ({
+      ...plan,
+      status,
+      planner: shell.planner,
+      workers,
+      tasks: plan.tasks.map((item) => ({
+        ...item,
+        status: 'pending',
+        worker: null,
+        workerThreadId: null,
+        workerTitle: null,
+        result: null,
+        error: null,
+      })),
+    });
+    const runCodexStage = async (prompt, message) => {
+      this.trackChild(task.id, plannerTaskId);
+      onEvent({
+        event: { type: 'turbo/stage', provider: 'codex', phase: 'planner', status: 'running' },
+        message,
+      });
+      try {
+        return await this.codex.run({
+          ...task,
+          id: plannerTaskId,
+          prompt,
+          thread_id: turbo.plannerThreadId || task.thread_id,
+          model: council.codexModel || turbo.plannerModel,
+          effort: council.codexEffort || turbo.plannerEffort,
+          read_only: true,
+        }, {
+          onEvent: ({ event, message: eventMessage }) => onEvent({ event: { ...event, phase: 'planner' }, message: eventMessage }),
+          onStderr,
+        });
+      } finally {
+        this.untrackChild(task.id, plannerTaskId);
+      }
+    };
+    const runClaudeStage = async (stage, draftPlan = null) => {
+      const method = stage === 'author' ? this.councilReviewer?.draft : this.councilReviewer?.review || this.councilReviewer?.run;
+      if (typeof method !== 'function') {
+        throw new Error(`Turbo Plan council is enabled but no Claude graph ${stage === 'author' ? 'author' : 'reviewer'} is configured.`);
+      }
+      const phase = stage === 'author' ? 'council-author' : 'council-review';
+      const model = stage === 'author' ? council.authorModel : council.reviewerModel;
+      const effort = stage === 'author' ? council.authorEffort : council.reviewerEffort;
+      this.councilParents.add(task.id);
+      try {
+        return await method.call(this.councilReviewer, {
+          parentTaskId: task.id,
+          task,
+          draftPlan,
+          workerCount: workers.length,
+          claudeModel: model,
+          claudeEffort: effort,
+          attachmentPaths,
+          onEvent: ({ event, message }) => onEvent({
+            event: { ...event, provider: 'claude', phase },
+            message,
+          }),
+          onStderr,
+        });
+      } finally {
+        this.councilParents.delete(task.id);
+      }
+    };
+
+    try {
+      if (!council.enabled) {
+        const plannerResult = await runCodexStage(
+          plannerPrompt(task, workers.length),
+          `Planner is designing a dependency graph for ${workers.length} worker terminals.`,
+        );
+        currentPlan = decoratePlan(parseTurboPlan(plannerResult.finalResponse, workers.length), 'ready');
+        this.artifacts?.writeTurboPlan(task.id, currentPlan);
+        onEvent({
+          event: { type: 'turbo/stage', provider: 'plan', phase: 'ready', status: 'ready', plan: currentPlan },
+          message: `Plan ready: ${currentPlan.tasks.length} tasks are waiting for worker execution across ${workers.length} terminals.`,
+        });
+        return currentPlan;
+      }
+
+      if (council.authorProvider === 'codex') {
+        const authorResult = await runCodexStage(
+          plannerPrompt(task, workers.length),
+          `Codex is authoring a dependency graph for ${workers.length} worker terminals.`,
+        );
+        currentPlan = decoratePlan(parseTurboPlan(authorResult.finalResponse, workers.length), 'reviewing');
+        currentPlan.council = {
+          ...shell.council,
+          status: 'reviewing',
+          author: { status: 'complete', provider: 'codex', model: council.authorModel, effort: council.authorEffort, completedAt: new Date().toISOString() },
+          codex: { status: 'complete', model: council.authorModel, effort: council.authorEffort, completedAt: new Date().toISOString() },
+        };
+        this.artifacts?.writeTurboPlan(task.id, currentPlan);
+        onEvent({
+          event: { type: 'turbo/stage', provider: 'codex', phase: 'planner', status: 'complete', plan: currentPlan },
+          message: 'Codex graph draft complete; planner Relay released for the next queued plan.',
+        });
+        onEvent({
+          event: { type: 'turbo/stage', provider: 'claude', phase: 'council-review', status: 'running', plan: currentPlan },
+          message: 'Claude is reviewing the Codex graph before worker execution.',
+        });
+        const authoredCouncil = currentPlan.council;
+        const reviewResult = await runClaudeStage('review', currentPlan);
+        currentPlan = decoratePlan(parseTurboPlan(reviewResult?.text || reviewResult?.finalResponse, workers.length), 'ready');
+        currentPlan.council = {
+          ...shell.council,
+          status: 'complete',
+          author: authoredCouncil.author,
+          codex: { status: 'complete', model: council.authorModel, effort: council.authorEffort },
+          review: { status: 'complete', provider: 'claude', model: council.reviewerModel, effort: council.reviewerEffort, sessionId: reviewResult?.sessionId || null },
+          reviewedAt: new Date().toISOString(),
+        };
+      } else {
+        onEvent({
+          event: { type: 'turbo/stage', provider: 'claude', phase: 'council-author', status: 'running', plan: shell },
+          message: `Claude is authoring a dependency graph for ${workers.length} worker terminals.`,
+        });
+        const authorResult = await runClaudeStage('author');
+        const authoredPlan = decoratePlan(parseTurboPlan(authorResult?.text || authorResult?.finalResponse, workers.length), 'reviewing');
+        authoredPlan.council = {
+          ...shell.council,
+          status: 'reviewing',
+          author: { status: 'complete', provider: 'claude', model: council.authorModel, effort: council.authorEffort, sessionId: authorResult?.sessionId || null, completedAt: new Date().toISOString() },
+        };
+        currentPlan = authoredPlan;
+        this.artifacts?.writeTurboPlan(task.id, currentPlan);
+        onEvent({
+          event: { type: 'turbo/stage', provider: 'claude', phase: 'council-author', status: 'complete', plan: currentPlan },
+          message: 'Claude graph draft complete; Codex will perform the independent review.',
+        });
+        const reviewResult = await runCodexStage(
+          codexReviewPrompt(task, currentPlan, workers.length),
+          'Codex is reviewing the Claude graph before worker execution.',
+        );
+        currentPlan = decoratePlan(parseTurboPlan(reviewResult.finalResponse, workers.length), 'ready');
+        currentPlan.council = {
+          ...shell.council,
+          status: 'complete',
+          author: authoredPlan.council.author,
+          review: { status: 'complete', provider: 'codex', model: council.reviewerModel, effort: council.reviewerEffort, completedAt: new Date().toISOString() },
+          codex: { status: 'complete', model: council.reviewerModel, effort: council.reviewerEffort, completedAt: new Date().toISOString() },
+          reviewedAt: new Date().toISOString(),
+        };
+        onEvent({
+          event: { type: 'turbo/stage', provider: 'codex', phase: 'planner', status: 'complete', plan: currentPlan },
+          message: 'Codex graph review complete; planner Relay released.',
+        });
+      }
+
+      this.artifacts?.writeTurboPlan(task.id, currentPlan);
+      onEvent({
+        event: { type: 'turbo/stage', provider: 'plan', phase: 'ready', status: 'ready', plan: currentPlan },
+        message: `Plan ready after ${council.reviewerProvider === 'claude' ? 'Claude' : 'Codex'} review: ${currentPlan.tasks.length} tasks are waiting for worker execution across ${workers.length} terminals.`,
+      });
+      return currentPlan;
+    } catch (error) {
+      currentPlan.status = 'failed';
+      currentPlan.error = String(error?.message || error || 'Turbo planning failed').slice(0, 500);
+      if (council.enabled) {
+        currentPlan.council = {
+          ...(currentPlan.council || shell.council),
+          status: 'failed',
+          error: currentPlan.error,
+        };
+      }
+      this.artifacts?.writeTurboPlan(task.id, currentPlan);
+      throw error;
+    } finally {
+      this.untrackChild(task.id, plannerTaskId);
+    }
+  }
+
+  async run(task, { onEvent = () => {}, onStderr = () => {} } = {}) {
     const turbo = task.turbo || {};
     const workers = Array.isArray(turbo.workers) ? turbo.workers : [];
     if (workers.length < 1) throw new Error('Turbo mode needs at least one worker terminal.');
 
-    const plannerTaskId = `${task.id}:planner`;
-    this.activeTaskIds.add(plannerTaskId);
-    onEvent({
-      event: { type: 'turbo/stage', provider: 'plan', phase: 'planner', status: 'running' },
-      message: `Planner is designing a dependency graph for ${workers.length} worker terminals.`,
-    });
-    let plannerResult;
-    try {
-      plannerResult = await this.codex.run({
-        ...task,
-        id: plannerTaskId,
-        prompt: plannerPrompt(task, workers.length),
-        thread_id: turbo.plannerThreadId || task.thread_id,
-        model: turbo.plannerModel,
-        effort: turbo.plannerEffort,
-        read_only: true,
-      }, {
-        onEvent: ({ event, message }) => onEvent({ event: { ...event, phase: 'planner' }, message }),
-        onStderr,
-      });
-    } finally {
-      this.activeTaskIds.delete(plannerTaskId);
-    }
-
-    const plan = parseTurboPlan(plannerResult.finalResponse, workers.length);
+    const plan = this.readyPlan(task) || await this.prepare(task, { onEvent, onStderr });
     plan.status = 'executing';
-    plan.planner = { threadId: turbo.plannerThreadId, model: turbo.plannerModel, effort: turbo.plannerEffort };
-    plan.workers = workers;
-    plan.tasks = plan.tasks.map((item) => ({ ...item, status: 'pending', worker: null, result: null }));
     this.artifacts?.writeTurboPlan(task.id, plan);
     onEvent({
       event: { type: 'turbo/stage', provider: 'plan', phase: 'workers', status: 'running', plan },
-      message: `Planner completed ${plan.tasks.length} tasks. Relay is dispatching dependency-ready work across ${workers.length} terminals.`,
+      message: `Plan is executing: dispatching dependency-ready work across ${workers.length} terminals.`,
     });
 
     const pending = new Map(plan.tasks.map((item) => [item.id, item]));
@@ -138,13 +441,20 @@ export class TurboRunner {
 
     const startWork = (worker, workPackage) => {
       const workerTaskId = `${task.id}:worker:${worker.index + 1}:${workPackage.id}`;
-      this.activeTaskIds.add(workerTaskId);
+      this.trackChild(task.id, workerTaskId);
       pending.delete(workPackage.id);
       workPackage.status = 'running';
       workPackage.worker = worker.index + 1;
+      workPackage.workerThreadId = worker.threadId;
+      workPackage.workerTitle = worker.title || null;
+      workPackage.error = null;
       this.artifacts?.writeTurboPlan(task.id, plan);
       onEvent({
-        event: { type: 'turbo/dispatch', provider: 'plan', phase: `worker-${worker.index + 1}`, worker: worker.index + 1, taskId: workPackage.id },
+        event: {
+          type: 'turbo/dispatch', provider: 'plan', phase: `worker-${worker.index + 1}`,
+          worker: worker.index + 1, workerThreadId: worker.threadId, workerTitle: worker.title || null,
+          taskId: workPackage.id,
+        },
         message: `Dispatched ${workPackage.id} to worker ${worker.index + 1}.`,
       });
       const promise = this.codex.run({
@@ -162,7 +472,21 @@ export class TurboRunner {
           message: `Worker ${worker.index + 1} [${workPackage.id}]: ${message}`,
         }),
         onStderr: (line) => onStderr(`Worker ${worker.index + 1} [${workPackage.id}]: ${line}`),
-      }).then((result) => ({ worker, workPackage, result })).finally(() => this.activeTaskIds.delete(workerTaskId));
+      }).then((result) => ({ worker, workPackage, result })).catch((error) => {
+        const message = String(error?.message || error || 'Worker failed').slice(0, 500);
+        workPackage.status = 'failed';
+        workPackage.error = message;
+        this.artifacts?.writeTurboPlan(task.id, plan);
+        onEvent({
+          event: {
+            type: 'turbo/taskFailed', provider: 'plan', phase: `worker-${worker.index + 1}`,
+            worker: worker.index + 1, workerThreadId: worker.threadId, workerTitle: worker.title || null,
+            taskId: workPackage.id,
+          },
+          message: `Worker ${worker.index + 1} failed ${workPackage.id}: ${message}`,
+        });
+        throw error;
+      }).finally(() => this.untrackChild(task.id, workerTaskId));
       active.set(worker.index, promise);
     };
 
@@ -188,15 +512,26 @@ export class TurboRunner {
         outcome.workPackage.status = 'complete';
         outcome.workPackage.result = outcome.result.finalResponse || '';
         this.artifacts?.writeTurboPlan(task.id, plan);
-        outcomes.push({ worker: outcome.worker.index + 1, id: outcome.workPackage.id, title: outcome.workPackage.title, result: outcome.result.finalResponse });
+        outcomes.push({
+          worker: outcome.worker.index + 1,
+          workerThreadId: outcome.worker.threadId,
+          workerTitle: outcome.worker.title || null,
+          id: outcome.workPackage.id,
+          title: outcome.workPackage.title,
+          result: outcome.result.finalResponse,
+        });
         onEvent({
-          event: { type: 'turbo/taskCompleted', provider: 'plan', phase: `worker-${outcome.worker.index + 1}`, worker: outcome.worker.index + 1, taskId: outcome.workPackage.id },
+          event: {
+            type: 'turbo/taskCompleted', provider: 'plan', phase: `worker-${outcome.worker.index + 1}`,
+            worker: outcome.worker.index + 1, workerThreadId: outcome.worker.threadId,
+            workerTitle: outcome.worker.title || null, taskId: outcome.workPackage.id,
+          },
           message: `Worker ${outcome.worker.index + 1} completed ${outcome.workPackage.id}.`,
         });
       }
     }
     } catch (error) {
-      this.cancel();
+      this.cancel(task.id);
       await Promise.allSettled(active.values());
       plan.status = 'failed';
       plan.error = error.message;
@@ -219,9 +554,20 @@ export class TurboRunner {
     };
   }
 
-  cancel() {
+  cancel(parentTaskId = null) {
     let cancelled = false;
-    for (const taskId of this.activeTaskIds) cancelled = this.codex.cancel(taskId) || cancelled;
+    const parentIds = parentTaskId == null ? [...this.activeChildren.keys()] : [parentTaskId];
+    for (const parentId of parentIds) {
+      for (const taskId of this.activeChildren.get(parentId) || []) {
+        cancelled = this.codex.cancel(taskId) || cancelled;
+      }
+    }
+    if (this.councilReviewer && typeof this.councilReviewer.cancel === 'function') {
+      const councilParents = parentTaskId == null ? [...this.councilParents] : [parentTaskId];
+      for (const parentId of councilParents) {
+        cancelled = this.councilReviewer.cancel(parentId) || cancelled;
+      }
+    }
     return cancelled;
   }
 }

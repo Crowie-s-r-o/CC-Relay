@@ -1,0 +1,64 @@
+Relay Source-Available View-Only License 1.0
+
+Copyright (c) 2026 Patrik Kelemen. All rights reserved.
+
+1. Purpose
+
+The source code and accompanying materials for Relay are made publicly visible
+solely so that people may inspect and read the code for security, privacy, and
+trust evaluation.
+
+2. Limited permission
+
+You may view the source code as displayed through a repository or other service
+authorized by the copyright holder.
+
+3. No other rights granted
+
+Except for the limited permission in Section 2, no license or permission is
+granted. Without prior written permission from the copyright holder, you may
+not:
+
+- use, run, execute, or deploy the software or any part of it;
+- copy, download, reproduce, or archive the software or any part of it;
+- modify, adapt, translate, or create derivative works from it;
+- distribute, publish, sublicense, sell, rent, lease, or otherwise provide it
+  to another person;
+- incorporate the software or any part of it into another project, product,
+  service, dataset, model, or codebase;
+- use the software or any part of it to develop, improve, benchmark, or train a
+  competing or substantially similar project, product, or service; or
+- remove or alter copyright, license, attribution, or proprietary notices.
+
+4. No patent or trademark license
+
+No patent, trademark, trade name, logo, or branding rights are granted under
+this license.
+
+5. Contributions
+
+No right to submit or incorporate contributions is granted by this license.
+Any contribution accepted by the copyright holder is subject to a separate
+written agreement or contribution terms provided by the copyright holder.
+
+6. Termination
+
+The limited permission in Section 2 terminates automatically if you breach this
+license. Upon termination, you must cease all access and use permitted by this
+license.
+
+7. Disclaimer
+
+THE SOFTWARE AND SOURCE CODE ARE PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. TO THE MAXIMUM
+EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY CLAIM,
+DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO THE SOFTWARE, SOURCE CODE,
+OR THIS LICENSE.
+
+8. Separate permission
+
+For permission to use, evaluate, modify, distribute, integrate, or license
+Relay, contact the copyright holder and obtain a separate written license.
+
+This license is source-available and view-only. It is not an open-source license.

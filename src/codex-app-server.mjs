@@ -4,15 +4,21 @@ import { createInterface } from 'node:readline';
 import { RelayWebSocketProxy } from './websocket-proxy.mjs';
 
 export const SHARED_CODEX_ENDPOINT = 'ws://127.0.0.1:4769';
-export const CODEX_APP_SERVER_ENDPOINT = 'ws://127.0.0.1:4770';
+export const CODEX_APP_SERVER_ENDPOINT = 'ws://127.0.0.1:0';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+export function isFreshThreadPersistenceError(error) {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /no rollout found for thread id|rollout(?: at)? .* is empty/i.test(message);
+}
+
 export class CodexAppServerError extends Error {
-  constructor(message, { cancelled = false } = {}) {
+  constructor(message, { cancelled = false, retryable = true } = {}) {
     super(message);
     this.name = 'CodexAppServerError';
     this.cancelled = cancelled;
+    this.retryable = retryable;
   }
 }
 
@@ -24,6 +30,19 @@ function sourceLabel(source) {
     return Object.keys(source)[0] || 'unknown';
   }
   return 'unknown';
+}
+
+function terminateProcessTree(child, signal = 'SIGTERM') {
+  if (!child) {
+    return false;
+  }
+  if (process.platform !== 'win32' && Number.isInteger(child.pid)) {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {}
+  }
+  return child.kill(signal);
 }
 
 export function normalizeThread(thread) {
@@ -106,6 +125,11 @@ function socketData(event) {
   return String(event.data);
 }
 
+export function advertisedWebSocketEndpoint(line) {
+  const match = String(line || '').match(/\blistening on:\s*(ws:\/\/[^\s]+)/i);
+  return match?.[1] || null;
+}
+
 export class CodexAppServer extends EventEmitter {
   constructor({
     command = 'codex',
@@ -115,6 +139,8 @@ export class CodexAppServer extends EventEmitter {
     webSocketFactory = (url) => new WebSocket(url),
     proxy = null,
     diagnostic = () => {},
+    freshThreadRetryDelayMs = 100,
+    terminateProcess = terminateProcessTree,
   } = {}) {
     super();
     this.command = command;
@@ -123,12 +149,15 @@ export class CodexAppServer extends EventEmitter {
     this.spawnProcess = spawnProcess;
     this.webSocketFactory = webSocketFactory;
     this.diagnostic = diagnostic;
+    this.freshThreadRetryDelayMs = freshThreadRetryDelayMs;
+    this.terminateProcess = terminateProcess;
     this.proxy = proxy || new RelayWebSocketProxy({ target: endpoint, diagnostic });
     this.child = null;
     this.socket = null;
     this.stdoutLines = null;
     this.stderrLines = null;
     this.nextRequestId = 1;
+    this.nextSteerId = 1;
     this.pending = new Map();
     this.startPromise = null;
     this.connected = false;
@@ -145,11 +174,19 @@ export class CodexAppServer extends EventEmitter {
     return {
       connected: this.connected,
       endpoint: this.publicEndpoint,
-      launchCommand: `codex --dangerously-bypass-approvals-and-sandbox --remote ${this.publicEndpoint}`,
+      launchCommand: `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${this.publicEndpoint}`,
       userAgent: this.userAgent,
       codexHome: this.codexHome,
       error: this.lastError,
     };
+  }
+
+  reserveLaunchClient(workspace, launchId) {
+    return this.proxy.reserveLaunchClient(workspace, launchId);
+  }
+
+  runtimeClientForThread(threadId) {
+    return this.proxy.runtimeClientForThread?.(threadId) || null;
   }
 
   async start() {
@@ -170,28 +207,64 @@ export class CodexAppServer extends EventEmitter {
 
   async startProcess() {
     this.diagnostic('appserver.start.requested', { endpoint: this.endpoint, publicEndpoint: this.publicEndpoint });
+    const dynamicEndpoint = new URL(this.endpoint).port === '0';
     const child = this.spawnProcess(
       this.command,
       ['-c', 'allow_login_shell=false', 'app-server', '--listen', this.endpoint],
-      { stdio: ['ignore', 'pipe', 'pipe'] },
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: process.platform !== 'win32',
+      },
     );
     this.child = child;
     this.stdoutLines = createInterface({ input: child.stdout });
     this.stderrLines = createInterface({ input: child.stderr });
 
-    this.stdoutLines.on('line', (line) => this.emit('stderr', line));
-    this.stderrLines.on('line', (line) => this.emit('stderr', line));
-    child.once('error', (error) => this.handleProcessExit(
-      `Could not start shared Codex app-server: ${error.message}`,
-      child,
-    ));
+    let settleAdvertisedEndpoint = () => {};
+    const endpointReady = dynamicEndpoint
+      ? new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          reject(new CodexAppServerError('Codex app-server did not advertise its listening endpoint.'));
+        }, 15_000);
+        settleAdvertisedEndpoint = (error, endpoint) => {
+          clearTimeout(timeout);
+          if (error) reject(error);
+          else resolve(endpoint);
+        };
+      })
+      : Promise.resolve(this.endpoint);
+    const handleProcessLine = (line) => {
+      const advertisedEndpoint = advertisedWebSocketEndpoint(line);
+      const startupMetadata = advertisedEndpoint
+        || /^\s*(?:codex app-server \(WebSockets\)|readyz:|healthz:|note: binds localhost only)/i.test(line);
+      if (!startupMetadata) {
+        this.emit('stderr', line);
+      }
+      if (dynamicEndpoint && advertisedEndpoint) {
+        settleAdvertisedEndpoint(null, advertisedEndpoint);
+        settleAdvertisedEndpoint = () => {};
+      }
+    };
+    this.stdoutLines.on('line', handleProcessLine);
+    this.stderrLines.on('line', handleProcessLine);
+    child.once('error', (error) => {
+      const message = `Could not start shared Codex app-server: ${error.message}`;
+      settleAdvertisedEndpoint(new CodexAppServerError(message));
+      settleAdvertisedEndpoint = () => {};
+      this.handleProcessExit(message, child);
+    });
     child.once('close', (code, signal) => {
       const suffix = signal ? ` after ${signal}` : ` with code ${code}`;
+      settleAdvertisedEndpoint(new CodexAppServerError(`Shared Codex app-server stopped${suffix}.`));
+      settleAdvertisedEndpoint = () => {};
       this.handleProcessExit(`Shared Codex app-server stopped${suffix}.`, child);
     });
 
     try {
-      const socket = await this.connectWithRetry(child);
+      const activeEndpoint = await endpointReady;
+      this.diagnostic('appserver.endpoint.ready', { configuredEndpoint: this.endpoint, activeEndpoint });
+      this.proxy.target = activeEndpoint;
+      const socket = await this.connectWithRetry(child, activeEndpoint);
       this.socket = socket;
       socket.addEventListener('message', (event) => this.handleLine(socketData(event)));
       socket.addEventListener('close', () => this.handleSocketExit(
@@ -218,7 +291,7 @@ export class CodexAppServer extends EventEmitter {
       this.userAgent = response.userAgent;
       this.lastError = null;
       this.emit('status', this.status());
-      this.diagnostic('appserver.ready', { endpoint: this.endpoint, userAgent: this.userAgent });
+      this.diagnostic('appserver.ready', { endpoint: activeEndpoint, userAgent: this.userAgent });
       return this.status();
     } catch (error) {
       this.diagnostic('appserver.start.failed', { error: error.message });
@@ -228,13 +301,13 @@ export class CodexAppServer extends EventEmitter {
     }
   }
 
-  async connectWithRetry(child) {
+  async connectWithRetry(child, endpoint = this.endpoint) {
     const deadline = Date.now() + 15_000;
     let lastError = null;
 
     while (Date.now() < deadline && this.child === child) {
       try {
-        return await this.openSocket();
+        return await this.openSocket(endpoint);
       } catch (error) {
         lastError = error;
         await delay(100);
@@ -242,16 +315,16 @@ export class CodexAppServer extends EventEmitter {
     }
 
     throw new CodexAppServerError(
-      this.lastError || lastError?.message || `Could not connect to ${this.endpoint}.`,
+      this.lastError || lastError?.message || `Could not connect to ${endpoint}.`,
     );
   }
 
-  openSocket() {
+  openSocket(endpoint = this.endpoint) {
     return new Promise((resolve, reject) => {
-      const socket = this.webSocketFactory(this.endpoint);
+      const socket = this.webSocketFactory(endpoint);
       const timeout = setTimeout(() => {
         socket.close();
-        reject(new CodexAppServerError(`Timed out connecting to ${this.endpoint}.`));
+        reject(new CodexAppServerError(`Timed out connecting to ${endpoint}.`));
       }, 1_000);
 
       socket.addEventListener('open', () => {
@@ -260,7 +333,7 @@ export class CodexAppServer extends EventEmitter {
       }, { once: true });
       socket.addEventListener('error', () => {
         clearTimeout(timeout);
-        reject(new CodexAppServerError(`Could not connect to ${this.endpoint}.`));
+        reject(new CodexAppServerError(`Could not connect to ${endpoint}.`));
       }, { once: true });
     });
   }
@@ -379,6 +452,10 @@ export class CodexAppServer extends EventEmitter {
       active.reasoningSummaries.set(params.itemId, summaries);
       return;
     }
+    if (method === 'thread/tokenUsage/updated') {
+      active.tokenUsage = params.tokenUsage || null;
+      return;
+    }
     if (method === 'item/reasoning/summaryTextDelta') {
       const summaries = active.reasoningSummaries.get(params.itemId) || [];
       summaries[params.summaryIndex] = `${summaries[params.summaryIndex] || ''}${params.delta || ''}`;
@@ -404,7 +481,11 @@ export class CodexAppServer extends EventEmitter {
     }
     if (shouldStoreNotification(method)) {
       active.onEvent({
-        event: { type: method, ...params },
+        event: {
+          type: method,
+          ...params,
+          ...(method === 'turn/completed' && active.tokenUsage ? { tokenUsage: active.tokenUsage } : {}),
+        },
         message: notificationMessage(method, params),
       });
     }
@@ -475,7 +556,7 @@ export class CodexAppServer extends EventEmitter {
     this.proxy.stop();
     this.failOutstanding(message);
     if (this.child) {
-      this.child.kill('SIGTERM');
+      this.terminateProcess(this.child);
     }
     this.emit('status', this.status());
   }
@@ -505,7 +586,10 @@ export class CodexAppServer extends EventEmitter {
     const threads = await Promise.all(this.proxy.listConnectedThreadIds().map(async (threadId) => {
       try {
         const response = await this.request('thread/read', { threadId, includeTurns: false });
-        return normalizeThread(response.thread);
+        return {
+          ...normalizeThread(response.thread),
+          launchId: this.proxy.launchIdForThread?.(threadId) || null,
+        };
       } catch (error) {
         this.emit('stderr', `Could not read shared Codex thread ${threadId}: ${error.message}`);
         return null;
@@ -588,9 +672,64 @@ export class CodexAppServer extends EventEmitter {
           return;
         }
       } catch (error) {
-        active.onStderr(`Could not poll Codex turn state: ${error.message}`);
+        if (isFreshThreadPersistenceError(error)) {
+          this.diagnostic('task.codex.turn.poll_deferred', {
+            taskId: active.taskId,
+            threadId: active.threadId,
+            turnId: active.turnId,
+            error: error.message,
+          });
+        } else {
+          active.onStderr(`Could not poll Codex turn state: ${error.message}`);
+        }
       }
     }
+  }
+
+  async subscribeFreshThread(active, baseThreadParams, maximumAttempts = 8) {
+    let lastError = null;
+    for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+      if (this.activeTurns.get(active.threadId) !== active) {
+        return false;
+      }
+      try {
+        await this.request('thread/resume', {
+          ...baseThreadParams,
+          threadId: active.threadId,
+        });
+        active.subscribed = true;
+        this.diagnostic('task.codex.thread.subscribed_after_start', {
+          taskId: active.taskId,
+          threadId: active.threadId,
+          turnId: active.turnId,
+          attempt,
+        });
+        return true;
+      } catch (error) {
+        lastError = error;
+        if (!isFreshThreadPersistenceError(error)) {
+          throw error;
+        }
+        this.diagnostic('task.codex.thread.subscription_deferred', {
+          taskId: active.taskId,
+          threadId: active.threadId,
+          turnId: active.turnId,
+          attempt,
+          error: error.message,
+        });
+        if (attempt < maximumAttempts) {
+          await delay(this.freshThreadRetryDelayMs * attempt);
+        }
+      }
+    }
+    this.diagnostic('task.codex.thread.subscribe_after_start_unavailable', {
+      taskId: active.taskId,
+      threadId: active.threadId,
+      turnId: active.turnId,
+      attempts: maximumAttempts,
+      error: lastError?.message,
+    });
+    return false;
   }
 
   async run(task, { onEvent, onStderr }) {
@@ -598,7 +737,7 @@ export class CodexAppServer extends EventEmitter {
       throw new CodexAppServerError('That Codex terminal already has an active Relay turn.');
     }
     if (!task.thread_id) {
-      throw new CodexAppServerError('This task does not have a connected Codex thread.');
+      throw new CodexAppServerError('This task does not have a connected Codex thread.', { retryable: false });
     }
 
     const completion = new Promise((resolve, reject) => {
@@ -617,7 +756,9 @@ export class CodexAppServer extends EventEmitter {
         reject,
       });
     });
-    const stderrListener = (line) => this.activeTurns.has(task.thread_id) && onStderr(line);
+    const stderrListener = (line) => (
+      [...this.activeTurns.values()].some((turn) => turn.taskId === task.id) && onStderr(line)
+    );
     this.on('stderr', stderrListener);
     this.diagnostic('task.codex.run.requested', {
       taskId: task.id,
@@ -632,37 +773,51 @@ export class CodexAppServer extends EventEmitter {
       await this.start();
       if (!await this.readConnectedThread(task.thread_id)) {
         this.diagnostic('task.codex.thread.missing', { taskId: task.id, threadId: task.thread_id });
-        throw new CodexAppServerError('The selected Codex terminal is no longer connected to Relay. Reconnect it and retry.');
+        throw new CodexAppServerError(
+          'The selected Codex terminal is no longer connected to Relay. Reconnect it and retry.',
+          { retryable: false },
+        );
       }
       const activeTurn = this.activeTurns.get(task.thread_id);
-      await this.waitForIdleThread(task.thread_id, activeTurn);
+      if (task.sessionFollowUp) {
+        const response = await this.request('thread/read', {
+          threadId: task.thread_id,
+          includeTurns: false,
+        });
+        if (response.thread.status?.type === 'active') {
+          throw new CodexAppServerError('That Codex terminal became busy. Your follow-up was not queued.');
+        }
+      } else {
+        await this.waitForIdleThread(task.thread_id, activeTurn);
+      }
       if (activeTurn.cancelRequested) {
         throw new CodexAppServerError('Task cancelled.', { cancelled: true });
       }
       const sandbox = task.read_only ? 'read-only' : 'workspace-write';
-      const resumeParams = {
-        threadId: task.thread_id,
+      const executionThreadId = task.thread_id;
+      let freshThread = false;
+      const baseThreadParams = {
         approvalPolicy: 'never',
         sandbox,
         config: { allow_login_shell: false },
       };
-      let freshThread = false;
+      const resumeParams = { ...baseThreadParams, threadId: executionThreadId };
       try {
         await this.request('thread/resume', resumeParams);
         activeTurn.subscribed = true;
-        this.diagnostic('task.codex.thread.resumed', { taskId: task.id, threadId: task.thread_id });
+        this.diagnostic('task.codex.thread.resumed', { taskId: task.id, threadId: executionThreadId });
       } catch (error) {
-        if (!/no rollout found for thread id/i.test(error.message)) {
+        if (!isFreshThreadPersistenceError(error)) {
           throw error;
         }
         this.diagnostic('task.codex.thread.fresh', {
           taskId: task.id,
-          threadId: task.thread_id,
+          threadId: executionThreadId,
         });
         freshThread = true;
       }
       const started = await this.request('turn/start', {
-        threadId: task.thread_id,
+        threadId: executionThreadId,
         input: [
           { type: 'text', text: task.prompt },
           ...(task.attachments || []).map((attachment) => ({
@@ -677,26 +832,20 @@ export class CodexAppServer extends EventEmitter {
         ...(task.model ? { model: task.model } : {}),
         ...(task.effort ? { effort: task.effort } : {}),
       });
-      if (!this.activeTurns.has(task.thread_id)) {
+      if (!this.activeTurns.has(executionThreadId)) {
         throw new CodexAppServerError('Codex turn ended before Relay received its start response.');
       }
-      const active = this.activeTurns.get(task.thread_id);
+      const active = this.activeTurns.get(executionThreadId);
       active.turnId = started.turn.id;
-      this.diagnostic('task.codex.turn.started', { taskId: task.id, threadId: task.thread_id, turnId: active.turnId });
+      this.diagnostic('task.codex.turn.started', { taskId: task.id, threadId: executionThreadId, turnId: active.turnId });
       if (freshThread) {
         try {
-          await this.request('thread/resume', resumeParams);
-          active.subscribed = true;
-          this.diagnostic('task.codex.thread.subscribed_after_start', {
-            taskId: task.id,
-            threadId: task.thread_id,
-            turnId: active.turnId,
-          });
+          await this.subscribeFreshThread(active, baseThreadParams);
         } catch (error) {
           active.onStderr(`Could not subscribe to live output for the new Codex thread: ${error.message}`);
           this.diagnostic('task.codex.thread.subscribe_after_start_failed', {
             taskId: task.id,
-            threadId: task.thread_id,
+            threadId: executionThreadId,
             turnId: active.turnId,
             error: error.message,
           });
@@ -709,15 +858,15 @@ export class CodexAppServer extends EventEmitter {
         this.finishActiveTurn(active.earlyCompletion);
       } else {
         this.pollActiveTurn(active).catch((error) => {
-          this.activeTurns.get(task.thread_id)?.onStderr(`Codex turn polling stopped: ${error.message}`);
+          this.activeTurns.get(executionThreadId)?.onStderr(`Codex turn polling stopped: ${error.message}`);
         });
       }
       return await completion;
     } catch (error) {
       this.diagnostic('task.codex.run.failed', { taskId: task.id, threadId: task.thread_id, error: error.message });
-      if (this.activeTurns.has(task.thread_id)) {
-        const active = this.activeTurns.get(task.thread_id);
-        this.activeTurns.delete(task.thread_id);
+      const active = [...this.activeTurns.values()].find((turn) => turn.taskId === task.id);
+      if (active) {
+        this.activeTurns.delete(active.threadId);
         await this.releaseSubscription(active);
         active.reject(error);
       }
@@ -736,6 +885,57 @@ export class CodexAppServer extends EventEmitter {
       threadId: active.threadId,
       turnId: active.turnId,
     }).catch((error) => active.onStderr(`Could not interrupt Codex: ${error.message}`));
+  }
+
+  async steer(taskId, prompt, attachments = []) {
+    const value = typeof prompt === 'string' ? prompt.trim() : '';
+    if (!value) {
+      throw new CodexAppServerError('Write a follow-up before sending it.');
+    }
+    const active = [...this.activeTurns.values()].find((turn) => turn.taskId === taskId);
+    if (!active?.turnId) {
+      throw new CodexAppServerError('That task no longer has an active Codex turn.');
+    }
+    const clientUserMessageId = `relay-steer-${taskId}-${this.nextSteerId}`;
+    this.nextSteerId += 1;
+    this.diagnostic('task.codex.steer.requested', {
+      taskId,
+      threadId: active.threadId,
+      turnId: active.turnId,
+      clientUserMessageId,
+    });
+    try {
+      const response = await this.request('turn/steer', {
+        threadId: active.threadId,
+        input: [
+          { type: 'text', text: value, text_elements: [] },
+          ...attachments.map((attachment) => ({
+            type: 'localImage',
+            path: attachment.path,
+          })),
+        ],
+        expectedTurnId: active.turnId,
+        clientUserMessageId,
+      });
+      if (response.turnId !== active.turnId) {
+        throw new CodexAppServerError('Codex updated a different turn than Relay expected.');
+      }
+      this.diagnostic('task.codex.steer.completed', {
+        taskId,
+        threadId: active.threadId,
+        turnId: active.turnId,
+        clientUserMessageId,
+      });
+      return { taskId, threadId: active.threadId, turnId: active.turnId };
+    } catch (error) {
+      this.diagnostic('task.codex.steer.failed', {
+        taskId,
+        threadId: active.threadId,
+        turnId: active.turnId,
+        error: error.message,
+      });
+      throw error;
+    }
   }
 
   cancel(taskId = null) {
@@ -759,7 +959,7 @@ export class CodexAppServer extends EventEmitter {
     this.stdoutLines?.close();
     this.stderrLines?.close();
     if (this.child) {
-      this.child.kill('SIGTERM');
+      this.terminateProcess(this.child);
     }
     this.proxy.stop();
     this.child = null;

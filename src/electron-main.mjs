@@ -1,10 +1,33 @@
-import { app, BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, dialog, shell } from 'electron';
 import { execFileSync } from 'node:child_process';
+import { autoUpdater } from 'electron-updater';
+import { createDesktopUpdater } from './desktop-updater.mjs';
 
 const RELAY_URL = 'http://127.0.0.1:4768';
 let mainWindow = null;
 let relayShutdown = null;
 let quitting = false;
+
+const desktopUpdater = createDesktopUpdater({
+  updater: autoUpdater,
+  dialog,
+  getCurrentVersion: () => app.getVersion(),
+  isEligible: () => app.isPackaged && (
+    process.platform === 'darwin'
+    || (process.platform === 'win32' && !process.env.PORTABLE_EXECUTABLE_FILE)
+  ),
+  getMainWindow: () => mainWindow,
+  restartAndInstall: async () => {
+    quitting = true;
+    try {
+      if (relayShutdown) await relayShutdown();
+    } finally {
+      autoUpdater.quitAndInstall(false, true);
+    }
+  },
+  logger: console,
+  timer: setTimeout,
+});
 
 function restoreMacShellPath() {
   if (process.platform !== 'darwin') return;
@@ -53,6 +76,7 @@ async function createWindow() {
     event.preventDefault();
     mainWindow.webContents.setZoomFactor(1);
   });
+  desktopUpdater.start();
 }
 
 const lock = app.requestSingleInstanceLock();

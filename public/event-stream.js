@@ -80,7 +80,7 @@ export function eventEntryCategory(entry) {
   if (COMMAND_ITEM_TYPES.has(item?.type)) {
     return 'commands';
   }
-  if (item?.type === 'agentMessage') {
+  if (item?.type === 'agentMessage' || item?.type === 'userMessage') {
     return 'messages';
   }
   if (entry.events.some((event) => ['claude', 'plan', 'result'].includes(event.kind))) {
@@ -98,7 +98,9 @@ export function isEventEntryHighlight(entry) {
   if (QUIET_ITEM_TYPES.has(item?.type)) {
     return false;
   }
-  if (lastEvent?.payload?.type === 'turn/started' || lastEvent?.payload?.type === 'turn/completed') {
+  if (lastEvent?.payload?.type === 'turn/started'
+    || lastEvent?.payload?.type === 'turn/completed'
+    || lastEvent?.payload?.type === 'claude/progress') {
     return false;
   }
   return true;
@@ -115,15 +117,17 @@ export function filterEventEntries(entries, filter) {
 }
 
 export function eventStreamStats(entries) {
-  const stats = { commands: 0, files: 0, messages: 0, errors: 0, running: 0 };
+  const stats = { commands: 0, files: 0, messages: 0, errors: 0, running: 0, thinkingTokens: 0 };
   for (const entry of entries || []) {
     const item = entryItem(entry);
     const last = entryLastEvent(entry);
     if (item?.type === 'commandExecution') stats.commands += 1;
     if (item?.type === 'fileChange') stats.files += 1;
-    if (item?.type === 'agentMessage' || ['claude', 'result'].includes(last?.kind)) stats.messages += 1;
+    if (['agentMessage', 'userMessage'].includes(item?.type) || ['claude', 'result'].includes(last?.kind)) stats.messages += 1;
     if (last?.kind === 'stderr' || last?.payload?.type === 'error' || item?.status === 'failed') stats.errors += 1;
     if (entry.startedEvent && !entry.completedEvent) stats.running += 1;
+    const reasoningTokens = Number(last?.payload?.tokenUsage?.last?.reasoningOutputTokens);
+    if (Number.isFinite(reasoningTokens)) stats.thinkingTokens += reasoningTokens;
   }
   return stats;
 }

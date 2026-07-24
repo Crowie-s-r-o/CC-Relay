@@ -12,6 +12,7 @@ The log records:
 
 - Native terminal launch request and dispatch
 - Shared proxy startup and client connection lifecycle
+- Codex workspace reservation, claim, cancellation, expiry, and application to `thread/start`
 - Thread create, resume, join, discovery, and disconnection
 - Task enqueue validation and rejection
 - App-server requests, responses, failures, and timeouts
@@ -21,6 +22,15 @@ The log records:
 
 Prompts and model responses are intentionally excluded. IDs, workspace paths, status, provider, model, effort, and errors are included because they are necessary to diagnose terminal handoff failures.
 
+## Codex terminal opens but Relay does not connect
+
+Native launch binding waits for the exact new Codex session for 15 seconds. A timeout is returned to the renderer as `connectionStatus: timed_out` instead of being treated as a successful connection. Relay then shows a targeted message explaining that it could not open a Codex Relay and that, if the terminal requires a Codex update, the user should update Codex and try again.
+
+The native terminal remains open so its update or startup message is visible. The timeout remains recorded as `terminal.binding.timed_out`, and Relay releases the one-use workspace reservation after the bounded wait.
+
+> [!important]
+> Relay does not read or classify Terminal.app output. The update guidance is conditional because authentication, shell startup, or another Codex failure can also prevent the session from connecting.
+
 The connection panel includes **Copy diagnostics**, which copies the latest 500 structured entries. The same data is available from `GET /api/diagnostics?limit=500`.
 
 The file is capped operationally: after it exceeds 5 MB, Relay retains approximately the newest 2 MB. API reads inspect at most the newest 1 MB instead of loading the entire file.
@@ -28,13 +38,185 @@ The file is capped operationally: after it exceeds 5 MB, Relay retains approxima
 > [!important]
 > Diagnostics can contain local workspace paths and session identifiers. Review them before sharing outside the machine.
 
+## Intermittent browser freezes
+
+Chrome long-task warnings attributed to Relay clicks are currently caused by unbounded full task-list and event-stream reconstruction on the main thread. Warnings attributed to `content.js` and `@eyeo/webext-ad-filtering-solution` come from an injected browser extension and can amplify the same DOM-mutation bursts. Relay also blocks its Node request loop during cached synchronous Claude CLI status checks. See [[renderer-performance]] for measurements, code paths, and the required repair order.
+
+## Plan council tasks that appear stuck
+
+Plan council mode is persisted on the task when it is submitted. Changing the composer back to Execute afterward does not change an existing task. When a selected task shows the Plan council rail and its database record has `mode = plan` and `provider = council`, the Claude Fable author stage is expected even if the composer currently highlights Execute and Codex.
+
+> [!important]
+> The standalone Plan council runner invokes Claude with `--output-format json` and buffers the final response until the child exits. Relay emits a stage heartbeat every 30 seconds and stops a stage after the one-hour safety limit. A missing heartbeat now indicates a stale backend or event path rather than expected provider silence. Confirm `capabilities.planCouncilResume` before using checkpoint resume controls.
+
+> [!note]
+> Relay selector activity counts only `mode = execute` tasks as direct terminal work. A Plan council Claude draft no longer labels its future Codex review Relay as **Running**.
+
+### Visible Claude terminal stays idle
+
+Plan council Claude stages do not send keystrokes to, resume, or redraw an open interactive Claude terminal. `ClaudeRunner` starts a separate `claude --print` process with read-only tools, plan permission mode, JSON output, and no session persistence. The visible terminal can therefore remain at an empty prompt while the council stage is genuinely running. This is distinct from direct Claude Execute, which resumes the selected conversation through another headless process but still cannot redraw the already-open interactive terminal.
+
+> [!important]
+> The two-process boundary described here still applies to Plan council, to Windows and Linux direct Claude Execute, and to any macOS session without an owned single-tab terminal. The selected Terminal.app window owns an interactive `claude --dangerously-skip-permissions --session-id <uuid>` process, while the headless `ClaudeExecutionRunner` path starts a separate `claude -p --output-format stream-json --resume <uuid>` process. That print process gives Relay structured tool events, cancellation ownership, and a reliable final result, but Claude does not mirror its output into the interactive TUI. Task 207 on July 21, 2026 confirmed both processes were live with the same UUID on different TTYs while only Task Activity showed execution.
+
+> [!success]
+> Resolved on macOS for direct Claude Execute (July 24, 2026). When Relay owns an exactly resolvable single-tab Terminal.app window for the session, `ClaudeExecutionRunner` runs the turn **inside** that terminal by typing a bracketed-paste prompt through `osascript` and mirrors the session `.jsonl` transcript into Task Activity. No second `claude` process is spawned. To tell which path a task took, read its `claude/started` event: `sessionMode: 'terminal'` means terminal-driven (the visible terminal shows the turn); `sessionMode: 'resume'` or `'fresh'` means the headless fallback. See [[claude-terminal-visibility]] for the mechanism, spike findings, and fallback matrix.
+
+> [!note]
+> Terminal-driven readiness and safety. Relay types once the session is registered and idle in `claude agents --json`; registration plus idle is the input-ready signal because a folder-trust-prompt session is not registered at all (empirically verified). The transcript file is not required, so a freshly launched terminal's first turn runs visibly (the tail reads from offset 0). Immediately before typing, Relay re-verifies that the resolved window, tty, and pid still match a fresh discovery read, because macOS recycles tty names; a mismatch aborts retryably with nothing typed. Every failure at or after injection is non-retryable (no-start, empty or missing final, ceiling, transcript shrinkage, mid-turn close, and the injection call itself, whose osascript timeout can fire after Terminal.app already ran the prompt), so the queue never auto-reinjects a turn. Cancellation sends a best-effort ESC to the exact window; System Events keystrokes are Accessibility-gated and intentionally unused. See [[claude-terminal-visibility]] for the tty-recycling incident that motivated the identity recheck.
+
+> [!note]
+> Direct Claude process ownership is per session. Different Claude UUIDs may have active print processes at the same time, while Relay rejects two active tasks for one UUID and cancels each process by its task ID. Plan council Claude stages still use their separate serialized council runner.
+
+> [!note]
+> Claude Code Remote Control does synchronize an interactive terminal with claude.ai and mobile clients, but its documented transport is Anthropic's hosted service and it exposes no supported local submission API for Relay. Adding `--remote-control` to Relay's launch command therefore does not make the existing local runner drive the visible terminal. The shipped macOS solution instead types a bracketed-paste prompt into the exact owned Terminal.app window and reads the session `.jsonl` transcript, which preserves structured item events, live completion, and cancellation while accepting two tradeoffs the earlier note anticipated: it is macOS-only, and a terminal-driven turn uses the interactive session's own model and effort rather than the composer's. See [[claude-terminal-visibility]].
+
+> [!note]
+> A `SessionStart` warning in the interactive terminal about prompt-type hooks is a local Claude hook configuration issue. It is not evidence that Relay failed to launch its separate Plan council child. Confirm launch through the persisted `claude/started` event and the live `claude --print` process.
+
+## Plan council disabled after restart
+
+Council capability and Claude authentication are separate checks. A current backend can advertise both `planCouncil` and `turboPlanCouncil` while Claude Code is installed but signed out. Claude Code 2.1.216 returns useful JSON with `loggedIn: false` and exit code 1 from `claude auth status --json`; treating that exit code as a missing CLI incorrectly collapses the state into a generic restart message.
+
+Relay now preserves signed-out JSON from the failed command, reports the CLI as installed but unauthenticated, and refreshes Claude authentication on a five-second cache. Council submissions force an immediate recheck. Run `claude auth login`; after successful sign-in the visible composer enables automatically without another Relay restart.
+
+> [!important]
+> Restarting Relay does not authenticate Claude. Only suggest a restart when the backend lacks the council capability. When the backend is current and `reason` is `signed_out`, show the login command and automatic-detection behavior.
+
+See [[turbo-plan-council]] and [[interface-layout]].
+
+Task 150 on July 17, 2026 demonstrated the distinction: Relay persisted `claude/started` for Opus at max effort at `16:42:32` local time. The draft process remained active until a cancellation request at `16:43:43`, after which the draft stage was saved as cancelled with no output.
+
+See [[task-history]] for the persisted task contract and [[interface-layout]] for Task Activity presentation.
+
+## Unbounded Plan council retry usage
+
+> [!warning]
+> Unbounded Plan council retry was a historical defect. Plan council failures are now non-retryable queue outcomes. Relay records the exact failed stage, preserves completed stage outputs in `plan.json`, and waits for an explicit **Resume** after the provider or reviewer problem is corrected.
+
+The July 17, 2026 task 130 incident proves the failure mode. The selected Codex review Relay was disconnected, but Relay launched the configured `fable` at `max` effort 520 times from `2026-07-16T23:55:00.205Z` through `2026-07-17T10:39:23.784Z`. Fifty Claude calls completed a fresh first draft and then failed at the disconnected Codex review. No Codex review or Claude revision completed. After provider usage was exhausted, another 468 launches exited with code 1 and were retried every five seconds.
+
+Task 184 on July 20 and 21, 2026 exposed the authentication variant. Its old queue launched Claude 78 times while `claude auth status --json` reported `loggedIn: false`. A direct reproduction returned `Failed to authenticate: OAuth session expired and could not be refreshed`, but the former runner reduced that output to a generic exit-code error.
+
+> [!important]
+> Do not restore automatic retry for Plan council. Manual resume validates a connected same-workspace Codex reviewer and current Claude authentication, keeps every completed checkpoint, and restarts only the first missing stage. The renderer requires `capabilities.planCouncilResume` so new static assets cannot invoke this behavior on an older backend.
+
+See [[plan-council]] and [[plan-council-review]].
+
+## Unbounded direct-task retry usage
+
+Task 216 exposed the direct Codex variant: its selected terminal disconnected, the runner detected that permanent identity failure, but the error lacked `retryable = false`. Relay retried the same assignment 1,279 times. Disconnected and missing Codex thread errors are now non-retryable, and every other direct or Turbo automatic retry chain has a queue-level limit of three retries. See [[automatic-retry-safety]].
+
+## Duplicate server starts and orphaned queue rows
+
+Relay must own `127.0.0.1:4768` before it recovers interrupted tasks or starts queue dispatch. A previous startup order called `queue.start()` before `server.listen()`. A second `npm start` could therefore mark the real server's active task interrupted, dispatch the next task from the shared SQLite database, then crash with `EADDRINUSE`. The dispatched row remained persisted as `running` even though the failed process no longer had an active runner.
+
+Startup now attaches the listen error handler first and moves queue recovery, the `relay.started` diagnostic, and background Codex app-server startup into the successful listen callback. A duplicate start reports the occupied port and exits without changing task status or adding queue events.
+
+> [!important]
+> When diagnosing a `running` row with no ID in `/api/status.activeTaskIds`, compare `task.codex.run.requested` with `task.codex.turn.started`. A row created by the old port-collision bug can have the former without the latter. Recover only that verified orphan as interrupted; do not cancel or rewrite a task that still appears in the live active-task map.
+
+## Visible prompt submits as empty
+
+> [!important]
+> Never nest another `<form>` inside `#task-form`. The Terminal Settings dialog briefly used an inner `method="dialog"` form. HTML form parsing closed the outer task form at the dialog boundary, leaving the visible prompt, image input, and submit button outside it. `new FormData(taskForm)` therefore omitted the visible prompt and the server returned **Task prompt is required**; image selection and button submission were also broken.
+
+Terminal Settings now uses a non-form panel and an explicit close handler. `test/composer-workflows.test.mjs` protects task form ownership, and the Electron renderer check verifies that `prompt.form`, `imageInput.form`, and `submitButton.form` all resolve to `#task-form`, while the prompt appears in `FormData`.
+
+## Continue session sends as a new task
+
+The old finished-task behavior deliberately created a linked Execute task, and an even older compatibility path called the ordinary task endpoint. Both paths made a follow-up appear as new queue work even though the dock promised the same terminal session.
+
+The renderer now separates drafting from safe submission. The textarea stays editable unless a request is active, but a finished task enables Send only when `/api/status` advertises `taskDirectFollowUp: true`. **Restart required**, **Terminal busy**, and **Session offline** all disable only Send. There is no ordinary-task fallback and no queued presentation state. After restarting Relay, hard refresh the renderer if needed and confirm that `/api/status` advertises both `taskDirectFollowUp: true` and `taskSteering: true`.
+
+If a direct follow-up fails, its task error begins with `Same-session follow-up`. Generic Retry is intentionally unavailable because retrying the stored source task would queue its original prompt. Reconnect or free the exact session, then use **Continue session** again.
+
+## Fresh rollout subscription warnings
+
+On the first task for a new Codex thread, the rollout metadata file may be briefly empty after `turn/start`. This is an expected persistence race, not a failed command. Relay retries the live-output subscription with bounded backoff and keeps transient empty-rollout details in diagnostics instead of Task Activity. See [[project-workspaces]].
+
+## Fresh Claude session has no conversation
+
+A newly opened Claude terminal may appear in session discovery before it has a persisted transcript. Relay first probes normal resume. On the exact **No conversation found with session ID** response naming the selected UUID, it suppresses that expected warning, refreshes discovery, verifies the same interactive UUID and workspace, and records `claude/session-initializing`. The first task then runs with `--session-id` using that exact UUID, and the successful result must report the same UUID before Relay accepts completion. Normal resume works afterward.
+
+An expected **Session ID ... is already in use** during this path means the interactive terminal persisted a transcript in the small gap between probe and initialization. Relay suppresses that same-UUID race warning, revalidates the terminal again, and resumes normally. A different UUID or any other provider error remains visible and fails closed.
+
+If Task Activity shows the raw missing-conversation warning followed by a manual-initialization failure, the running Relay backend predates this fix and needs a normal restart. If initialization instead reports that the terminal closed, became background-only, or belongs to another workspace, reopen or select the exact interactive terminal and retry manually. See [[project-workspaces]] and [[claude-fresh-session-review]].
+
+> [!note]
+> The known missing-conversation probe line is hidden only when Relay handles it through same-session initialization. All other Claude stderr remains the primary failure message so authentication, CLI startup, and provider failures stay actionable.
+
+## Orphaned internal Codex app-server ports
+
+Relay's public endpoints remain fixed: the browser and HTTP API use `127.0.0.1:4768`, while interactive Codex terminals use the WebSocket proxy at `ws://127.0.0.1:4769`. The Codex app-server behind that proxy is private implementation detail and now binds an operating-system-assigned loopback port by starting with `ws://127.0.0.1:0`.
+
+The launcher parses the exact `listening on:` endpoint advertised by its newly spawned Codex child, points the WebSocket proxy at that endpoint, initializes it, and only then reports the app-server ready. This ownership handshake prevents an orphaned app-server from an earlier Relay process from hijacking a new startup. The previous fixed internal port `4770` could remain occupied after Relay exited; a new process would briefly connect to the orphan, then tear down public port `4769` when its own child failed to bind.
+
+Native Codex launch also awaits `codexAppServer.start()` before reserving the workspace or dispatching Terminal.app or `cmd.exe`. A launch therefore fails through the HTTP request without opening a terminal when the public proxy is unavailable. Known app-server startup metadata is kept out of task stderr, while genuine child-process errors remain visible.
+
+Useful diagnostic sequence:
+
+- `appserver.start.requested` contains the configured private endpoint ending in port `0`.
+- `appserver.endpoint.ready` records the actual private endpoint advertised by the owned child.
+- `proxy.listening` confirms the fixed terminal endpoint `4769` is accepting connections.
+- `appserver.ready` is emitted only after initialization and proxy binding succeed.
+- `terminal.launch.waiting_for_codex` must precede `terminal.launch.codex_ready` and `terminal.launch.dispatched`.
+
+> [!important]
+> Do not restore a fixed private app-server port or let a native Codex launch bypass readiness. Port `4769` is correct for `codex --remote`; port `4768` is HTTP and cannot accept the Codex WebSocket protocol.
+
+## Native terminal shutdown ownership
+
+`terminal.launch.dispatched` records the exact `terminalWindowId` on macOS or `terminalProcessId` on Windows when the native launcher can capture it. Graceful application quit emits `terminal.shutdown.requested`, waits for pending serialized launches, and then closes only those owned handles. Completion emits `terminal.shutdown.completed` with `windowCount` and `processCount`.
+
+macOS close failures emit `terminal.shutdown.failed`. Individual Windows process-tree failures emit `terminal.shutdown.process_failed` with the process ID, allowing the remaining owned terminals to continue closing. Cleanup errors are diagnostic rather than permission to target all Terminal windows or all `cmd.exe` processes.
+
+## Single terminal close ownership
+
+`terminal.launch.dispatched` now includes an in-memory `launchId` beside the captured native handle. Backend discovery then requires two observations of the exact launch UUID: Claude uses the interactive CLI session ID, while Codex uses metadata from its dedicated one-use proxy endpoint. `proxy.launch.reservation.created`, `proxy.launch.reservation.claimed`, `proxy.launch.reservation.cancelled`, and `proxy.launch.reservation.expired` trace that endpoint without relying on shared-client arrival order. `terminal.session.bound` records the exact launch ID, thread ID, provider, and canonical project path. `terminal.binding.discovery_failed` and `terminal.binding.timed_out` explain why ownership was not bound. A user close emits `terminal.close.requested`, followed by `terminal.close.completed` or `terminal.close.failed`.
+
+For existing macOS one-tab Terminal sessions, `terminal.recovery.completed` records the exact thread, provider, runtime PID, TTY, and Terminal window ID recovered from the live identity chain. `terminal.recovery.socket_inspection_failed`, `terminal.recovery.native_inspection_failed`, and `terminal.recovery.inventory_invalid` report operating-system discovery failures. `terminal.recovery.rejected` means the result conflicted with another binding. `terminal.recovery.identity_changed` means the same conversation moved or no longer maps to the recorded process and window; Relay drops that mapping instead of closing the stale target.
+
+> [!important]
+> The Close row must never disappear. An unavailable action stays visible and prints its reason inline. If the row itself is missing, the browser is serving stale UI assets; refresh it. If a current macOS session remains unverifiable, inspect recovery diagnostics and confirm it occupies one tab in one Terminal window. Relay must never recover an association from only a process name, project path, or Terminal.app window title.
+
+The API refuses close requests while `src/terminal-control.mjs` finds a queued, running, or scheduled-to-retry task assigned to the direct thread, Turbo planner, or Turbo worker. `src/terminal-close-coordinator.mjs` reserves the thread, revalidates its live provider and project, repeats the task check, and then delegates the exact native close with a ten-second operating-system timeout. Queue enqueue, retry, assignment, planner, and dispatch paths reject a reserved thread until the close finishes or fails. This protects queue ownership independently of possibly stale browser state. See [[project-workspaces]].
+
+## Claude binary resolution
+
+Relay pins one exact `claude` binary at startup instead of trusting bare `PATH` resolution, which varied with how Relay was launched (Finder or dock versus a terminal) and could select an outdated binary whose `agents --json` fails. `src/claude-binary.mjs` enumerates candidates, probes each with `--version`, and selects the highest version.
+
+- `claude.binary.resolved` records the chosen `command` absolute path, its `version`, a `supportsAgentsJson` flag, and the `rejected` candidates with their version or probe-failure reason. Use it to confirm which binary discovery and execution actually use.
+- `claude.binary.fallback` means no candidate responded to `--version`, so Relay fell back to bare `claude`. Its `candidates` list (or `error`) explains why. Discovery may then behave exactly as it did before the fix, so treat this as the degraded path.
+
+The resolver caches the result for the process lifetime. `ClaudeSessionRegistry` re-resolves once with a refresh when `claude agents --json` fails with an unknown-option error, then retries against the newer binary. A stale backend that predates this change shows neither event; restart Relay to load the resolver.
+
+> [!important]
+> The resolver never throws. A rejected resolve would abort the top-level `await` in `src/server.mjs` and prevent `server.listen`, so every probe and resolution error is caught and downgraded to the bare-`claude` fallback with a diagnostic.
+
+See [[claude-terminal-visibility]] for the root cause and the two-binary machine that motivated the fix.
+
 ## Files
 
 - `src/diagnostics.mjs`
 - `src/server.mjs`
+- `src/claude-binary.mjs`
+- `src/claude-session-registry.mjs`
+- `src/claude-runtime-status.mjs`
+- `src/claude-runner.mjs`
+- `src/claude-execution-runner.mjs`
+- `src/claude-terminal-executor.mjs`
+- `src/claude-transcript-tail.mjs`
 - `src/project-launcher.mjs`
+- `src/terminal-launch-coordinator.mjs`
+- `src/terminal-close-coordinator.mjs`
+- `src/terminal-control.mjs`
+- `src/terminal-runtime-resolver.mjs`
 - `src/websocket-proxy.mjs`
 - `src/codex-app-server.mjs`
 - `test/diagnostics.test.mjs`
+- `test/server-startup.test.mjs`
+- `test/terminal-runtime-resolver.test.mjs`
+- `test/claude-terminal-executor.test.mjs`
 
 #relay #diagnostics #terminal #codex #logging

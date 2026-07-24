@@ -2,22 +2,49 @@ import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
 
 export class ClaudeRunnerError extends Error {
-  constructor(message, { cancelled = false, exitCode = null } = {}) {
+  constructor(message, { cancelled = false, exitCode = null, retryable = false } = {}) {
     super(message);
     this.name = 'ClaudeRunnerError';
     this.cancelled = cancelled;
     this.exitCode = exitCode;
+    this.retryable = retryable;
+  }
+}
+
+function parsedMessages(output) {
+  const parsed = JSON.parse(output);
+  return Array.isArray(parsed) ? parsed : [parsed];
+}
+
+export function claudeFailureMessage(output) {
+  try {
+    const messages = parsedMessages(output);
+    const result = [...messages].reverse().find((message) => (
+      message.type === 'result' && (message.is_error || message.subtype?.startsWith('error'))
+    ));
+    if (typeof result?.result === 'string' && result.result.trim()) return result.result.trim();
+    if (typeof result?.error === 'string' && result.error.trim()) return result.error.trim();
+    const assistantError = [...messages].reverse().find((message) => (
+      message.type === 'assistant' && typeof message.error === 'string'
+    ));
+    const content = assistantError?.message?.content;
+    const errorText = Array.isArray(content)
+      ? content.find((item) => item.type === 'text' && typeof item.text === 'string')?.text
+      : null;
+    return errorText?.trim() || '';
+  } catch {
+    return '';
   }
 }
 
 export function parseClaudeResult(output) {
   let parsed;
   try {
-    parsed = JSON.parse(output);
+    parsed = parsedMessages(output);
   } catch (error) {
     throw new ClaudeRunnerError(`Claude returned invalid JSON: ${error.message}`);
   }
-  const messages = Array.isArray(parsed) ? parsed : [parsed];
+  const messages = parsed;
   const result = [...messages].reverse().find((message) => message.type === 'result')
     || messages.find((message) => typeof message.result === 'string');
   if (!result) {
@@ -79,6 +106,7 @@ export class ClaudeRunner {
     });
     let stdout = '';
     let stderrBuffer = '';
+    let lastStderrLine = '';
     const active = { child, cancelRequested: false };
     this.active = active;
     onEvent({
@@ -96,6 +124,7 @@ export class ClaudeRunner {
       const lines = stderrBuffer.split('\n');
       stderrBuffer = lines.pop() || '';
       for (const line of lines.filter(Boolean)) {
+        lastStderrLine = line.trim() || lastStderrLine;
         onStderr(line);
       }
     });
@@ -112,6 +141,7 @@ export class ClaudeRunner {
           this.active = null;
         }
         if (stderrBuffer.trim()) {
+          lastStderrLine = stderrBuffer.trim();
           onStderr(stderrBuffer.trim());
         }
         if (active.cancelRequested) {
@@ -119,8 +149,11 @@ export class ClaudeRunner {
           return;
         }
         if (code !== 0) {
+          const failure = claudeFailureMessage(stdout)
+            || lastStderrLine
+            || `Claude Code stopped${signal ? ` after ${signal}` : ` with code ${code}`}.`;
           reject(new ClaudeRunnerError(
-            `Claude Code stopped${signal ? ` after ${signal}` : ` with code ${code}`}.`,
+            failure,
             { exitCode: code },
           ));
           return;

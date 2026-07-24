@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { isUnknownOptionError } from './claude-binary.mjs';
 
 function execute(command, args) {
   return new Promise((resolve, reject) => {
@@ -21,7 +22,7 @@ export function normalizeClaudeSessions(value) {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value
+  const sessions = value
     .filter((session) => (
       typeof session?.sessionId === 'string'
       && typeof session?.cwd === 'string'
@@ -40,14 +41,25 @@ export function normalizeClaudeSessions(value) {
       pid: session.pid,
       connectedToRelay: true,
       updatedAt: Number(session.startedAt) || null,
-    }))
-    .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
+    }));
+  const unique = new Map();
+  for (const session of sessions) {
+    const existing = unique.get(session.id);
+    const sessionIsInteractive = session.source === 'Claude interactive';
+    const existingIsInteractive = existing?.source === 'Claude interactive';
+    if (!existing || (sessionIsInteractive && !existingIsInteractive)
+      || (sessionIsInteractive === existingIsInteractive && (session.updatedAt || 0) > (existing.updatedAt || 0))) {
+      unique.set(session.id, session);
+    }
+  }
+  return [...unique.values()].sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0));
 }
 
 export class ClaudeSessionRegistry {
-  constructor({ runCommand = execute, cacheMs = 750 } = {}) {
+  constructor({ runCommand = execute, cacheMs = 750, resolveCommand = async () => 'claude' } = {}) {
     this.runCommand = runCommand;
     this.cacheMs = cacheMs;
+    this.resolveCommand = resolveCommand;
     this.cachedAt = 0;
     this.cachedSessions = [];
     this.pending = null;
@@ -61,7 +73,7 @@ export class ClaudeSessionRegistry {
     if (this.pending) {
       return this.pending;
     }
-    this.pending = this.runCommand('claude', ['agents', '--json'])
+    this.pending = this.discover()
       .then((output) => {
         this.cachedSessions = normalizeClaudeSessions(JSON.parse(output));
         this.cachedAt = Date.now();
@@ -78,6 +90,24 @@ export class ClaudeSessionRegistry {
         this.pending = null;
       });
     return this.pending;
+  }
+
+  // Runs `claude agents --json` against the resolved binary. If the invocation
+  // fails with an unknown-option error (an outdated binary that predates the
+  // `--json` flag), re-resolve to a newer binary once and retry.
+  async discover() {
+    const command = await this.resolveCommand();
+    try {
+      return await this.runCommand(command, ['agents', '--json']);
+    } catch (error) {
+      if (isUnknownOptionError(error)) {
+        const refreshed = await this.resolveCommand({ refresh: true });
+        if (refreshed !== command) {
+          return this.runCommand(refreshed, ['agents', '--json']);
+        }
+      }
+      throw error;
+    }
   }
 
   async readConnectedSession(sessionId) {

@@ -1,6 +1,7 @@
 appId: com.relay.queue
 productName: Relay
 asar: true
+generateUpdatesFilesForAllChannels: true
 files:
   - src/**/*
   - public/**/*
@@ -18,3 +19,8 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
 artifactName: Relay-${version}-${os}-${arch}.${ext}
+publish:
+  provider: github
+  owner: patrikkelemen
+  repo: relay
+  releaseType: release

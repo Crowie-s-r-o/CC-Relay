@@ -6,6 +6,9 @@ type: architecture
 
 # Interface Layout
 
+> [!note]
+> The task-scope control uses the same compact bordered button treatment as the adjacent **Queue** and **History** view controls. It defaults to **All Relays** within the selected Launchpad project and offers **This Relay** only as an explicit temporary filter, as documented in [[task-history]].
+
 The Relay UI follows the supplied `Relay.html` reference at its 1680 by 1180 desktop target. The main visual system uses bundled local copies of Instrument Sans, Source Serif 4, and JetBrains Mono, blue interaction states, white rounded panels, and a navy execution console.
 
 The Electron window enforces a 100 percent page zoom and blocks Command or Control zoom shortcuts. The compact reference dimensions assume normal zoom; allowing the window to retain a 200 percent zoom makes project cards and every neighboring control appear twice their intended size.
@@ -28,34 +31,67 @@ Column preferences are stored in `localStorage` under `relay.panelWidths`. The d
 - `public/index.html`
 - `public/app.js`
 
-## Header status contrast
+## Global running-task header
 
-The header status modules use explicit foreground colors because legacy status rules also support the dark visual treatment. On the current white header, labels use muted slate, values use dark navy, and running, paused, and offline states receive blue, amber, and red accents. Keep these overrides scoped beneath `.app-header` and after the legacy rules so a background change cannot leave white status text on a white panel.
+The center of the application header is a global monitoring rail, not a connection, session, queue, or status summary. It contains only tasks whose persisted status is `running`, including simultaneous work from every project. Queue and History remain scoped to the selected Launchpad; this header rail is the intentional cross-project exception.
 
-Each module uses a two-row CSS grid. The label spans both grid columns, while the state dot and value occupy the second row as one centered unit. The dot must remain in normal grid flow rather than being absolutely positioned, otherwise values with different widths appear inconsistently aligned. On wide desktop layouts, the complete status capsule is absolutely centered within `.app-header` so unequal logo and action widths cannot shift it. Responsive layouts retain normal flow.
+Each compact card shows the task number, project, Relay or Claude session, live duration, prompt, and latest recorded agent response. `src/running-task-feed.mjs` selects only Codex `agentMessage` and Claude `claude/message` events, so command output, tool protocol, and hidden reasoning never replace the response preview. A task without an agent message says **Waiting for the first agent response**. Clicking a card selects its pinned project when available, returns to Queue and All Relays, and opens the task's complete Task Activity view.
 
-The desktop capsule uses compact 8px uppercase labels and 11px monospace values. Its fixed 488px four-segment grid gives Sessions extra room for the explicit `Codex n · Claude n` value while keeping Connection, Queue, and Running narrow. This mirrors the preferred compact reference and avoids ambiguous provider glyphs in the status summary.
+The rail scrolls horizontally instead of compressing or dropping running tasks. Its empty state is the single neutral **No tasks running** message. Generic running markers and the card edge remain purple. Codex response ownership is blue, and only Claude response ownership uses the reserved orange. At 1344px and below the rail moves to its own full-width header row; narrow cards remain horizontally scrollable.
 
 ## Execution ledger
 
-The task activity console uses a navy execution-ledger treatment rather than a raw terminal transcript. Its hierarchy is:
+The task activity console renders as a realistic terminal on a near-black Tokyo Night background rather than a card ledger. Its palette is defined through `--term-*` variables scoped to `.events-section`, so the dark surface and syntax colors never leak into the rest of the light app, and semantic failure still reads as red. Its hierarchy is:
 
-1. Session title and live state
-2. Command, file, message, error, and active-work metrics
-3. Filters, signal count, copy, and follow controls
-4. A compact chronological event rail
+1. A slim metrics strip (thinking tokens, commands, file changes, messages, errors, active work)
+2. A filter toolbar (Highlights, Commands, Messages, All) with Copy log
+3. The scrollback: one numbered line per grouped signal
+4. The follow-up input prompt line
+5. A tmux-style status bar of solid colored segments
 
-Event cards use provider-specific accents for Codex, Claude, Plan council, and Relay. Running and error states override the provider accent so urgent state remains scannable. Commands, patches, long messages, and tool payloads keep native disclosure controls and use larger monospace text when expanded.
+Each signal renders in a terminal-idiomatic shape instead of a bordered card. Commands render as a shell prompt line, `~/workspace ❯ <syntax-highlighted command>`, followed by a `✓/✗ exit N · duration · time` meta line and a `▸ N lines` output disclosure with a left-border block. A JavaScript tokenizer (`highlightCommand`) colors the command into program, arguments, flags, numbers, strings, and operators; every token is escaped first. Reasoning renders as `┊ provider reasoned for Xs` when done or `┊ provider thinking▍` with a blinking block cursor while streaming, plus an optional muted italic preview. File changes use `+` create and `~` modify glyphs with the patch behind a disclosure. Final Codex or Claude responses render as a prominent, comfortably sized response block. Commands, file changes, failures, and final messages stay visually loud; queue, protocol, reasoning, and session-lifecycle lines stay dim. Errors and Claude session-busy waiting stay red with output expanded by default. Provider is never the only status cue: kind, glyph, and text differ as well.
 
-The right task inspector is a two-row grid. `.task-detail-scroll` owns the independently scrollable upper half and retains normal content padding. The terminal owns the lower 50 percent, remains pinned in place, spans the full panel width, and manages its own event-list scrolling. On narrow screens, the split changes to 55 percent task content and 45 percent terminal.
+The tmux status bar is built inside `renderEventStream` from real task state: a LIVE segment from the session state (only pulsing while actually running), the Relay identity, provider and model, the visible/total signal count, the follow-live toggle, effort, and the live task duration (kept current every second through `refreshTaskDurations`). Unknown segments hide rather than inventing a value. On widths below 620px the lower-priority Relay, provider, and effort segments hide so the bar never overflows, keeping LIVE, signals, following, and duration. The four filter buttons and Copy log always remain in the toolbar with their ids, `data-event-filter`, and `aria-pressed` behavior intact; follow-live lives in the status bar but toggles the same state and stays keyboard accessible.
 
-The terminal has no title header. Runtime state lives in the compact toolbar, metrics use one horizontal 34px row, and event cards use reduced padding, type sizes, trace widths, and gaps. This is intentionally an information-dense monitoring surface rather than a presentation card.
+The right task inspector is a three-row grid: independently scrollable task content, a horizontal drag separator, and the pinned activity terminal. The terminal defaults to the lower 50 percent, spans the full panel width, and manages its own event-list scrolling. Dragging the separator changes terminal height between safe content minimums, keyboard Up and Down adjust it in 20px steps, and the pixel height persists under `relay.terminalHeight`. On narrow screens, the default split uses 45 percent for the terminal.
 
-Codex agent-message cards also omit their repeated provider, title, state, duration, and timestamp header. Their full message text renders directly at 13px without the long-message disclosure wrapper. Commands, file changes, errors, tools, and non-Codex providers retain compact headers because their execution metadata remains useful.
+The task header is intentionally dense: reduced inspector padding, a 20px task title, inline compact metadata, a smaller action button, and tighter Prompt and Result sections. The execution terminal should receive as much vertical room as possible without hiding task context.
+
+The terminal has no title header. Runtime state lives in the slim metrics strip, the compact filter toolbar, and the tmux status bar. Scrollback lines use a small left gutter line number and dense monospace type. This is intentionally an information-dense monitoring surface rather than a presentation card.
+
+Direct tasks place a compact **Continue session** command dock below the event scrollback, styled as the shell input prompt line with a green `❯` caret and the near-black terminal surface. Its context line names the original Relay, provider, model, and effort; its state pill distinguishes sends now, updates current, sending now, terminal busy, restart required, live update unavailable, and session offline. There is no queued state. The multiline `textarea` expands only to 92px, Enter sends, and Shift+Enter adds a line. It remains editable while submission is unavailable and is disabled only during an active request. Codex uses blue and Claude uses its reserved orange identity accent. The dock is hidden for Plan council and Turbo.
+
+Finished-task submission requires `capabilities.taskDirectFollowUp` and calls the dedicated `/api/tasks/:id/follow-up` route. When current UI assets run against an older backend, the dock shows **Restart required** and disables Send instead of calling the ordinary Execute endpoint. Running Codex steering is separately gated by `capabilities.taskSteering`. These independent gates let a hot-loaded renderer preserve safe active-turn steering without exposing the older finished-task queue behavior.
+
+Task-detail requests use `taskLoadSequence`. A newer card selection invalidates every older in-flight detail response, and the continuation dock hides while selection changes. Without this guard, polling and a fast user selection can resolve out of order and expose a follow-up input bound to a different task than the selected card.
+
+Prompt and Result use compact evidence disclosures in the upper task pane. Their summaries retain a truncated preview so the important context remains visible when collapsed. A newly selected task collapses Prompt and opens Result only when an outcome exists, leaving more room for live execution and continuation without discarding the complete stored text.
+
+Codex agent-message lines also omit their repeated provider, title, state, and timestamp header. Their full response text renders directly in the prominent response block without the long-message disclosure wrapper. Commands, file changes, errors, tools, and non-Codex providers retain their signal-line header because their execution metadata remains useful.
+
+Direct Codex and Claude response bodies use `font-weight: 650` through `.detail-panel .event-list .term-response-body`. This stronger weight is reserved for text written directly by the AI. Commands, reasoning, queue protocol, and generic event messages remain regular weight so the response stays visually distinct from its execution trace.
+
+The **Continue session** dock includes one low-contrast, icon-only image action between its textarea and Send button. Follow-up images may also be pasted. The four visual grid items are the generated terminal caret, flexible textarea, image action, and Send button, so the final override must use `auto minmax(0, 1fr) auto auto`. The dock deliberately avoids thumbnails and hides image metadata until an image is attached; it then shows a plain image count and **Clear images**, while the submitted task detail remains the durable visual list. Image drafts follow the selected task just like text drafts.
+
+> [!important]
+> Do not define only three columns for the continuation prompt row. Its generated `::before` caret participates in grid layout and otherwise pushes Send onto a second row while shrinking the textarea.
 
 Expanded terminal disclosures persist across live polling and filter rerenders. Each event article exposes its stable grouped-entry ID, while each nested `details` element is keyed by its index inside that event. A capture-phase `toggle` listener updates `state.expandedEventDetails`; render snapshots current DOM state before replacement and restores matching disclosures afterward. The set is cleared only when selecting a different task.
 
-The All filter includes Codex reasoning summaries while they stream. Relay consumes `item/reasoning/summaryTextDelta`, accumulates each summary part by item ID, and publishes `item/updated` snapshots that the browser folds into one live reasoning entry. Reasoning remains excluded from Highlights to keep that view compact. Relay intentionally displays only the model-provided summary stream, not private hidden chain-of-thought.
+Expanded command output has its own nested scroll container. Before live polling replaces event markup, Relay records each output's vertical offset and whether it was already near the bottom, keyed by the same stable event and disclosure identity. After rendering, it restores the exact offset for inspected output or follows the new bottom only when that individual output was already at the bottom. Selecting another task clears these positions.
+
+Expanded command output must use the opaque `#0c0e17` terminal surface. The app-wide `pre` rule is intentionally light for task evidence, so the terminal override uses `.detail-panel .events-section .event-output > pre.event-output-content` and an explicit opaque background color. Keep the subtle blue-gray inset edge, but do not turn command output into a white or translucent light card.
+
+## Task artifact copy actions
+
+Prompt, Result, Claude draft, Codex review, and Final revised plan each expose a compact **Copy** action in Task Activity. Copy uses the stored source text, so Plan council Markdown remains intact instead of being flattened from the rendered document. Result copies the task error when an error is the visible outcome. Pending or absent content disables its action, and selecting another task clears the prior copy payload before the detail request resolves.
+
+> [!important]
+> Keep copy payloads separate from rendered `innerHTML`. Plan draft, review, and final plan must copy `plan.draft`, `plan.review`, and `plan.finalPlan` directly.
+
+The terminal defaults to the **All** filter so the complete task activity is visible when a task opens. All includes Codex reasoning summaries while they stream. Relay consumes `item/reasoning/summaryTextDelta`, accumulates each summary part by item ID, and publishes `item/updated` snapshots that the browser folds into one live reasoning entry. Reasoning remains excluded from Highlights to keep that optional view compact. Relay intentionally displays only the model-provided summary stream, not private hidden chain-of-thought.
+
+Codex `thread/tokenUsage/updated` notifications are retained in the eventual `turn/completed` task event. The console metrics show the task's summed `reasoningOutputTokens` as **thinking tokens**. This is usage telemetry only and does not expose private hidden chain-of-thought. Older completed tasks recorded before this support show zero because their persisted events contain no token snapshot.
 
 Task reference images render as compact 64px square thumbnails, falling to 56px on narrow screens. Filenames and file sizes remain available through the image link and accessible image alternative, while only the sequence number overlays the thumbnail.
 
@@ -64,56 +100,162 @@ The composer accepts up to 99 reference images per task. The independent safety 
 > [!important]
 > Keep scrolling separated between `.task-detail-scroll` and `.event-list`. Restoring scrolling on `.detail-panel` makes the terminal move away from the bottom and breaks the monitoring layout.
 
+> [!important]
+> Preserving only `.event-list.scrollTop` is insufficient. Command output scrolls inside `pre.event-output-content`, and replacing that node during polling resets it unless its position is captured before `innerHTML` replacement and restored afterward.
+
 > [!note]
-> Motion is limited to the existing pulse for actively running events and remains disabled under reduced-motion preferences.
+> Motion is limited to the running-event LIVE pulse and the blinking reasoning and input cursors. All of it is disabled under `prefers-reduced-motion: reduce`. The continuously updating event list carries no decorative animation.
+
+> [!important]
+> The terminal must give each sub-surface (`.events-section`, `.event-metrics`, `.event-toolbar`, `.event-list`, and `pre.event-output-content`) its OWN opaque dark background, not rely on one container background showing through. A dark dock and status bar sitting over a white metrics row, toolbar, event list, or command output is the signature of a missing terminal override or partially cached `style.css`. Opaque per-surface backgrounds keep the terminal dark even under a partial cache. When the terminal looks white, hard-refresh (Cmd+Shift+R) or restart Electron before assuming a CSS regression.
+
+> [!important]
+> A running Codex task uses the structured app-server `turn/steer` protocol against its exact active turn. A non-running direct task starts the next provider turn against the exact session immediately. Neither path sends raw keystrokes into Terminal.app or creates queue work.
 
 ## Execution settings
 
-The model control remains a native select for reliable keyboard and platform behavior, wrapped in a styled shell that supplies the visual surface, focus ring, and chevron. Reasoning effort is a native range input mapped directly to the selected model's ordered `supportedReasoningEfforts`. There is no synthetic **Model default** stop. A newly selected model starts on its declared default effort, or its first supported effort when no declared default is available, and Relay stores that explicit effort string.
+The Model control remains a native select for reliable keyboard and platform behavior, wrapped in a styled shell that supplies the visual surface, focus ring, and chevron. Reasoning effort remains the compact slider mapped directly to the selected model's ordered `supportedReasoningEfforts`. There is no synthetic **Model default** stop. A newly selected model starts on its declared default effort, or its first supported effort when no declared default is available, and Relay stores that explicit effort string.
 
 All model selectors listen to `input`, not `change`. Direct execution, Plan council, and both Turbo model roles therefore update their state, supported effort options, defaults, validation, and submit readiness as soon as the highlighted model changes. Do not move model handling back to `change`, which can wait until a native picker closes or loses focus.
 
-The effort thumb, filled track, active step marker, and value label update during the `input` event so dragging feels immediate. Motion is disabled when reduced motion is requested.
+The composer has two workflow tabs: **Execute** and **Forward-planning Turbo**. Plan council is not a standalone tab. Execute contains an unchecked **Use Plan council for this prompt** option that reveals its Claude author, Codex reviewer, Claude revision route and readiness row. The copy states that this creates a reviewed read-only plan instead of direct execution. Enabling it selects Codex for the required review Relay, hides direct model and effort controls, and changes the primary action to **Build reviewed plan**. Provider tabs remain interactive. Choosing Claude turns Execute Plan council off and continues as direct Claude execution. Leaving Execute or successfully submitting also resets the option to off.
 
-Direct execution presents Model and Effort as compact horizontal controls. Each control keeps its short identifier and hint on the left while the interactive surface occupies the remaining width. The model select is 28px tall, and the effort slider retains its value and step markers without adding a second full-width row.
+Direct Model and Effort state belongs to the selected Relay terminal, not merely to its provider. `threadExecutionSettings` retains the exact pair independently for each Codex or Claude session. Switching terminals commits the new terminal ID before rendering controls, so returning to a terminal restores its own slider position. An explicit change also updates the provider fallback used when Relay discovers a new terminal.
+
+The Effort slider updates terminal state during the `input` event. At direct submission, Relay maps the rendered slider index through its `data-values` array and copies the resulting effort string back to terminal state before building the request. The server then validates that exact model and effort pair against the corresponding provider catalog.
+
+Submission snapshots the visible Model and Effort before awaiting idle-Relay discovery. When idle routing chooses a different terminal, Relay writes that same snapshot to the destination terminal. After enqueue succeeds, the task response is authoritative: its accepted `thread_id`, model, and effort are remembered again before the post-submit refresh. This prevents an `xhigh` task card from being followed by a `low` composer slider on the Relay that received it.
+
+Terminal execution settings carry a provenance of `default`, `task`, or `user`. Initial rendering may create a `default` entry before task history finishes loading. `hydrateThreadExecutionSettings()` must replace that provisional value with the newest persisted Execute task for the terminal. A `user` entry represents a new unsent choice and must never be overwritten by history polling. A successful submission changes it to the server-confirmed `task` value and records the task ID for monotonic hydration.
+
+Direct execution presents Model and Effort as compact horizontal controls directly below the Relay picker. This ordering makes the selected Relay the context for the settings that follow. Each control keeps its short identifier and hint on the left while the interactive surface occupies the remaining width. The model select is 28px tall, while the slider retains its value and step markers.
+
+The slider footer shows only the current effort name on the left and one compact dot per supported effort on the right. Do not render every effort name across the footer because six-value model catalogs overflow the compact card. Each dot may expose its name as a title, while the range input reports the selected name through `aria-valuetext`.
 
 > [!important]
-> Never infer a fixed effort scale in CSS or markup. Models expose different effort lists, so `renderExecutionControls()` must rebuild the range maximum and its index-to-value mapping whenever the provider or model changes.
+> Never infer a fixed effort scale in CSS or markup. Models expose different effort lists, so `renderExecutionControls()` must rebuild the slider maximum and its index-to-value mapping whenever the provider, terminal, or model changes. Never submit the numeric range value as effort.
+
+> [!important]
+> Idle routing separates the terminal selected when the user presses submit from the terminal that receives the task. Execution state must be applied to both the selected terminal and the accepted destination terminal. Do not wait until after asynchronous routing to read the slider.
+
+> [!note]
+> Live verification against the Relay server selected the `vector-algo` project and Relay thread `019f802a-69da-7930-8b33-cba43dee1f0b`. The slider restored `xhigh` from task 171. Changing it locally to `ultra` remained `ultra` after the four-second thread poll, proving task hydration does not overwrite unsent user state.
 
 ## Terminal launch layout controls
 
-The terminal window grid controls inside connection help use a two-level layout. A full-width heading row contains the grid enable switch, followed by compact column and row inputs and a flexible monitor selector. This keeps the switch label readable and gives the monitor name the remaining width without allowing it to crowd the other controls. Below 760px, the monitor selector moves to its own row.
+The composer exposes compact **Launch Codex** and **Launch Claude** actions beside **Settings**. The old provider switcher is not visible. In direct Execute mode, Codex and Claude sessions share one Relay picker; selecting a session makes its provider authoritative and immediately swaps the Model and Effort controls to that provider. Turbo shows only eligible Codex Relays. Execute Plan council also shows interactive Claude sessions for launch feedback, but only its Codex review Relays are selectable. Settings opens a native dialog containing the selected provider's launch command, copy and diagnostic actions, and window-layout controls.
+
+A dedicated **Close selected terminal** row sits directly beneath the Relay cards and is never hidden. It names the selected session and shows the complete availability reason inline. An older running backend labels the disabled action **Restart required** and explains that macOS can inspect existing one-tab Terminal sessions after restart. A current but unverifiable, ambiguous, or multi-tab session explains that native identity is unavailable. Task-protected sessions show the blocking task reason. Only an idle session with an exact native handle enables the red-outline action. During the request it reads **Closing** and cannot be submitted twice. The button, label, and reason are derived by `public/terminal-close-state.js`, whose pure-state tests protect all visible states.
+
+Plan council invokes Claude author and revision stages through the signed-in non-interactive Claude CLI. It does not route those stages through an interactive Claude session. Its terminal picker keeps Codex Relays as the only selectable review targets, while connected interactive Claude sessions remain visible as disabled **Execute only** entries. Launching or discovering an interactive Claude session while Plan council is enabled must not replace the selected Codex provider or Relay or turn the council off. Picker copy states that the signed-in Claude CLI authors and revises automatically.
+
+Task Activity presents the saved draft, independent review, and final revision as separate readable sections, but only the final revision becomes the canonical Markdown artifact. The final section always shows its exact `plan.md` path. A current backend adds **Open plan.md**; an older backend keeps the row visible as **Restart to open**. Immediately below it, an **Execute reviewed plan** panel lists every opened same-workspace Codex and Claude Relay in a native select and names the provider and Relay on its button. Failed tasks retain the capability-gated **Resume on Relay n** action. Selector options, button copy, and disabled reasons update when terminal discovery or authentication changes.
+
+> [!important]
+> Do not hide interactive Claude sessions when Execute Plan council is enabled. Hiding them made a successful launch look like failed discovery, and switching to Turbo appeared to repair it only because that workflow disabled the Execute council. Keep the session visible but non-selectable so the routing contract stays truthful.
+
+The two launch actions live in the terminal section heading row, aligned opposite **Run in terminal**. They must not render as a separate footer below the Relay cards, because that reserves unnecessary vertical space in the composer.
+
+The terminal window grid controls in the settings dialog use a two-level layout. A full-width heading row contains the grid enable switch, followed by compact column and row inputs and a flexible monitor selector. This keeps the switch label readable and gives the monitor name the remaining width without allowing it to crowd the other controls. Below 760px, the monitor selector moves to its own row.
+
+The persisted **Launch behind other windows** checkbox applies to every native launch path, including project cards. Relay omits Terminal activation and minimizes the captured new Terminal.app window on macOS. It starts `cmd.exe` with PowerShell's minimized window style on Windows. The option shares `relay.terminalLayout` storage with the grid settings and travels in the existing launch request object.
 
 On macOS, each grid launch inspects the bounds of currently open Terminal.app windows and places the new window in the first unoccupied cell. Closing a terminal therefore frees that exact cell for the next launch. The launcher's in-memory rotating slot remains a fallback when Terminal window inspection is unavailable or every cell is occupied.
 
 Codex and Claude share the same grid and slot sequence. Provider selection changes only the launched command. Terminal.app receives the selected bounds immediately, then Relay reapplies them to the captured new window after a short startup delay because full-screen terminal clients such as Claude can resize their window during initialization.
 
-Native terminal launches are serialized inside `ProjectLauncher`. This is required even when browser requests arrive concurrently: slot inspection, window creation, and slot reservation must complete as one launch operation, otherwise several requests can observe the same empty cell and overlap. On macOS, the AppleScript captures the new front window's numeric ID immediately after `do script` and uses that stable ID for both bounds assignments. A delayed bounds assignment must never target the dynamically changing front window.
+Native terminal launches are serialized inside `ProjectLauncher`. This is required even when browser requests arrive concurrently: slot inspection, window creation, and slot reservation must complete as one launch operation, otherwise several requests can observe the same empty cell and overlap. On macOS, `do script` returns the newly created tab. The AppleScript resolves the owning window by matching that exact selected tab, captures its numeric ID, and uses the stable ID for both bounds assignments. Terminal focus is not reliable enough to identify a newly launched window, so a delayed bounds assignment must never target the dynamically changing front window.
 
 > [!important]
 > Do not use only a monotonically advancing slot counter for Terminal.app. It cannot observe closed windows and eventually creates gaps or overlaps after normal close-and-reopen use.
 
 > [!important]
-> Do not remove the per-launch queue or replace the captured Terminal window ID with `front window`. Both changes reintroduce overlap when multiple launches are requested together.
+> Do not remove the per-launch queue or identify the launched Terminal window through `front window`. Both changes reintroduce overlap when multiple launches are requested together. Retain the `launchedTab` ownership lookup and captured numeric window ID.
 
 > [!note]
 > Keep the column and row controls at stable compact widths on desktop. The monitor selector is the only field that should grow because display names and resolutions vary.
+
+> [!important]
+> Background launch must target only the newly created window. Hiding Terminal.app itself would also hide unrelated interactive terminals.
 
 ## Connected terminal cards
 
 Connected terminal cards use two information rows. The workspace name and status form the primary row; the task preview and terminal metadata share the secondary row. Icons and selection marks stay compact so a connected session does not dominate the composer vertically.
 
-Codex terminal cards are labeled **Relay 1**, **Relay 2**, and so on within the current project scope. They are also drop targets for queued task cards. The terminal section uses one compact heading row for its title and refresh action, followed by the status text and idle-routing checkbox without the previous oversized fieldset spacing.
+On desktop, the terminal list uses a fixed three-column grid so three Relay workers sit in one row. Each card stacks its task preview and terminal metadata beneath the primary name and status row, with long values truncated inside the tile. Below 760px, the list returns to one column for readable touch targets.
+
+The disconnected terminal empty state spans the complete terminal grid. It must not inherit the width of one worker column, because its explanatory copy becomes unreadably narrow when the desktop list has three columns.
+
+Codex terminal cards render the persisted `relayName` and `relayNumber` fields, normally **Relay 1**, **Relay 2**, and so on. The labels are global to the Codex thread, not the current project or discovery array, so inserting or reordering terminals cannot change a name or number. They are also drop targets for queued task cards. The terminal section uses one compact heading row for its title, followed by the status text and task-routing options without the previous oversized fieldset spacing.
+
+> [!note]
+> Queue state and terminal discovery update automatically. Do not expose manual Refresh controls or instruct users to refresh. Server-sent events update queue changes immediately, visible-page polling repairs missed events, and terminal discovery runs silently in the background.
 
 Relay cards derive their visible activity from task ownership rather than relying only on the provider thread title. A running direct task shows its task number and prompt, Turbo participants identify planner or worker role, an idle terminal with assigned work shows its waiting count and next task, and a free terminal says it is ready. The state badge follows this derived running, queued, or idle state.
 
+Turbo queue cards retain the canonical `queued` or `running` status badge and add a compact secondary forward-plan stage badge. **Forward plan** means a queued Turbo parent has no reusable graph yet, **Planning ahead** means its queued graph is currently being prepared, **Plan ready** means a validated graph will bypass the planner at execution time, and **Workers running** means the parent is executing its graph. Complete and failed variants are terminal signals only. The stage badge is width-constrained so it cannot expand the task card.
+
+Planner terminal activity follows the persisted lifecycle: a planner preparing a queued parent reads **Planning ahead · Task #n**, current worker terminals read **Turbo worker · Task #n**, and the original planner reads **Idle · Ready for work** after the parent graph reaches `executing`. If that same thread is preparing another queued parent, the look-ahead label takes precedence.
+
+Connected Codex Relays use a repeating six-color identity palette based on their persisted Relay number. The readable `Relay n` name and task-card footer ownership label use the full accent. Unselected Relay selector cards use the matching soft background. Hover strengthens the tint slightly, while selection uses the Relay accent for the border, radio control, and a stronger tinted background. The palette deliberately contains no orange slot: Relay 4 uses sky blue, and orange remains reserved for Claude identity. The old heavy colored left stripe remains removed, and task cards remain neutral apart from their Relay ownership text. Status colors remain semantic and do not inherit the identity accent. Relay selector titles contain only the readable `Relay n` name; workspace and session metadata live in the bottom text row. The running, queued, or idle badge sits beneath the provider icon at the lower left, outside the text column, so status does not add a fourth text row or increase card height.
+
+Relay selector titles use the Instrument Sans body face at a firm interface weight. They intentionally do not inherit Source Serif 4 from the display token, because worker names are operational controls rather than editorial headings.
+
+> [!note]
+> Connected task owners reuse the persisted Relay name color in their footer label. Historical owners without a connected Relay use neutral text because no live color can be applied safely. Relay colors come from the thread's immutable `relayNumber` through the six-color palette; they never depend on the current connected-terminal ordering. See [[task-history]].
+
+> [!important]
+> Do not assign colors or labels from the visible terminal index. Use the thread's persisted `relayNumber` for `relay-color-1` through `relay-color-6`, and use `relayName` as the display text. A disconnected or historical thread without a live identity stays neutral rather than receiving a guessed Relay number.
+
 > [!note]
 > Keep preview and metadata independently truncated. Long prompts, paths, and session identifiers must not widen the card or force an extra line.
+
+## Turbo fleet and dispatch graph
+
+Turbo task cards keep their canonical task status and forward-plan marker, then add one compact fleet manifest. The manifest reads **Planner** followed by one planner identity, an arrow, **Executes on**, and the ordered worker identities. A connected Codex thread is identified as **Relay n** and receives its existing `relay-color-n` class. A disconnected or historical thread uses its persisted title in a neutral chip. The renderer must not invent a Relay number from a worker slot or an old title. The manifest wraps within the task card and stays secondary to task status.
+
+The detail graph is an operational dispatch ledger rather than a dashboard. A thin progress bar exposes an accessible `progressbar` label and complete-package count over the total. Each package is a compact dispatch ticket with a uniform outline, a state port, monospace package ID, title and dependency status, and a right ownership stamp. State is communicated by the outline, surface tint, and state port, never by a colored left border. The state port shows a check for `complete`, an accessible spinner for `running`, an error mark and message for `failed`, and a neutral ready or blocked state for `pending` packages. Ownership stamps use live Relay identity colors only when the matching connected thread is present; historical titles remain neutral.
+
+> [!important]
+> Dispatch tickets are owned by the final `.turbo-graph-*` rules. Do not reintroduce broad legacy selectors such as `.turbo-task-graph article` or `.turbo-task-graph article > span`: their higher specificity collapses the narrow layout, makes both state and ownership elements span rows, and truncates the package copy. The current ticket uses a compact state, copy, and ownership grid, with ownership moving below the copy only at the narrow breakpoint.
+
+While an active Turbo plan has no graph packages, the progress header says **Planning dependency graph** instead of presenting the meaningless `0 / 0 complete`. It uses an indeterminate progress sweep, and three restrained skeleton tickets communicate that work is still arriving. The progressbar omits `aria-valuenow` while indeterminate and announces that planning is in progress. A running parent with no persisted graph is also treated as planning because workers cannot start without a validated graph.
+
+Running tickets use one small comet-ring spinner and no additional pulse or dashboard animation. Live polling replaces graph markup, so the renderer seeds its negative animation delay from `performance.now()` to preserve the spinner phase across replacements and prevent an apparent frozen loader. The planning indicator, running spinner, and skeleton sweep stop under `prefers-reduced-motion: reduce`. At the narrow breakpoint, the ownership stamp moves below the ticket content, and all graph text remains `min-width: 0` with ellipsis so the graph cannot widen or overflow the detail panel.
+
+## Turbo council route
+
+The Turbo composer keeps the optional Plan council as one compact route. Its unchecked **Use Plan council for this prompt** option sits beside a keyboard-accessible question-mark button. The disclosure explains that the selected first provider creates the JSON graph, the second checks and corrects it, workers wait, the pass adds time, and Claude CLI sign-in is required.
+
+> [!note]
+> Execute and Forward-planning Turbo wrap their optional Plan council controls in the same compact neutral review surface. The shared surface uses a 12px radius, quiet gray-blue border, white toggle row, the **Optional review / Plan council** heading, and a pill-shaped **2 providers** badge. Checked state uses one soft blue focus treatment instead of nested blue outlines. Keep provider identity colors inside the expanded route only.
+
+> [!important]
+> Both workflows use the same `.plan-council-option` and `.plan-council-toggle` component structure, the same primary label, and the same checked and focus states. Turbo may add only its help disclosure and workflow-specific supporting sentence. `test/composer-workflows.test.mjs` protects this shared contract.
+
+When enabled, both workflows use the same rounded provider nodes, 3px provider accent rails, numbered **Author** and **Reviewer** roles, agent icons, rounded model and effort controls, and central review handoff. The handoff is a thin line with one circular arrow marker, which is the route's signature visual and makes the execution sequence readable without extra decoration. Execute adds its compact Claude revision strip and readiness pills. Turbo adds only its **Codex first / Claude first** segmented control and swaps node order and role copy. Codex keeps its selected planner model and effort; Claude uses its catalog-backed model and normalized effort. Worker settings remain separate. Disabled routes are hidden in both workflows, and the expanded route collapses to one column on narrow screens.
+
+The switch is unchecked by default, so disabled Turbo keeps its existing planner-to-worker behavior and does not require Claude availability. Enabling it adds one quality pass and latency before workers start. Reviewer readiness uses the selected Claude catalog and signed-in CLI state. Execute and Turbo keep independent per-prompt council switches.
+
+Turbo task metadata states the selected provider order before workers. During `planning` and `reviewing`, copy identifies the provider that owns the current stage. A Codex Relay appears busy only while Codex owns that stage; it remains visually idle during a Claude stage. Queue and detail labels keep **Council review** alongside the canonical task badge.
 
 ## Task card footers
 
 Task cards use one compact footer row below a single divider. The left side combines model, explicit effort or `default`, optional image count, and workspace. The right side combines the status dot, live or final duration, and a `DD Mon HH:mm` timestamp. Completed durations omit a redundant `Took` prefix. Do not restore separate execution and workspace rows.
 
-Task states use one final semantic palette at the end of the stylesheet cascade: running is amber, queued is slate-blue, complete is green, failed and interrupted are red, and cancelled is neutral gray. Both the badge and footer dot follow the same state. Keep this correction after legacy task-card rules so Running and Queued cannot collapse into the same color again.
+Queue containment is explicit at the panel, list, and card levels with `min-width: 0`; the list and cards also remain constrained to their available width. Prompt text keeps its three-line clamp and uses `overflow-wrap: anywhere` so long prose or uninterrupted tokens cannot widen the middle workspace column or render beneath the task activity panel.
+
+Task states use one final semantic palette at the end of the stylesheet cascade: running is purple, queued is slate-blue, complete is green, failed and interrupted are red, and cancelled is neutral gray. Both the badge and footer dot follow the same state. Queued uses a blue badge and blue outlined waiting dot, while cancelled uses a gray badge and solid gray terminal dot, so the two states remain distinct without relying on text alone. The shared `--running` and `--running-soft` tokens also drive project activity, Relay status badges, header activity, planning stages, and terminal events. Orange is reserved for selectors explicitly owned by Claude. Keep this correction after legacy task-card rules so Running, Queued, and Cancelled cannot collapse into similar colors again.
+
+## Interaction polish
+
+The 2026 visual system moved the primary accent from the earlier signal green to blue, but several hover, selected-tint, and empty-state values were left in the old desaturated-green family, so interactive surfaces read slightly off against the cool neutral lines and mist background. A refinement pass finished that migration without touching the layout or the execution ledger.
+
+Residual green interaction states are neutralized to the cool blue and neutral system: the generic `.button` hover, the `.text-button` hover, the `.mode-tab` hover, the base `.terminal-option` hover, the attachment dropzone and queue-reorder hover backgrounds, the empty task-activity glyph, and the disconnected-terminal empty state. The `--blue` and `--muted` token gaps are closed by aliasing them to `--signal` and `--slate`, which restores the parallel batch bar accent stripe, the parallel and idle-route checkbox accent colors, and the muted terminal-settings labels and close glyph.
+
+App-chrome controls share one quiet 140ms color and shadow transition so hover, focus, and selection settle instead of snapping. Destructive `.button.danger` actions gain a red-tinted hover so Cancel, Delete, and Close read as consequential, the persistent header action lifts within its own navy family, and the primary action carries a single soft same-hue shadow lift with the disabled state kept flat. The dark Tokyo Night terminal, its follow-up dock, and every `.events-section` descendant are intentionally excluded.
+
+> [!important]
+> Residual green hover rules must be edited in place, never appended at end of file. `.mode-tab:hover` and `.mode-tab.selected` share specificity, as do `.terminal-option:hover` and its `relay-color` and `.selected` overrides. Because the green hover sits before the later blue selected rule, source order keeps the blue selected border while hovering a selected tab or terminal. An appended equal-specificity `:hover` would come after the selected rule and silently drop that accent on hover. Genuinely new rules (the `--blue` and `--muted` aliases, the danger and header hovers, the primary shadow, and the shared transition) are appended because no competing declaration exists.
 
 #relay #ui #layout #resizing #design
