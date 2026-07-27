@@ -28,6 +28,9 @@ The payloads were already large during the diagnosis: `/api/tasks` returned abou
 
 `GET /api/status` calls `ClaudeRuntimeStatus.current()`. On each five-second cache expiry, `readClaudeRuntimeStatus()` uses `execFileSync` for `claude --version` and `claude auth status --json`. A measured cache-expiry request took about 448 ms while normal status requests took about 5 to 11 ms. This blocks the Relay Node event loop and delays requests and SSE delivery, but it does not directly cause Chrome's main-thread click violation.
 
+> [!done]
+> **Fixed.** `ClaudeRuntimeStatus.current()` is now a pure cache read that never spawns a process, refreshed by a background interval using bounded asynchronous probes. The probes previously had no timeout at all, so a stalled `claude auth status --json` could hang the server rather than merely slow it. The Codex probe received the same treatment and is no longer captured once at module load. No request handler spawns a provider CLI any more, which also removes this delay from `POST /api/tasks`. See [[task-add-reliability]].
+
 ## Required repair order
 
 1. Make the task-list API lightweight and paginate or window terminal task history. Do not return full results and other detail-only data for every card.
@@ -35,7 +38,7 @@ The payloads were already large during the diagnosis: `/api/tasks` returned abou
 3. Patch only changed task cards and append or patch new task events. Do not replace the full event stream when its revision has not changed.
 4. Coalesce SSE updates by revision and use a slow safety poll instead of running the same full refresh from both SSE and a two-second interval.
 5. Preserve disclosure and nested scroll state without walking and measuring the complete event DOM on every update.
-6. Refresh Claude runtime status asynchronously so CLI checks never block the server request loop.
+6. ~~Refresh Claude runtime status asynchronously so CLI checks never block the server request loop.~~ **Done.** Both provider probes are asynchronous, bounded, and background-refreshed; request handlers only read cached values. See [[task-add-reliability]].
 
 > [!warning]
 > A CSS-only adjustment, a longer debounce, or disabling the extension alone is insufficient. The renderer must bound payload size, DOM size, and work per update.

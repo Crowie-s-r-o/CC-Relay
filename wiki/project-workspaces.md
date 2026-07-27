@@ -8,36 +8,42 @@ type: architecture
 
 Pinned projects in `public/app.js` are selectable workspace cards. The active path is persisted in `localStorage` under `relay.activeProjectPath`.
 
-One Launchpad project is always selected whenever pinned projects exist. Clicking or keyboard-activating the selected project keeps it selected. Startup and stale saved-selection recovery choose the selected terminal's project, another connected workspace, or the first pinned project.
+Project identity color starts from a deterministic hash of the normalized project path in `public/project-colors.js`. The visible project list then resolves collisions against the remaining slots in the six-color palette, so up to six pinned projects never share a color. The project name, initial tile, selected outline, and matching global running-task card reuse the resolved identity.
+
+Execute Plan council uses the task's persisted project path as artifact authority. Its final Markdown is written to `<project-root>/.data/tasks/<task-id>/plan.md`, while the draft, review, and recovery checkpoints remain in Relay's central data directory. A completed legacy council is migrated to the project path when read. Relay never changes the target repository's `.gitignore`.
+
+> [!note]
+> The colors should feel varied, but they are intentionally deterministic rather than generated with `Math.random()`. Reloading Relay or rendering the same pinned project in the header must not change its identity. Adding or reordering projects may change a collision-resolved assignment because uniqueness within the visible set takes priority.
+
+One Launchpad project is always selected whenever pinned projects exist. Clicking or keyboard-activating the selected project keeps it selected. Startup and stale saved-selection recovery choose the saved project, a connected legacy workspace, or the first pinned project.
 
 > [!important]
 > There is no unscoped or **All Projects** Queue or History state. A missing project path yields no task cards, never tasks from every project. Removing the active project immediately selects another pinned project, and Relay prevents removal of the final pinned project. The header running-task rail is deliberately global so concurrent work across projects remains visible without changing the selected workspace.
 
-Project launch buttons follow the compact reference: 30px high, regular-weight monospace labels, thin 6px-radius borders, and neutral white surfaces for both providers. On the selected card, only the Claude icon and label use the orange provider accent, `#C96A1F`. The selected project uses a single-pixel blue outline with no elevated shadow. Keep these rules in the late cascade correction section of `public/style.css`, where they can override the older generic project-button surfaces.
-
-> [!note]
-> The Claude launch button uses a deterministic inline SVG burst beside its label. Its orange foreground is owned by `.project-launch-claude`, while `.project-launch-icon` draws with `currentColor`. Keep the button as an inline flex row so the 12px mark remains visible and aligned with the orange label. A font glyph was avoided because fallback fonts rendered the burst smaller and with inconsistent spoke shapes.
-
-Unselected project cards intentionally reduce visual weight. Their initial tile becomes cool gray, project and path text become muted, activity accents lose saturation, and both provider launch buttons use the same neutral gray treatment. Hover may increase contrast slightly but must not restore blue or orange provider colors until the card is selected.
+Project cards are status and selection surfaces, not terminal launch surfaces. They do not contain Codex or Claude buttons. Terminal creation remains available through the Launchpad heading actions and the composer connection controls. The selected project uses its project identity color as a single-pixel outline with no elevated shadow.
 
 > [!important]
-> Keep the unselected rules after the generic provider and hover rules in the final cascade. Earlier placement lets the orange Claude hover treatment leak back into inactive cards.
+> On desktop, the entire Launchpad is 104px high and the workspace height calculation subtracts the matching 188px combined header and Launchpad height.
 
 > [!important]
-> Do not enlarge these controls to match the primary action buttons. They are secondary inline launch shortcuts inside a compact project card.
+> Desktop project cards are one 42px row. The name and path group sits beside activity, and the project list scrolls horizontally when necessary. Do not place activity beneath the project name inside the fixed desktop dock. A two-row 70px card inside the former 124px dock was visibly clipped because the heading, margins, padding, and scrollbar consumed the remaining height.
 
-Each project card includes a live activity line derived from persisted tasks in that exact workspace. Status priority is running, queued, latest failure or interruption, then idle. Running summaries include the active task number and compact prompt plus any waiting count; idle summaries retain the last completed task number. Queue and task events already trigger the normal client refresh, so this line requires no separate polling channel.
+> [!important]
+> The unpin control owns the final `close` grid area of `.project-chip`. It must be a direct card child after the activity group, never a child of `.project-chip-head`. Nesting it in the name sub-grid places the close button in the middle of the card.
+
+Each project card includes a prominent live activity line derived from persisted tasks in that exact workspace. Its state label is **Running**, **Waiting**, **Restart needed**, **Attention**, or **Idle**, followed by a truncated task-specific detail. Status priority is running, queued, latest failure or interruption, then idle. Running summaries include the active task and any waiting count; idle summaries retain the last completed task number. Queue and task events already trigger the normal client refresh, so this line requires no separate polling channel.
 
 The visible project path shows only its final two directory names separated by ` / `. For example, `/Users/patrikkelemen/WebstormProjects/relay` renders as `WebstormProjects / relay`. The complete path remains in the card title and continues to drive all workspace matching.
 
 The active project scopes:
 
-- Connected Codex and Claude sessions
 - Task cards and project-level status counts
-- Parallel Claude session choices
-- The explicit **Launch Codex** and **Launch Claude** actions
+- Codex and Claude provider, model, and effort choices
+- Per-provider automatic instance limits and active usage
+- Every disposable terminal launch and its working directory
+- Legacy connected-session controls when an older backend is active
 
-In direct Execute mode, the session picker combines live Codex and Claude sessions for the active project. The selected session determines the execution provider, so its provider catalog drives the adjacent Model and Effort controls. Provider filtering remains in place for Codex-only workflows such as Plan council review and Turbo planning.
+In current direct Execute mode, provider tabs choose Codex or Claude and the selected project's automatic pool supplies the terminal later. No live session is selected when a fresh task is submitted. The provider catalog still drives the adjacent Model and Effort controls. A backend without `capabilities.disposableTerminalPools` retains the former live-session picker as a compatibility path.
 
 ## Stable Relay identity
 
@@ -47,13 +53,15 @@ The terminal picker and task cards render the persisted fields directly. They mu
 
 Each pinned project owns an independent task queue. Queue positions, priority insertion, retry append order, stale reorder validation, pause state, FIFO barriers, and dispatch eligibility are scoped by the task's exact `repo_path`. Reordering Alpha never rewrites Beta positions, pausing Alpha leaves Beta runnable, and a Plan council running in Alpha does not hold direct Codex work at the head of Beta's queue. Relay still coordinates shared provider and terminal resources centrally, so provider-wide exclusive tasks remain serialized even though unrelated direct Codex work can run beside them.
 
-Direct execution capacity is session-scoped across any number of projects. Relay imposes no project-count or global direct-execution limit. Every distinct live Codex or Claude session may execute at the same time, including mixed-provider work in every project. Only tasks assigned to the same exact session ID remain sequential. The global running-task header is the cross-project monitoring surface while each Launchpad keeps its own Queue and History.
+Direct execution capacity is controlled by `max_codex_instances` and `max_claude_instances` on each pinned project. Both default to 1 and can be set from 1 through 8 in the left composer panel. A project's active and reserved disposable work consumes only that project's provider limits. Separate projects can therefore use their own limits concurrently, subject to the machine and provider account.
 
 > [!note]
-> Regression coverage generates twelve project paths and starts twenty-four direct tasks simultaneously: one Codex and one Claude task per project. Separate Claude runner coverage confirms twelve independent CLI processes receive the correct project working directories. Twelve is a practical test size, not a product maximum.
+> The configured number is an upper bound, not a promise that every provider process will start instantly. Queue order, exclusive workflow barriers, provider authentication, native launch binding, and machine resources still apply.
 
 > [!important]
-> Do not introduce a fixed project or direct-session concurrency constant. Capacity is the number of distinct connected session IDs. Machine resources and provider account throttling may limit real throughput, but Relay must not add an artificial project-count ceiling.
+> Capacity is counted from both active task reservations and exact native launches. A terminal whose cleanup failed remains counted until Relay can prove that exact launch is gone. Never release capacity merely because session discovery stopped listing it.
+
+Direct Execute and Planner breakdown need one slot from their selected provider. Plan council needs one Claude and one Codex slot. Turbo needs one Codex planner plus its worker count, and adds one Claude slot when its council runs through a terminal. Relay validates an atomic workflow requirement before it starts, so it never launches half a Plan council or a partial Turbo fleet and then waits while holding those terminals.
 
 > [!important]
 > A backend without `capabilities.parallelClaudeExecution` still has the former global Claude lock. When a direct Claude task waits behind a different active Claude session, project activity and queue summary must say **Restart Relay for parallel Claude projects** instead of presenting the delay as ordinary FIFO waiting.
@@ -64,7 +72,7 @@ Direct execution capacity is session-scoped across any number of projects. Relay
 > [!important]
 > Renderer files can refresh while the Node backend remains alive. `/api/status` advertises `capabilities.projectQueueIsolation` when project-scoped dispatch is active. If the capability is missing and another project is visibly holding waiting work, project cards and the queue summary must request a normal Relay restart. Task 184 proved that refreshing the page alone does not replace an old in-memory scheduler. See [[project-queue-isolation-review]].
 
-Each project also owns an in-memory composer session. Switching Launchpads saves and restores the prompt draft, reference images, Execute or Turbo mode, Plan council settings, provider, model settings, and selected terminal. A project without saved state starts with a blank prompt, no images, Execute with Codex, and its own eligible terminal selection. Queue scope is intentionally excluded from the snapshot and resets to the broad project view. Composer state cannot be created without a project path.
+Each project also owns an in-memory composer session. Switching Launchpads saves and restores the prompt draft, reference images, Execute or Turbo mode, Plan council settings, provider, and model settings. A project without saved state starts with a blank prompt, no images, and Execute with Codex. A legacy selected terminal remains in the compatibility snapshot but current disposable submissions ignore it. Queue scope is intentionally excluded and resets to the broad project view. Composer state cannot be created without a project path.
 
 > [!important]
 > Never build a reorder snapshot from every queued task. The client sends only the active project's queued IDs plus its project path, and the database validates and renumbers only that path. Cross-project task IDs must fail stale-order validation.
@@ -75,7 +83,13 @@ Each project also owns an in-memory composer session. Switching Launchpads saves
 > [!note]
 > Selecting a project immediately makes its normalized exact path the outer boundary for Queue and History. A project switch resets task scope to **All Relays**, clears the selected detail task, restores that project's composer and execution terminal, and then refreshes terminals, task cards, counts, and statistics. See [[task-history]].
 
-## Terminal handoff
+## Automatic terminal lifecycle
+
+With `capabilities.disposableTerminalPools`, a task is persisted before any provider terminal exists. When the task is runnable and the project has capacity, Relay launches a fresh native terminal in the exact project path and binds it through provider-specific proof: the Codex proxy launch reservation or the expected Claude session ID. It requires two stable discovery observations before the task owns the session.
+
+Every native launch has a fresh `launchId`, including a terminal that resumes an older conversation ID. Task completion, failure, cancellation, or interruption releases the task and closes that exact launch. Manually opened windows are never part of automatic cleanup. See [[disposable-terminal-pools]].
+
+### Legacy manual terminal handoff
 
 After a launch, the client polls session discovery for up to 15 seconds. It matches provider and normalized working-directory path and accepts only a session ID that was not present before the launch. The new session must appear in two consecutive discovery results before Relay selects it. Existing sessions in the same workspace are never used as a fallback for a newly launched terminal.
 
@@ -96,13 +110,15 @@ If no project card is active but a live session is already selected, **Launch te
 
 ## Terminal interaction model
 
-The event rail inside **Terminal output** remains a read-only viewer, not a terminal emulator. It renders provider events recorded by Relay and offers filtering, follow mode, and log copying. Direct tasks add a separate **Continue session** dock above that rail. For a running Codex task, sending uses the app-server steering protocol to update the exact active turn. After a turn finishes, the dock immediately starts the next provider turn against the exact original session and reuses the source task activity. Neither path creates queue work or injects raw keystrokes. See [[task-history]] and [[interface-layout]].
+The event rail inside **Terminal output** remains a read-only viewer, not a terminal emulator. It renders provider events recorded by Relay and offers filtering, follow mode, and log copying. Direct tasks add a separate **Continue session** dock above that rail. For a running Codex task, sending uses the app-server steering protocol to update the exact active turn. After a disposable turn finishes, the dock creates a linked queue task that launches a new terminal and resumes the saved conversation. The legacy persistent path still starts an immediate next turn in the original open session. See [[task-history]] and [[interface-layout]].
 
-The macOS **Launch terminal** action opens a real Terminal.app window and starts the provider CLI there. For Codex, that process connects to Relay's shared app-server with `--remote`. The same Codex thread can still be used interactively in Terminal.app when idle, but the user should not submit another prompt while a Relay task is running in that thread because Relay and the interactive client share the thread's active-turn state.
+Codex sandbox policy is turn-persistent. Relay must send an explicit `dangerFullAccess` policy on every normal Execute and finished-task follow-up, because an omitted policy inherits a prior read-only Plan council or Turbo planning policy. Read-only stages still receive an explicit `readOnly` policy. See [[codex-sandbox-isolation]].
+
+The manual macOS **Launch terminal** action opens a real Terminal.app window and starts the provider CLI there. For Codex, that process connects to Relay's shared app-server with `--remote`. Manual sessions are independent from current queued work, which launches and owns its own disposable terminal.
 
 Relay owns the native terminals it launches for the lifetime of the desktop app. On macOS, `ProjectLauncher` captures the exact Terminal window ID returned for each launched tab. On Windows, it captures the `cmd.exe` process ID returned by `Start-Process -PassThru`. During graceful shutdown, Relay first stops queued work, then closes only those process-launched Terminal windows or Windows process trees, and only afterward closes the Codex app-server and database. Runtime-recovered or user-opened terminal windows are never included in automatic shutdown cleanup.
 
-The terminal picker always exposes a **Close selected terminal** row directly beneath its Relay cards. The action remains visible when disabled and explains whether Relay needs a restart, native identity is ambiguous, or a task currently protects it. Each successful native launch receives an in-memory launch ID. `TerminalLaunchCoordinator` serializes launch and discovery until it observes the exact new session twice. Claude starts its interactive CLI with the launch UUID as `--session-id`; Codex receives a dedicated one-use loopback WebSocket endpoint that carries the launch UUID into the proxy client record. The backend also verifies provider and canonical project path before binding that thread to the captured native handle. The browser only selects the backend-confirmed thread. Closing targets one bound handle and automatically selects the next eligible session in the composer.
+On a current backend, the composer hides the terminal picker and **Close selected terminal** row and shows project provider limits instead. The picker and explicit close action remain available only in the legacy compatibility UI. Each successful native launch still receives an in-memory launch ID. `TerminalLaunchCoordinator` serializes launch and discovery until it observes the exact new session twice. Claude starts its interactive CLI with a controlled session UUID; Codex receives a dedicated one-use loopback WebSocket endpoint that carries the launch UUID into the proxy client record. The backend verifies provider and canonical project path before binding the session to the captured native handle. Automatic cleanup targets that one launch ID.
 
 On macOS, `TerminalRuntimeResolver` can recover exact control for an already-running session. Claude discovery supplies the interactive process PID. A Codex thread supplies one exact proxy client socket, which `lsof` maps to one Codex PID. Relay maps that PID to one TTY through `ps`, then requires exactly one Terminal.app window containing exactly one tab with that TTY. Any missing, duplicate, multi-client, multi-tab, or shared-window result is rejected. The coordinator repeats session identity verification at the API boundary, and the launcher rechecks the process TTY and window TTY immediately before closing.
 
@@ -110,7 +126,7 @@ On macOS, `TerminalRuntimeResolver` can recover exact control for an already-run
 > Native handles are never persisted. A process-launched terminal is bound in memory. A macOS runtime-recovered terminal is re-derived from its live PID, socket, TTY, and single-tab window, is revalidated before every explicit close, and is excluded from graceful-shutdown cleanup. A session moved to another terminal invalidates the old mapping instead of closing the former window.
 
 > [!warning]
-> A queued, running, or scheduled-to-retry task protects every terminal it owns. This includes direct and Plan council `thread_id` assignments plus Turbo planner and worker assignments. Cancel or reassign the task before closing its terminal. While a close is reserved, new enqueue, retry, assignment, planner, and dispatch operations cannot claim that terminal. The API repeats this validation against the live session and current tasks even when the browser previously rendered the action as available.
+> A queued, running, or scheduled-to-retry legacy task protects every terminal it owns. Disposable tasks reserve provider capacity and their exact native launches instead. Relay closes each disposable launch automatically at the task outcome, and a cleanup failure keeps its capacity reserved.
 
 > [!important]
 > Never replace exact identity with a broad Terminal quit, `close every window`, process-name-only kill, workspace-path match, or window-title match. Those approaches can close unrelated user terminals. Runtime recovery requires the complete live identity chain, and a multi-tab window is rejected. New native launches are rejected once shutdown begins, and the serialized launch queue is allowed to settle before its launch-owned handles are closed.
@@ -146,7 +162,9 @@ The rollout file can exist but remain empty for a short interval after `turn/sta
 > [!important]
 > UI wording can be misleading: **Terminal output** means task activity output, while **Launch terminal** means opening an external native terminal.
 
-## Fresh Claude terminal execution
+## Legacy fresh Claude terminal execution
+
+This section documents the persistent selected-session compatibility path. Current disposable work creates a fresh Claude conversation in its own native terminal, or relaunches `claude --resume <conversation-id>` for an explicit continuation.
 
 `claude agents --json` can report a newly launched interactive Claude terminal before that terminal has saved its first conversation transcript. The session is live and selectable, but `claude -p --resume <session-id>` exits with **No conversation found with session ID** until a first turn exists.
 
@@ -160,7 +178,7 @@ Task 164 on July 20, 2026 exposed an unsafe earlier fallback that became an unbo
 
 `claude agents --json` may temporarily list both the interactive terminal and a print or background child with the same session ID. Discovery deduplicates by session ID, prefers `kind = interactive`, and otherwise keeps the newest record. Duplicate DOM entries with the same ID make both cards appear selected and must never reach the browser.
 
-When Execute Plan council is enabled, discovered interactive Claude sessions remain visible in the Relay picker with an **Execute only** marker. They are disabled because council authoring and revision use the signed-in non-interactive Claude CLI, while the selected terminal is the Codex review Relay. This preserves launch feedback without allowing an interactive Claude session to replace the reviewer or disable the council. See [[interface-layout]].
+In this legacy path, Execute Plan council on macOS has its own Claude author-terminal selector and uses the ordinary Relay picker for the Codex reviewer. Current automatic Plan council has no selectors: it reserves and launches one Claude author plus one Codex reviewer from the project's pool. See [[interface-layout]] and [[disposable-terminal-pools]].
 
 > [!important]
 > A selected Claude session disappearing before dispatch or before first-turn initialization is a non-retryable session error. Do not treat absence, a background duplicate, or a different workspace as the selected interactive terminal. Session identity failures wait for an explicit manual retry instead of entering the generic automatic retry loop.

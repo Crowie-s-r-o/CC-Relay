@@ -4,6 +4,7 @@ import { now } from './database.mjs';
 const RETRYABLE_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_SOURCE_STATUSES = new Set(['complete', 'failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_ERROR_PREFIX = 'Same-session follow-up';
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export class TaskQueue extends EventEmitter {
   constructor({
@@ -13,6 +14,10 @@ export class TaskQueue extends EventEmitter {
     retryDelayMs = 5000,
     maxAutomaticRetries = 3,
     isThreadAvailable = () => true,
+    listIdleSessions = null,
+    terminalPool = null,
+    dispatchWait = wait,
+    dispatchPollMs = 1_000,
   }) {
     super();
     this.database = database;
@@ -25,6 +30,15 @@ export class TaskQueue extends EventEmitter {
     this.retryDelayMs = retryDelayMs;
     this.maxAutomaticRetries = maxAutomaticRetries;
     this.isThreadAvailable = isThreadAvailable;
+    this.listIdleSessions = listIdleSessions;
+    this.terminalPool = terminalPool;
+    this.dispatchWait = dispatchWait;
+    this.dispatchPollMs = dispatchPollMs;
+    // A Claude task whose selected terminal is externally busy stays queued here until the
+    // terminal is idle or idle routing finds another destination. Codex still uses this map
+    // for its short routing window after beginTask. In both cases no runner owns the task yet,
+    // so cancellation has to be represented by this guard.
+    this.dispatchGuards = new Map();
     this.retryTimers = new Map();
     this.automaticRetryCounts = new Map();
   }
@@ -33,6 +47,7 @@ export class TaskQueue extends EventEmitter {
     const ids = new Set();
     const directThreadId = task?.thread_id || task?.thread?.id;
     if (directThreadId) ids.add(directThreadId);
+    if (task?.author_thread_id) ids.add(task.author_thread_id);
     const turbo = task?.turbo || {};
     const plannerThreadId = turbo.plannerThreadId || turbo.planner?.threadId;
     if (plannerThreadId) ids.add(plannerThreadId);
@@ -40,6 +55,27 @@ export class TaskQueue extends EventEmitter {
       if (worker?.threadId) ids.add(worker.threadId);
     }
     return [...ids];
+  }
+
+  disposableConversationId(task) {
+    const lifecycle = task?.terminal_lifecycle || task?.terminalLifecycle;
+    if (
+      lifecycle !== 'disposable'
+      || task?.mode !== 'execute'
+      || !['codex', 'claude'].includes(task?.provider)
+    ) return null;
+    return task.thread_id || task.thread?.id || null;
+  }
+
+  disposableConversationConflict(task, { excludeTaskId = null } = {}) {
+    const threadId = this.disposableConversationId(task);
+    if (!threadId) return null;
+    return this.database.listTasks().find((candidate) => (
+      candidate.id !== excludeTaskId
+      && candidate.provider === task.provider
+      && candidate.thread_id === threadId
+      && ['queued', 'running'].includes(candidate.status)
+    )) || null;
   }
 
   taskHasUnavailableThread(task) {
@@ -160,6 +196,7 @@ export class TaskQueue extends EventEmitter {
     const reviewingTaskIds = [...this.activePreparations.entries()]
       .filter(([, entry]) => entry.councilStage === 'reviewing')
       .map(([taskId]) => taskId);
+    const activeTasks = [...this.activeTasks.values()];
     return {
       paused: this.database.isPaused() || (repoPath ? this.database.isProjectPaused(repoPath) : false),
       pausedProjectPaths: this.database.pausedProjectPaths(),
@@ -167,6 +204,9 @@ export class TaskQueue extends EventEmitter {
       activeTaskIds,
       planningTaskIds,
       reviewingTaskIds,
+      ...(repoPath && this.terminalPool
+        ? { terminalPool: { repoPath, ...this.terminalPool.projectStatus(repoPath, activeTasks) } }
+        : {}),
     };
   }
 
@@ -181,6 +221,9 @@ export class TaskQueue extends EventEmitter {
         throw new Error('That submission ID was already used for different work.');
       }
       return existing;
+    }
+    if (this.disposableConversationConflict(taskInput)) {
+      throw new Error('This conversation already has queued or running work.');
     }
     if (this.taskHasUnavailableThread(taskInput)) {
       throw new Error('That terminal is closing. Choose another Relay before adding work.');
@@ -201,7 +244,7 @@ export class TaskQueue extends EventEmitter {
       }
     } catch (error) {
       this.database.deleteTask(task.id);
-      this.artifacts.deleteTask(task.id);
+      this.artifacts.deleteTask(task.id, { repoPath: task.repo_path });
       throw error;
     }
     if (runNow) {
@@ -234,6 +277,8 @@ export class TaskQueue extends EventEmitter {
     }
 
     if (task.status === 'queued') {
+      const dispatchGuard = this.dispatchGuards.get(taskId);
+      if (dispatchGuard) dispatchGuard.cancelRequested = true;
       if (this.activePreparations.has(taskId)) {
         this.database.addEvent(taskId, 'queue', 'Cancellation requested for the active forward planner.');
         if (!this.runner.cancel(taskId)) throw new Error('The planning process is no longer running.');
@@ -254,6 +299,15 @@ export class TaskQueue extends EventEmitter {
     }
 
     this.database.addEvent(taskId, 'queue', 'Cancellation requested.');
+    // The task is running but is still inside the idle-routing window, so no runner owns it
+    // yet. Without this branch the user sees a visibly running task refuse to cancel with
+    // "The AI process is no longer running."
+    const guard = this.dispatchGuards.get(taskId);
+    if (guard) {
+      guard.cancelRequested = true;
+      this.changed(taskId);
+      return;
+    }
     if (!this.runner.cancel(taskId)) {
       throw new Error('The AI process is no longer running.');
     }
@@ -273,6 +327,9 @@ export class TaskQueue extends EventEmitter {
     if (String(task.error || '').startsWith(FOLLOW_UP_ERROR_PREFIX)) {
       throw new Error('Use Continue session to send that follow-up again. It cannot be placed in the task queue.');
     }
+    if (this.disposableConversationConflict(task, { excludeTaskId: task.id })) {
+      throw new Error('This conversation already has queued or running work.');
+    }
     if (this.taskHasUnavailableThread(task)) {
       throw new Error('That terminal is closing. Retry after choosing another Relay.');
     }
@@ -291,6 +348,7 @@ export class TaskQueue extends EventEmitter {
     });
     this.artifacts.clearOutcome(taskId, {
       preservePlan: task.mode === 'plan',
+      repoPath: task.repo_path,
     });
     this.database.addEvent(taskId, 'queue', 'Task queued for retry.');
     this.changed(taskId);
@@ -311,15 +369,23 @@ export class TaskQueue extends EventEmitter {
     if (this.activePreparations.has(taskId)) {
       throw new Error('Wait for the forward planner to finish or cancel it before deleting the task.');
     }
+    const dispatchGuard = this.dispatchGuards.get(taskId);
+    if (dispatchGuard) dispatchGuard.cancelRequested = true;
     const deleted = this.database.deleteTask(taskId);
     if (deleted) {
-      this.artifacts.deleteTask(taskId);
+      this.artifacts.deleteTask(taskId, { repoPath: task.repo_path });
     }
     this.changed(taskId);
     return deleted;
   }
 
-  edit(taskId, { title, prompt }) {
+  edit(taskId, {
+    title,
+    prompt,
+    provider = undefined,
+    model = undefined,
+    effort = undefined,
+  }) {
     const task = this.database.getTask(taskId);
     if (!task) throw new Error('Task not found.');
     if (task.status !== 'queued') {
@@ -328,16 +394,66 @@ export class TaskQueue extends EventEmitter {
     if (this.activePreparations.has(taskId)) {
       throw new Error('This task is already being prepared. Cancel it before changing its request.');
     }
-    const updated = this.database.updateQueuedTask(taskId, { title, prompt });
+    const executionChanged = provider !== undefined || model !== undefined || effort !== undefined;
+    if (
+      executionChanged
+      && (task.mode !== 'execute' || task.terminal_lifecycle !== 'disposable')
+    ) {
+      throw new Error('Only automatic queued Execute tasks can change AI provider or execution settings.');
+    }
+    const nextProvider = provider === undefined ? task.provider : provider;
+    if (executionChanged && !['codex', 'claude'].includes(nextProvider)) {
+      throw new Error(`Unsupported AI provider: ${nextProvider}`);
+    }
+    const providerChanged = nextProvider !== task.provider;
+    const changes = {
+      title,
+      prompt,
+      ...(executionChanged ? {
+        provider: nextProvider,
+        model: model ?? null,
+        effort: effort ?? null,
+      } : {}),
+      ...(providerChanged ? {
+        thread_id: null,
+        thread_name: null,
+        thread_source: null,
+        session_id: null,
+        continued_from_task_id: null,
+      } : {}),
+    };
+    const updated = this.database.updateQueuedTask(taskId, changes);
+    const dispatchGuard = this.dispatchGuards.get(taskId);
+    if (dispatchGuard) dispatchGuard.task = updated;
     try {
       this.artifacts.initializeTask(updated);
     } catch (error) {
-      this.database.updateTask(taskId, { title: task.title, prompt: task.prompt });
+      this.database.updateTask(taskId, {
+        title: task.title,
+        prompt: task.prompt,
+        provider: task.provider,
+        model: task.model,
+        effort: task.effort,
+        thread_id: task.thread_id,
+        thread_name: task.thread_name,
+        thread_source: task.thread_source,
+        session_id: task.session_id,
+        continued_from_task_id: task.continued_from_task_id,
+      });
       throw error;
     }
-    this.artifacts.clearOutcome(taskId);
-    this.database.addEvent(taskId, 'queue', 'Queued task request edited before execution.');
+    this.artifacts.clearOutcome(taskId, { repoPath: task.repo_path });
+    this.database.addEvent(
+      taskId,
+      'queue',
+      providerChanged
+        ? `Queued task switched from ${task.provider === 'claude' ? 'Claude' : 'Codex'} to ${nextProvider === 'claude' ? 'Claude' : 'Codex'} before execution. A fresh ${nextProvider === 'claude' ? 'Claude' : 'Codex'} conversation will be used.`
+        : executionChanged
+          ? 'Queued task request and execution settings edited before execution.'
+          : 'Queued task request edited before execution.',
+    );
     this.changed(taskId);
+    this.schedule();
     return updated;
   }
 
@@ -352,15 +468,21 @@ export class TaskQueue extends EventEmitter {
     const task = this.database.getTask(taskId);
     if (!task) throw new Error('Task not found.');
     if (task.status !== 'queued') throw new Error('Only queued tasks can be assigned to another terminal.');
+    if (task.terminal_lifecycle === 'disposable') {
+      throw new Error('This task uses the automatic terminal pool and cannot be assigned manually.');
+    }
     if (!this.isThreadAvailable(thread.id)) throw new Error('That terminal is closing. Choose another Relay.');
     const updated = this.database.updateTask(taskId, {
       thread_id: thread.id,
       thread_name: thread.title,
       thread_source: thread.source,
     });
+    const dispatchGuard = this.dispatchGuards.get(taskId);
+    if (dispatchGuard) dispatchGuard.task = updated;
     this.artifacts.updateTaskAssignment(updated);
     this.database.addEvent(taskId, 'queue', `Task assigned to ${thread.title}.`);
     this.changed(taskId);
+    this.schedule();
     return updated;
   }
 
@@ -394,6 +516,19 @@ export class TaskQueue extends EventEmitter {
     return this.isConcurrentCodexTask(task) || this.isDirectClaudeTask(task);
   }
 
+  // Tasks that occupy exactly one session for one turn and therefore need no barrier
+  // beyond "one Relay task per session id". Direct execution plus Planner breakdowns.
+  //
+  // A breakdown is planning work, but mechanically it is ordinary single-session work:
+  // RelayRunner sends it to the provider runner by task.provider, like a direct task.
+  // Scheduling it as an exclusive head froze its entire project and consumed the shared
+  // exclusive slot that Plan council and Turbo need, for no safety benefit. The exclusive
+  // barriers themselves are unchanged: Plan council and Turbo are still classified as
+  // non-single-session and still hold `sharedExclusiveAvailable`.
+  isSingleSessionTask(task) {
+    return this.isDirectExecutionTask(task) || task?.mode === 'breakdown';
+  }
+
   turboPlan(task) {
     try { return this.artifacts.readTurboPlan(task.id); } catch { return null; }
   }
@@ -402,11 +537,16 @@ export class TaskQueue extends EventEmitter {
     return task?.mode === 'turbo' && this.turboPlan(task)?.status === 'executing';
   }
 
-  reservedThreadIds() {
+  reservedThreadIds({ excludeTaskId = null } = {}) {
     const reserved = new Set();
     for (const task of this.activeTasks.values()) {
-      if (this.isDirectExecutionTask(task)) {
+      if (excludeTaskId !== null && task.id === excludeTaskId) continue;
+      if (this.isSingleSessionTask(task)) {
         if (task.thread_id) reserved.add(task.thread_id);
+        continue;
+      }
+      if (task.mode === 'plan') {
+        for (const threadId of this.taskThreadIds(task)) reserved.add(threadId);
         continue;
       }
       if (task.mode !== 'turbo') continue;
@@ -422,6 +562,10 @@ export class TaskQueue extends EventEmitter {
     }
     for (const entry of this.activePreparations.values()) {
       if (entry.plannerBusy && entry.plannerThreadId) reserved.add(entry.plannerThreadId);
+    }
+    for (const guard of this.dispatchGuards.values()) {
+      if (excludeTaskId !== null && guard.task?.id === excludeTaskId) continue;
+      for (const threadId of this.taskThreadIds(guard.task)) reserved.add(threadId);
     }
     return reserved;
   }
@@ -475,6 +619,12 @@ export class TaskQueue extends EventEmitter {
     const planningThreads = new Set([...this.activePreparations.values()]
       .filter((entry) => entry.plannerBusy)
       .map((entry) => entry.plannerThreadId));
+    // Forward planning starts a real turn on the planner session, so it has to honour the
+    // same reservation every dispatch does. Look-ahead only avoided Turbo's own worker and
+    // planner threads before, which was survivable while every other non-direct mode froze
+    // its whole project. Single-session breakdowns run beside Turbo now, so a breakdown
+    // holding a session in another project has to be visible here too.
+    const reservedThreads = this.reservedThreadIds();
     const candidates = this.database.listTasks()
       .filter((task) => task.status === 'queued'
         && task.mode === 'turbo'
@@ -486,7 +636,10 @@ export class TaskQueue extends EventEmitter {
       const plan = this.turboPlan(task);
       if (plan?.status === 'ready') continue;
       const plannerThreadId = task.turbo?.plannerThreadId || task.thread_id;
-      if (!plannerThreadId || workerThreads.has(plannerThreadId) || planningThreads.has(plannerThreadId)) continue;
+      if (!plannerThreadId
+        || workerThreads.has(plannerThreadId)
+        || planningThreads.has(plannerThreadId)
+        || reservedThreads.has(plannerThreadId)) continue;
       planningThreads.add(plannerThreadId);
       this.startPreparation(task, plannerThreadId);
     }
@@ -562,35 +715,62 @@ export class TaskQueue extends EventEmitter {
       activeByProject.get(task.repo_path).push(task);
     }
 
-    let sharedExclusiveAvailable = !active.some((task) => !this.isDirectExecutionTask(task));
+    let sharedExclusiveAvailable = !active.some((task) => !this.isSingleSessionTask(task));
     for (const [repoPath, projectQueued] of queuedByProject) {
       const projectActive = activeByProject.get(repoPath) || [];
       const executingTurbo = projectActive.some((task) => this.isTurboExecuting(task));
 
       if (executingTurbo) {
         for (const task of projectQueued) {
-          if (!this.isConcurrentCodexTask(task) || !task.thread_id || reservedThreads.has(task.thread_id)) continue;
-          reservedThreads.add(task.thread_id);
+          if (!this.isConcurrentCodexTask(task)) continue;
+          if (task.terminal_lifecycle === 'disposable') {
+            if (task.thread_id && reservedThreads.has(task.thread_id)) continue;
+            if (!this.terminalPool?.canRun(task, [...active, ...runnable])) continue;
+            if (task.thread_id) reservedThreads.add(task.thread_id);
+          } else {
+            if (!task.thread_id || reservedThreads.has(task.thread_id)) continue;
+            reservedThreads.add(task.thread_id);
+          }
           runnable.push(task);
         }
         continue;
       }
 
-      if (projectActive.some((task) => !this.isDirectExecutionTask(task))) continue;
+      if (projectActive.some((task) => !this.isSingleSessionTask(task))) continue;
       const first = projectQueued[0];
       if (first?.mode === 'turbo' && this.activePreparations.has(first.id)) continue;
 
-      if (first && !this.isDirectExecutionTask(first)) {
+      if (first && !this.isSingleSessionTask(first)) {
+        if (this.dispatchGuards.has(first.id)) continue;
         if (projectActive.length > 0 || !sharedExclusiveAvailable) continue;
+        const firstThreadIds = this.taskThreadIds(first);
+        if (
+          first.terminal_lifecycle === 'disposable'
+          && firstThreadIds.some((threadId) => reservedThreads.has(threadId))
+        ) continue;
+        if (
+          first.terminal_lifecycle === 'disposable'
+          && !this.terminalPool?.canRun(first, [...active, ...runnable])
+        ) continue;
+        if (first.terminal_lifecycle === 'disposable') {
+          for (const threadId of firstThreadIds) reservedThreads.add(threadId);
+        }
         runnable.push(first);
         sharedExclusiveAvailable = false;
         continue;
       }
 
       for (const task of projectQueued) {
-        if (!this.isDirectExecutionTask(task)) break;
-        if (!task.thread_id || reservedThreads.has(task.thread_id)) continue;
-        reservedThreads.add(task.thread_id);
+        if (!this.isSingleSessionTask(task)) break;
+        if (this.dispatchGuards.has(task.id)) continue;
+        if (task.terminal_lifecycle === 'disposable') {
+          if (task.thread_id && reservedThreads.has(task.thread_id)) continue;
+          if (!this.terminalPool?.canRun(task, [...active, ...runnable])) continue;
+          if (task.thread_id) reservedThreads.add(task.thread_id);
+        } else {
+          if (!task.thread_id || reservedThreads.has(task.thread_id)) continue;
+          reservedThreads.add(task.thread_id);
+        }
         runnable.push(task);
       }
     }
@@ -623,13 +803,267 @@ export class TaskQueue extends EventEmitter {
   }
 
   runTask(task, options = {}) {
+    if (!options.sessionFollowUp && task.terminal_lifecycle === 'disposable' && this.terminalPool) {
+      this.beginTask(task, options);
+      return this.executeTask(task, { ...options, prepareDisposable: true });
+    }
+    if (!options.sessionFollowUp && this.shouldWaitForClaudeDispatch(task)) {
+      return this.startClaudeDispatch(task, options);
+    }
     this.beginTask(task, options);
     return this.executeTask(task, options);
   }
 
-  async executeTask(task, { sessionFollowUp = false } = {}) {
+  shouldWaitForClaudeDispatch(task) {
+    return Boolean(this.listIdleSessions)
+      && (
+        (this.isDirectClaudeTask(task) && Boolean(task.thread_id))
+        || (task?.mode === 'plan' && Boolean(task.author_thread_id))
+      );
+  }
+
+  claudeDispatchTask(task) {
+    if (task?.mode !== 'plan') return task;
+    return {
+      ...task,
+      provider: 'claude',
+      thread_id: task.author_thread_id,
+      thread_name: task.author_thread_name,
+      thread_source: task.author_thread_source,
+      prefer_idle_terminal: 0,
+    };
+  }
+
+  claudeDispatchThreadId(task) {
+    return task?.mode === 'plan' ? task.author_thread_id : task?.thread_id;
+  }
+
+  startClaudeDispatch(task, options = {}) {
+    const existing = this.dispatchGuards.get(task.id);
+    if (existing?.promise) return existing.promise;
+    const guard = {
+      task,
+      cancelRequested: false,
+      promise: null,
+    };
+    this.dispatchGuards.set(task.id, guard);
+    guard.promise = this.waitForClaudeDispatch(task, guard, options)
+      .finally(() => {
+        if (this.dispatchGuards.get(task.id) === guard) {
+          this.dispatchGuards.delete(task.id);
+        }
+        this.changed(task.id);
+        this.schedule();
+      });
+    return guard.promise;
+  }
+
+  async waitForClaudeDispatch(task, guard, options = {}) {
+    let announcedThreadId = null;
+    while (!this.stopping && !guard.cancelRequested) {
+      const current = this.database.getTask(task.id);
+      if (!current || current.status !== 'queued') return;
+      guard.task = current;
+      const dispatchTask = this.claudeDispatchTask(current);
+
+      const resolution = await this.resolveIdleDestination(dispatchTask, {
+        holdBusySelected: true,
+        expectedStatus: 'queued',
+      });
+      if (guard.cancelRequested || this.stopping) return;
+      if (resolution.retry) continue;
+
+      if (resolution.ready) {
+        const latest = this.database.getTask(task.id);
+        if (
+          !latest
+          || latest.status !== 'queued'
+          || this.claudeDispatchThreadId(latest) !== resolution.task.thread_id
+        ) {
+          continue;
+        }
+        guard.task = latest;
+        if (announcedThreadId) {
+          this.database.addEvent(
+            task.id,
+            'queue',
+            `Claude session ${dispatchTask.thread_name || dispatchTask.thread_id} is ready. Starting the queued task.`,
+          );
+        }
+        this.dispatchGuards.delete(task.id);
+        this.beginTask(latest, options);
+        return this.executeTask(latest, { ...options, dispatchResolved: true });
+      }
+
+      if (announcedThreadId !== dispatchTask.thread_id) {
+        const planPrefix = current.mode === 'plan' ? 'Plan council author ' : '';
+        const recovery = current.mode === 'plan'
+          ? 'Finish its active work, or cancel and retry with another Claude author terminal.'
+          : 'Finish its active work or assign this task to another Claude Relay.';
+        const message = `The selected ${planPrefix}Claude session ${dispatchTask.thread_name || dispatchTask.thread_id} is busy. This task remains queued and nothing has been sent. ${recovery}`;
+        const event = {
+          type: 'claude/waiting',
+          provider: 'claude',
+          sessionId: dispatchTask.thread_id,
+          queued: true,
+        };
+        this.artifacts.appendRawEvent(task.id, event);
+        this.database.addEvent(task.id, 'claude', message, event);
+        this.changed(task.id);
+        announcedThreadId = dispatchTask.thread_id;
+      }
+      await this.dispatchWait(this.dispatchPollMs);
+    }
+  }
+
+  // Dispatch-time idle routing. Claude direct tasks claim a dispatch guard synchronously but
+  // stay persisted as queued until this lookup finds a usable destination. The guard prevents
+  // concurrent claims without presenting unsent work as running. Other routing paths retain
+  // the short post-beginTask guard. Routing never leaves repo_path.
+  //
+  // The gate remains synchronous because schedule() calls runNext() and planAhead() in the
+  // same tick. An unconditional await on unrelated tasks can silently stop Turbo look-ahead
+  // from observing the state established by runner.run().
+  shouldRouteIdle(task) {
+    return Boolean(this.listIdleSessions)
+      && task.prefer_idle_terminal === 1
+      && task.mode === 'execute'
+      && Boolean(task.thread_id);
+  }
+
+  async resolveIdleDestination(task, {
+    holdBusySelected = false,
+    expectedStatus = null,
+  } = {}) {
+    let candidates = [];
     try {
-      const outcome = await this.runner.run(task, {
+      candidates = (await this.listIdleSessions(task)) || [];
+    } catch {
+      // Discovery trouble must never fail a task that already has a valid destination.
+      return { task, ready: true, retry: false, selected: null };
+    }
+    if (expectedStatus) {
+      const latest = this.database.getTask(task.id);
+      if (
+        !latest
+        || latest.status !== expectedStatus
+        || this.claudeDispatchThreadId(latest) !== task.thread_id
+      ) {
+        return { task: latest || task, ready: false, retry: true, selected: null };
+      }
+    }
+    if (candidates.length === 0) {
+      return { task, ready: true, retry: false, selected: null };
+    }
+
+    const reserved = this.reservedThreadIds({ excludeTaskId: task.id });
+    // Sessions that already own waiting or active single-session Relay work. Routing onto
+    // one would not be unsafe (runnableTasks() still serializes per session), but it would
+    // send the task to a terminal that is about to be busy, which defeats the point.
+    const assigned = new Set(this.database.listTasks()
+      .filter((item) => item.id !== task.id
+        && this.isSingleSessionTask(item)
+        && ['queued', 'running'].includes(item.status)
+        && item.thread_id)
+      .map((item) => item.thread_id));
+    const isFree = (session) => Boolean(session)
+      && session.status === 'idle'
+      && !reserved.has(session.id)
+      && !assigned.has(session.id);
+
+    // The session the user actually chose always wins when it is free.
+    const selected = candidates.find((session) => session.id === task.thread_id);
+    if (isFree(selected)) {
+      return { task, ready: true, retry: false, selected };
+    }
+
+    const target = this.shouldRouteIdle(task) ? candidates.find(isFree) : null;
+    if (!target || target.id === task.thread_id) {
+      const selectedBusy = selected && selected.status !== 'idle';
+      return {
+        task,
+        ready: !(holdBusySelected && selectedBusy),
+        retry: false,
+        selected,
+      };
+    }
+
+    const updated = this.database.updateTask(task.id, {
+      thread_id: target.id,
+      thread_name: target.title,
+      thread_source: target.source,
+    });
+    this.artifacts.updateTaskAssignment(updated);
+    this.database.addEvent(
+      task.id,
+      'queue',
+      `The selected terminal was busy, so idle routing moved this task to ${target.title}.`,
+    );
+    const routed = {
+      ...task,
+      thread_id: target.id,
+      thread_name: target.title,
+      thread_source: target.source,
+    };
+    this.changed(task.id);
+    return { task: routed, ready: true, retry: false, selected: target };
+  }
+
+  async routeToIdleSession(task) {
+    if (!this.shouldRouteIdle(task)) return task;
+    const resolution = await this.resolveIdleDestination(task);
+    const routed = resolution.task;
+    if (routed.thread_id !== task.thread_id) {
+      this.activeTasks.set(task.id, routed);
+      // The originally selected session is free again, so another waiting task may start on it.
+      this.schedule();
+    }
+    return routed;
+  }
+
+  async executeTask(task, {
+    sessionFollowUp = false,
+    dispatchResolved = false,
+    prepareDisposable = false,
+  } = {}) {
+    let disposableGuard = null;
+    try {
+      // A follow-up is pinned to the terminal that already holds the conversation. The
+      // shouldRouteIdle() gate keeps this path await-free for every task that is not opting
+      // into idle routing, so runner.run() is still invoked in the dispatch tick.
+      let routed = task;
+      if (prepareDisposable) {
+        disposableGuard = {
+          task,
+          cancelRequested: false,
+          promise: null,
+          phase: 'preparing',
+        };
+        this.dispatchGuards.set(task.id, disposableGuard);
+        routed = await this.terminalPool.prepare(task, {
+          isCancelled: () => disposableGuard.cancelRequested || this.stopping,
+        });
+        this.activeTasks.set(task.id, routed);
+        disposableGuard.task = routed;
+        if (disposableGuard.cancelRequested || this.stopping) {
+          throw Object.assign(new Error('Task cancelled before its terminal was ready.'), { cancelled: true });
+        }
+        this.dispatchGuards.delete(task.id);
+        disposableGuard = null;
+      }
+      if (!sessionFollowUp && !dispatchResolved && this.shouldRouteIdle(task)) {
+        const guard = { cancelRequested: false };
+        this.dispatchGuards.set(task.id, guard);
+        try {
+          routed = await this.routeToIdleSession(task);
+        } finally {
+          this.dispatchGuards.delete(task.id);
+        }
+        if (guard.cancelRequested) {
+          throw Object.assign(new Error('Task cancelled before Relay chose a terminal.'), { cancelled: true });
+        }
+      }
+      const outcome = await this.runner.run(routed, {
         onEvent: ({ event, message }) => {
           this.artifacts.appendRawEvent(task.id, event);
           const kind = event.provider || (
@@ -705,6 +1139,12 @@ export class TaskQueue extends EventEmitter {
         this.scheduleAutoRetry(task.id);
       }
     } finally {
+      if (disposableGuard && this.dispatchGuards.get(task.id) === disposableGuard) {
+        this.dispatchGuards.delete(task.id);
+      }
+      if (prepareDisposable) {
+        await this.terminalPool.release(task.id);
+      }
       this.activeTasks.delete(task.id);
       this.changed(task.id);
       this.emit('taskIdle', task.id);
@@ -715,10 +1155,19 @@ export class TaskQueue extends EventEmitter {
 
   async shutdown() {
     this.stopping = true;
+    const dispatchPromises = [];
+    for (const guard of this.dispatchGuards.values()) {
+      guard.cancelRequested = true;
+      if (guard.promise) dispatchPromises.push(guard.promise);
+    }
     for (const taskId of this.retryTimers.keys()) {
       this.clearAutoRetry(taskId);
     }
-    if (this.activeTasks.size === 0 && this.activePreparations.size === 0) {
+    if (
+      this.activeTasks.size === 0
+      && this.activePreparations.size === 0
+      && dispatchPromises.length === 0
+    ) {
       return;
     }
 
@@ -732,11 +1181,12 @@ export class TaskQueue extends EventEmitter {
     const preparationPromises = [...this.activePreparations.values()].map(({ promise }) => promise);
     const executionsDone = taskIds.length === 0 ? Promise.resolve() : idle;
     const preparationsDone = Promise.allSettled(preparationPromises);
+    const dispatchesDone = Promise.allSettled(dispatchPromises);
     const timeout = new Promise((resolve) => {
       const timer = setTimeout(resolve, 3000);
       timer.unref();
     });
-    await Promise.race([Promise.all([executionsDone, preparationsDone]), timeout]);
+    await Promise.race([Promise.all([executionsDone, preparationsDone, dispatchesDone]), timeout]);
   }
 
   changed(taskId = null) {

@@ -11,6 +11,7 @@ export class TerminalLaunchCoordinator {
   constructor({
     launcher,
     listSessions,
+    threadIdForLaunch = () => null,
     diagnostic = () => {},
     delay = wait,
     now = Date.now,
@@ -19,6 +20,7 @@ export class TerminalLaunchCoordinator {
   }) {
     this.launcher = launcher;
     this.listSessions = listSessions;
+    this.threadIdForLaunch = threadIdForLaunch;
     this.diagnostic = diagnostic;
     this.delay = delay;
     this.now = now;
@@ -27,14 +29,14 @@ export class TerminalLaunchCoordinator {
     this.queue = Promise.resolve();
   }
 
-  launch(path, provider, layout) {
-    const operation = this.queue.then(() => this.launchNow(path, provider, layout));
+  launch(path, provider, layout, options = {}) {
+    const operation = this.queue.then(() => this.launchNow(path, provider, layout, options));
     this.queue = operation.catch(() => {});
     return operation;
   }
 
-  async launchNow(path, provider, layout) {
-    const launched = await this.launcher.launch(path, provider, layout);
+  async launchNow(path, provider, layout, options = {}) {
+    const launched = await this.launcher.launch(path, provider, layout, options);
     if (!launched.launchId) return launched;
 
     try {
@@ -55,12 +57,16 @@ export class TerminalLaunchCoordinator {
           await this.delay(this.pollMs);
           continue;
         }
+        const exactCodexThreadId = provider === 'codex'
+          ? this.threadIdForLaunch(launched.launchId)
+          : null;
         const thread = sessions.find((item) => (
           item.provider === provider
           && canonicalPath(item.cwd) === canonicalPath(launched.path)
           && (provider === 'claude'
-            ? item.id === launched.launchId
-            : item.launchId === launched.launchId)
+            ? item.id === (launched.expectedThreadId || launched.launchId)
+            : item.launchId === launched.launchId
+              || (exactCodexThreadId && item.id === exactCodexThreadId))
         ));
         if (thread?.id === candidateId) observations += 1;
         else {
@@ -68,8 +74,24 @@ export class TerminalLaunchCoordinator {
           observations = thread ? 1 : 0;
         }
         if (thread && observations >= 2) {
-          this.launcher.bindOwnedTerminal(launched.launchId, thread);
-          return { ...launched, threadId: thread.id };
+          try {
+            this.launcher.bindOwnedTerminal(launched.launchId, thread);
+          } catch (error) {
+            this.diagnostic('terminal.binding.rejected', {
+              launchId: launched.launchId,
+              provider,
+              path: launched.path,
+              threadId: thread.id,
+              error: error.message,
+            });
+            return {
+              ...launched,
+              connectionStatus: 'binding_rejected',
+              bindingError: error.message,
+              thread,
+            };
+          }
+          return { ...launched, threadId: thread.id, thread };
         }
         await this.delay(this.pollMs);
       }

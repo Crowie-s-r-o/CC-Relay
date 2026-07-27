@@ -25,6 +25,12 @@ test('database persists tasks in queue order and records events', () => {
       mode: 'plan',
       council: {
         authorProvider: 'claude',
+        authorThread: {
+          id: 'claude-author',
+          title: 'Claude author terminal',
+          source: 'Claude interactive',
+          cwd: '/repo/two',
+        },
         authorModel: 'opus',
         authorEffort: 'max',
         reviewerProvider: 'codex',
@@ -44,12 +50,17 @@ test('database persists tasks in queue order and records events', () => {
     assert.equal(first.effort, 'high');
     assert.equal(second.mode, 'plan');
     assert.equal(second.author_provider, 'claude');
+    assert.equal(second.author_thread_id, 'claude-author');
+    assert.equal(second.author_thread_name, 'Claude author terminal');
+    assert.equal(second.author_thread_source, 'Claude interactive');
     assert.equal(second.author_model, 'opus');
     assert.equal(second.author_effort, 'max');
     assert.equal(second.reviewer_provider, 'codex');
     assert.equal(second.reviewer_model, 'gpt-test');
     assert.equal(second.reviewer_effort, 'high');
     assert.equal(second.continued_from_task_id, first.id);
+    assert.equal(database.latestTaskForThread('claude-author').thread_id, 'claude-author');
+    assert.equal(database.latestTaskForThread('claude-author').thread_name, 'Claude author terminal');
 
     database.updateTask(first.id, { status: 'complete', result: 'Done' });
     assert.equal(database.getTask(first.id).result, 'Done');
@@ -97,16 +108,27 @@ test('database edits only tasks that are still queued', () => {
     const edited = database.updateQueuedTask(queued.id, {
       title: 'Updated',
       prompt: 'Updated prompt',
+      provider: 'claude',
+      model: 'sonnet',
+      effort: 'high',
+      thread_id: null,
+      thread_name: null,
+      thread_source: null,
     });
     assert.equal(edited.title, 'Updated');
     assert.equal(edited.prompt, 'Updated prompt');
+    assert.equal(edited.provider, 'claude');
+    assert.equal(edited.model, 'sonnet');
+    assert.equal(edited.effort, 'high');
+    assert.equal(edited.thread_id, null);
 
     database.updateTask(queued.id, { status: 'running' });
     assert.throws(
-      () => database.updateQueuedTask(queued.id, { prompt: 'Too late' }),
+      () => database.updateQueuedTask(queued.id, { prompt: 'Too late', provider: 'codex' }),
       /still waiting in the queue/,
     );
     assert.equal(database.getTask(queued.id).prompt, 'Updated prompt');
+    assert.equal(database.getTask(queued.id).provider, 'claude');
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
@@ -374,6 +396,12 @@ test('database persists, deduplicates, launches, and removes pinned projects', (
     const duplicate = database.addProject({ path: '/repo/one', name: 'renamed' });
     const second = database.addProject({ path: '/repo/two', name: 'two' });
     assert.equal(duplicate.id, first.id);
+    assert.equal(first.max_codex_instances, 1);
+    assert.equal(first.max_claude_instances, 1);
+    const resized = database.updateProjectInstanceLimits(first.id, { codex: 4, claude: 2 });
+    assert.equal(resized.max_codex_instances, 4);
+    assert.equal(resized.max_claude_instances, 2);
+    assert.equal(database.getProjectByPath('/repo/one').id, first.id);
     assert.deepEqual(database.listProjects().map((project) => project.id), [first.id, second.id]);
     assert.ok(database.markProjectLaunched(first.id).last_launched_at);
     assert.equal(database.deleteProject(first.id), true);

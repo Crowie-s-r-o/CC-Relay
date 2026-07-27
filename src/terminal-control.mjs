@@ -3,6 +3,7 @@ const ACTIVE_TASK_STATUSES = new Set(['queued', 'running', 'retrying']);
 export function taskUsesTerminal(task, threadId) {
   if (!task || !threadId || !ACTIVE_TASK_STATUSES.has(task.status)) return false;
   if (task.thread_id === threadId) return true;
+  if (task.author_thread_id === threadId) return true;
   const turbo = task.turbo || {};
   if (turbo.plannerThreadId === threadId || turbo.planner?.threadId === threadId) return true;
   return Array.isArray(turbo.workers)

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
 import { ClaudeTerminalExecutor } from './claude-terminal-executor.mjs';
+import { injectionPromptIssue } from './claude-transcript-tail.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -50,8 +51,55 @@ function resultText(content) {
   }).filter(Boolean).join('\n');
 }
 
+// Claude Code spawns a sub-agent through its own `Agent` tool. Relay keeps the mcpToolCall
+// envelope so every existing consumer (grouping, copy log, stored events from older tasks)
+// still works, and adds flat sub-agent metadata the console uses for a dedicated signal.
+const AGENT_TOOL_NAME = 'Agent';
+
+// A backgrounded launch returns immediately while the agent keeps working. The interactive
+// transcript records the launch metadata as a sibling `toolUseResult` object; the headless
+// stream-json path only carries the tool_result text, so both markers are honoured.
+// Both phrases are Claude's own launch text, matched in full so a sub-agent report that
+// merely mentions background work is never mistaken for an async launch.
+const ASYNC_LAUNCH_TEXT = /async agent launched|the agent is working in the background/i;
+const ASYNC_AGENT_ID = /agentid:\s*([A-Za-z0-9_-]+)/i;
+
+function trimmedString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function subAgentLaunchOutcome(record, block) {
+  const reported = record?.toolUseResult;
+  if (reported && typeof reported === 'object') {
+    const backgrounded = reported.isAsync === true || trimmedString(reported.status) === 'async_launched';
+    if (backgrounded) {
+      return { backgrounded: true, agentId: trimmedString(reported.agentId) };
+    }
+  }
+  const text = resultText(block?.content);
+  if (ASYNC_LAUNCH_TEXT.test(text)) {
+    return { backgrounded: true, agentId: text.match(ASYNC_AGENT_ID)?.[1] || '' };
+  }
+  return { backgrounded: false, agentId: '' };
+}
+
 function toolItem(block, cwd) {
   const input = block.input || {};
+  if (block.name === AGENT_TOOL_NAME) {
+    return {
+      type: 'mcpToolCall',
+      id: block.id,
+      server: 'Claude Code',
+      tool: AGENT_TOOL_NAME,
+      arguments: input,
+      status: 'inProgress',
+      result: null,
+      subAgent: true,
+      toolUseId: block.id,
+      agentName: trimmedString(input.description),
+      agentType: trimmedString(input.subagent_type),
+    };
+  }
   if (block.name === 'Bash') {
     return {
       type: 'commandExecution',
@@ -86,7 +134,7 @@ function toolItem(block, cwd) {
   };
 }
 
-function completedToolItem(item, block) {
+function completedToolItem(item, block, record = null) {
   const text = resultText(block.content);
   const failed = Boolean(block.is_error);
   if (item.type === 'commandExecution') {
@@ -100,15 +148,108 @@ function completedToolItem(item, block) {
   if (item.type === 'fileChange') {
     return { ...item, status: failed ? 'failed' : 'completed', result: text };
   }
-  return {
+  const completed = {
     ...item,
     status: failed ? 'failed' : 'completed',
     result: { content: text ? [{ type: 'text', text }] : [] },
   };
+  if (item.subAgent && !failed) {
+    // The tool call completing does not mean the sub-agent finished: a backgrounded launch
+    // stays live until its task notification arrives.
+    const outcome = subAgentLaunchOutcome(record, block);
+    completed.backgrounded = outcome.backgrounded;
+    if (outcome.agentId) {
+      completed.agentId = outcome.agentId;
+    }
+  }
+  return completed;
+}
+
+// Reads a Claude `<task-notification>` payload, the record that reports a backgrounded
+// sub-agent finishing. Returns null for any other queue-operation content (agent messages,
+// plain queue bookkeeping) so unrelated records stay invisible.
+export function parseAgentTaskNotification(content) {
+  const text = typeof content === 'string' ? content : '';
+  if (!text.includes('<task-notification>')) {
+    return null;
+  }
+  const body = text.match(/<task-notification>([\s\S]*?)<\/task-notification>/)?.[1] || '';
+  if (!body) {
+    return null;
+  }
+  const field = (name) => body.match(new RegExp(`<${name}>([\\s\\S]*?)</${name}>`))?.[1]?.trim() || '';
+  const toolUseId = field('tool-use-id');
+  const agentId = field('task-id');
+  if (!toolUseId && !agentId) {
+    return null;
+  }
+  const summary = field('summary');
+  return {
+    toolUseId,
+    agentId,
+    status: field('status') || 'completed',
+    summary,
+    // Summaries read `Agent "<name>" finished`, so the name survives even when the
+    // notification arrives before (or without) the launch record it belongs to.
+    agentName: summary.match(/Agent\s+"([^"]*)"/)?.[1]?.trim() || '',
+  };
+}
+
+function subAgentLabel(item) {
+  const name = trimmedString(item?.agentName);
+  if (name) {
+    return `"${name}"`;
+  }
+  return trimmedString(item?.agentType) || trimmedString(item?.toolUseId) || 'agent';
+}
+
+function subAgentCompletionMessage(item) {
+  if (!item?.subAgent) {
+    return '';
+  }
+  if (item.status === 'failed') {
+    return `Claude could not start sub-agent ${subAgentLabel(item)}.`;
+  }
+  return item.backgrounded
+    ? `Sub-agent ${subAgentLabel(item)} is working in the background.`
+    : `Sub-agent ${subAgentLabel(item)} finished.`;
+}
+
+// Claude writes the same task notification twice, once when it enqueues the notification and
+// once when it removes it. Both records carry identical content, so the turn context remembers
+// what it already reported and the console shows one finish per sub-agent run.
+function firstNotificationSighting(context, notification, content) {
+  if (!context.agentNotifications) {
+    context.agentNotifications = new Set();
+  }
+  const key = `${notification.agentId}|${notification.toolUseId}|${notification.status}|${String(content || '').length}`;
+  if (context.agentNotifications.has(key)) {
+    return false;
+  }
+  context.agentNotifications.add(key);
+  return true;
 }
 
 export function consumeClaudeStreamMessage(message, context) {
   const emitted = [];
+  if (message.type === 'queue-operation') {
+    const notification = parseAgentTaskNotification(message.content);
+    if (notification && firstNotificationSighting(context, notification, message.content)) {
+      emitted.push({
+        event: {
+          type: 'claude/agent-finished',
+          provider: 'claude',
+          toolUseId: notification.toolUseId,
+          agentId: notification.agentId,
+          status: notification.status,
+          summary: notification.summary,
+          agentName: notification.agentName,
+        },
+        message: notification.summary
+          || `Sub-agent ${notification.agentName || notification.agentId} finished.`,
+      });
+    }
+  }
   if (message.type === 'assistant') {
     for (const block of message.message?.content || []) {
       if (block.type === 'tool_use' && block.id) {
@@ -116,7 +257,9 @@ export function consumeClaudeStreamMessage(message, context) {
         context.tools.set(block.id, item);
         emitted.push({
           event: { type: 'item/started', provider: 'claude', item },
-          message: `${item.type === 'commandExecution' ? 'Running' : 'Claude started'}: ${block.name || 'tool'}`,
+          message: item.subAgent
+            ? `Claude started sub-agent ${subAgentLabel(item)}.`
+            : `${item.type === 'commandExecution' ? 'Running' : 'Claude started'}: ${block.name || 'tool'}`,
         });
       } else if (block.type === 'text' && block.text?.trim()) {
         emitted.push({
@@ -140,13 +283,14 @@ export function consumeClaudeStreamMessage(message, context) {
       if (!item) {
         continue;
       }
-      const completedItem = completedToolItem(item, block);
+      const completedItem = completedToolItem(item, block, message);
       context.tools.delete(block.tool_use_id);
       emitted.push({
         event: { type: 'item/completed', provider: 'claude', item: completedItem },
-        message: completedItem.type === 'commandExecution'
-          ? `Command ${completedItem.status}: ${completedItem.command}`
-          : `Claude ${completedItem.tool || 'file change'} ${completedItem.status}.`,
+        message: subAgentCompletionMessage(completedItem)
+          || (completedItem.type === 'commandExecution'
+            ? `Command ${completedItem.status}: ${completedItem.command}`
+            : `Claude ${completedItem.tool || 'file change'} ${completedItem.status}.`),
       });
     }
   }
@@ -186,6 +330,8 @@ export class ClaudeExecutionRunner {
     spawnProcess = spawn,
     sessions,
     wait = delay,
+    now = Date.now,
+    idleDiscoveryStaleLimitMs = 60_000,
     platform = process.platform,
     resolveTerminal = null,
     terminalExecutor = null,
@@ -194,10 +340,17 @@ export class ClaudeExecutionRunner {
     this.spawnProcess = spawnProcess;
     this.sessions = sessions;
     this.wait = wait;
+    this.now = now;
+    this.idleDiscoveryStaleLimitMs = idleDiscoveryStaleLimitMs;
     this.platform = platform;
     this.resolveTerminal = resolveTerminal;
     this.terminalExecutor = terminalExecutor
-      || new ClaudeTerminalExecutor({ sessions, wait, resolveTerminal });
+      || new ClaudeTerminalExecutor({
+        command,
+        sessions,
+        wait,
+        resolveTerminal,
+      });
     this.activeByTask = new Map();
     this.activeBySession = new Map();
   }
@@ -207,8 +360,26 @@ export class ClaudeExecutionRunner {
       return null;
     }
     let announced = false;
+    // A session cached as busy is served indefinitely while discovery keeps failing, because
+    // the registry now returns last-known-good instead of an empty list. Without a bound the
+    // task sits on "Waiting for the selected Claude session to become idle" forever. Track how
+    // long we have been reading stale data and fail clearly instead of hanging.
+    let staleSince = null;
     while (!active.cancelRequested) {
       const session = await this.sessions.readConnectedSession(task.thread_id);
+      if (this.sessions.stale) {
+        const timestamp = this.now();
+        if (staleSince === null) {
+          staleSince = timestamp;
+        } else if (timestamp - staleSince >= this.idleDiscoveryStaleLimitMs) {
+          throw new ClaudeExecutionError(
+            `Relay could not read live Claude session state for ${Math.round(this.idleDiscoveryStaleLimitMs / 1000)} seconds, so it never confirmed the terminal was free and typed nothing. Check that the Claude CLI responds to \`claude agents --json\`, then retry.`,
+            { retryable: false },
+          );
+        }
+      } else {
+        staleSince = null;
+      }
       if (!session) {
         throw new ClaudeExecutionError(
           'The selected Claude terminal is no longer open. Choose a live Claude session and retry.',
@@ -421,7 +592,35 @@ export class ClaudeExecutionRunner {
 
     try {
       const session = await this.waitForIdle(task, active, onEvent);
-      const terminal = await this.resolveTerminalTarget(session, active);
+      let terminal = await this.resolveTerminalTarget(session, active);
+      if (!terminal && task.require_terminal === true) {
+        throw new ClaudeExecutionError(
+          `Relay could not resolve the exact owned terminal for ${task.thread_name || task.thread_id}. Plan council did not run Claude headlessly. Launch a Claude Relay from this workspace, select it as the council author terminal, then retry.`,
+          { retryable: false },
+        );
+      }
+      if (terminal) {
+        const fallbackReason = this.headlessFallbackReason(task);
+        if (fallbackReason) {
+          if (task.require_terminal === true) {
+            throw new ClaudeExecutionError(
+              `Relay cannot type this Plan council stage into ${task.thread_name || task.thread_id}: ${fallbackReason} The stage was not run headlessly.`,
+              { retryable: false },
+            );
+          }
+          // A prompt that fails the deterministic pre-injection terminal checks (too large for
+          // the osascript argv, or containing a NUL byte) cannot be typed, but it ran fine
+          // headless via stdin before the terminal path existed. The check is pre-injection
+          // with nothing typed, so routing to the headless path here restores that capability
+          // with no risk of double execution (Issue 15). The headless path never touches argv
+          // with the prompt, so neither the size nor the NUL constraint applies to it.
+          onEvent({
+            event: { type: 'claude/progress', provider: 'claude', sessionId: task.thread_id },
+            message: `Relay is running this task headless instead of typing it into the ${task.thread_name || task.thread_id} terminal because ${fallbackReason}`,
+          });
+          terminal = null;
+        }
+      }
       const outcome = terminal
         ? await this.terminalExecutor.runTurn(task, active, session, terminal, { onEvent, onStderr })
         : await this.runHeadless(task, active, { onEvent, onStderr });
@@ -438,6 +637,16 @@ export class ClaudeExecutionRunner {
       if (this.activeByTask.get(taskKey) === active) this.activeByTask.delete(taskKey);
       if (this.activeBySession.get(task.thread_id) === active) this.activeBySession.delete(task.thread_id);
     }
+  }
+
+  // The reason this turn must run headless even though an owned terminal resolved, or null
+  // when the prompt is safe to type. Deterministic and pre-injection: an oversized or
+  // NUL-bearing prompt cannot travel as an osascript argv value, so Relay routes it to the
+  // headless stdin path instead of failing (Issue 15). Uses the same byte limit the executor
+  // would enforce so the routing decision and the executor's own backstop check agree.
+  headlessFallbackReason(task) {
+    const maxBytes = this.terminalExecutor?.maxPromptBytes;
+    return injectionPromptIssue(taskPrompt(task), maxBytes ? { maxBytes } : {});
   }
 
   // Decide whether this turn can run inside the interactive terminal on macOS. Returns the

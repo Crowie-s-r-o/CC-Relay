@@ -9,6 +9,9 @@ type: architecture
 > [!note]
 > The task-scope control uses the same compact bordered button treatment as the adjacent **Queue** and **History** view controls. It defaults to **All Relays** within the selected Launchpad project and offers **This Relay** only as an explicit temporary filter, as documented in [[task-history]].
 
+> [!important]
+> Current backends advertise `capabilities.disposableTerminalPools`. In that mode the composer shows per-project Codex and Claude maximum instance controls instead of a live terminal picker. References below to a selected Relay, immediate finished-task follow-up, manual assignment, or the parallel batch bar describe the legacy persistent-task compatibility path unless stated otherwise. See [[disposable-terminal-pools]].
+
 The Relay UI follows the supplied `Relay.html` reference at its 1680 by 1180 desktop target. The main visual system uses bundled local copies of Instrument Sans, Source Serif 4, and JetBrains Mono, blue interaction states, white rounded panels, and a navy execution console.
 
 The Electron window enforces a 100 percent page zoom and blocks Command or Control zoom shortcuts. The compact reference dimensions assume normal zoom; allowing the window to retain a 200 percent zoom makes project cards and every neighboring control appear twice their intended size.
@@ -37,7 +40,7 @@ The center of the application header is a global monitoring rail, not a connecti
 
 Each compact card shows the task number, project, Relay or Claude session, live duration, prompt, and latest recorded agent response. `src/running-task-feed.mjs` selects only Codex `agentMessage` and Claude `claude/message` events, so command output, tool protocol, and hidden reasoning never replace the response preview. A task without an agent message says **Waiting for the first agent response**. Clicking a card selects its pinned project when available, returns to Queue and All Relays, and opens the task's complete Task Activity view.
 
-The rail scrolls horizontally instead of compressing or dropping running tasks. Its empty state is the single neutral **No tasks running** message. Generic running markers and the card edge remain purple. Codex response ownership is blue, and only Claude response ownership uses the reserved orange. At 1344px and below the rail moves to its own full-width header row; narrow cards remain horizontally scrollable.
+The rail scrolls horizontally instead of compressing or dropping running tasks. Its empty state is the single neutral **No tasks running** message. A running card inherits the deterministic six-color identity of its project for its edge, live dot, task number, focus ring, and hover tint. Codex response ownership remains blue, and only Claude response ownership uses the reserved orange. At 1344px and below the rail moves to its own full-width header row; narrow cards remain horizontally scrollable.
 
 ## Execution ledger
 
@@ -59,9 +62,9 @@ The task header is intentionally dense: reduced inspector padding, a 20px task t
 
 The terminal has no title header. Runtime state lives in the slim metrics strip, the compact filter toolbar, and the tmux status bar. Scrollback lines use a small left gutter line number and dense monospace type. This is intentionally an information-dense monitoring surface rather than a presentation card.
 
-Direct tasks place a compact **Continue session** command dock below the event scrollback, styled as the shell input prompt line with a green `❯` caret and the near-black terminal surface. Its context line names the original Relay, provider, model, and effort; its state pill distinguishes sends now, updates current, sending now, terminal busy, restart required, live update unavailable, and session offline. There is no queued state. The multiline `textarea` expands only to 92px, Enter sends, and Shift+Enter adds a line. It remains editable while submission is unavailable and is disabled only during an active request. Codex uses blue and Claude uses its reserved orange identity accent. The dock is hidden for Plan council and Turbo.
+Direct tasks place a compact **Continue session** command dock below the event scrollback, styled as the shell input prompt line with a green `❯` caret and the near-black terminal surface. Its context line names the conversation, provider, model, and effort. A finished disposable task shows **Resume available** even after its terminal has closed. Sending creates a linked queue task, while **Conversation busy** prevents two queued or running owners of the same saved conversation. The multiline `textarea` expands only to 92px, Enter sends, and Shift+Enter adds a line. It remains editable while submission is unavailable and is disabled only during an active request. Codex uses blue and Claude uses its reserved orange identity accent. The dock is hidden for Plan council and Turbo.
 
-Finished-task submission requires `capabilities.taskDirectFollowUp` and calls the dedicated `/api/tasks/:id/follow-up` route. When current UI assets run against an older backend, the dock shows **Restart required** and disables Send instead of calling the ordinary Execute endpoint. Running Codex steering is separately gated by `capabilities.taskSteering`. These independent gates let a hot-loaded renderer preserve safe active-turn steering without exposing the older finished-task queue behavior.
+Finished disposable submission requires `capabilities.resumableDisposableSessions` and calls `/api/tasks/:id/follow-up`, which returns the linked task. Finished legacy submission requires `capabilities.taskDirectFollowUp` and starts the next turn in the original live session. When current UI assets run against an older backend, the dock shows **Restart required** and disables Send instead of calling the ordinary Execute endpoint. Running Codex steering is separately gated by `capabilities.taskSteering`.
 
 Task-detail requests use `taskLoadSequence`. A newer card selection invalidates every older in-flight detail response, and the continuation dock hides while selection changes. Without this guard, polling and a fast user selection can resolve out of order and expose a follow-up input bound to a different task than the selected card.
 
@@ -110,7 +113,7 @@ The composer accepts up to 99 reference images per task. The independent safety 
 > The terminal must give each sub-surface (`.events-section`, `.event-metrics`, `.event-toolbar`, `.event-list`, and `pre.event-output-content`) its OWN opaque dark background, not rely on one container background showing through. A dark dock and status bar sitting over a white metrics row, toolbar, event list, or command output is the signature of a missing terminal override or partially cached `style.css`. Opaque per-surface backgrounds keep the terminal dark even under a partial cache. When the terminal looks white, hard-refresh (Cmd+Shift+R) or restart Electron before assuming a CSS regression.
 
 > [!important]
-> A running Codex task uses the structured app-server `turn/steer` protocol against its exact active turn. A non-running direct task starts the next provider turn against the exact session immediately. Neither path sends raw keystrokes into Terminal.app or creates queue work.
+> A running Codex task uses the structured app-server `turn/steer` protocol against its exact active turn. A non-running disposable task creates linked queue work that relaunches and resumes the saved conversation. Only the legacy persistent path starts the next turn against an already open session immediately.
 
 ## Execution settings
 
@@ -120,7 +123,7 @@ All model selectors listen to `input`, not `change`. Direct execution, Plan coun
 
 The composer has two workflow tabs: **Execute** and **Forward-planning Turbo**. Plan council is not a standalone tab. Execute contains an unchecked **Use Plan council for this prompt** option that reveals its Claude author, Codex reviewer, Claude revision route and readiness row. The copy states that this creates a reviewed read-only plan instead of direct execution. Enabling it selects Codex for the required review Relay, hides direct model and effort controls, and changes the primary action to **Build reviewed plan**. Provider tabs remain interactive. Choosing Claude turns Execute Plan council off and continues as direct Claude execution. Leaving Execute or successfully submitting also resets the option to off.
 
-Direct Model and Effort state belongs to the selected Relay terminal, not merely to its provider. `threadExecutionSettings` retains the exact pair independently for each Codex or Claude session. Switching terminals commits the new terminal ID before rendering controls, so returning to a terminal restores its own slider position. An explicit change also updates the provider fallback used when Relay discovers a new terminal.
+In automatic mode, direct Model and Effort state belongs to the selected provider inside the active project's composer snapshot. Fresh tasks have no terminal ID to own settings. The legacy compatibility path keeps `threadExecutionSettings` independently for each live Codex or Claude session.
 
 The Effort slider updates terminal state during the `input` event. At direct submission, Relay maps the rendered slider index through its `data-values` array and copies the resulting effort string back to terminal state before building the request. The server then validates that exact model and effort pair against the corresponding provider catalog.
 
@@ -128,7 +131,7 @@ Submission snapshots the visible Model and Effort before awaiting idle-Relay dis
 
 Terminal execution settings carry a provenance of `default`, `task`, or `user`. Initial rendering may create a `default` entry before task history finishes loading. `hydrateThreadExecutionSettings()` must replace that provisional value with the newest persisted Execute task for the terminal. A `user` entry represents a new unsent choice and must never be overwritten by history polling. A successful submission changes it to the server-confirmed `task` value and records the task ID for monotonic hydration.
 
-Direct execution presents Model and Effort as compact horizontal controls directly below the Relay picker. This ordering makes the selected Relay the context for the settings that follow. Each control keeps its short identifier and hint on the left while the interactive surface occupies the remaining width. The model select is 28px tall, while the slider retains its value and step markers.
+Direct execution presents Model and Effort as compact horizontal controls below the automatic pool controls, or below the Relay picker on a legacy backend. Each control keeps its short identifier and hint on the left while the interactive surface occupies the remaining width. The model select is 28px tall, while the slider retains its value and step markers.
 
 The slider footer shows only the current effort name on the left and one compact dot per supported effort on the right. Do not render every effort name across the footer because six-value model catalogs overflow the compact card. Each dot may expose its name as a title, while the range input reports the selected name through `aria-valuetext`.
 
@@ -143,18 +146,16 @@ The slider footer shows only the current effort name on the left and one compact
 
 ## Terminal launch layout controls
 
-The composer exposes compact **Launch Codex** and **Launch Claude** actions beside **Settings**. The old provider switcher is not visible. In direct Execute mode, Codex and Claude sessions share one Relay picker; selecting a session makes its provider authoritative and immediately swaps the Model and Effort controls to that provider. Turbo shows only eligible Codex Relays. Execute Plan council also shows interactive Claude sessions for launch feedback, but only its Codex review Relays are selectable. Settings opens a native dialog containing the selected provider's launch command, copy and diagnostic actions, and window-layout controls.
+On a current backend, the composer shows Codex and Claude provider tabs plus per-project maximum instance inputs. It shows each provider's active count and does not require a live Relay selection. A fresh task waits for capacity, launches the terminals required by its workflow, and closes those exact owned launches when it ends. **Settings** still opens the native dialog for launch layout and diagnostics. The project launchpad retains manual **Launch Codex** and **Launch Claude** actions for interactive sessions.
 
-A dedicated **Close selected terminal** row sits directly beneath the Relay cards and is never hidden. It names the selected session and shows the complete availability reason inline. An older running backend labels the disabled action **Restart required** and explains that macOS can inspect existing one-tab Terminal sessions after restart. A current but unverifiable, ambiguous, or multi-tab session explains that native identity is unavailable. Task-protected sessions show the blocking task reason. Only an idle session with an exact native handle enables the red-outline action. During the request it reads **Closing** and cannot be submitted twice. The button, label, and reason are derived by `public/terminal-close-state.js`, whose pure-state tests protect all visible states.
+The former shared Relay picker, composer launch buttons, and **Close selected terminal** row are compatibility UI for a backend without `capabilities.disposableTerminalPools`. In that view the close row names the selected session, explains its complete availability reason, and permits closure only for an idle session with an exact native handle. The button, label, and reason are derived by `public/terminal-close-state.js`, whose pure-state tests protect all visible states.
 
-Plan council invokes Claude author and revision stages through the signed-in non-interactive Claude CLI. It does not route those stages through an interactive Claude session. Its terminal picker keeps Codex Relays as the only selectable review targets, while connected interactive Claude sessions remain visible as disabled **Execute only** entries. Launching or discovering an interactive Claude session while Plan council is enabled must not replace the selected Codex provider or Relay or turn the council off. Picker copy states that the signed-in Claude CLI authors and revises automatically.
+Plan council shows the selected project's Claude and Codex capacity. It needs one slot from each provider and launches both terminals as one atomic workflow reservation. The legacy composer exposes separate Claude author and Codex reviewer terminal selectors only when the automatic pool capability is absent.
 
-Task Activity presents the saved draft, independent review, and final revision as separate readable sections, but only the final revision becomes the canonical Markdown artifact. The final section always shows its exact `plan.md` path. A current backend adds **Open plan.md**; an older backend keeps the row visible as **Restart to open**. Immediately below it, an **Execute reviewed plan** panel lists every opened same-workspace Codex and Claude Relay in a native select and names the provider and Relay on its button. Failed tasks retain the capability-gated **Resume on Relay n** action. Selector options, button copy, and disabled reasons update when terminal discovery or authentication changes.
+Task Activity presents the saved draft, independent review, and final revision as separate readable sections, but only the final revision becomes the canonical Markdown artifact. The final section always shows its exact project-local `plan.md` path. A current backend adds **Open plan.md**; an older backend keeps the row visible as **Restart to open**. When the final plan exists, a cool-blue step **04** appears immediately after the council stage rail, before the long plan sources. It contains a Codex or Claude provider choice and queues execution through the selected project's disposable pool. The detail header repeats **Execute plan** as a shortcut that scrolls to the handoff and focuses its actionable control. A failed disposable council retry also relaunches and resumes its saved provider conversations through the pool.
 
 > [!important]
-> Do not hide interactive Claude sessions when Execute Plan council is enabled. Hiding them made a successful launch look like failed discovery, and switching to Turbo appeared to repair it only because that workflow disabled the Execute council. Keep the session visible but non-selectable so the routing contract stays truthful.
-
-The two launch actions live in the terminal section heading row, aligned opposite **Run in terminal**. They must not render as a separate footer below the Relay cards, because that reserves unnecessary vertical space in the composer.
+> Do not reintroduce a required live-terminal picker into the current composer. New work is assigned to a project and provider pool. Existing sessions appear only in the legacy compatibility path and task history.
 
 The terminal window grid controls in the settings dialog use a two-level layout. A full-width heading row contains the grid enable switch, followed by compact column and row inputs and a flexible monitor selector. This keeps the switch label readable and gives the monitor name the remaining width without allowing it to crowd the other controls. Below 760px, the monitor selector moves to its own row.
 
@@ -258,4 +259,216 @@ App-chrome controls share one quiet 140ms color and shadow transition so hover, 
 > [!important]
 > Residual green hover rules must be edited in place, never appended at end of file. `.mode-tab:hover` and `.mode-tab.selected` share specificity, as do `.terminal-option:hover` and its `relay-color` and `.selected` overrides. Because the green hover sits before the later blue selected rule, source order keeps the blue selected border while hovering a selected tab or terminal. An appended equal-specificity `:hover` would come after the selected rule and silently drop that accent on hover. Genuinely new rules (the `--blue` and `--muted` aliases, the danger and header hovers, the primary shadow, and the shared transition) are appended because no competing declaration exists.
 
-#relay #ui #layout #resizing #design
+## Round 2 layout revisions
+
+A second design round restructured the three areas the operator called out ("the tasks in header are terrible, the launchpad also, I need much more space there in the launchpad") beyond CSS, into markup, while every capability and DOM contract was preserved.
+
+**Header running-task monitor.** The rail is no longer a persistent bordered pill. `.header-running-tasks` is now a transparent horizontal scroll track, so its empty state is a compact content-hugging `.header-running-empty` chip (a hollow dot plus **No tasks running**) that reads as a quiet status line rather than a large void, at every width. At and below 1344px the rail moves to its own row and the empty chip stays left-aligned so the full-width row cannot become a new empty band. A running card is a three-tier grid: a mono meta line (`#256`, project · Relay, live duration), the prompt as its title, and the latest agent response tagged with its provider. `.header-running-response` and `data-running-task-id` stay intact (composer-workflows asserts them); the old `.header-running-task-topline` and bare `> strong` classes were renamed to `.header-running-meta`, `.header-running-loc`, and `.header-running-prompt`, updated in both the stylesheet and `renderHeaderRunningTasks`. Project identity color owns the edge, live dot, and task number; provider tags stay blue for Codex and reserved orange for Claude. The desktop header is 84px high so the three-tier card fits without stealing meaningful workspace.
+
+**Launchpad as a compact card rail.** The dock uses a `.project-dock-bar` heading row above one horizontal `.project-list` rail. Each desktop `.project-chip` is exactly 42px high and 330px wide. Its grid areas are `head activity close`: initial, colored name, and path on the left; status-led activity in the center; and unpin fixed to the far-right edge. Project cards contain no Codex or Claude launch actions. Activity always exposes a concise state first, then the relevant task detail. The project name, tile, selected outline, and header task share the collision-resolved color produced by `public/project-colors.js`; up to six pinned projects receive different palette slots. The rail scrolls horizontally when projects exceed the available width and hides vertical overflow, so a second card row cannot be clipped by the fixed dock. The project selection hooks and last-project unpin guard remain unchanged. Below 760px, each card fills the viewport while preserving the same far-right close column.
+
+**Vertical budget.** The compact desktop geometry is header `84px`, dock `104px`, `.workspace height: calc(100vh - 188px)`, and the legacy bounded `.task-list height: calc(100vh - 288px)`. These four must move as a set; the header plus dock total feeds both viewport offsets.
+
+> [!warning]
+> Reducing only the dock height is not a valid compacting strategy. The failed 124px revision retained two-row project cards and clipped their activity and launch controls at the dock boundary. Card structure and viewport offsets must be changed with the dock height.
+
+**Launchpad cascade consolidation.** Rather than stack a fifth override layer, the operative launchpad CSS was consolidated into the base `.project-*` block and the conflicting 2026 project overrides were deleted (only the neutral `.project-dock-actions .button` height and the `#add-launch-project-button` accent were kept). The stale horizontal-flex responsive project rules in the older `max-width: 1180px` and `max-width: 760px` blocks were removed since the grid handles wrapping.
+
+**Composer and queue polish (light touch).** `.mode-tab strong` now wraps instead of truncating, so **Forward-planning turbo** always reads in full while `.mode-tab small` still ellipsizes. The queue heading no longer wraps: `.queue-panel > .section-heading` gains `flex-wrap: wrap` and its `h2` is fixed at `23px` with `white-space: nowrap`, so **Task queue** stays on one line and the Queue/History and scope controls drop to their own row only when the middle column is tight. The protected Plan council shell, execution controls, and terminal picker were left structurally intact.
+
+## Composer add-task reliability
+
+Adding a task must always work and must feel immediate. Four separate things in the
+composer could block it, lose it, or make it look frozen. All four are fixed, and the fixes
+constrain future edits.
+
+**Submit is gated on input validity only.** `composerValidationIssue` disables the button
+for an empty prompt, no selected Relay, or attachments over the limits, and for nothing
+else. It deliberately never reads `state.threads`.
+
+> [!warning]
+> Do not reintroduce liveness into the submit gate. `state.threads` is replaced wholesale
+> every four seconds and on every SSE `threads` change, so gating on it made the button
+> flicker to disabled and produced **Choose a connected terminal before sending** for a
+> session that was in fact connected. Plan council readiness and the Turbo worker count are
+> validated at submit time, where the message can be exact and a stale process list cannot
+> block a valid prompt.
+
+**A submission in flight owns the Relay selection.** `renderThreads` reads
+`state.submitting` into `selectionLocked` and, while a submission is pending, only paints.
+It does not reassign `state.selectedThreadId` and does not flip `state.selectedProvider`.
+Before this, a background poll landing between Enter and the POST could send the task to a
+different Relay than the one the user picked, and the pre-POST idle settle loop, which
+polls threads itself, could do it too. That loop now refreshes with
+`loadThreads({ render: false })`.
+
+**The prompt survives failure.** Nothing inside the submit `try` clears the prompt or the
+attachments. The POST result is captured into `createdTask`, and only after
+`if (!createdTask) return` does the composer clear and the refresh run. The refresh uses
+its own `catch` writing to `#queue-summary`.
+
+> [!important]
+> `await load()` must never sit inside the submit `try`. It previously did, after the
+> prompt had already been cleared, so a refresh hiccup reported a task that had been
+> created successfully as a failed add and the user lost their text at the same time.
+
+The refresh is `load({ fresh: true })`. Concurrent refreshes still deduplicate, but a
+caller that has just written chains a new snapshot after the in-flight one instead of
+joining it, because a snapshot requested before the task existed does not contain it and
+`loadSnapshot` would then discard the new selection.
+
+**Failures have their own region.** `#composer-alert` sits inside `#task-form` above the
+footer, `role="status"` and `aria-live="polite"`, hidden when empty. `#form-message` remains
+a shared channel written by terminal launch, terminal close, diagnostics, and the plan
+council toggles, so a submit failure written there could be overwritten by unrelated
+activity. `setComposerAlert` takes a kind: a `validation` complaint clears as the user fixes
+it, a `failure` from the server stays visible until the next attempt, because it is the only
+record that the prompt still in the box was never accepted.
+
+**Requests are bounded.** `api()` carries an `AbortController` with a 20 second default and
+45 seconds for task creation, which also accepts image data. Without it a hung fetch left
+`state.submitting` true forever: the button stuck on **Adding task**, Enter a silent no-op,
+and no recovery except a reload.
+
+**In-flight feedback.** `#task-form[data-pending="true"]` softens the prompt field and the
+attachment composer and sets a progress cursor on the button, and the form carries
+`aria-busy`. The prompt stays editable so nothing typed is lost.
+
+> [!note]
+> The in-flight disable and the quiet no-op on a repeated Enter are deliberate and stay.
+> They are progress, not a rejection. Removing them reintroduces the false missing-terminal
+> report from task 274, recorded in [[task-history]]. Equally, a successful submission still
+> selects the new task and opens its details; the rule about not moving the activity panel
+> applies to background refreshes, not to the user's own submit.
+
+**The retry keeps its identity.** The submission signature identifies the intent, the
+prompt and the routing that carries it, and deliberately excludes `runNow` and
+`preferIdleTerminal`. Ctrl+Enter, an ambiguous failure, then a plain Enter retry is one
+intent and reuses one UUID, so a first POST whose response was merely lost cannot become a
+second task. The rule lives in `public/submission-intent.js` and is unit tested. See
+[[duplicate-submission-review]].
+
+**Idle routing has two implementations.** When the backend advertises
+`capabilities.dispatchIdleRouting`, the browser posts immediately with the user's visibly
+selected `threadId` plus a `preferIdleTerminal` boolean, and the server picks a free Relay
+at dispatch. The preference is off for Plan council and for Ctrl+Enter **Run now**, which
+keeps pinning to the selected Relay. An older backend keeps the client settle loop, which
+is the only thing that can delay task creation: it waits up to three seconds for a
+just-launched Relay to connect, so a task is not pinned to the busy Relay the user is
+looking at. `settleIdleSubmissionThread` and its two `IDLE_SETTLE_*` constants are written
+to be deleted in one piece once the capability is universal; it has a single call site.
+
+## Unknown is not unavailable
+
+Two backend states must never be rendered as an outage.
+
+**Boot-time provider probes.** Codex and Claude are both probed in the background after
+listen, so for the first moment after every Relay start `/api/status` reports
+`available: false` with `pending: true` on the provider object. The header pill renders
+that as the neutral `checking` state with **Checking Relay**, and `claudePlanIssue` returns
+**Checking the Claude CLI** before it will say the CLI is unavailable. Rendering pending as
+unavailable opened every launch with a false broken-backend banner. The checking dot needs
+no CSS: the base `.live-dot` is already neutral grey and only `online` and `offline`
+recolor it, which is why `index.html` ships with `data-state="checking"`.
+
+> [!important]
+> The checking state must not mask a genuine outage. It applies only while a provider is
+> still `pending`; once a probe answers with `pending: false` and `available: false` the
+> pill returns to **Relay unavailable**. Both transitions are covered by tests and were
+> confirmed against the running app.
+
+**Stale Claude discovery.** A failed `claude agents --json` probe no longer implies an
+empty session list. The registry keeps its last known good sessions, sets `lastError`, and
+marks itself stale, so sessions and an error now arrive together. The sessions stay listed
+and selectable and `claudeDiscoveryNote()` appends one quiet sentence to `#session-message`
+saying the list may be out of date and that Relay retries automatically. The frontend
+derives staleness from the error plus the presence of Claude sessions, so no extra API
+field was needed.
+
+See [[parallel-project-queues]] for what several simultaneously running tasks changed in the
+header counts, the inferred activity selection, and the parallel batch guard.
+
+## Planner dependency board
+
+The Planner dialog grew from `min(1060px, 100vw - 32px)` to `min(1400px, 100vw - 32px)`. A wave
+of steps carrying an editable title, an editable prompt, and a dependency picker does not fit the
+old width, and the surface stays inside the `terminal-settings-card` shell using only `planner-*`
+classes. See [[planner]].
+
+Steps render as compact dispatch tickets in the **same visual language as the Turbo graph**
+without reusing its selectors: a `auto auto minmax(0, 1fr) auto` grid of selection checkbox,
+circular state port, copy column, and quiet controls, with a uniform outline plus a soft surface
+tint per state and no colored left border. Waves are labeled groups; the wave currently executing
+carries `data-active="true"` and the running tint. State is never carried by color alone: the port
+glyph, the chip label, and the dependency sentence all change with it.
+
+Step status uses the established semantic palette exactly: running purple, complete green, failed
+red, blocked amber, cancelled neutral gray, queued blue. Orange is not borrowed, it remains Claude
+identity. `retrying` deliberately takes the running tone with its own label and an inset ring,
+because it is work still in flight rather than a failure.
+
+> [!important]
+> The app-wide `textarea` rule sets `min-height: 168px` for the composer prompt. Every compact
+> Planner input must opt out of it (`.planner-field textarea` and `.planner-step-prompt`), or a
+> three-row field renders as a tall empty block and one step ticket fills the dialog.
+
+> [!important]
+> Do not re-render the Planner board from the live poll. Board markup is rebuilt only when
+> `plannerBoardSignature` changes; the 2.5 second refresh calls a targeted updater that writes
+> `textContent` and `dataset` on existing nodes. Replacing `innerHTML` over a board full of
+> textareas destroys the caret, the IME composition, and the native undo history on every poll,
+> and it restarts the running spinner. The state port is the single exception and is rewritten
+> only when that step's status actually changed.
+
+Run progress is announced through one dedicated `#planner-run-announce` live region, written only
+when its sentence changes. `#planner-detail` carries no `aria-live`: it is replaced whenever the
+board structure changes, so making it a live region announces the entire dialog on every refresh.
+
+At 900px the ticket controls move to their own row below the copy, which is the same narrow-width
+behavior the Turbo dispatch tickets use. At 760px the plan sidebar moves above the detail and the
+run controls stack. At 480px the dependency picker becomes a single column, the wave heading wraps,
+and the plan brief shortens. The board never scrolls the dialog horizontally at any of these
+widths. The step spinner and the progress-bar transition stop under `prefers-reduced-motion`.
+
+## Provider tabs with integrated pool steppers
+
+The composer no longer repeats each provider twice. The former **Automatic terminal pool** block
+held two wide cards that showed the same icon, provider name, and usage count as the provider tabs
+directly above them. The per-project maximum now lives inside the provider tab itself, and the
+section below keeps only its heading row, **Settings**, the session message, and one quiet
+lifecycle sentence.
+
+Each entry in `#provider-tabs` is a `.agent-tab-shell` wrapper holding two independent siblings:
+
+1. `button.agent-tab` keeps `id="provider-codex"` or `id="provider-claude"`, `role="tab"`,
+   `aria-selected`, `aria-controls="terminal-panel"`, `data-provider`, the `selected` class, and the
+   roving `tabindex`. `renderProviderTabs()` and `selectedExecutionProvider()` still read exactly
+   these attributes, and `document.querySelectorAll('.agent-tab')` still returns only the buttons.
+2. `div.agent-tab-pool` holds the `Max` caption and `#max-codex-instances` or
+   `#max-claude-instances`.
+
+> [!important]
+> The stepper must stay a sibling of the tab button. A form control nested inside a button is
+> invalid markup and swallows its own events. As siblings, a click, focus, keystroke, or spinner
+> press on the stepper never reaches provider selection, and arrow keys inside the number field
+> never move between tabs.
+
+Enter inside a stepper is prevented and blurs the field instead. Both inputs sit inside
+`#task-form`, so an unguarded Return would implicitly submit the composer and queue the prompt.
+Blurring commits the value through the same `change` listener that saves the project limits.
+
+`.agent-tab-shell` paints the card frame, the hover state, and the selected border and tint through
+`:has()`. The selected provider name also takes its provider color, so selection never depends on
+`:has()` alone. `.agent-tabs` sizes itself with `repeat(auto-fit, minmax(184px, 1fr))`: the two
+cards sit side by side in a normal composer and stack to full width once the panel is narrower than
+about 378px, which covers the 360px composer minimum and the 420px page width without truncating
+the usage count.
+
+`#codex-pool-usage` and `#claude-pool-usage` still exist inside each stepper as `.sr-only`
+`aria-hidden` elements so `renderAutomaticTerminalPool()` keeps a valid write target. The visible
+count belongs to the tab, and nothing states it twice. `#terminal-pool-controls` survives as the
+single lifecycle sentence and keeps the `hidden` toggling that separates automatic and legacy
+modes. On a legacy backend the whole tab container is hidden, so the steppers disappear with it and
+the Relay picker path is untouched. See [[disposable-terminal-pools]] and [[project-workspaces]].
+
+#relay #ui #layout #resizing #design #composer #planner

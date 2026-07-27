@@ -14,10 +14,6 @@ function attachmentContext(task) {
     .join('\n')}`;
 }
 
-function attachmentPaths(task) {
-  return (task.attachments || []).map((attachment) => attachment.path);
-}
-
 export function authorPrompt(task) {
   return `You are the author in a two-agent implementation planning council.
 
@@ -98,6 +94,8 @@ function createPlanRecord(task, artifactPath) {
       provider: task.author_provider,
       model: task.author_model,
       effort: task.author_effort,
+      threadId: task.author_thread_id,
+      session: task.author_thread_name,
     },
     reviewer: {
       provider: task.reviewer_provider,
@@ -201,7 +199,33 @@ function normalizePlan(plan, task, artifactPath) {
     threadId: task.thread_id,
     session: task.thread_name,
   };
+  normalized.author = {
+    ...normalized.author,
+    threadId: task.author_thread_id,
+    session: task.author_thread_name,
+  };
   return normalized;
+}
+
+function claudeStageTask(task, prompt) {
+  if (!task.author_thread_id) {
+    throw new Error(
+      'Plan council needs a connected Claude author terminal. Choose a Claude Relay in this workspace and retry.',
+    );
+  }
+  return {
+    ...task,
+    prompt,
+    provider: 'claude',
+    thread_id: task.author_thread_id,
+    thread_name: task.author_thread_name || task.author_thread_id,
+    thread_source: task.author_thread_source || 'Claude interactive',
+    model: task.author_model,
+    effort: task.author_effort,
+    require_terminal: true,
+    terminal_permission_mode: 'plan',
+    terminal_tools: ['Read', 'Glob', 'Grep', 'AskUserQuestion'],
+  };
 }
 
 function requireStageText(value, stageId, provider) {
@@ -231,12 +255,14 @@ export class PlanCouncilRunner {
     claude,
     codex,
     artifacts,
+    terminalExecution = true,
     heartbeatMs = 30_000,
     stageTimeoutMs = 60 * 60_000,
   }) {
     this.claude = claude;
     this.codex = codex;
     this.artifacts = artifacts;
+    this.terminalExecution = terminalExecution;
     this.heartbeatMs = heartbeatMs;
     this.stageTimeoutMs = stageTimeoutMs;
     this.activeRunner = null;
@@ -289,12 +315,31 @@ export class PlanCouncilRunner {
     });
   }
 
-  persist(plan) {
-    plan.updatedAt = new Date().toISOString();
-    this.artifacts.writePlan(plan.taskId, plan);
+  runClaudeStage(task, prompt, phase, onEvent, onStderr) {
+    const callbacks = {
+      onEvent: (event) => this.providerEvent(onEvent, 'claude', phase, event),
+      onStderr,
+    };
+    if (this.terminalExecution) {
+      return this.claude.run(claudeStageTask(task, prompt), callbacks);
+    }
+    return this.claude.run(prompt, {
+      cwd: task.repo_path,
+      model: task.author_model,
+      effort: task.author_effort,
+      attachmentPaths: (task.attachments || []).map((attachment) => attachment.path),
+      owner: task.id,
+      ...callbacks,
+    });
   }
 
-  announceStage(callback, plan, stageId, status, message) {
+  persist(task, plan) {
+    plan.updatedAt = new Date().toISOString();
+    plan.artifactPath = this.artifacts.planPath(plan.taskId, task.repo_path);
+    this.artifacts.writePlan(plan.taskId, plan, { repoPath: task.repo_path });
+  }
+
+  announceStage(callback, task, plan, stageId, status, message) {
     const stage = plan.stages.find((item) => item.id === stageId);
     const definition = STAGES.find((item) => item.id === stageId);
     const timestamp = new Date().toISOString();
@@ -314,7 +359,7 @@ export class PlanCouncilRunner {
       plan.error = null;
       plan.failedStage = null;
     }
-    this.persist(plan);
+    this.persist(task, plan);
     callback({
       event: { type: 'plan/stage', provider: 'plan', phase: stageId, status },
       message,
@@ -322,7 +367,7 @@ export class PlanCouncilRunner {
   }
 
   loadPlan(task) {
-    const artifactPath = this.artifacts.planPath(task.id);
+    const artifactPath = this.artifacts.planPath(task.id, task.repo_path);
     const stored = this.artifacts.readPlan(task.id);
     if (!stored || !planMatchesTask(stored, task)) {
       return { plan: createPlanRecord(task, artifactPath), resumedStages: [] };
@@ -342,7 +387,7 @@ export class PlanCouncilRunner {
     const { plan, resumedStages } = this.loadPlan(task);
     this.activeTaskId = task.id;
     try {
-      this.persist(plan);
+      this.persist(task, plan);
       if (resumedStages.length > 0 && resumedStages.length < STAGES.length) {
         onEvent({
           event: {
@@ -358,17 +403,21 @@ export class PlanCouncilRunner {
       if (!plan.draft) {
         this.activeStageId = 'draft';
         this.activeRunner = this.claude;
-        this.announceStage(onEvent, plan, 'draft', 'running', 'Claude started the first plan draft.');
-        const draftResult = await this.monitorStage(this.claude.run(authorPrompt(task), {
-          cwd: task.repo_path,
-          model: task.author_model,
-          effort: task.author_effort,
-          attachmentPaths: attachmentPaths(task),
-          onEvent: (event) => this.providerEvent(onEvent, 'claude', 'draft', event),
-          onStderr,
-        }), onEvent, 'draft');
-        plan.draft = requireStageText(draftResult?.text, 'draft', 'Claude');
-        this.announceStage(onEvent, plan, 'draft', 'complete', 'Claude completed the first plan draft.');
+        this.announceStage(onEvent, task, plan, 'draft', 'running', 'Claude started the first plan draft.');
+        const draftResult = await this.monitorStage(
+          this.runClaudeStage(task, authorPrompt(task), 'draft', onEvent, onStderr),
+          onEvent,
+          'draft',
+        );
+        plan.draft = requireStageText(
+          draftResult?.finalResponse ?? draftResult?.text,
+          'draft',
+          'Claude',
+        );
+        if (task.author_thread_id) {
+          plan.author.threadId = draftResult?.sessionId || task.author_thread_id;
+        }
+        this.announceStage(onEvent, task, plan, 'draft', 'complete', 'Claude completed the first plan draft.');
         this.activeStageId = null;
         this.activeRunner = null;
       }
@@ -376,7 +425,7 @@ export class PlanCouncilRunner {
       if (!plan.review) {
         this.activeStageId = 'review';
         this.activeRunner = this.codex;
-        this.announceStage(onEvent, plan, 'review', 'running', 'Codex started reviewing the Claude draft.');
+        this.announceStage(onEvent, task, plan, 'review', 'running', 'Codex started reviewing the Claude draft.');
         const reviewResult = await this.monitorStage(this.codex.run({
           ...task,
           prompt: reviewerPrompt(task, plan.draft),
@@ -393,7 +442,7 @@ export class PlanCouncilRunner {
           'Codex',
         );
         plan.reviewer.threadId = reviewResult?.sessionId || task.thread_id;
-        this.announceStage(onEvent, plan, 'review', 'complete', 'Codex completed its independent review.');
+        this.announceStage(onEvent, task, plan, 'review', 'complete', 'Codex completed its independent review.');
         this.activeStageId = null;
         this.activeRunner = null;
       }
@@ -401,20 +450,27 @@ export class PlanCouncilRunner {
       if (!plan.finalPlan) {
         this.activeStageId = 'revision';
         this.activeRunner = this.claude;
-        this.announceStage(onEvent, plan, 'revision', 'running', 'Claude started revising the plan from Codex feedback.');
-        const finalResult = await this.monitorStage(this.claude.run(
-          revisionPrompt(task, plan.draft, plan.review),
-          {
-            cwd: task.repo_path,
-            model: task.author_model,
-            effort: task.author_effort,
-            attachmentPaths: attachmentPaths(task),
-            onEvent: (event) => this.providerEvent(onEvent, 'claude', 'revision', event),
+        this.announceStage(onEvent, task, plan, 'revision', 'running', 'Claude started revising the plan from Codex feedback.');
+        const finalResult = await this.monitorStage(
+          this.runClaudeStage(
+            task,
+            revisionPrompt(task, plan.draft, plan.review),
+            'revision',
+            onEvent,
             onStderr,
-          },
-        ), onEvent, 'revision');
-        plan.finalPlan = requireStageText(finalResult?.text, 'revision', 'Claude');
-        this.announceStage(onEvent, plan, 'revision', 'complete', 'Claude completed the final reviewed plan.');
+          ),
+          onEvent,
+          'revision',
+        );
+        plan.finalPlan = requireStageText(
+          finalResult?.finalResponse ?? finalResult?.text,
+          'revision',
+          'Claude',
+        );
+        if (task.author_thread_id) {
+          plan.author.threadId = finalResult?.sessionId || task.author_thread_id;
+        }
+        this.announceStage(onEvent, task, plan, 'revision', 'complete', 'Claude completed the final reviewed plan.');
         this.activeStageId = null;
         this.activeRunner = null;
       }
@@ -423,7 +479,7 @@ export class PlanCouncilRunner {
       plan.error = null;
       plan.failedStage = null;
       plan.completedAt = plan.completedAt || new Date().toISOString();
-      this.persist(plan);
+      this.persist(task, plan);
       onEvent({
         event: {
           type: 'plan/completed',
@@ -452,7 +508,7 @@ export class PlanCouncilRunner {
         stage.status = plan.status;
         stage.error = failure.message;
       }
-      this.persist(plan);
+      this.persist(task, plan);
       throw failure;
     } finally {
       this.activeRunner = null;

@@ -5,6 +5,14 @@ function normalizedProjectPath(path) {
   return String(path || '').replace(/[\\/]+$/, '').replaceAll('\\', '/');
 }
 
+/**
+ * True when a task has reached a terminal state and can no longer produce work.
+ * Shared so callers cannot drift from the set the history statistics already use.
+ */
+export function isFinishedTaskStatus(status) {
+  return FINISHED_STATUSES.has(status);
+}
+
 export function tasksForScope(tasks, { projectPath = null, taskScope = 'workspace', threadId = null } = {}) {
   if (!projectPath) return [];
   const projectTasks = tasks.filter((task) => normalizedProjectPath(task.repo_path) === normalizedProjectPath(projectPath));

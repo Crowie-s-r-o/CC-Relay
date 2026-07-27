@@ -32,6 +32,26 @@ test('continuation drafts stay editable while their session is offline', () => {
   });
 });
 
+test('a finished disposable task can queue a resumable continuation while its terminal is closed', () => {
+  assert.deepEqual(continuationPresentation({
+    supportsDirectFollowUp: true,
+    sessionConnected: false,
+    resumableSession: true,
+    busy: false,
+    taskRunning: false,
+    provider: 'claude',
+    submitting: false,
+    prompt: 'Continue here',
+  }), {
+    state: 'ready',
+    label: 'Resume available',
+    buttonLabel: 'Resume session',
+    hint: 'Relay will queue a linked task, launch a disposable terminal when a slot is free, and resume this conversation.',
+    inputDisabled: false,
+    sendDisabled: false,
+  });
+});
+
 test('an older backend never falls back to creating a queue task', () => {
   const presentation = continuationPresentation({
     supportsDirectFollowUp: false,

@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 function writeFileAtomically(filePath, content) {
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
@@ -30,7 +30,10 @@ export class ArtifactStore {
     return join(this.rootPath, String(taskId));
   }
 
-  planPath(taskId) {
+  planPath(taskId, repoPath = null) {
+    if (typeof repoPath === 'string' && repoPath.trim()) {
+      return resolve(repoPath, '.data', 'tasks', String(taskId), 'plan.md');
+    }
     return join(this.taskDirectory(taskId), 'plan.md');
   }
 
@@ -38,10 +41,12 @@ export class ArtifactStore {
     const directory = this.taskDirectory(task.id);
     mkdirSync(directory, { recursive: true });
     const execution = task.mode === 'plan'
-      ? `Mode: plan council\n\nAuthor: ${task.author_provider} / ${task.author_model} / ${task.author_effort}\n\nReviewer: ${task.reviewer_provider} / ${task.reviewer_model} / ${task.reviewer_effort}`
+      ? `Mode: plan council\n\nAuthor: ${task.author_provider} / ${task.author_model} / ${task.author_effort}\n\nAuthor terminal: \`${task.author_thread_id || 'unassigned'}\` / ${task.author_thread_name || 'unassigned'}\n\nReviewer: ${task.reviewer_provider} / ${task.reviewer_model} / ${task.reviewer_effort}`
       : task.mode === 'turbo'
         ? `Mode: forward-planning turbo\n\nPlanner: ${task.turbo?.plannerModel} / ${task.turbo?.plannerEffort}\n\nWorkers: ${task.turbo?.workerCount} / ${task.turbo?.workerModel} / ${task.turbo?.workerEffort}${(task.turbo?.council?.enabled || task.turbo?.councilEnabled) ? `\n\nCouncil: ${(task.turbo?.council?.order || ['codex', 'claude']).map((provider) => provider === 'claude' ? 'Claude' : 'Codex').join(' → ')}\nAuthor: ${task.turbo?.council?.authorModel || 'configured model'} / ${task.turbo?.council?.authorEffort || 'model default'}\nReviewer: ${task.turbo?.council?.reviewerModel || 'configured model'} / ${task.turbo?.council?.reviewerEffort || 'model default'}\nCouncil status: pending` : ''}`
-      : `Mode: execute\n\nProvider: ${task.provider || 'codex'}\n\nModel: ${task.model || 'session default'}\n\nEffort: ${task.effort || 'model default'}\n\nContext: resume selected session`;
+      : `Mode: execute\n\nProvider: ${task.provider || 'codex'}\n\nModel: ${task.model || 'session default'}\n\nEffort: ${task.effort || 'model default'}\n\nContext: ${task.terminal_lifecycle === 'disposable'
+        ? task.continued_from_task_id ? 'launch disposable terminal and resume saved conversation' : 'launch fresh disposable terminal'
+        : 'resume selected session'}`;
     const attachments = Array.isArray(task.attachments) ? task.attachments : [];
     const attachmentSection = attachments.length > 0
       ? `\n\n## Reference images\n\n${attachments.map((item) => `- ${item.name} (${item.mimeType}, ${item.size} bytes)`).join('\n')}`
@@ -59,6 +64,17 @@ export class ArtifactStore {
     const content = readFileSync(path, 'utf8')
       .replace(/^Thread: `.*`$/m, `Thread: \`${task.thread_id}\``)
       .replace(/^Session: .*$/m, `Session: ${task.thread_name}`);
+    writeFileSync(path, content, 'utf8');
+  }
+
+  updateCouncilAuthorAssignment(task) {
+    const path = join(this.taskDirectory(task.id), 'task.md');
+    if (!existsSync(path)) return;
+    const content = readFileSync(path, 'utf8')
+      .replace(
+        /^Author terminal: `.*` \/ .*$/m,
+        `Author terminal: \`${task.author_thread_id || 'unassigned'}\` / ${task.author_thread_name || 'unassigned'}`,
+      );
     writeFileSync(path, content, 'utf8');
   }
 
@@ -119,16 +135,26 @@ export class ArtifactStore {
     return metadata;
   }
 
-  writePlan(taskId, plan) {
+  writePlan(taskId, plan, { repoPath = null } = {}) {
     const directory = this.taskDirectory(taskId);
+    const artifactPath = this.planPath(taskId, repoPath);
+    const legacyArtifactPath = this.planPath(taskId);
+    const storedPlan = { ...plan, artifactPath };
     mkdirSync(directory, { recursive: true });
-    writeFileAtomically(join(directory, 'plan.json'), `${JSON.stringify(plan, null, 2)}\n`);
+    writeFileAtomically(join(directory, 'plan.json'), `${JSON.stringify(storedPlan, null, 2)}\n`);
     const finalPlan = typeof plan.finalPlan === 'string' ? plan.finalPlan.trim() : '';
     if (plan.status === 'complete' && finalPlan) {
-      writeFileAtomically(this.planPath(taskId), `${finalPlan}\n`);
+      mkdirSync(dirname(artifactPath), { recursive: true });
+      writeFileAtomically(artifactPath, `${finalPlan}\n`);
+      if (legacyArtifactPath !== artifactPath) {
+        rmSync(legacyArtifactPath, { force: true });
+      }
       rmSync(join(directory, 'result.md'), { force: true });
     } else {
-      rmSync(this.planPath(taskId), { force: true });
+      rmSync(artifactPath, { force: true });
+      if (legacyArtifactPath !== artifactPath) {
+        rmSync(legacyArtifactPath, { force: true });
+      }
     }
   }
 
@@ -164,20 +190,30 @@ export class ArtifactStore {
     writeFileSync(join(directory, 'error.txt'), `${error.trim()}\n`, 'utf8');
   }
 
-  clearOutcome(taskId, { preservePlan = false, preserveTurboPlan = false } = {}) {
+  clearOutcome(taskId, {
+    preservePlan = false,
+    preserveTurboPlan = false,
+    repoPath = null,
+  } = {}) {
     const directory = this.taskDirectory(taskId);
     rmSync(join(directory, 'result.md'), { force: true });
     rmSync(join(directory, 'error.txt'), { force: true });
     if (!preservePlan) {
       rmSync(join(directory, 'plan.json'), { force: true });
       rmSync(this.planPath(taskId), { force: true });
+      if (repoPath) {
+        rmSync(this.planPath(taskId, repoPath), { force: true });
+      }
     }
     if (!preserveTurboPlan) {
       rmSync(join(directory, 'turbo-plan.json'), { force: true });
     }
   }
 
-  deleteTask(taskId) {
+  deleteTask(taskId, { repoPath = null } = {}) {
+    if (repoPath) {
+      rmSync(this.planPath(taskId, repoPath), { force: true });
+    }
     rmSync(this.taskDirectory(taskId), { recursive: true, force: true });
   }
 }

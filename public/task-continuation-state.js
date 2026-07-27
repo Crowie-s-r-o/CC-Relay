@@ -4,6 +4,7 @@ export function continuationPresentation({
   supportsDirectFollowUp,
   supportsTaskSteering,
   sessionConnected,
+  resumableSession = false,
   busy,
   taskRunning,
   provider,
@@ -23,7 +24,7 @@ export function continuationPresentation({
       sendDisabled: true,
     };
   }
-  if (!sessionConnected) {
+  if (!sessionConnected && !resumableSession) {
     return {
       state: 'offline',
       label: 'Session offline',
@@ -66,6 +67,16 @@ export function continuationPresentation({
     };
   }
   if (busy) {
+    if (resumableSession) {
+      return {
+        state: 'unavailable',
+        label: 'Conversation busy',
+        buttonLabel: 'Resume session',
+        hint: 'This conversation already has queued or running work. Continue after that task ends.',
+        inputDisabled: false,
+        sendDisabled: true,
+      };
+    }
     return {
       state: 'unavailable',
       label: 'Terminal busy',
@@ -73,6 +84,16 @@ export function continuationPresentation({
       hint: 'Finish or cancel the work using this terminal, then send again. Follow-ups are never queued.',
       inputDisabled: false,
       sendDisabled: true,
+    };
+  }
+  if (resumableSession) {
+    return {
+      state: 'ready',
+      label: 'Resume available',
+      buttonLabel: 'Resume session',
+      hint: 'Relay will queue a linked task, launch a disposable terminal when a slot is free, and resume this conversation.',
+      inputDisabled: false,
+      sendDisabled: !hasPrompt,
     };
   }
   return {

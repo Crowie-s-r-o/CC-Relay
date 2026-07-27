@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve } from 'node:path';
@@ -12,12 +12,17 @@ import {
 } from './attachments.mjs';
 import { ClaudeBinaryResolver } from './claude-binary.mjs';
 import { ClaudeExecutionRunner } from './claude-execution-runner.mjs';
-import { ClaudeRuntimeStatus } from './claude-runtime-status.mjs';
+import { ClaudeRuntimeStatus, isConfidentlyUnavailable } from './claude-runtime-status.mjs';
 import { ClaudeRunner } from './claude-runner.mjs';
 import { ClaudeSessionRegistry } from './claude-session-registry.mjs';
 import { CodexAppServer } from './codex-app-server.mjs';
+import { readCodexRuntimeStatus } from './codex-runtime-status.mjs';
 import { RelayDatabase } from './database.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
+import {
+  DisposableTerminalPool,
+  disposableTerminalRequirements,
+} from './disposable-terminal-pool.mjs';
 import { CLAUDE_MODELS, validateExecutionSettings } from './model-catalog.mjs';
 import { PlanCouncilRunner } from './plan-council-runner.mjs';
 import {
@@ -26,8 +31,29 @@ import {
   validatePlanExecution,
 } from './plan-execution.mjs';
 import { buildParallelCodexPrompt } from './parallel-batch.mjs';
-import { ProjectLauncher, claudeRelayCommand, shellQuote, validateProjectPath } from './project-launcher.mjs';
+import {
+  breakdownInProgress,
+  breakdownUpdateForDeletedTask,
+  breakdownUpdateForTask,
+  buildBreakdownPrompt,
+  buildRefinementPrompt,
+  MAX_BREAKDOWN_PROPOSALS,
+  sanitizeProposalGraph,
+} from './plan-breakdown.mjs';
+import { PlanRunCoordinator } from './plan-run.mjs';
+import {
+  ProjectLauncher,
+  claudeRelayCommand,
+  normalizeTerminalLayout,
+  shellQuote,
+  validateProjectPath,
+} from './project-launcher.mjs';
 import { TaskQueue } from './queue.mjs';
+import {
+  resolveSubmissionThread,
+  SESSION_NEVER_SEEN,
+  submissionSessionProvider,
+} from './session-resolution.mjs';
 import { buildSessionFollowUp } from './task-continuation.mjs';
 import { TerminalCloseCoordinator } from './terminal-close-coordinator.mjs';
 import { TerminalLaunchCoordinator } from './terminal-launch-coordinator.mjs';
@@ -36,7 +62,7 @@ import { TurboPlanCouncilReviewer } from './turbo-plan-council.mjs';
 import { validateTurboCouncilConfig } from './turbo-council-config.mjs';
 import { TurboRunner } from './turbo-runner.mjs';
 import { RelayRunner } from './relay-runner.mjs';
-import { runningTaskFeed } from './running-task-feed.mjs';
+import { AgentUpdateCache } from './running-task-feed.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_ROOT = join(APP_ROOT, 'public');
@@ -46,6 +72,7 @@ const DATA_ROOT = dataDirectoryIndex >= 0 && process.argv[dataDirectoryIndex + 1
   : join(APP_ROOT, '.data');
 const HOST = '127.0.0.1';
 const PORT = 4768;
+const PLAN_COUNCIL_TERMINAL_EXECUTION = process.platform === 'darwin';
 
 const diagnostics = new DiagnosticLog(join(DATA_ROOT, 'relay-diagnostics.jsonl'));
 const diagnostic = (event, details) => diagnostics.write(event, details);
@@ -77,6 +104,7 @@ const resolveClaudeTerminal = async (session) => {
     source: session.source,
   }]);
   if (!native || native.threadId !== session.id) return null;
+  if (!projectLauncher.refreshTerminalRuntimeIdentity(session.id, native)) return null;
   return {
     terminalWindowId: native.terminalWindowId,
     terminalTty: native.terminalTty,
@@ -90,11 +118,15 @@ const claudeExecution = new ClaudeExecutionRunner({
   resolveTerminal: resolveClaudeTerminal,
 });
 const planCouncil = new PlanCouncilRunner({
-  claude: claudeRunner,
+  claude: PLAN_COUNCIL_TERMINAL_EXECUTION ? claudeExecution : claudeRunner,
   codex: codexAppServer,
   artifacts,
+  terminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
 });
-const turboCouncilReviewer = new TurboPlanCouncilReviewer({ claude: claudeRunner });
+const turboCouncilReviewer = new TurboPlanCouncilReviewer({
+  claude: PLAN_COUNCIL_TERMINAL_EXECUTION ? claudeExecution : claudeRunner,
+  terminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
+});
 const turboRunner = new TurboRunner({ codex: codexAppServer, artifacts, councilReviewer: turboCouncilReviewer });
 const runner = new RelayRunner({
   codex: codexAppServer,
@@ -103,12 +135,34 @@ const runner = new RelayRunner({
   turbo: turboRunner,
 });
 const closingTerminalIds = new Set();
-const queue = new TaskQueue({
-  database,
-  artifacts,
-  runner,
-  isThreadAvailable: (threadId) => !closingTerminalIds.has(threadId),
-});
+
+function sameWorkspace(left, right) {
+  if (!left || !right) return false;
+  return resolve(left) === resolve(right);
+}
+
+// Candidate sessions for dispatch-time idle routing: same provider, same workspace, live
+// right now. Routing never crosses a workspace, so a routed task keeps its repo_path and
+// stays in the same project queue.
+//
+// Both registries deliberately swallow discovery failures and serve last-known-good, which is
+// exactly what makes task-add reliable. That same behaviour is wrong here: routing decides
+// where to send a task based on which sessions are IDLE, and a cached `status` from before the
+// outage is not evidence of anything. So when the forced refresh came back stale, report no
+// candidates. The queue then leaves the task on the session the user selected, which is the
+// documented behaviour and would otherwise be unreachable in production.
+async function idleSessionCandidates(task) {
+  if (!['codex', 'claude'].includes(task.provider)) return [];
+  if (task.provider === 'claude') {
+    const sessions = await claudeSessions.listSessions({ refresh: true });
+    if (claudeSessions.stale) return [];
+    return sessions.filter((session) => sameWorkspace(session.cwd, task.repo_path));
+  }
+  const threads = await codexAppServer.listConnectedThreads({ refresh: true });
+  if (codexAppServer.threadsStale) return [];
+  return threads.filter((thread) => sameWorkspace(thread.cwd, task.repo_path));
+}
+
 const projectLauncher = new ProjectLauncher({
   diagnostic,
   claudeBinary: claudeBinaryPath,
@@ -119,10 +173,28 @@ const projectLauncher = new ProjectLauncher({
 const terminalLaunchCoordinator = new TerminalLaunchCoordinator({
   launcher: projectLauncher,
   diagnostic,
+  threadIdForLaunch: (launchId) => codexAppServer.threadIdForLaunch(launchId),
   listSessions: (provider) => provider === 'codex'
     ? codexAppServer.listConnectedThreads()
-    : claudeSessions.listSessions(),
+    : claudeSessions.listSessions({ refresh: true }),
 });
+const disposableTerminalPool = new DisposableTerminalPool({
+  database,
+  artifacts,
+  coordinator: terminalLaunchCoordinator,
+  launcher: projectLauncher,
+  diagnostic,
+});
+const queue = new TaskQueue({
+  database,
+  artifacts,
+  runner,
+  isThreadAvailable: (threadId) => !closingTerminalIds.has(threadId),
+  listIdleSessions: idleSessionCandidates,
+  terminalPool: disposableTerminalPool,
+});
+// Planner v2 plan runs. A reconciler over the same queue, never a second scheduler.
+const planRuns = new PlanRunCoordinator({ database, queue, diagnostic });
 const terminalCloseCoordinator = new TerminalCloseCoordinator({
   launcher: projectLauncher,
   listTasks: terminalControlTasks,
@@ -133,6 +205,10 @@ const terminalCloseCoordinator = new TerminalCloseCoordinator({
   onReleased: () => queue.schedule(),
 });
 const sseClients = new Set();
+const agentUpdates = new AgentUpdateCache({
+  latestEventId: (taskId) => database.latestEventId(taskId),
+  listEventsSince: (taskId, sinceId, limit) => database.listEventsSince(taskId, sinceId, limit),
+});
 
 function terminalControlTasks() {
   const pendingRetryIds = queue.pendingRetryTaskIds();
@@ -141,20 +217,43 @@ function terminalControlTasks() {
   ));
 }
 
-function codexStatus() {
-  try {
-    const version = execFileSync('codex', ['--version'], { encoding: 'utf8' }).trim();
-    execFileSync('codex', ['login', 'status'], { encoding: 'utf8', stdio: 'pipe' });
-    return { available: true, authenticated: true, version };
-  } catch (error) {
-    return { available: false, authenticated: false, version: null, error: error.message };
-  }
+const CODEX_STATUS_REFRESH_MS = 30_000;
+
+// Both provider probes are asynchronous and bounded. They used to be execFileSync, which
+// blocked the whole event loop and therefore delayed every request including POST /api/tasks.
+// Codex status used to be captured once at module load and never re-read, so a transient
+// probe failure at boot disabled Codex until Relay was restarted. It now refreshes in the
+// background while request handlers only ever read this cached value.
+let runtimeStatus = { available: false, authenticated: false, version: null, pending: true };
+let codexStatusPending = null;
+let codexStatusTimer = null;
+function refreshCodexStatus() {
+  if (codexStatusPending) return codexStatusPending;
+  codexStatusPending = readCodexRuntimeStatus()
+    .then((status) => {
+      runtimeStatus = status;
+      return status;
+    })
+    .finally(() => {
+      codexStatusPending = null;
+    });
+  return codexStatusPending;
 }
 
-const runtimeStatus = codexStatus();
+function activateCodexRuntime(status) {
+  if (!status.available || !status.authenticated) return Promise.resolve(false);
+  return codexAppServer.start()
+    .then(() => codexAppServer.listModels())
+    .then(() => true)
+    .catch((error) => {
+      diagnostic('appserver.models.prewarm.failed', { error: error.message });
+      return false;
+    });
+}
 
 const claudeRuntime = new ClaudeRuntimeStatus({ command: claudeBinaryPath });
-const currentClaudeStatus = (force = false) => claudeRuntime.current({ force });
+// Cache read only. Never spawns, never blocks, so it is safe on any request path.
+const currentClaudeStatus = () => claudeRuntime.current();
 
 function sendJson(response, statusCode, value) {
   const body = JSON.stringify(value);
@@ -198,6 +297,228 @@ function taskIdFromPath(pathname) {
 function titleFromPrompt(prompt) {
   const compact = prompt.replace(/\s+/g, ' ').trim();
   return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact;
+}
+
+function validateInstanceLimit(value, provider) {
+  const limit = Number(value);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 8) {
+    throw new Error(`${provider} max instances must be a whole number from 1 to 8.`);
+  }
+  return limit;
+}
+
+function validateTaskTerminalLayout(value) {
+  if (!value || typeof value !== 'object') return null;
+  const layout = normalizeTerminalLayout(value);
+  return {
+    ...(layout || { enabled: false }),
+    background: value.background === true,
+  };
+}
+
+const MAX_PLAN_NAME = 200;
+const MAX_PLAN_CONTENT = 100_000;
+const MAX_BREAKDOWN_GUIDANCE = 8_000;
+const MAX_PROPOSAL_TITLE = 300;
+const MAX_PROPOSAL_PROMPT = 12_000;
+
+function validatePlanName(value) {
+  const name = typeof value === 'string' ? value.trim() : '';
+  if (!name) throw new Error('A plan name is required.');
+  if (name.length > MAX_PLAN_NAME) throw new Error(`Plan name must be ${MAX_PLAN_NAME} characters or fewer.`);
+  return name;
+}
+
+function validatePlanContent(value) {
+  const content = typeof value === 'string' ? value : '';
+  if (content.length > MAX_PLAN_CONTENT) {
+    throw new Error(`Plan content must be ${MAX_PLAN_CONTENT.toLocaleString('en-US')} characters or fewer.`);
+  }
+  return content;
+}
+
+// Normalize a client-supplied proposal list into stored {id, title, prompt, dependsOn}
+// rows. Every proposal keeps a non-empty prompt; a blank title falls back to the prompt.
+//
+// The dependency graph is re-sanitized on every edit: duplicate ids are regenerated first
+// (Finding 25), then references to ids that no longer exist are pruned, then any cycle the
+// edit introduced is broken. Removing a step in the review UI is exactly what leaves a
+// dangling reference behind, so this runs on the ordinary edit path, not only on parse.
+function validateProposals(input) {
+  if (!Array.isArray(input)) throw new Error('Proposals must be a list.');
+  if (input.length > MAX_BREAKDOWN_PROPOSALS) {
+    throw new Error(`A breakdown can hold at most ${MAX_BREAKDOWN_PROPOSALS} proposals.`);
+  }
+  const mapped = input.map((item, index) => {
+    const prompt = typeof item?.prompt === 'string' ? item.prompt.trim() : '';
+    if (!prompt) throw new Error(`Proposal ${index + 1} needs a task prompt.`);
+    if (prompt.length > MAX_PROPOSAL_PROMPT) {
+      throw new Error(`Proposal ${index + 1} is too long.`);
+    }
+    const rawTitle = typeof item?.title === 'string' ? item.title.trim() : '';
+    const title = (rawTitle || titleFromPrompt(prompt)).slice(0, MAX_PROPOSAL_TITLE);
+    const id = typeof item?.id === 'string' && item.id.trim() ? item.id.trim() : randomUUID();
+    const dependsOn = Array.isArray(item?.dependsOn) ? item.dependsOn : [];
+    return { id, title, prompt, dependsOn };
+  });
+  return sanitizeProposalGraph(mapped);
+}
+
+// Treat a breakdown as in progress when its row is pending/running or its linked
+// task is queued, running, or scheduled for an automatic retry (Finding 23).
+function planBreakdownInProgress(breakdown) {
+  if (!breakdown) return false;
+  const retryScheduled = breakdown.task_id != null && queue.pendingRetryTaskIds().has(breakdown.task_id);
+  const linkedTask = breakdown.task_id != null ? database.getTask(breakdown.task_id) : null;
+  return breakdownInProgress(breakdown, { retryScheduled, taskStatus: linkedTask?.status || null });
+}
+
+// Both breakdown routes validate, then await the request body and the live session before
+// they write anything, so two overlapping submissions can clear one early check and still
+// both create a breakdown. This runs again synchronously immediately before the create, next
+// to the write it protects, so the duplicate-breakdown guard defends itself.
+function requireNoBreakdownInProgress(planId) {
+  if (planBreakdownInProgress(database.latestPlanBreakdown(planId))) {
+    throw Object.assign(
+      new Error('This plan already has a breakdown in progress. Wait for it to finish or cancel it.'),
+      { statusCode: 409 },
+    );
+  }
+}
+
+function breakdownSummary(breakdown) {
+  if (!breakdown) return null;
+  return {
+    id: breakdown.id,
+    status: breakdown.status,
+    parsed: breakdown.parsed,
+    proposalCount: Array.isArray(breakdown.proposals) ? breakdown.proposals.length : 0,
+    attempt: database.breakdownAttempt(breakdown.plan_id, breakdown.id),
+    updatedAt: breakdown.updated_at,
+  };
+}
+
+// Refinement keeps every prior attempt, so each breakdown carries its 1-based ordinal.
+function withBreakdownAttempt(breakdown) {
+  if (!breakdown) return null;
+  return { ...breakdown, attempt: database.breakdownAttempt(breakdown.plan_id, breakdown.id) };
+}
+
+function planWithBreakdown(plan) {
+  if (!plan) return null;
+  return {
+    ...plan,
+    breakdown: withBreakdownAttempt(database.latestPlanBreakdown(plan.id)),
+    run: planRuns.view(plan.id),
+  };
+}
+
+// The ids the user is currently reviewing. A refinement attempt hands them to the model
+// and asks for them back unchanged, so a surviving step keeps its identity (and the
+// user's selection) across attempts.
+function knownProposalIds(breakdown) {
+  return new Set((breakdown?.proposals || []).map((proposal) => proposal.id).filter(Boolean));
+}
+
+// See src/session-resolution.mjs for the three-tier policy this binds to the live registries.
+function sessionResolutionDeps(sessionProvider, threadId) {
+  const usesCodexSession = sessionProvider !== 'claude';
+  return {
+    findSession: (id) => (usesCodexSession
+      ? codexAppServer.findConnectedThread(id)
+      : claudeSessions.findSession(id)),
+    knownSession: (id) => (usesCodexSession
+      ? codexAppServer.knownThread(id)
+      : claudeSessions.knownSession(id)),
+    latestTaskForThread: (id) => database.latestTaskForThread(id),
+    onDiscoveryError: (error) => diagnostic('api.task.enqueue.discovery_failed', {
+      provider: sessionProvider,
+      threadId,
+      error: error.message,
+    }),
+  };
+}
+
+async function resolvePlanSession(provider, threadId) {
+  return provider === 'claude'
+    ? claudeSessions.readConnectedSession(threadId)
+    : codexAppServer.readConnectedThread(threadId);
+}
+
+// Every Planner route that sends work to a session validates the same three things: the
+// session is live now, it is open in the plan's own workspace, and Claude is usable when
+// Claude was chosen. Plans are resolved by id without a project cross-check (Finding 24),
+// so this workspace check is what keeps a plan's work inside its own project.
+async function requirePlanSession(plan, provider, threadId) {
+  if (!threadId) {
+    throw new Error('Choose a live Codex or Claude session in this project.');
+  }
+  const thread = await resolvePlanSession(provider, threadId);
+  if (!thread) {
+    throw new Error(provider === 'claude'
+      ? 'That Claude Code session is no longer open. Refresh the session list.'
+      : 'That terminal is not connected to Relay\'s shared Codex server. Refresh the session list.');
+  }
+  if (resolve(thread.cwd) !== resolve(plan.repo_path)) {
+    throw new Error('The selected session must be open in the same project as the plan.');
+  }
+  if (provider === 'claude') requireClaudeReady();
+  return thread;
+}
+
+async function resolvePlannerTaskSession(plan, provider, body) {
+  if (body.terminalLifecycle === 'disposable') {
+    const projectPath = validateProjectPath(body.projectPath).path;
+    if (resolve(projectPath) !== resolve(plan.repo_path)) {
+      throw new Error('The automatic terminal must use the same project as the plan.');
+    }
+    if (!database.getProjectByPath(projectPath)) {
+      throw new Error('Pin this plan project in Relay before running automatic work.');
+    }
+    if (provider === 'claude') requireClaudeReady('Claude Planner execution');
+    return {
+      disposable: true,
+      terminalLifecycle: 'disposable',
+      terminalLayout: validateTaskTerminalLayout(body.terminalLayout),
+      thread: {
+        id: null,
+        provider,
+        cwd: projectPath,
+        title: `Automatic ${provider === 'claude' ? 'Claude' : 'Codex'} instance`,
+        source: 'Relay managed terminal pool',
+      },
+      sessionId: `automatic:${provider}`,
+    };
+  }
+  const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+  const thread = await requirePlanSession(plan, provider, threadId);
+  return {
+    disposable: false,
+    terminalLifecycle: 'persistent',
+    terminalLayout: null,
+    thread,
+    sessionId: thread.id,
+  };
+}
+
+function planProvider(value, fallback = 'codex') {
+  if (value === 'claude') return 'claude';
+  if (value === 'codex') return 'codex';
+  return fallback === 'claude' ? 'claude' : 'codex';
+}
+
+// Adding work must never fail because a background probe has not finished yet or just
+// errored. Only a completed probe that actually reported a signed-out CLI blocks the add.
+// Every other case is accepted and, if Claude really is unusable, the task fails at dispatch
+// with a task-level message instead of losing the user's prompt at submission time.
+function requireClaudeReady(action = 'Claude execution') {
+  const claudeRuntimeStatus = currentClaudeStatus();
+  // A stale-cache read is also a good moment to kick the background refresh.
+  void claudeRuntime.refresh();
+  if (isConfidentlyUnavailable(claudeRuntimeStatus)) {
+    throw new Error(`${action} needs a signed-in Claude Code CLI. Run \`claude auth login\`; Relay will detect it automatically.`);
+  }
+  return claudeRuntimeStatus;
 }
 
 function serveStatic(pathname, response) {
@@ -246,10 +567,10 @@ function serveTaskAttachment(task, attachment, response) {
   response.end(body);
 }
 
-function readPlanRecord(taskId) {
-  const plan = artifacts.readPlan(taskId);
+function readPlanRecord(task) {
+  const plan = artifacts.readPlan(task.id);
   if (!plan) return null;
-  const artifactPath = artifacts.planPath(taskId);
+  const artifactPath = artifacts.planPath(task.id, task.repo_path);
   const finalPlan = typeof plan.finalPlan === 'string' ? plan.finalPlan.trim() : '';
   const normalized = { ...plan, artifactPath };
   if (plan.status === 'complete' && finalPlan) {
@@ -258,15 +579,15 @@ function readPlanRecord(taskId) {
     if (plan.version !== 2 || plan.artifactPath !== artifactPath || current !== expected) {
       normalized.version = 2;
       normalized.finalPlan = finalPlan;
-      artifacts.writePlan(taskId, normalized);
+      artifacts.writePlan(task.id, normalized, { repoPath: task.repo_path });
     }
   }
   return normalized;
 }
 
 function servePlanArtifact(task, response) {
-  readPlanRecord(task.id);
-  const filePath = artifacts.planPath(task.id);
+  readPlanRecord(task);
+  const filePath = artifacts.planPath(task.id, task.repo_path);
   if (!existsSync(filePath) || !statSync(filePath).isFile()) {
     sendError(response, 404, 'Final reviewed plan not found.');
     return;
@@ -289,7 +610,42 @@ function broadcast(change) {
   }
 }
 
+// Reconcile a plan breakdown against the terminal state of its linked queue task.
+// A breakdown runs as an ordinary `mode: breakdown` queue task on the chosen live
+// session; when it settles, its raw response is parsed into review-ready proposals
+// stored on the plan. This never creates tasks: unparseable output leaves the raw
+// response surfaced and no proposals. Returns true when the breakdown record changed.
+function syncPlanBreakdown(taskId) {
+  const breakdown = database.breakdownForTask(taskId);
+  if (!breakdown) return false;
+  const task = database.getTask(taskId);
+  // The task row is gone, which means the user deleted it from the queue. Fail the attempt
+  // so the plan is not locked out of every breakdown, refine, and run route forever.
+  if (!task) {
+    const deletion = breakdownUpdateForDeletedTask(breakdown);
+    if (!deletion) return false;
+    database.updatePlanBreakdown(breakdown.id, deletion);
+    diagnostic('plan.breakdown.task_deleted', { breakdownId: breakdown.id, taskId });
+    return true;
+  }
+  // A refinement attempt is asked to echo the ids it was given, so the proposals the user
+  // is reviewing keep their identity when the revision lands.
+  const previous = database.breakdownsForPlan(breakdown.plan_id)
+    .find((candidate) => candidate.id !== breakdown.id && candidate.proposals.length > 0);
+  const changes = breakdownUpdateForTask(task, breakdown, { knownIds: knownProposalIds(previous) });
+  if (!changes) return false;
+  database.updatePlanBreakdown(breakdown.id, changes);
+  diagnostic('plan.breakdown.synced', {
+    breakdownId: breakdown.id,
+    taskId,
+    status: changes.status || breakdown.status,
+    parsed: changes.parsed,
+  });
+  return true;
+}
+
 queue.on('changed', (change) => {
+  let plansChanged = false;
   if (change?.taskId) {
     const task = database.getTask(change.taskId);
     diagnostic('queue.task.changed', {
@@ -299,8 +655,13 @@ queue.on('changed', (change) => {
       provider: task?.provider,
       error: task?.error || undefined,
     });
+    plansChanged = syncPlanBreakdown(change.taskId);
+    // Plan runs reconcile off the same signal. The coordinator is re-entrancy safe: this
+    // listener fires synchronously from inside queue.enqueue while a run is still fanning
+    // its ready steps out.
+    if (planRuns.reconcileForTask(change.taskId)) plansChanged = true;
   }
-  broadcast(change);
+  broadcast(plansChanged ? { ...change, plans: true } : change);
 });
 codexAppServer.on('status', (status) => broadcast({ codex: status }));
 codexAppServer.on('threads', () => broadcast({ threads: true }));
@@ -328,6 +689,7 @@ export const server = createServer(async (request, response) => {
           parallelClaudeExecution: true,
           imageAttachments: true,
           planCouncil: true,
+          planCouncilTerminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
           planCouncilResume: true,
           planArtifacts: true,
           planExecution: true,
@@ -341,11 +703,19 @@ export const server = createServer(async (request, response) => {
           taskDirectFollowUp: true,
           taskFollowUpAttachments: true,
           queuedTaskEditing: true,
+          queuedTaskProviderSwitch: true,
+          queuedClaudeAssignment: true,
           taskSteering: true,
           turboExecution: true,
+          planner: true,
+          plannerV2: true,
+          dispatchIdleRouting: true,
+          instantTaskAdd: true,
+          disposableTerminalPools: true,
+          resumableDisposableSessions: true,
         },
         taskCount: tasks.length,
-        runningTasks: runningTaskFeed(tasks, (taskId) => database.listEvents(taskId, 1_000)),
+        runningTasks: agentUpdates.feed(tasks),
         diagnostics: { endpoint: '/api/diagnostics', file: diagnostics.filePath },
       });
       return;
@@ -485,6 +855,38 @@ export const server = createServer(async (request, response) => {
     }
 
     const projectMatch = pathname.match(/^\/api\/projects\/(\d+)(?:\/(launch))?$/);
+    if (request.method === 'PATCH' && projectMatch && !projectMatch[2]) {
+      const body = await readJson(request);
+      const projectId = Number(projectMatch[1]);
+      const existingProject = database.getProject(projectId);
+      if (!existingProject) throw new Error('Pinned project not found.');
+      const codex = validateInstanceLimit(body.maxCodexInstances, 'Codex');
+      const claude = validateInstanceLimit(body.maxClaudeInstances, 'Claude');
+      const blockedTask = database.listTasks().find((task) => {
+        if (
+          task.status !== 'queued'
+          || task.terminal_lifecycle !== 'disposable'
+          || resolve(task.repo_path) !== resolve(existingProject.path)
+        ) return false;
+        const required = disposableTerminalRequirements(task);
+        return required.codex > codex || required.claude > claude;
+      });
+      if (blockedTask) {
+        const required = disposableTerminalRequirements(blockedTask);
+        throw new Error(
+          `Task ${blockedTask.id} is already queued and needs ${required.codex} Codex and ${required.claude} Claude instances. Finish or cancel it before lowering these limits.`,
+        );
+      }
+      const project = database.updateProjectInstanceLimits(Number(projectMatch[1]), {
+        codex,
+        claude,
+      });
+      queue.schedule();
+      broadcast({ projects: true });
+      sendJson(response, 200, { project });
+      return;
+    }
+
     if (request.method === 'POST' && projectMatch?.[2] === 'launch') {
       const project = database.listProjects().find((item) => item.id === Number(projectMatch[1]));
       if (!project) throw new Error('Pinned project not found.');
@@ -501,6 +903,404 @@ export const server = createServer(async (request, response) => {
         throw new Error('Relay must keep one Launchpad project selected. Add another project before unpinning this one.');
       }
       sendJson(response, 200, { deleted: database.deleteProject(Number(projectMatch[1])) });
+      return;
+    }
+
+    if (request.method === 'GET' && pathname === '/api/plans') {
+      const projectPath = url.searchParams.get('projectPath')?.trim() || '';
+      if (!projectPath) {
+        throw new Error('A project is required to list its plans.');
+      }
+      const plans = database.listPlans(projectPath).map((plan) => ({
+        ...plan,
+        breakdown: breakdownSummary(database.latestPlanBreakdown(plan.id)),
+        run: planRuns.summary(plan.id),
+      }));
+      sendJson(response, 200, { plans });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/plans') {
+      const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
+      const projectPath = typeof body.projectPath === 'string' ? body.projectPath.trim() : '';
+      if (!projectPath) {
+        throw new Error('A project is required to save a plan.');
+      }
+      const plan = database.createPlan({
+        repoPath: projectPath,
+        name: validatePlanName(body.name),
+        content: validatePlanContent(body.content),
+      });
+      diagnostic('api.plan.created', { planId: plan.id, repoPath: projectPath });
+      sendJson(response, 201, { plan: planWithBreakdown(plan) });
+      return;
+    }
+
+    const planMatch = pathname.match(/^\/api\/plans\/(\d+)$/);
+    const planBreakdownMatch = pathname.match(/^\/api\/plans\/(\d+)\/breakdown$/);
+    const planBreakdownQueueMatch = pathname.match(/^\/api\/plans\/(\d+)\/breakdown\/queue$/);
+    const planBreakdownRefineMatch = pathname.match(/^\/api\/plans\/(\d+)\/breakdown\/refine$/);
+    const planRunMatch = pathname.match(/^\/api\/plans\/(\d+)\/run$/);
+    const planRunStopMatch = pathname.match(/^\/api\/plans\/(\d+)\/run\/stop$/);
+
+    if (request.method === 'GET' && planMatch) {
+      const plan = database.getPlan(Number(planMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      // Reading an active run also repairs it. The reconciler is idempotent and the
+      // per-step submission id is deterministic, so this can only ever finish work a
+      // missed queue event left behind; it is the same repair role the visible-page
+      // refresh plays for the task list.
+      planRuns.reconcilePlan(plan.id);
+      sendJson(response, 200, { plan: planWithBreakdown(plan) });
+      return;
+    }
+
+    if (request.method === 'PATCH' && planMatch) {
+      const plan = database.getPlan(Number(planMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
+      const changes = {};
+      if (body.name !== undefined) changes.name = validatePlanName(body.name);
+      if (body.content !== undefined) changes.content = validatePlanContent(body.content);
+      const updated = database.updatePlan(plan.id, changes);
+      diagnostic('api.plan.updated', { planId: plan.id, fields: Object.keys(changes) });
+      sendJson(response, 200, { plan: planWithBreakdown(updated) });
+      return;
+    }
+
+    if (request.method === 'DELETE' && planMatch) {
+      const plan = database.getPlan(Number(planMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      // Best effort: free the session by cancelling a still-active breakdown task.
+      for (const breakdown of database.breakdownsForPlan(plan.id)) {
+        if (breakdown.task_id) {
+          try { queue.cancel(breakdown.task_id); } catch {}
+        }
+      }
+      // Stop the run and cancel its still-queued steps before the cascade removes the
+      // rows. Leaving that to ON DELETE CASCADE would orphan queued step tasks that
+      // nothing owns any more.
+      planRuns.release(plan.id);
+      const deleted = database.deletePlan(plan.id);
+      diagnostic('api.plan.deleted', { planId: plan.id, deleted });
+      sendJson(response, 200, { deleted });
+      return;
+    }
+
+    if (request.method === 'POST' && planBreakdownMatch) {
+      const plan = database.getPlan(Number(planBreakdownMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
+      const provider = planProvider(body.provider);
+      const guidance = typeof body.guidance === 'string' ? body.guidance.trim() : '';
+      if (guidance.length > MAX_BREAKDOWN_GUIDANCE) {
+        throw new Error(`Breakdown guidance must be ${MAX_BREAKDOWN_GUIDANCE.toLocaleString('en-US')} characters or fewer.`);
+      }
+      requireNoBreakdownInProgress(plan.id);
+      const session = await resolvePlannerTaskSession(plan, provider, body);
+      const thread = session.thread;
+      requireNoBreakdownInProgress(plan.id);
+      const breakdown = database.createPlanBreakdown({
+        planId: plan.id,
+        provider,
+        sessionId: session.sessionId,
+        sessionLabel: thread.title || session.sessionId,
+        guidance: guidance || null,
+        status: 'pending',
+      });
+      let task;
+      try {
+        task = queue.enqueue({
+          title: `Plan breakdown · ${plan.name}`.slice(0, 118),
+          prompt: buildBreakdownPrompt({ plan, guidance }),
+          thread,
+          provider,
+          mode: 'breakdown',
+          repoPath: plan.repo_path,
+          terminalLifecycle: session.terminalLifecycle,
+          terminalLayout: session.terminalLayout,
+          submissionId: randomUUID(),
+        });
+      } catch (error) {
+        database.updatePlanBreakdown(breakdown.id, { status: 'failed', error: error.message });
+        throw error;
+      }
+      const linked = database.updatePlanBreakdown(breakdown.id, { task_id: task.id });
+      diagnostic('api.plan.breakdown.requested', {
+        planId: plan.id,
+        breakdownId: breakdown.id,
+        taskId: task.id,
+        provider,
+        threadId: session.sessionId,
+        repoPath: plan.repo_path,
+      });
+      sendJson(response, 201, {
+        plan: planWithBreakdown(database.getPlan(plan.id)),
+        breakdown: withBreakdownAttempt(linked),
+      });
+      return;
+    }
+
+    // Refinement is a NEW breakdown attempt that revises the proposals the user is
+    // actually looking at, including their own edits, instead of restarting from the plan.
+    // History is kept: prior attempts stay in plan_breakdowns and the newest is current.
+    if (request.method === 'POST' && planBreakdownRefineMatch) {
+      const plan = database.getPlan(Number(planBreakdownRefineMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
+      const feedback = typeof body.feedback === 'string' ? body.feedback.trim() : '';
+      if (!feedback) {
+        throw new Error('Describe what should change before refining the breakdown.');
+      }
+      if (feedback.length > MAX_BREAKDOWN_GUIDANCE) {
+        throw new Error(`Refinement feedback must be ${MAX_BREAKDOWN_GUIDANCE.toLocaleString('en-US')} characters or fewer.`);
+      }
+      const current = database.latestPlanBreakdown(plan.id);
+      if (!current || current.proposals.length === 0) {
+        throw new Error('Run a breakdown with at least one task before refining it.');
+      }
+      requireNoBreakdownInProgress(plan.id);
+      const provider = planProvider(body.provider, current.provider);
+      const session = await resolvePlannerTaskSession(plan, provider, {
+        ...body,
+        threadId: typeof body.threadId === 'string' && body.threadId.trim()
+          ? body.threadId.trim()
+          : current.session_id || '',
+      });
+      const thread = session.thread;
+      requireNoBreakdownInProgress(plan.id);
+      const refined = database.createPlanBreakdown({
+        planId: plan.id,
+        provider,
+        sessionId: session.sessionId,
+        sessionLabel: thread.title || session.sessionId,
+        guidance: feedback,
+        status: 'pending',
+      });
+      let task;
+      try {
+        task = queue.enqueue({
+          title: `Plan refinement · ${plan.name}`.slice(0, 118),
+          prompt: buildRefinementPrompt({
+            plan,
+            proposals: current.proposals,
+            feedback,
+            guidance: current.guidance,
+          }),
+          thread,
+          provider,
+          mode: 'breakdown',
+          repoPath: plan.repo_path,
+          terminalLifecycle: session.terminalLifecycle,
+          terminalLayout: session.terminalLayout,
+          submissionId: randomUUID(),
+        });
+      } catch (error) {
+        database.updatePlanBreakdown(refined.id, { status: 'failed', error: error.message });
+        throw error;
+      }
+      const linked = database.updatePlanBreakdown(refined.id, { task_id: task.id });
+      diagnostic('api.plan.breakdown.refine_requested', {
+        planId: plan.id,
+        breakdownId: refined.id,
+        previousBreakdownId: current.id,
+        taskId: task.id,
+        provider,
+        threadId: session.sessionId,
+        proposals: current.proposals.length,
+      });
+      sendJson(response, 201, {
+        plan: planWithBreakdown(database.getPlan(plan.id)),
+        breakdown: withBreakdownAttempt(linked),
+      });
+      return;
+    }
+
+    if (request.method === 'PATCH' && planBreakdownMatch) {
+      const plan = database.getPlan(Number(planBreakdownMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      const breakdown = database.latestPlanBreakdown(plan.id);
+      if (!breakdown) {
+        throw new Error('This plan has no breakdown proposals to edit yet.');
+      }
+      // Only a completed breakdown owns editable proposals. Rejecting edits in any
+      // other state keeps the never-overwrite-user-edits guarantee unconditional:
+      // otherwise an edit made while the row is 'failed' would be clobbered when a
+      // queued automatic retry later transitions the row into 'complete' (Finding 22).
+      if (breakdown.status !== 'complete') {
+        sendError(response, 409, 'Proposals can only be edited after the breakdown completes.');
+        return;
+      }
+      const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
+      const { proposals, notes } = validateProposals(body.proposals);
+      const updated = database.setBreakdownProposals(breakdown.id, proposals, notes);
+      sendJson(response, 200, { breakdown: withBreakdownAttempt(updated) });
+      return;
+    }
+
+    if (request.method === 'POST' && planBreakdownQueueMatch) {
+      const plan = database.getPlan(Number(planBreakdownQueueMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
+      const { proposals } = validateProposals(body.proposals);
+      if (proposals.length === 0) {
+        throw new Error('Select at least one task to queue.');
+      }
+      const provider = planProvider(body.provider);
+      const session = await resolvePlannerTaskSession(plan, provider, body);
+      const thread = session.thread;
+      const execution = validateExecutionSettings({
+        model: body.model,
+        effort: body.effort,
+        models: provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
+      });
+      const created = [];
+      for (const proposal of proposals) {
+        const task = queue.enqueue({
+          title: proposal.title,
+          prompt: proposal.prompt,
+          thread,
+          provider,
+          mode: 'execute',
+          ...execution,
+          repoPath: plan.repo_path,
+          terminalLifecycle: session.terminalLifecycle,
+          terminalLayout: session.terminalLayout,
+          submissionId: randomUUID(),
+        });
+        database.addEvent(task.id, 'queue', `Queued from Planner breakdown of "${plan.name}".`);
+        created.push(task);
+      }
+      diagnostic('api.plan.breakdown.queued', {
+        planId: plan.id,
+        count: created.length,
+        provider,
+        threadId: session.sessionId,
+        repoPath: plan.repo_path,
+      });
+      sendJson(response, 201, { tasks: created });
+      return;
+    }
+
+    // Start an orchestrated plan run. The run engine is a reconciler over the ordinary
+    // queue: a step whose dependencies are complete becomes a normal mode 'execute' task
+    // through the same enqueue path the composer uses, carrying preferIdleTerminal so
+    // independent steps fan out across idle same-workspace sessions.
+    if (request.method === 'POST' && planRunMatch) {
+      const plan = database.getPlan(Number(planRunMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      // Fail fast with the specific reason. This is an early read for a good message only:
+      // planRuns.start() re-checks the same conflict synchronously next to the write, so two
+      // overlapping submissions cannot both get past this and mint two task sets.
+      planRuns.reconcilePlan(plan.id);
+      const startConflict = planRuns.startConflict(plan.id);
+      if (startConflict) {
+        sendError(response, 409, startConflict);
+        return;
+      }
+      const breakdown = database.latestPlanBreakdown(plan.id);
+      if (!breakdown || breakdown.status !== 'complete' || breakdown.proposals.length === 0) {
+        throw new Error('Run a breakdown with at least one task before running the plan.');
+      }
+      const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
+      const proposalIds = body.proposalIds === undefined || body.proposalIds === null
+        ? breakdown.proposals.map((proposal) => proposal.id)
+        : body.proposalIds;
+      if (!Array.isArray(proposalIds)) {
+        throw new Error('Selected step ids must be a list.');
+      }
+      const selected = new Set(proposalIds.map((id) => (typeof id === 'string' ? id.trim() : '')).filter(Boolean));
+      if (selected.size === 0) {
+        throw new Error('Select at least one step to run.');
+      }
+      const known = new Set(breakdown.proposals.map((proposal) => proposal.id));
+      const unknown = [...selected].filter((id) => !known.has(id));
+      if (unknown.length > 0) {
+        throw new Error('Those steps are no longer part of this breakdown. Reload the Planner and try again.');
+      }
+      const proposals = breakdown.proposals.filter((proposal) => selected.has(proposal.id));
+      const provider = planProvider(body.provider);
+      const session = await resolvePlannerTaskSession(plan, provider, body);
+      const thread = session.thread;
+      const execution = validateExecutionSettings({
+        model: body.model,
+        effort: body.effort,
+        models: provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
+      });
+      const run = planRuns.start({
+        plan,
+        breakdown,
+        proposals,
+        thread,
+        sessionId: session.sessionId,
+        provider,
+        preferIdleTerminal: body.preferIdleTerminal === true && !session.disposable,
+        terminalLifecycle: session.terminalLifecycle,
+        terminalLayout: session.terminalLayout,
+        model: execution.model ?? null,
+        effort: execution.effort ?? null,
+      });
+      diagnostic('api.plan.run.started', {
+        planId: plan.id,
+        runId: run.id,
+        steps: proposals.length,
+        provider,
+        threadId: session.sessionId,
+        preferIdleTerminal: body.preferIdleTerminal === true && !session.disposable,
+        repoPath: plan.repo_path,
+      });
+      broadcast({ plans: true });
+      sendJson(response, 201, {
+        plan: planWithBreakdown(database.getPlan(plan.id)),
+        run: planRuns.view(plan.id),
+      });
+      return;
+    }
+
+    // Stop means: enqueue nothing further. Steps that are already queued or running are
+    // deliberately left alone and stay individually cancellable through the normal task
+    // cancel. Idempotent, so a second stop during the drain is never an error.
+    if (request.method === 'POST' && planRunStopMatch) {
+      const plan = database.getPlan(Number(planRunStopMatch[1]));
+      if (!plan) {
+        sendError(response, 404, 'Plan not found.');
+        return;
+      }
+      const stopped = planRuns.stop(plan.id);
+      if (!stopped) {
+        sendError(response, 409, 'There is no active plan run to stop.');
+        return;
+      }
+      diagnostic('api.plan.run.stopped', { planId: plan.id, runId: stopped.id });
+      broadcast({ plans: true });
+      sendJson(response, 200, {
+        plan: planWithBreakdown(database.getPlan(plan.id)),
+        run: planRuns.view(plan.id),
+      });
       return;
     }
 
@@ -523,8 +1323,19 @@ export const server = createServer(async (request, response) => {
       }
       const attachments = decodeImageAttachments(body.attachments);
       const runNow = body.runNow === true;
+      const terminalLifecycle = body.terminalLifecycle === 'disposable'
+        ? 'disposable'
+        : 'persistent';
+      const disposable = terminalLifecycle === 'disposable';
+      const terminalLayout = disposable ? validateTaskTerminalLayout(body.terminalLayout) : null;
+      // Run now pins the task to the visibly selected terminal, so it deliberately opts out
+      // of idle routing. Plan council occupies both of its providers and never reroutes.
+      const preferIdleTerminal = body.preferIdleTerminal === true
+        && mode === 'execute'
+        && !runNow
+        && !disposable;
       const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
-      if (!threadId) {
+      if (!disposable && !threadId) {
         throw new Error('A connected AI session is required.');
       }
       const provider = mode === 'execute' && typeof body.provider === 'string'
@@ -550,14 +1361,38 @@ export const server = createServer(async (request, response) => {
         sendJson(response, 200, { task: existingSubmission, duplicateSubmission: true });
         return;
       }
-      const thread = mode === 'plan' || mode === 'turbo' || provider === 'codex'
-        ? await codexAppServer.readConnectedThread(threadId)
-        : await claudeSessions.readConnectedSession(threadId);
-      if (!thread) {
-        diagnostic('api.task.enqueue.rejected', { mode, provider, threadId, reason: 'thread-not-connected' });
-        throw new Error(provider === 'claude'
-          ? 'That Claude Code session is no longer open. Refresh the session list.'
-          : 'That terminal is not connected to Relay\'s shared Codex server. Refresh the session list.');
+      const sessionProvider = submissionSessionProvider(mode, provider);
+      let resolvedSession = { source: 'automatic-pool', thread: null };
+      let thread;
+      if (disposable) {
+        const requestedProjectPath = typeof body.projectPath === 'string' ? body.projectPath.trim() : '';
+        if (!requestedProjectPath) {
+          throw new Error('A project is required for automatic terminal execution.');
+        }
+        const projectPath = validateProjectPath(requestedProjectPath).path;
+        const project = database.getProjectByPath(projectPath);
+        if (!project) {
+          throw new Error('Pin this project in Relay before adding automatic terminal work.');
+        }
+        thread = {
+          id: null,
+          provider: sessionProvider,
+          cwd: project.path,
+          title: `Automatic ${sessionProvider === 'claude' ? 'Claude' : 'Codex'} instance`,
+          source: 'Relay managed terminal pool',
+        };
+        resolvedSession = { source: 'automatic-pool', thread };
+      } else {
+        resolvedSession = await resolveSubmissionThread(
+          sessionProvider,
+          threadId,
+          sessionResolutionDeps(sessionProvider, threadId),
+        );
+        thread = resolvedSession.thread;
+        if (!thread) {
+          diagnostic('api.task.enqueue.rejected', { mode, provider, threadId, reason: 'thread-never-seen' });
+          throw new Error(SESSION_NEVER_SEEN[sessionProvider]);
+        }
       }
 
       diagnostic('api.task.enqueue.validated', {
@@ -566,6 +1401,9 @@ export const server = createServer(async (request, response) => {
         threadId,
         repoPath: thread.cwd,
         threadStatus: thread.status,
+        resolvedFrom: resolvedSession.source,
+        preferIdleTerminal,
+        terminalLifecycle,
       });
 
       if (mode === 'turbo') {
@@ -576,14 +1414,17 @@ export const server = createServer(async (request, response) => {
         const models = await codexAppServer.listModels();
         const planner = validateExecutionSettings({ model: body.plannerModel, effort: body.plannerEffort, models });
         const worker = validateExecutionSettings({ model: body.workerModel, effort: body.workerEffort, models });
-        const connected = await codexAppServer.listConnectedThreads();
-        const workerThreads = connected.filter((item) => (
-          item.id !== thread.id && resolve(item.cwd) === resolve(thread.cwd)
-        )).slice(0, workerCount);
-        if (workerThreads.length < workerCount) {
-          throw new Error(`Turbo mode needs the planner plus ${workerCount} other live Codex terminal${workerCount === 1 ? '' : 's'} in this workspace.`);
+        let workerThreads = [];
+        if (!disposable) {
+          const connected = await codexAppServer.listConnectedThreads();
+          workerThreads = connected.filter((item) => (
+            item.id !== thread.id && resolve(item.cwd) === resolve(thread.cwd)
+          )).slice(0, workerCount);
+          if (workerThreads.length < workerCount) {
+            throw new Error(`Turbo mode needs the planner plus ${workerCount} other live Codex terminal${workerCount === 1 ? '' : 's'} in this workspace.`);
+          }
         }
-        const claudeRuntimeStatus = currentClaudeStatus(body.councilEnabled === true);
+        const claudeRuntimeStatus = currentClaudeStatus();
         const council = validateTurboCouncilConfig({
           enabled: body.councilEnabled,
           order: body.councilOrder ?? body.order,
@@ -605,12 +1446,15 @@ export const server = createServer(async (request, response) => {
           reviewerModel: council.enabled ? council.reviewerModel : undefined,
           reviewerEffort: council.enabled ? council.reviewerEffort : undefined,
         });
-        const task = queue.enqueue({
+        const taskInput = {
           title: titleFromPrompt(prompt), prompt, thread, provider: 'codex', mode, attachments, runNow,
           submissionId,
           model: planner.model, effort: planner.effort,
+          repoPath: thread.cwd,
+          terminalLifecycle,
+          terminalLayout,
           turbo: {
-            plannerThreadId: thread.id,
+            plannerThreadId: thread.id || null,
             plannerModel: planner.model,
             plannerEffort: planner.effort,
             workerModel: worker.model,
@@ -618,8 +1462,16 @@ export const server = createServer(async (request, response) => {
             workerCount,
             workers: workerThreads.map((item) => ({ threadId: item.id, title: item.title })),
             council,
+            councilTerminalExecution: disposable && PLAN_COUNCIL_TERMINAL_EXECUTION,
           },
+        };
+        const capacityIssue = disposableTerminalPool.capacityIssue({
+          ...taskInput,
+          repo_path: thread.cwd,
+          terminal_lifecycle: terminalLifecycle,
         });
+        if (capacityIssue) throw new Error(capacityIssue);
+        const task = queue.enqueue(taskInput);
         sendJson(response, 201, { task });
         return;
       }
@@ -628,9 +1480,33 @@ export const server = createServer(async (request, response) => {
         if (body.councilEnabled !== true) {
           throw new Error('Plan council must be explicitly enabled for this task.');
         }
-        const claudeRuntimeStatus = currentClaudeStatus(true);
-        if (!claudeRuntimeStatus.available || !claudeRuntimeStatus.authenticated) {
-          throw new Error('Plan council needs a signed-in Claude Code CLI. Run `claude auth login`; Relay will detect it automatically.');
+        const claudeRuntimeStatus = requireClaudeReady('Plan council');
+        let authorThread = null;
+        if (PLAN_COUNCIL_TERMINAL_EXECUTION && !disposable) {
+          const authorThreadId = typeof body.authorThreadId === 'string'
+            ? body.authorThreadId.trim()
+            : '';
+          if (!authorThreadId) {
+            throw new Error('Choose a connected Claude author terminal for Plan council.');
+          }
+          const resolvedAuthor = await resolveSubmissionThread(
+            'claude',
+            authorThreadId,
+            sessionResolutionDeps('claude', authorThreadId),
+          );
+          authorThread = resolvedAuthor.thread;
+          if (!authorThread) {
+            throw new Error('Relay has never seen that Claude author terminal. Refresh the session list.');
+          }
+          if (resolve(authorThread.cwd) !== resolve(thread.cwd)) {
+            throw new Error('The Claude author and Codex reviewer must be open in the same workspace.');
+          }
+          const ownedAuthorTerminal = projectLauncher.terminalForThread(authorThread.id);
+          if (!ownedAuthorTerminal || ownedAuthorTerminal.provider !== 'claude') {
+            throw new Error(
+              'Plan council needs a Claude Relay launched by Relay so it can type into that exact terminal. Launch Claude here, then select it as the author terminal.',
+            );
+          }
         }
         const authorProvider = typeof body.authorProvider === 'string'
           ? body.authorProvider.trim()
@@ -664,6 +1540,12 @@ export const server = createServer(async (request, response) => {
         if (!reviewer.model) {
           throw new Error('Choose a Codex reviewer model for Plan council.');
         }
+        diagnostic('api.plan.council.sessions', {
+          terminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
+          authorThreadId: authorThread?.id || null,
+          reviewerThreadId: thread.id,
+          repoPath: thread.cwd,
+        });
         const task = queue.enqueue({
           title: titleFromPrompt(prompt),
           prompt,
@@ -672,6 +1554,7 @@ export const server = createServer(async (request, response) => {
           mode,
           council: {
             authorProvider,
+            ...(authorThread ? { authorThread } : {}),
             authorModel,
             authorEffort,
             reviewerProvider,
@@ -681,16 +1564,16 @@ export const server = createServer(async (request, response) => {
           attachments,
           runNow,
           submissionId,
+          repoPath: thread.cwd,
+          terminalLifecycle,
+          terminalLayout,
         });
         sendJson(response, 201, { task });
         return;
       }
 
       if (provider === 'claude') {
-        const claudeRuntimeStatus = currentClaudeStatus(true);
-        if (!claudeRuntimeStatus.available || !claudeRuntimeStatus.authenticated) {
-          throw new Error('Claude execution needs a signed-in Claude Code CLI. Run `claude auth login`; Relay will detect it automatically.');
-        }
+        const claudeRuntimeStatus = requireClaudeReady('Claude execution');
         const execution = validateExecutionSettings({
           model: body.model,
           effort: body.effort,
@@ -706,6 +1589,10 @@ export const server = createServer(async (request, response) => {
           attachments,
           runNow,
           submissionId,
+          preferIdleTerminal,
+          repoPath: thread.cwd,
+          terminalLifecycle,
+          terminalLayout,
         });
         sendJson(response, 201, { task });
         return;
@@ -725,6 +1612,10 @@ export const server = createServer(async (request, response) => {
         attachments,
         runNow,
         submissionId,
+        preferIdleTerminal,
+        repoPath: thread.cwd,
+        terminalLifecycle,
+        terminalLayout,
       });
       sendJson(response, 201, { task });
       return;
@@ -740,13 +1631,24 @@ export const server = createServer(async (request, response) => {
       if (tasks.some((task) => !task || task.status !== 'queued')) {
         throw new Error('Only tasks that are still queued can be bundled. Refresh and try again.');
       }
+      // Only ordinary direct work can be folded into one Codex command. A Planner
+      // breakdown, a Plan council, or a Turbo task carries machinery its owner still
+      // tracks by task id, and bundling one would delete that task out from under it.
+      if (tasks.some((task) => task.mode !== 'execute' || task.terminal_lifecycle === 'disposable')) {
+        throw new Error('Only legacy direct Execute tasks assigned to a live terminal can be bundled.');
+      }
       const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
       const thread = threadId ? await codexAppServer.readConnectedThread(threadId) : null;
       if (!thread) {
         throw new Error('Choose a live Codex terminal for parallel execution.');
       }
       tasks = taskIds.map((id) => database.getTask(id));
-      if (tasks.some((task) => !task || task.status !== 'queued')) {
+      if (tasks.some((task) => (
+        !task
+        || task.status !== 'queued'
+        || task.mode !== 'execute'
+        || task.terminal_lifecycle === 'disposable'
+      ))) {
         throw new Error('The queue changed while the parallel batch was being prepared.');
       }
       tasks.sort((left, right) => left.position - right.position || left.id - right.id);
@@ -857,10 +1759,64 @@ export const server = createServer(async (request, response) => {
         return;
       }
       if (sourceTask.provider === 'claude') {
-        const claudeRuntimeStatus = currentClaudeStatus(true);
-        if (!claudeRuntimeStatus.available || !claudeRuntimeStatus.authenticated) {
-          throw new Error('Claude continuation needs a signed-in Claude Code CLI. Run `claude auth login`; Relay will detect it automatically.');
+        const claudeRuntimeStatus = requireClaudeReady('Claude continuation');
+      }
+      if (sourceTask.terminal_lifecycle === 'disposable') {
+        if (!['complete', 'failed', 'cancelled', 'interrupted'].includes(sourceTask.status)) {
+          throw new Error('That task is not ready to continue yet.');
         }
+        if (!sourceTask.thread_id) {
+          throw new Error('The original conversation was not established, so it cannot be resumed.');
+        }
+        const conflict = database.listTasks().find((task) => (
+          task.id !== sourceTask.id
+          && task.thread_id === sourceTask.thread_id
+          && ['queued', 'running'].includes(task.status)
+        ));
+        if (conflict) {
+          throw new Error('This conversation already has queued or running work.');
+        }
+        const execution = validateExecutionSettings({
+          model: sourceTask.model,
+          effort: sourceTask.effort,
+          models: sourceTask.provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
+        });
+        const task = queue.enqueue({
+          title: `Continue: ${sourceTask.title}`,
+          prompt,
+          thread: {
+            id: sourceTask.thread_id,
+            provider: sourceTask.provider,
+            cwd: sourceTask.repo_path,
+            title: sourceTask.thread_name || `Resumed ${sourceTask.provider} conversation`,
+            source: 'Relay managed terminal pool',
+          },
+          repoPath: sourceTask.repo_path,
+          provider: sourceTask.provider,
+          mode: 'execute',
+          ...execution,
+          attachments,
+          continuedFromTaskId: sourceTask.id,
+          terminalLifecycle: 'disposable',
+          terminalLayout: sourceTask.terminal_layout,
+        });
+        database.addEvent(
+          sourceTask.id,
+          'queue',
+          `Continuation queued as task ${task.id}. Relay will resume conversation ${sourceTask.thread_id}.`,
+        );
+        diagnostic('api.task.continuation_queued', {
+          sourceTaskId: sourceTask.id,
+          taskId: task.id,
+          threadId: sourceTask.thread_id,
+          provider: sourceTask.provider,
+        });
+        sendJson(response, 202, {
+          task,
+          continuationQueued: true,
+          threadId: sourceTask.thread_id,
+        });
+        return;
       }
       const thread = sourceTask.provider === 'codex'
         ? await codexAppServer.readConnectedThread(sourceTask.thread_id)
@@ -934,7 +1890,7 @@ export const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         task,
         events: database.listEvents(taskId),
-        plan: task.mode === 'plan' ? readPlanRecord(taskId) : null,
+        plan: task.mode === 'plan' ? readPlanRecord(task) : null,
         turboPlan: task.mode === 'turbo' ? artifacts.readTurboPlan(taskId) : null,
       });
       return;
@@ -946,7 +1902,23 @@ export const server = createServer(async (request, response) => {
       const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
       if (!prompt) throw new Error('Task prompt is required.');
       if (prompt.length > 12_000) throw new Error('Task prompt must be 12,000 characters or fewer.');
-      const task = queue.edit(taskId, { title: titleFromPrompt(prompt), prompt });
+      const changes = { title: titleFromPrompt(prompt), prompt };
+      if (Object.hasOwn(body, 'provider')) {
+        const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
+        if (!['codex', 'claude'].includes(provider)) {
+          throw new Error(`Unsupported AI provider: ${provider}`);
+        }
+        if (provider === 'claude') requireClaudeReady('Claude execution');
+        const execution = validateExecutionSettings({
+          model: body.model,
+          effort: body.effort,
+          models: provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
+        });
+        Object.assign(changes, { provider, ...execution });
+      } else if (Object.hasOwn(body, 'model') || Object.hasOwn(body, 'effort')) {
+        throw new Error('Choose an AI provider when changing execution settings.');
+      }
+      const task = queue.edit(taskId, changes);
       diagnostic('api.task.edited', { taskId, repoPath: task.repo_path, mode: task.mode, provider: task.provider });
       sendJson(response, 200, { task });
       return;
@@ -963,22 +1935,38 @@ export const server = createServer(async (request, response) => {
       const sourceTaskId = taskIdFromPath(pathname);
       const sourceTask = database.getTask(sourceTaskId);
       if (!sourceTask) throw new Error('Plan council task not found.');
-      const plan = readPlanRecord(sourceTaskId);
+      const plan = readPlanRecord(sourceTask);
       const body = await readJson(request);
       const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
       if (!['codex', 'claude'].includes(provider)) {
         throw new Error('Choose whether Codex or Claude should execute the reviewed plan.');
       }
+      const terminalLifecycle = body.terminalLifecycle === 'disposable'
+        ? 'disposable'
+        : 'persistent';
+      const disposable = terminalLifecycle === 'disposable';
       const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
-      const thread = provider === 'codex'
-        ? await codexAppServer.readConnectedThread(threadId)
-        : await claudeSessions.readConnectedSession(threadId);
+      let thread;
+      if (disposable) {
+        const projectPath = validateProjectPath(body.projectPath).path;
+        if (resolve(projectPath) !== resolve(sourceTask.repo_path)) {
+          throw new Error('The reviewed plan must execute in its original project.');
+        }
+        thread = {
+          id: null,
+          provider,
+          cwd: projectPath,
+          title: `Automatic ${provider === 'codex' ? 'Codex' : 'Claude'} instance`,
+          source: 'Relay managed terminal pool',
+        };
+      } else {
+        thread = provider === 'codex'
+          ? await codexAppServer.readConnectedThread(threadId)
+          : await claudeSessions.readConnectedSession(threadId);
+      }
       const finalPlan = validatePlanExecution({ sourceTask, plan, thread, provider });
       if (provider === 'claude') {
-        const claudeRuntimeStatus = currentClaudeStatus(true);
-        if (!claudeRuntimeStatus.available || !claudeRuntimeStatus.authenticated) {
-          throw new Error('Claude execution needs a signed-in Claude Code CLI. Run `claude auth login`; Relay will detect it automatically.');
-        }
+        const claudeRuntimeStatus = requireClaudeReady('Claude execution');
       }
       const execution = validateExecutionSettings({
         model: body.model,
@@ -1007,7 +1995,7 @@ export const server = createServer(async (request, response) => {
         prompt: buildPlanExecutionPrompt({
           sourceTask,
           plan: { ...plan, finalPlan },
-          planPath: artifacts.planPath(sourceTask.id),
+          planPath: artifacts.planPath(sourceTask.id, sourceTask.repo_path),
         }),
         thread,
         provider,
@@ -1016,6 +2004,9 @@ export const server = createServer(async (request, response) => {
         attachments,
         continuedFromTaskId: sourceTask.id,
         runNow: body.runNow === true,
+        repoPath: thread.cwd,
+        terminalLifecycle,
+        terminalLayout: disposable ? validateTaskTerminalLayout(body.terminalLayout) : null,
       });
       database.addEvent(
         executionTask.id,
@@ -1040,9 +2031,12 @@ export const server = createServer(async (request, response) => {
       if (!['failed', 'cancelled', 'interrupted'].includes(task.status)) {
         throw new Error('Only failed, cancelled, or interrupted tasks can be retried.');
       }
-      if (task.mode === 'plan') {
+      if (task.mode === 'plan' && task.terminal_lifecycle !== 'disposable') {
         const body = await readJson(request);
         const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
+        const requestedAuthorThreadId = typeof body.authorThreadId === 'string'
+          ? body.authorThreadId.trim()
+          : '';
         const reviewerThreadId = requestedThreadId || task.thread_id;
         const reviewerThread = reviewerThreadId
           ? await codexAppServer.readConnectedThread(reviewerThreadId)
@@ -1053,11 +2047,33 @@ export const server = createServer(async (request, response) => {
         if (resolve(reviewerThread.cwd) !== resolve(task.repo_path)) {
           throw new Error('The Plan council reviewer must use a Relay in the same workspace.');
         }
-        const plan = readPlanRecord(taskId);
+        const plan = readPlanRecord(task);
         if (plan?.status !== 'complete') {
-          const claudeRuntimeStatus = currentClaudeStatus(true);
-          if (!claudeRuntimeStatus.available || !claudeRuntimeStatus.authenticated) {
-            throw new Error('Plan council needs a signed-in Claude Code CLI. Run `claude auth login`; Relay will detect it automatically.');
+          const claudeRuntimeStatus = requireClaudeReady('Plan council');
+          if (PLAN_COUNCIL_TERMINAL_EXECUTION) {
+            const authorThreadId = requestedAuthorThreadId || task.author_thread_id;
+            const authorThread = authorThreadId
+              ? await claudeSessions.readConnectedSession(authorThreadId)
+              : null;
+            if (!authorThread) {
+              throw new Error('Choose a connected Claude author terminal before resuming the Plan council.');
+            }
+            if (resolve(authorThread.cwd) !== resolve(task.repo_path)) {
+              throw new Error('The Plan council author must use a Claude Relay in the same workspace.');
+            }
+            const ownedAuthorTerminal = projectLauncher.terminalForThread(authorThread.id);
+            if (!ownedAuthorTerminal || ownedAuthorTerminal.provider !== 'claude') {
+              throw new Error('The Plan council author must use a Claude terminal launched by Relay.');
+            }
+            if (authorThread.id !== task.author_thread_id) {
+              const reassigned = database.updateTask(taskId, {
+                author_thread_id: authorThread.id,
+                author_thread_name: authorThread.title,
+                author_thread_source: authorThread.source,
+              });
+              artifacts.updateCouncilAuthorAssignment(reassigned);
+              database.addEvent(taskId, 'queue', `Plan council author moved to ${authorThread.title}.`);
+            }
           }
         }
         if (reviewerThread.id !== task.thread_id) {
@@ -1078,13 +2094,23 @@ export const server = createServer(async (request, response) => {
       const taskId = taskIdFromPath(pathname);
       const task = database.getTask(taskId);
       if (!task) throw new Error('Task not found.');
-      if (task.mode !== 'execute' || task.provider !== 'codex') {
-        throw new Error('Only queued Codex tasks can be assigned to another terminal.');
+      if (task.mode !== 'execute' || !['codex', 'claude'].includes(task.provider)) {
+        throw new Error('Only queued Execute tasks can be assigned to another terminal.');
       }
       const body = await readJson(request);
       const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
-      const thread = threadId ? await codexAppServer.readConnectedThread(threadId) : null;
-      if (!thread) throw new Error('That Codex terminal is no longer connected. Refresh and try again.');
+      const thread = threadId
+        ? task.provider === 'codex'
+          ? await codexAppServer.readConnectedThread(threadId)
+          : await claudeSessions.readConnectedSession(threadId)
+        : null;
+      if (!thread) {
+        throw new Error(
+          task.provider === 'claude'
+            ? 'That Claude terminal is no longer open. Choose another live Claude Relay.'
+            : 'That Codex terminal is no longer connected. Choose another live Relay.',
+        );
+      }
       if (resolve(task.repo_path) !== resolve(thread.cwd)) {
         throw new Error('Tasks can only move between terminals in the same workspace.');
       }
@@ -1152,7 +2178,9 @@ export const server = createServer(async (request, response) => {
     serveStatic(pathname, response);
   } catch (error) {
     diagnostic('api.request.failed', { method: request.method, pathname, error: error.message });
-    const statusCode = error instanceof SyntaxError ? 400 : 422;
+    // A guard that has to run synchronously next to the write it protects cannot reach the
+    // route's own sendError, so it carries its status code on the error instead.
+    const statusCode = error instanceof SyntaxError ? 400 : error.statusCode || 422;
     sendError(response, statusCode, error.message || 'Request failed.');
   }
 });
@@ -1167,18 +2195,41 @@ server.once('error', (error) => {
 
 server.listen(PORT, HOST, () => {
   queue.start();
+  // After queue recovery, not before: recoverInterruptedTasks() marks tasks that died with
+  // the server as `interrupted` without emitting a queue change, so nothing else would tell
+  // a plan run that its steps are gone. An interrupted step is a failure with no scheduled
+  // retry, so its dependents block and the user can retry the task to re-arm it.
+  planRuns.reconcileAll();
   diagnostic('relay.started', { host: HOST, port: PORT, dataRoot: DATA_ROOT });
   codexAppServer.start().catch((error) => {
     diagnostic('appserver.background_start.failed', { error: error.message });
     console.error(`Codex app-server could not start: ${error.message}`);
   });
+  // Provider readiness is probed in the background from here on. No request handler ever
+  // spawns a provider CLI, so no request can be delayed by one.
+  claudeRuntime.start();
+  refreshCodexStatus().then((status) => {
+    if (!status.available || !status.authenticated) {
+      console.log('Codex is unavailable or not authenticated. Check `codex login status`.');
+      return;
+    }
+    // Warm the model list so the first Codex, Plan council, or Turbo submission after a
+    // restart does not pay the paginated model/list round trip.
+    void activateCodexRuntime(status);
+  });
+  codexStatusTimer = setInterval(() => {
+    void refreshCodexStatus().then((status) => activateCodexRuntime(status));
+  }, CODEX_STATUS_REFRESH_MS);
+  codexStatusTimer.unref?.();
   console.log(`Relay is running at http://${HOST}:${PORT}`);
-  if (!runtimeStatus.available || !runtimeStatus.authenticated) {
-    console.log('Codex is unavailable or not authenticated. Check `codex login status`.');
-  }
 });
 
 export async function shutdown() {
+  claudeRuntime.stop();
+  if (codexStatusTimer) {
+    clearInterval(codexStatusTimer);
+    codexStatusTimer = null;
+  }
   for (const client of sseClients) {
     client.end();
   }

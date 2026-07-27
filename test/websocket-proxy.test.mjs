@@ -109,6 +109,57 @@ test('proxy applies a launched project workspace to a new remote thread', async 
   }
 });
 
+test('a dedicated launch endpoint binds a resumed Codex conversation to the new launch', async () => {
+  const backend = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await once(backend, 'listening');
+  backend.on('connection', (socket) => {
+    socket.on('message', (data) => {
+      const message = JSON.parse(data.toString('utf8'));
+      socket.send(JSON.stringify({
+        id: message.id,
+        result: { thread: { id: message.params.threadId } },
+      }));
+    });
+  });
+
+  const address = backend.address();
+  const proxy = new RelayWebSocketProxy({
+    port: 0,
+    target: `ws://127.0.0.1:${address.port}`,
+  });
+  await proxy.start();
+  const launchId = 'resume-launch';
+  const existingReservation = await proxy.reserveLaunchClient('/work/project', 'previous-launch');
+  const reservation = await proxy.reserveLaunchClient('/work/project', launchId);
+  const existing = new WebSocket(existingReservation.endpoint);
+  const client = new WebSocket(reservation.endpoint);
+
+  try {
+    await Promise.all([once(existing, 'open'), once(client, 'open')]);
+    let connected = once(proxy, 'changed');
+    existing.send(JSON.stringify({
+      id: 2,
+      method: 'thread/resume',
+      params: { threadId: THREAD_ID },
+    }));
+    await connected;
+    connected = once(proxy, 'changed');
+    client.send(JSON.stringify({
+      id: 3,
+      method: 'thread/resume',
+      params: { threadId: THREAD_ID },
+    }));
+    await connected;
+    assert.equal(proxy.launchIdForThread(THREAD_ID), 'previous-launch');
+    assert.equal(proxy.threadIdForLaunch(launchId), THREAD_ID);
+  } finally {
+    existing.close();
+    client.close();
+    proxy.stop();
+    await new Promise((resolve) => backend.close(resolve));
+  }
+});
+
 test('a dedicated launch endpoint cannot be claimed by a manual shared-proxy client', async () => {
   const backend = new WebSocketServer({ host: '127.0.0.1', port: 0 });
   await once(backend, 'listening');

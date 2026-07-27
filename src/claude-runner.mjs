@@ -68,7 +68,20 @@ export class ClaudeRunner {
   constructor({ command = 'claude', spawnProcess = spawn } = {}) {
     this.command = command;
     this.spawnProcess = spawnProcess;
-    this.active = null;
+    // Stages are tracked per owner, not in one global slot. A single slot meant two
+    // concurrent stages could not coexist (queue.planAhead starts one forward-planning
+    // preparation per project, so two projects with Plan council enabled collided), and
+    // it meant cancel() killed whichever stage happened to be active rather than the one
+    // the caller named.
+    this.stages = new Map();
+  }
+
+  // `this.active` is retained as a read-only view of the most recently started stage so
+  // existing callers and tests that inspect it keep working.
+  get active() {
+    let latest = null;
+    for (const stage of this.stages.values()) latest = stage;
+    return latest;
   }
 
   run(prompt, {
@@ -76,11 +89,13 @@ export class ClaudeRunner {
     model,
     effort,
     attachmentPaths = [],
+    owner = null,
     onEvent,
     onStderr,
   }) {
-    if (this.active) {
-      throw new ClaudeRunnerError('Claude already has an active Relay plan stage.');
+    const ownerKey = owner === null || owner === undefined ? Symbol('claude-stage') : String(owner);
+    if (this.stages.has(ownerKey)) {
+      throw new ClaudeRunnerError('Claude already has an active Relay plan stage for this task.');
     }
     const attachmentDirectories = [...new Set(attachmentPaths.map((path) => dirname(path)))];
     const args = [
@@ -107,8 +122,8 @@ export class ClaudeRunner {
     let stdout = '';
     let stderrBuffer = '';
     let lastStderrLine = '';
-    const active = { child, cancelRequested: false };
-    this.active = active;
+    const active = { child, cancelRequested: false, owner: ownerKey };
+    this.stages.set(ownerKey, active);
     onEvent({
       event: { type: 'claude/started', model, effort },
       message: `Claude started with ${model} at ${effort} effort.`,
@@ -130,16 +145,15 @@ export class ClaudeRunner {
     });
 
     return new Promise((resolve, reject) => {
+      const release = () => {
+        if (this.stages.get(ownerKey) === active) this.stages.delete(ownerKey);
+      };
       child.once('error', (error) => {
-        if (this.active === active) {
-          this.active = null;
-        }
+        release();
         reject(new ClaudeRunnerError(`Could not start Claude Code: ${error.message}`));
       });
       child.once('close', (code, signal) => {
-        if (this.active === active) {
-          this.active = null;
-        }
+        release();
         if (stderrBuffer.trim()) {
           lastStderrLine = stderrBuffer.trim();
           onStderr(stderrBuffer.trim());
@@ -173,12 +187,23 @@ export class ClaudeRunner {
     });
   }
 
-  cancel() {
-    if (!this.active) {
-      return false;
+  // Cancels the stage belonging to `owner`. Passing no owner keeps the historical
+  // cancel-everything behaviour used by shutdown paths, but a named owner now only ever
+  // stops its own stage, so cancelling one project's plan cannot kill another's.
+  cancel(owner = null) {
+    if (owner === null || owner === undefined) {
+      let cancelled = false;
+      for (const stage of [...this.stages.values()]) {
+        stage.cancelRequested = true;
+        stage.child.kill('SIGTERM');
+        cancelled = true;
+      }
+      return cancelled;
     }
-    this.active.cancelRequested = true;
-    this.active.child.kill('SIGTERM');
+    const stage = this.stages.get(String(owner));
+    if (!stage) return false;
+    stage.cancelRequested = true;
+    stage.child.kill('SIGTERM');
     return true;
   }
 }

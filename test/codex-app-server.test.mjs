@@ -353,6 +353,7 @@ test('shared app-server lists connected threads and completes a queued turn', as
     const resume = received.find((message) => message.method === 'thread/resume');
     assert.equal(resume.params.threadId, THREAD_ID);
     assert.equal(resume.params.approvalPolicy, 'never');
+    assert.equal(resume.params.sandbox, 'danger-full-access');
 
     const turnStart = received.find((message) => message.method === 'turn/start');
     assert.equal(turnStart.params.threadId, THREAD_ID);
@@ -363,6 +364,9 @@ test('shared app-server lists connected threads and completes a queued turn', as
     });
     assert.equal(turnStart.params.model, 'gpt-test');
     assert.equal(turnStart.params.effort, 'high');
+    assert.deepEqual(turnStart.params.sandboxPolicy, {
+      type: 'dangerFullAccess',
+    });
     assert.equal(received.some((message) => message.method === 'thread/unsubscribe'), true);
   } finally {
     client.close();
@@ -579,6 +583,48 @@ test('plan review runs in the Codex read-only sandbox', async () => {
     assert.deepEqual(turnStart.params.sandboxPolicy, {
       type: 'readOnly',
       networkAccess: false,
+    });
+  } finally {
+    client.close();
+  }
+});
+
+test('direct execution resets a reused plan-review thread to full access', async () => {
+  const received = [];
+  const client = new CodexAppServer({
+    spawnProcess: () => fakeAppServerProcess(),
+    webSocketFactory: () => new FakeWebSocket(received),
+    proxy: new FakeProxy(),
+  });
+
+  try {
+    await client.run({
+      thread_id: THREAD_ID,
+      prompt: 'Review this plan without editing.',
+      read_only: true,
+    }, {
+      onEvent: () => {},
+      onStderr: () => {},
+    });
+    await client.run({
+      thread_id: THREAD_ID,
+      prompt: 'Implement the reviewed plan.',
+    }, {
+      onEvent: () => {},
+      onStderr: () => {},
+    });
+
+    const resumes = received.filter((message) => message.method === 'thread/resume');
+    assert.equal(resumes.at(-2).params.sandbox, 'read-only');
+    assert.equal(resumes.at(-1).params.sandbox, 'danger-full-access');
+
+    const turnStarts = received.filter((message) => message.method === 'turn/start');
+    assert.deepEqual(turnStarts.at(-2).params.sandboxPolicy, {
+      type: 'readOnly',
+      networkAccess: false,
+    });
+    assert.deepEqual(turnStarts.at(-1).params.sandboxPolicy, {
+      type: 'dangerFullAccess',
     });
   } finally {
     client.close();

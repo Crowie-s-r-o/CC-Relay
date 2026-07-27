@@ -26,6 +26,7 @@ export function freshProjectComposerState() {
     threadExecutionSettings: {},
     planSettings: {
       enabled: false,
+      authorThreadId: null,
       authorModel: 'fable',
       authorEffort: 'max',
       reviewerModel: null,

@@ -282,6 +282,12 @@ export class RelayWebSocketProxy extends EventEmitter {
     ))?.launchId || null;
   }
 
+  threadIdForLaunch(launchId) {
+    return [...this.clients].find((client) => (
+      !client.closed && client.launchId === launchId && client.threadId
+    ))?.threadId || null;
+  }
+
   runtimeClientForThread(threadId) {
     const matches = [...this.clients].filter((client) => (
       !client.closed

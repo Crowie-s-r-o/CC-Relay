@@ -63,9 +63,17 @@ export function resolveClaudeTranscriptPath(cwd, sessionId, {
 // transcript is never re-read on every poll. Backed by fs by default; tests inject a fake.
 export function fsTranscriptSource(path, {
   statSync = fsStatSync,
+  existsSync = fsExistsSync,
 } = {}) {
   return {
     path,
+    // Whether the transcript file is present. Observed once at turn start to classify a
+    // freshly launched session (no transcript yet) apart from an established one, so a later
+    // transient stat failure cannot be mistaken for a fresh session. existsSync itself
+    // returns false on any stat error, so it must never be trusted concurrently with size().
+    exists() {
+      return existsSync(path);
+    },
     size() {
       try {
         return statSync(path).size;
@@ -164,8 +172,8 @@ export function sanitizeInjectedPrompt(text) {
 }
 
 // Wrap sanitized text in bracketed-paste markers. The interactive TUI inserts the
-// whole block literally (newlines stay soft), and Terminal's do script appends the
-// carriage return that submits it as one turn.
+// whole block literally (newlines stay soft). Terminal's do script appends Return,
+// but the executor separately verifies that Claude actually started the turn.
 export function bracketedPastePayload(text) {
   const esc = String.fromCharCode(27);
   return `${esc}[200~${sanitizeInjectedPrompt(text)}${esc}[201~`;
@@ -182,7 +190,7 @@ export function injectionPromptIssue(text, { maxBytes = 100_000 } = {}) {
   }
   const bytes = Buffer.byteLength(value, 'utf8');
   if (bytes > maxBytes) {
-    return `the prompt is ${bytes} bytes, larger than the ${maxBytes}-byte terminal injection limit. Shorten it, or run it on a non-macOS Relay that uses the headless path.`;
+    return `the prompt is ${bytes} bytes, larger than the ${maxBytes}-byte terminal injection limit.`;
   }
   return null;
 }

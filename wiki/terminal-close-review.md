@@ -223,10 +223,73 @@ Relay now inspects the exact captured Terminal window immediately before closure
 > Never return to closing a live Terminal.app window before its exact TTY processes are gone. Terminal.app can show a modal confirmation and leave the close request incomplete.
 
 > [!note]
-> A failed TTY kill leaves the native window open and preserves explicit ownership for retry. Exit code 1 from `pkill` means the exact TTY already has no matching processes, so Relay may safely continue with the window close.
+> A failed TTY kill leaves the native window open and preserves explicit ownership for retry. Exit code 1 from the kill step means one enumerated process already exited or refused the signal. The drain gate below, not that exit code, decides whether the window may close.
 
-Focused coverage in `test/project-launcher.test.mjs` proves exact TTY targeting, no neighboring-window reference, kill-failure preservation, already-empty TTY handling, and shutdown cleanup. The complete suite passes 242 tests.
+### Process-drain follow-up
+
+Task 322 proved that a successful termination call is not sufficient evidence that Terminal.app already sees an idle window. Diagnostics recorded `terminal.close.processes_terminated` and `terminal.close.completed` 1 ms apart while Terminal.app still presented its running-process confirmation for `codex` and `node`.
+
+`ProjectLauncher.waitForMacTerminalProcessesToExit()` polls the exact TTY for up to two seconds and requires two consecutive empty observations before sending `close window`. The second observation gives both the process table and Terminal.app a settling interval after `SIGKILL`. A process that remains on the TTY causes cleanup to fail closed: the exact window stays open, ownership is retained, and no confirmation-producing close request is sent.
+
+The first version of that gate polled `pgrep -t <exact-tty> '.*'`. The section below explains why that never observed anything on Darwin 25 and what replaced it.
+
+> [!important]
+> A delivered signal means the signals were sent, not that every target has disappeared from the process table. Keep the bounded exact-TTY drain gate between termination and native window closure.
+
+Focused coverage in `test/project-launcher.test.mjs` proves exact TTY targeting, no neighboring-window reference, kill-failure preservation, already-empty TTY handling, delayed process drain, drain timeout, and shutdown cleanup. The complete suite passes 665 tests.
 
 See [[project-workspaces]], [[diagnostics]], and [[interface-layout]].
 
 #relay #terminal #macos #process-cleanup
+
+## Darwin 25 pgrep and pkill TTY filter regression
+
+On July 27, 2026, the whole macOS close path was found to terminate nothing while reporting success. The cause is the operating system, not Relay's ownership logic: on Darwin 25.5.0 the `-t` terminal filter of `pgrep` and `pkill` matches no processes at all.
+
+### Evidence
+
+- `ps -t ttys003 -o pid,tty,stat,command` lists `login`, the shell, `claude`, and its MCP children.
+- `pgrep -t ttys003` exits 1 with no output. The same holds for every one of the 16 live TTYs on the machine and for every accepted name form: `ttys003`, `s003`, and `/dev/ttys003`.
+- `pgrep` itself works. `pgrep -x claude` returns the expected identifiers. Only the `-t` filter is inert.
+
+### Why the close path reported a vacuous success
+
+1. `pkill -KILL -t <tty> '.*'` matched nothing and exited 1. Relay tolerated exit code 1 as "the TTY is already empty".
+2. `waitForMacTerminalProcessesToExit()` polled `pgrep -t <tty> '.*'`, received exit 1 twice, counted two empty observations, and returned success without a single live process having been signalled.
+3. The AppleScript `close window` step then met Terminal.app's running-process confirmation for the still-live shell and provider, so the window stayed open while Relay recorded a completed close.
+
+Task 320 is the recorded incident. In `.data/relay-diagnostics.jsonl` around 2026-07-27T18:03, `terminal.close.requested`, `terminal.close.processes_terminated`, and `terminal.close.completed` were all emitted at 18:03:40 for window 64612 on `/dev/ttys003`. Three seconds later `terminal.recovery.completed` re-bound the same live session, `runtimeProcessId` 30848, on the same TTY. Nothing had been killed.
+
+### The ps-based replacement
+
+`ProjectLauncher` no longer runs `pgrep` or `pkill` anywhere in the macOS close path. One helper, `macTerminalProcessSnapshot()`, owns both enumeration and the drain gate:
+
+1. `ps -t <exact-tty> -o pid=` lists the processes attached to the freshly verified TTY. This command demonstrably works on Darwin 25.
+2. Numeric identifiers are parsed by `terminalProcessIds()`, which trims the right-aligned columns and drops any line that is not a bare identifier. Identifiers stay strings so they can be passed straight to `execFile`.
+3. `kill -9 <pid> ...` terminates exactly the enumerated processes in one call.
+4. `waitForMacTerminalProcessesToExit()` polls the same `ps` snapshot every 50 ms for up to two seconds and still requires two consecutive empty observations before `close window`. The timeout still throws `Processes on terminal <tty> did not exit after SIGKILL.`, so an undrained TTY keeps its window open and retains ownership.
+
+Race tolerances are deliberate and narrow:
+
+- `ps` exiting 1 with no output means the TTY carries no processes or its device is already gone. That is an empty observation, not an error.
+- `ps` exiting 1 **with** output counts as occupied. An unreadable process table fails closed instead of repeating the vacuous success this section exists to remove.
+- `kill` exiting 1 is tolerated because a listed process can exit between the snapshot and the signal. Every other exit code throws.
+
+Diagnostics are unchanged. `terminal.close.requested`, `terminal.close.processes_terminated`, `terminal.close.completed`, and `terminal.close.failed` keep their names and fields, so existing incident triage still applies. The `ps -p <pid> -o tty=` identity pre-check in `closeTrackedTerminalNow()`, the AppleScript inspect with its expected-TTY check, the AppleScript close step, the Windows `taskkill.exe` path, and ownership bookkeeping are untouched.
+
+> [!important]
+> Never reintroduce `pgrep -t` or `pkill -t` on macOS. On Darwin 25 the TTY filter matches nothing and its exit code 1 is indistinguishable from a genuinely empty terminal, which converts every close into a silent no-op. Enumerate with `ps -t <tty> -o pid=` and signal the parsed identifiers.
+
+### Test coverage
+
+`test/project-launcher.test.mjs` now proves the exact command sequence `osascript` inspect, `ps -t`, `kill -9`, `ps -t`, `ps -t`, `osascript` close. The suite asserts that the kill step receives the exact enumerated identifiers, so a mechanism that matches nothing fails loudly instead of passing vacuously, and that no call in any close path uses `pgrep` or `pkill`. Further cases cover a process that survives one poll, a TTY that never drains (rejection, `terminal.close.failed`, no `close window`, ownership retained), `ps` exiting 1 with empty output as an empty observation, unreadable output failing closed, an unexpected `ps` exit code propagating, and identifier parsing of padded, blank, and non-numeric lines. The complete suite passes 665 tests.
+
+### Test gap
+
+No destructive close was executed against a live Terminal.app window. The user's working sessions were on the machine throughout, so verification stayed read-only: the `ps` and `pgrep` behavior above was confirmed live, and all kill behavior is covered by mocked tests only.
+
+One live-only risk remains. The `login` process on a Terminal.app TTY is root-owned, so Relay's `kill -9` is refused for that one identifier and it is expected to exit on its own once its child shell dies. The drain gate waits for that within its two-second deadline. This has never completed successfully in production, because the `pgrep` no-op made every previous drain vacuous. If `login` does not exit in time, `closeTrackedTerminalNow()` throws before `forgetTrackedTerminal()`, which keeps the window open and leaks the pool allocation. Watch the first real closes for `terminal.close.failed` carrying `did not exit after SIGKILL`.
+
+The same root cause changes shutdown timing. A vacuous drain cost about one poll interval per window, so `closeOwnedTerminals()` felt instant. A real drain costs at least one poll interval per window and up to the full two-second deadline for any window that does not drain, walked sequentially, so quitting with eight pooled terminals can stall for roughly sixteen seconds in the worst case. The shutdown test uses two windows with cooperative snapshots and cannot surface this. Measure a real quit before changing the deadline or the poll interval.
+
+#relay #terminal #macos #process-cleanup #darwin25

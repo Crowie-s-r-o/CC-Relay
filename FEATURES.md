@@ -8,12 +8,12 @@ Relay does not call the OpenAI or Anthropic APIs directly. It uses the installed
 
 Relay is designed to make AI development work easier to control:
 
-- Pin projects and launch connected Codex or Claude terminals from one place.
+- Pin projects and set separate maximum Codex and Claude instances for each one.
 - Queue prompts instead of waiting for one task to finish before preparing the next.
-- Choose the provider, model, reasoning effort, and target terminal.
-- Route direct Codex work to a genuinely idle Relay when one is available.
-- Run independent Codex tasks concurrently on different Relay terminals while keeping work sequential within each terminal.
-- Continue any direct Codex or Claude task from Task Activity in the exact same session, model, and effort.
+- Choose the provider, model, and reasoning effort without keeping a target terminal open.
+- Launch a fresh provider terminal only when a queued task receives capacity, then close it at outcome.
+- Run independent tasks concurrently up to each project's provider limits.
+- Continue a direct Codex or Claude task by relaunching and resuming its saved conversation.
 - Attach screenshots and other reference images to tasks.
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
 - Persist prompts, events, results, plans, errors, and attachments locally.
@@ -23,19 +23,19 @@ Relay is designed to make AI development work easier to control:
 
 ### Execute
 
-Execute sends one task directly to one selected AI session.
+Execute sends one task to one selected provider. Relay creates the terminal and conversation when the task starts.
 
 Use Execute when the task is already clear and you want an agent to perform the work, such as implementing a feature, fixing a bug, editing files, running tests, reviewing code, or answering a focused technical question.
 
 You can choose:
 
 - Codex or Claude Code
-- A connected session in the active project
+- The active project and its automatic provider pool
 - The model and reasoning effort
 - Optional reference images
 - Normal queueing or priority execution
 
-For direct Codex work, **Use an idle Relay when available** distributes consecutive tasks across free terminals. Different Relay terminals can execute independently at the same time, while tasks assigned to the same terminal remain ordered.
+The project's Codex and Claude limits control how many independent direct tasks can run at once. Every fresh task receives a fresh conversation. An explicit continuation resumes its saved conversation and is serialized against any other work using that conversation ID.
 
 **Best for:** well-defined work that needs one agent and one execution context.
 
@@ -55,15 +55,15 @@ This workflow combines two provider perspectives before implementation begins. I
 
 **Best for:** architecture, migrations, risky changes, multi-part features, and work that should be validated before code is edited.
 
-**Output:** a first draft, Codex review, final revised plan, live stage progress, and saved `plan.json` and `plan.md` artifacts.
+**Output:** a first draft, Codex review, final revised plan, live stage progress, an internal `plan.json` checkpoint, and a final-only `<project-root>/.data/tasks/<task-id>/plan.md` artifact.
 
 ### Forward-planning Turbo
 
-Forward-planning Turbo turns a large objective into a dependency-aware execution graph and runs that graph across multiple Codex terminals.
+Forward-planning Turbo turns a large objective into a dependency-aware execution graph and runs that graph across a temporary Codex fleet.
 
-The selected Codex terminal acts as a read-only planner. It studies the workspace once and returns a structured plan containing execution packages and their dependencies. Relay validates the plan, assigns ready packages to worker terminals, runs independent packages concurrently, and unlocks dependent packages as their prerequisites finish.
+Relay launches one read-only Codex planner and the requested number of workers. The planner studies the workspace once and returns a structured plan containing execution packages and their dependencies. Relay validates the plan, assigns ready packages to workers, runs independent packages concurrently, and unlocks dependent packages as their prerequisites finish.
 
-Workers share the same project workspace. The planner is expected to separate file ownership where possible and encode required ordering explicitly. Relay reuses workers until the complete graph is finished.
+Workers share the same project workspace. The planner is expected to separate file ownership where possible and encode required ordering explicitly. Relay reuses workers until the graph finishes, then closes the complete fleet.
 
 You can choose:
 
@@ -79,25 +79,25 @@ You can choose:
 
 | Workflow | Main purpose | Agents | Project changes | Parallel execution |
 | --- | --- | --- | --- | --- |
-| Execute | Complete a clear task | One Codex or Claude session | Allowed | Across separate Relay terminals |
+| Execute | Complete a clear task | One disposable Codex or Claude instance | Allowed | Up to the project provider limit |
 | Execute with Plan council | Produce a reviewed plan | Claude author, Codex reviewer, Claude reviser | No, read-only | Staged review loop |
-| Forward-planning Turbo | Plan and execute a large objective | One Codex planner and multiple Codex workers | Planner is read-only, workers can edit | Dependency-aware worker execution |
+| Forward-planning Turbo | Plan and execute a large objective | One disposable Codex planner and multiple disposable workers | Planner is read-only, workers can edit | Dependency-aware worker execution |
 
 ## Supporting features
 
 ### Project Launchpad
 
-Pin frequently used folders and treat each one as a workspace. A project card scopes connected sessions, tasks, activity, and launch actions. Separate buttons open Codex or Claude in the selected folder.
+Pin frequently used folders and treat each one as a workspace. A project card scopes tasks, activity, plans, provider settings, and instance limits. The composer opens Claude and Codex automatically only for runnable work.
 
 ### Task queue and Relay assignment
 
-Tasks are stored in SQLite and survive restarts. Each project owns its queue order, pause state, and FIFO barriers. Waiting tasks can be reordered or reassigned to another compatible Codex terminal in the same workspace. Direct Codex tasks can run concurrently on separate terminals, including while another project is running a Plan council, without forcing unrelated work to wait.
+Tasks are stored in SQLite and survive restarts. Each project owns its queue order, pause state, FIFO barriers, and provider limits. Waiting tasks can be reordered. Disposable tasks are not assigned manually because the pool creates their terminal when they start. Legacy persistent tasks retain compatible reassignment support.
 
-Task Activity includes a compact continuation dock for direct tasks. A follow-up becomes a linked queue task on the original session and waits behind any active turn there. Prompt and Result remain available through dense preview disclosures above the live event rail.
+Task Activity includes a compact continuation dock for direct tasks. A follow-up becomes a linked queue task on the original conversation and waits for both project capacity and any active turn using that ID. Prompt and Result remain available through dense preview disclosures above the live event rail.
 
 ### Run now
 
-Run now places an urgent task ahead of other waiting tasks. It does not interrupt work that is already running. If another compatible Relay is available, the task can start there immediately.
+Run now places an urgent task ahead of other waiting tasks. It does not interrupt work that is already running or bypass provider instance limits.
 
 ### Reference images
 

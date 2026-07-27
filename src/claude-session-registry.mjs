@@ -64,12 +64,19 @@ export class ClaudeSessionRegistry {
     this.cachedSessions = [];
     this.pending = null;
     this.lastError = null;
+    this.lastGoodAt = 0;
+    this.stale = false;
   }
 
   async listSessions({ refresh = false } = {}) {
     if (!refresh && Date.now() - this.cachedAt < this.cacheMs) {
       return this.cachedSessions;
     }
+    // A forced refresh joins a discovery already in flight rather than starting a second one.
+    // That discovery reads live state at the moment it resolves, so the caller still gets
+    // current data; it only gives up control over when the read started. Deliberate: the
+    // 800 ms liveness poll and dispatch can both ask at once, and one probe per caller is what
+    // produced the spawn storm that made discovery fail in the first place.
     if (this.pending) {
       return this.pending;
     }
@@ -77,14 +84,23 @@ export class ClaudeSessionRegistry {
       .then((output) => {
         this.cachedSessions = normalizeClaudeSessions(JSON.parse(output));
         this.cachedAt = Date.now();
+        this.lastGoodAt = this.cachedAt;
         this.lastError = null;
+        this.stale = false;
         return this.cachedSessions;
       })
       .catch((error) => {
-        this.cachedSessions = [];
+        // Last known good, deliberately. Blanking the cache here made every live Claude
+        // session disappear for cacheMs after a single transient `claude agents --json`
+        // failure (spawn EAGAIN, probe timeout, JSON hiccup), which turned an ordinary
+        // POST /api/tasks into a hard "that session is no longer open" rejection. A failed
+        // probe tells us nothing about the sessions, so it must not erase what we knew.
+        // A probe that SUCCEEDS and omits a session still removes it, so a genuinely
+        // closed terminal is still detected on the very next discovery.
         this.cachedAt = Date.now();
         this.lastError = error.message;
-        return [];
+        this.stale = true;
+        return this.cachedSessions;
       })
       .finally(() => {
         this.pending = null;
@@ -110,8 +126,23 @@ export class ClaudeSessionRegistry {
     }
   }
 
+  // Dispatch-time and liveness lookup. Forces a fresh probe because a runner about to type
+  // into a terminal needs current truth, not a cached guess.
   async readConnectedSession(sessionId) {
     const sessions = await this.listSessions({ refresh: true });
     return sessions.find((session) => session.id === sessionId) || null;
+  }
+
+  // Add-path lookup. Serves the warm cache instead of forcing a cold `claude agents --json`
+  // spawn, so creating a task never waits on a subprocess and never fails because discovery
+  // happened to be mid-refresh.
+  async findSession(sessionId) {
+    const sessions = await this.listSessions();
+    return sessions.find((session) => session.id === sessionId) || null;
+  }
+
+  // Synchronous last-known-good lookup with no I/O at all.
+  knownSession(sessionId) {
+    return this.cachedSessions.find((session) => session.id === sessionId) || null;
   }
 }

@@ -165,6 +165,15 @@ export class CodexAppServer extends EventEmitter {
     this.userAgent = null;
     this.lastError = null;
     this.activeTurns = new Map();
+    this.cachedThreads = [];
+    this.threadsCachedAt = 0;
+    this.threadsCacheMs = 750;
+    this.threadsPending = null;
+    this.threadsStale = false;
+    this.cachedModels = null;
+    this.modelsCachedAt = 0;
+    this.modelsCacheMs = 60_000;
+    this.modelsPending = null;
     this.proxy.on('changed', () => this.emit('threads'));
     this.proxy.on('error', (error) => this.emit('stderr', `Shared Codex proxy error: ${error.message}`));
     this.proxy.on('clientError', (error) => this.emit('stderr', `Connected Codex client error: ${error.message}`));
@@ -581,7 +590,53 @@ export class CodexAppServer extends EventEmitter {
     this.emit('status', this.status());
   }
 
-  async listConnectedThreads() {
+  // Discovery is one `thread/read` round trip per connected terminal, so it must not sit on
+  // the task-add path uncached. Concurrent callers share one discovery and a failed
+  // discovery keeps the last known good list rather than reporting zero terminals.
+  async listConnectedThreads({ refresh = false } = {}) {
+    if (!refresh && Date.now() - this.threadsCachedAt < this.threadsCacheMs) {
+      return this.cachedThreads;
+    }
+    // A forced refresh joins a discovery that is already in flight rather than starting a
+    // second one. That discovery reads live state at the moment it resolves, so the caller
+    // still gets current data; the only thing it gives up is control over when the read
+    // started. This is deliberate: dispatch and the 800 ms liveness poll can both ask at once,
+    // and starting a probe per caller is what produced the spawn storm in the first place.
+    if (this.threadsPending) return this.threadsPending;
+    this.threadsPending = this.discoverConnectedThreads()
+      .then((threads) => {
+        this.cachedThreads = threads;
+        this.threadsCachedAt = Date.now();
+        this.threadsStale = false;
+        return threads;
+      })
+      .catch((error) => {
+        this.threadsCachedAt = Date.now();
+        this.threadsStale = true;
+        this.lastError = error.message;
+        return this.cachedThreads;
+      })
+      .finally(() => {
+        this.threadsPending = null;
+      });
+    return this.threadsPending;
+  }
+
+  // Add-path lookup: warm cache only, never forces a cold round trip per connected terminal.
+  async findConnectedThread(threadId) {
+    const threads = await this.listConnectedThreads();
+    return threads.find((thread) => thread.id === threadId) || null;
+  }
+
+  knownThread(threadId) {
+    return this.cachedThreads.find((thread) => thread.id === threadId) || null;
+  }
+
+  threadIdForLaunch(launchId) {
+    return this.proxy.threadIdForLaunch?.(launchId) || null;
+  }
+
+  async discoverConnectedThreads() {
     await this.start();
     const threads = await Promise.all(this.proxy.listConnectedThreadIds().map(async (threadId) => {
       try {
@@ -607,7 +662,35 @@ export class CodexAppServer extends EventEmitter {
     return connected;
   }
 
-  async listModels() {
+  // The model list is a paginated JSON-RPC round trip, and every Codex, Plan council, and
+  // Turbo submission validates its model against it. Leaving it uncached kept a cold wire
+  // round trip (up to the 30s request timeout, more than once when paginated) on the
+  // task-add path. Models change rarely, so this caches for a minute, deduplicates
+  // concurrent callers, and keeps the last known good list if a refresh fails.
+  async listModels({ refresh = false } = {}) {
+    if (!refresh && this.cachedModels && Date.now() - this.modelsCachedAt < this.modelsCacheMs) {
+      return this.cachedModels;
+    }
+    if (this.modelsPending) return this.modelsPending;
+    this.modelsPending = this.discoverModels()
+      .then((models) => {
+        this.cachedModels = models;
+        this.modelsCachedAt = Date.now();
+        return models;
+      })
+      .catch((error) => {
+        if (!this.cachedModels) throw error;
+        this.modelsCachedAt = Date.now();
+        this.lastError = error.message;
+        return this.cachedModels;
+      })
+      .finally(() => {
+        this.modelsPending = null;
+      });
+    return this.modelsPending;
+  }
+
+  async discoverModels() {
     await this.start();
     const models = [];
     let cursor = null;
@@ -623,8 +706,9 @@ export class CodexAppServer extends EventEmitter {
     return models;
   }
 
+  // Dispatch-time and liveness lookup: forces current truth before Relay drives a terminal.
   async readConnectedThread(threadId) {
-    const threads = await this.listConnectedThreads();
+    const threads = await this.listConnectedThreads({ refresh: true });
     return threads.find((thread) => thread.id === threadId) || null;
   }
 
@@ -793,7 +877,10 @@ export class CodexAppServer extends EventEmitter {
       if (activeTurn.cancelRequested) {
         throw new CodexAppServerError('Task cancelled.', { cancelled: true });
       }
-      const sandbox = task.read_only ? 'read-only' : 'workspace-write';
+      const sandbox = task.read_only ? 'read-only' : 'danger-full-access';
+      const sandboxPolicy = task.read_only
+        ? { type: 'readOnly', networkAccess: false }
+        : { type: 'dangerFullAccess' };
       const executionThreadId = task.thread_id;
       let freshThread = false;
       const baseThreadParams = {
@@ -826,9 +913,7 @@ export class CodexAppServer extends EventEmitter {
           })),
         ],
         approvalPolicy: 'never',
-        ...(task.read_only
-          ? { sandboxPolicy: { type: 'readOnly', networkAccess: false } }
-          : {}),
+        sandboxPolicy,
         ...(task.model ? { model: task.model } : {}),
         ...(task.effort ? { effort: task.effort } : {}),
       });

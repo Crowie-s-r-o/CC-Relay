@@ -7,6 +7,8 @@ import { TerminalRuntimeResolver, normalizeTerminalTty } from './terminal-runtim
 
 const execFile = promisify(execFileCallback);
 const TERMINAL_CLOSE_TIMEOUT_MS = 10_000;
+const TERMINAL_PROCESS_DRAIN_TIMEOUT_MS = 2_000;
+const TERMINAL_PROCESS_DRAIN_POLL_MS = 50;
 const SHARED_CODEX_ENDPOINT = 'ws://127.0.0.1:4769';
 export const CODEX_RELAY_COMMAND = `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${SHARED_CODEX_ENDPOINT}`;
 export const CLAUDE_RELAY_COMMAND = 'claude --dangerously-skip-permissions';
@@ -30,16 +32,40 @@ function terminalTtyName(value) {
   return /^[a-zA-Z0-9._-]+$/.test(name) ? name : null;
 }
 
-export function codexRelayCommand(path, quote = shellQuote, endpoint = SHARED_CODEX_ENDPOINT) {
-  return `codex --dangerously-bypass-approvals-and-sandbox --cd ${quote(path)} --remote ${endpoint}`;
+export function terminalProcessIds(output) {
+  // Process identifiers stay strings so they can be passed straight to execFile.
+  return String(output ?? '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => /^\d+$/.test(line));
 }
 
-export function claudeRelayCommand(sessionId = null, quote = shellQuote, binary = 'claude') {
+export function codexRelayCommand(
+  path,
+  quote = shellQuote,
+  endpoint = SHARED_CODEX_ENDPOINT,
+  resumeThreadId = null,
+) {
+  const command = resumeThreadId ? `codex resume ${quote(resumeThreadId)}` : 'codex';
+  return `${command} --dangerously-bypass-approvals-and-sandbox --cd ${quote(path)} --remote ${endpoint}`;
+}
+
+export function claudeRelayCommand(
+  sessionId = null,
+  quote = shellQuote,
+  binary = 'claude',
+  resumeSessionId = null,
+) {
   // Pin the exact resolved binary so the interactive terminal runs the same
   // claude Relay discovered, instead of relying on shell PATH order. The bare
   // 'claude' default stays unquoted for backward compatibility.
   const bin = binary && binary !== 'claude' ? quote(binary) : 'claude';
-  return `${bin} --dangerously-skip-permissions${sessionId ? ` --session-id ${quote(sessionId)}` : ''}`;
+  const sessionArgument = resumeSessionId
+    ? ` --resume ${quote(resumeSessionId)}`
+    : sessionId
+      ? ` --session-id ${quote(sessionId)}`
+      : '';
+  return `${bin} --dangerously-skip-permissions${sessionArgument}`;
 }
 
 export function normalizeTerminalLayout(layout) {
@@ -112,13 +138,18 @@ export function validateProjectPath(path) {
   return { path: resolved, name: basename(resolved) || resolved };
 }
 
-export function terminalCommand(path, provider, { claudeSessionId = null, codexEndpoint = SHARED_CODEX_ENDPOINT, claudeBinary = 'claude' } = {}) {
+export function terminalCommand(path, provider, {
+  claudeSessionId = null,
+  codexEndpoint = SHARED_CODEX_ENDPOINT,
+  claudeBinary = 'claude',
+  resumeThreadId = null,
+} = {}) {
   if (!['codex', 'claude'].includes(provider)) {
     throw new Error(`Unsupported AI provider: ${provider}`);
   }
   const command = provider === 'codex'
-    ? codexRelayCommand(path, shellQuote, codexEndpoint)
-    : claudeRelayCommand(claudeSessionId, shellQuote, claudeBinary);
+    ? codexRelayCommand(path, shellQuote, codexEndpoint, resumeThreadId)
+    : claudeRelayCommand(claudeSessionId, shellQuote, claudeBinary, resumeThreadId);
   return `cd ${shellQuote(path)} && ${command}`;
 }
 
@@ -133,6 +164,7 @@ export class ProjectLauncher {
     runtimeResolver = null,
     createId = randomUUID,
     now = Date.now,
+    delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     recoveryRetryMs = 15_000,
     claudeBinary = 'claude',
   } = {}) {
@@ -144,6 +176,7 @@ export class ProjectLauncher {
     this.reserveCodexLaunch = reserveCodexLaunch;
     this.createId = createId;
     this.now = now;
+    this.delay = delay;
     this.recoveryRetryMs = recoveryRetryMs;
     this.runtimeResolver = runtimeResolver || new TerminalRuntimeResolver({
       run,
@@ -168,6 +201,7 @@ export class ProjectLauncher {
     terminalProcessId = null,
     terminalTty = null,
     runtimeProcessId = null,
+    expectedThreadId = null,
     closeOnShutdown = true,
     ownershipSource = 'launch',
     cancelWorkspaceReservation = null,
@@ -189,6 +223,7 @@ export class ProjectLauncher {
       terminalProcessId,
       terminalTty,
       runtimeProcessId,
+      expectedThreadId,
       closeOnShutdown,
       ownershipSource,
       cancelWorkspaceReservation,
@@ -268,6 +303,7 @@ export class ProjectLauncher {
     const candidates = threads.filter((thread) => (
       thread?.id
       && !this.terminalForThread(thread.id)
+      && !this.pendingLaunchMatches(thread)
       && (this.recoveryRetryAt.get(thread.id) || 0) <= timestamp
     ));
     if (candidates.length === 0) return [];
@@ -324,6 +360,21 @@ export class ProjectLauncher {
     return recovered;
   }
 
+  pendingLaunchMatches(thread) {
+    if (!thread?.provider || typeof thread.cwd !== 'string') return false;
+    let path;
+    try {
+      path = validateProjectPath(thread.cwd).path;
+    } catch {
+      return false;
+    }
+    return [...this.ownedTerminals.values()].some((terminal) => (
+      !terminal.threadId
+      && terminal.provider === thread.provider
+      && terminal.path === path
+    ));
+  }
+
   async verifyTerminalForThread(thread) {
     const terminal = [...this.ownedTerminals.values()].find((item) => item.threadId === thread?.id);
     if (!terminal) return false;
@@ -344,7 +395,6 @@ export class ProjectLauncher {
       current
       && current.terminalWindowId === terminal.terminalWindowId
       && current.terminalTty === terminal.terminalTty
-      && current.runtimeProcessId === terminal.runtimeProcessId
     );
     if (!verified) {
       this.forgetTrackedTerminal(terminal.launchId);
@@ -352,12 +402,53 @@ export class ProjectLauncher {
         threadId: thread.id,
         provider: thread.provider,
       });
+    } else if (current.runtimeProcessId !== terminal.runtimeProcessId) {
+      const previousRuntimeProcessId = terminal.runtimeProcessId;
+      terminal.runtimeProcessId = current.runtimeProcessId;
+      this.diagnostic('terminal.recovery.process_refreshed', {
+        threadId: thread.id,
+        provider: thread.provider,
+        previousRuntimeProcessId,
+        runtimeProcessId: current.runtimeProcessId,
+      });
     }
     return verified;
   }
 
+  refreshTerminalRuntimeIdentity(threadId, current) {
+    const terminal = [...this.ownedTerminals.values()].find((item) => item.threadId === threadId);
+    if (!terminal || !current) return false;
+    const sameTerminal = current.terminalWindowId === terminal.terminalWindowId
+      && (!terminal.terminalTty || current.terminalTty === terminal.terminalTty);
+    if (!sameTerminal) return false;
+    const previousRuntimeProcessId = terminal.runtimeProcessId;
+    terminal.terminalTty ||= current.terminalTty || null;
+    terminal.runtimeProcessId = current.runtimeProcessId || null;
+    if (terminal.runtimeProcessId !== previousRuntimeProcessId) {
+      this.diagnostic('terminal.process.refreshed', {
+        launchId: terminal.launchId,
+        threadId,
+        provider: terminal.provider,
+        previousRuntimeProcessId,
+        runtimeProcessId: terminal.runtimeProcessId,
+      });
+    }
+    return true;
+  }
+
   terminalForThread(threadId) {
     const terminal = [...this.ownedTerminals.values()].find((item) => item.threadId === threadId);
+    if (!terminal) return null;
+    return {
+      launchId: terminal.launchId,
+      threadId: terminal.threadId,
+      provider: terminal.provider,
+      path: terminal.path,
+    };
+  }
+
+  terminalForLaunch(launchId) {
+    const terminal = this.ownedTerminals.get(launchId);
     if (!terminal) return null;
     return {
       launchId: terminal.launchId,
@@ -446,16 +537,16 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
     }
   }
 
-  async launch(path, provider, requestedLayout = null) {
+  async launch(path, provider, requestedLayout = null, options = {}) {
     if (this.closing) {
       throw new Error('Relay is closing and cannot launch another terminal.');
     }
-    const launch = this.launchQueue.then(() => this.launchNow(path, provider, requestedLayout));
+    const launch = this.launchQueue.then(() => this.launchNow(path, provider, requestedLayout, options));
     this.launchQueue = launch.catch(() => {});
     return launch;
   }
 
-  async launchNow(path, provider, requestedLayout = null) {
+  async launchNow(path, provider, requestedLayout = null, { resumeThreadId = null } = {}) {
     this.ensureSupported();
     const project = validateProjectPath(path);
     if (!['codex', 'claude'].includes(provider)) {
@@ -467,6 +558,9 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       this.diagnostic('terminal.launch.codex_ready', { path: project.path });
     }
     const expectedLaunchId = this.createId();
+    const expectedThreadId = typeof resumeThreadId === 'string' && resumeThreadId.trim()
+      ? resumeThreadId.trim()
+      : expectedLaunchId;
     const layout = normalizeTerminalLayout(requestedLayout);
     const background = requestedLayout?.background === true;
     const displays = layout ? await this.listDisplays() : [];
@@ -493,9 +587,19 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
     const codexEndpoint = workspaceReservation?.endpoint || SHARED_CODEX_ENDPOINT;
     const command = this.platform === 'win32'
       ? provider === 'codex'
-        ? codexRelayCommand(project.path, cmdQuote, codexEndpoint)
-        : claudeRelayCommand(expectedLaunchId, cmdQuote, this.claudeBinary)
-      : terminalCommand(project.path, provider, { claudeSessionId: expectedLaunchId, codexEndpoint, claudeBinary: this.claudeBinary });
+        ? codexRelayCommand(project.path, cmdQuote, codexEndpoint, resumeThreadId)
+        : claudeRelayCommand(
+          resumeThreadId ? null : expectedLaunchId,
+          cmdQuote,
+          this.claudeBinary,
+          resumeThreadId,
+        )
+      : terminalCommand(project.path, provider, {
+        claudeSessionId: resumeThreadId ? null : expectedLaunchId,
+        codexEndpoint,
+        claudeBinary: this.claudeBinary,
+        resumeThreadId,
+      });
     this.diagnostic('terminal.launch.requested', {
       launchId: expectedLaunchId,
       provider,
@@ -506,6 +610,7 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       slot,
       bounds,
       endpoint: provider === 'codex' ? codexEndpoint : undefined,
+      resumeThreadId: resumeThreadId || undefined,
     });
     if (this.platform === 'win32') {
       const startProcess = `$process = Start-Process -FilePath 'cmd.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList '/k', ${powershellQuote(command)}${background ? " -WindowStyle Minimized" : ''} -PassThru`;
@@ -534,6 +639,7 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
         provider,
         path: project.path,
         terminalProcessId,
+        expectedThreadId,
         cancelWorkspaceReservation,
       });
       if (!launchId) cancelWorkspaceReservation?.();
@@ -544,7 +650,18 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
         platform: this.platform,
         terminalProcessId,
       });
-      return { ...project, provider, command, layout, display: display || null, slot, bounds, launchId, terminalProcessId };
+      return {
+        ...project,
+        provider,
+        command,
+        layout,
+        display: display || null,
+        slot,
+        bounds,
+        launchId,
+        expectedThreadId,
+        terminalProcessId,
+      };
     }
     const backgroundCommand = background
       ? '\nset miniaturized of launchedWindow to true'
@@ -570,6 +687,7 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       provider,
       path: project.path,
       terminalWindowId,
+      expectedThreadId,
       cancelWorkspaceReservation,
     });
     if (!launchId) cancelWorkspaceReservation?.();
@@ -580,7 +698,18 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       platform: this.platform,
       terminalWindowId,
     });
-    return { ...project, provider, command, layout, display: display || null, slot, bounds, launchId, terminalWindowId };
+    return {
+      ...project,
+      provider,
+      command,
+      layout,
+      display: display || null,
+      slot,
+      bounds,
+      launchId,
+      expectedThreadId,
+      terminalWindowId,
+    };
   }
 
   async closeOwnedTerminal(threadId) {
@@ -588,6 +717,21 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       throw new Error('Relay is closing and cannot change terminal sessions.');
     }
     const close = this.launchQueue.then(() => this.closeOwnedTerminalNow(threadId));
+    this.launchQueue = close.catch(() => {});
+    return close;
+  }
+
+  async closeOwnedLaunch(launchId) {
+    if (this.closing) {
+      throw new Error('Relay is closing and cannot change terminal sessions.');
+    }
+    const close = this.launchQueue.then(() => {
+      const terminal = this.ownedTerminals.get(launchId);
+      if (!terminal) {
+        throw new Error('Relay could not verify an exact native terminal for this launch.');
+      }
+      return this.closeTrackedTerminalNow(terminal);
+    });
     this.launchQueue = close.catch(() => {});
     return close;
   }
@@ -608,19 +752,62 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       throw new Error('The terminal TTY could not be verified.');
     }
 
-    try {
-      await this.run(
-        'pkill',
-        ['-KILL', '-t', ttyName, '.*'],
-        { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
-      );
-    } catch (error) {
-      if (error?.code !== 1) throw error;
+    const { processIds } = await this.macTerminalProcessSnapshot(ttyName);
+    if (processIds.length > 0) {
+      try {
+        await this.run(
+          'kill',
+          ['-9', ...processIds],
+          { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+        );
+      } catch (error) {
+        // kill exits 1 when a listed process already vanished between the snapshot and
+        // the signal, or when the signal is refused for one of the enumerated targets.
+        // The drain gate below, not this exit code, decides whether the TTY is clear.
+        if (error?.code !== 1) throw error;
+      }
     }
+
+    await this.waitForMacTerminalProcessesToExit(ttyName);
 
     const closeScript = `tell application "Terminal"\nif exists window id ${terminal.terminalWindowId} then close window id ${terminal.terminalWindowId} saving no\nend tell`;
     await this.run('osascript', ['-e', closeScript], { timeout: TERMINAL_CLOSE_TIMEOUT_MS });
     return tty;
+  }
+
+  async macTerminalProcessSnapshot(ttyName) {
+    // Darwin 25 accepts the pgrep and pkill -t filter but matches nothing, even while the
+    // process table clearly lists processes on that TTY. ps reports the exact TTY
+    // membership Relay must terminate, so it owns both enumeration and the drain gate.
+    let output = '';
+    try {
+      const result = await this.run(
+        'ps',
+        ['-t', ttyName, '-o', 'pid='],
+        { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+      );
+      output = result?.stdout ?? '';
+    } catch (error) {
+      // ps exits 1 with no output when the exact TTY carries no processes or its device
+      // is already gone. Output alongside that exit code still counts as occupied, so an
+      // unreadable process table fails closed instead of vacuously reporting success.
+      if (error?.code !== 1) throw error;
+      output = typeof error.stdout === 'string' ? error.stdout : '';
+    }
+    const text = String(output).trim();
+    return { empty: text === '', processIds: terminalProcessIds(text) };
+  }
+
+  async waitForMacTerminalProcessesToExit(ttyName) {
+    const deadline = this.now() + TERMINAL_PROCESS_DRAIN_TIMEOUT_MS;
+    let emptyObservations = 0;
+    while (this.now() <= deadline) {
+      const { empty } = await this.macTerminalProcessSnapshot(ttyName);
+      emptyObservations = empty ? emptyObservations + 1 : 0;
+      if (emptyObservations >= 2) return;
+      await this.delay(TERMINAL_PROCESS_DRAIN_POLL_MS);
+    }
+    throw new Error(`Processes on terminal ${ttyName} did not exit after SIGKILL.`);
   }
 
   async closeOwnedTerminalNow(threadId) {
@@ -628,6 +815,11 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
     if (!terminal) {
       throw new Error('Relay could not verify an exact native terminal for this session.');
     }
+    return this.closeTrackedTerminalNow(terminal);
+  }
+
+  async closeTrackedTerminalNow(terminal) {
+    const threadId = terminal.threadId;
     this.diagnostic('terminal.close.requested', {
       launchId: terminal.launchId,
       threadId,
@@ -674,7 +866,13 @@ JSON.stringify(terminal.running() ? terminal.windows().map((window) => {
       throw new Error(`Could not close the terminal: ${error.message}`);
     }
     this.forgetTrackedTerminal(terminal.launchId);
-    this.recoveryRetryAt.delete(threadId);
+    const recoveryThreadId = threadId || terminal.expectedThreadId;
+    if (recoveryThreadId) {
+      // The provider connection can remain discoverable briefly after its terminal process
+      // exits. Do not let the /api/threads recovery poll resurrect the window Relay just
+      // closed and reserve the old conversation against a later disposable resume.
+      this.recoveryRetryAt.set(recoveryThreadId, this.now() + this.recoveryRetryMs);
+    }
     this.diagnostic('terminal.close.completed', {
       launchId: terminal.launchId,
       threadId,

@@ -52,3 +52,28 @@ test('running task feed is global and excludes non-running tasks', () => {
     [3, '/repo/beta', 'Beta update'],
   ]);
 });
+
+test('a Claude input request becomes the latest running-task update', () => {
+  const events = [
+    {
+      id: 1,
+      kind: 'claude',
+      message: 'Earlier response',
+      payload: { type: 'claude/message', provider: 'claude', text: 'Earlier response' },
+      created_at: '2026-07-20T10:00:01.000Z',
+    },
+    {
+      id: 2,
+      kind: 'claude',
+      message: 'Claude paused in the relay-9 terminal and may be waiting for your input.',
+      payload: { type: 'claude/input-required', provider: 'claude' },
+      created_at: '2026-07-20T10:00:02.000Z',
+    },
+  ];
+
+  assert.deepEqual(latestAgentUpdate(events), {
+    text: 'Claude paused in the relay-9 terminal and may be waiting for your input.',
+    provider: 'claude',
+    createdAt: '2026-07-20T10:00:02.000Z',
+  });
+});

@@ -67,6 +67,95 @@ Null or empty prompts still fail through existing validation. Missing, malformed
 2. Expose an idempotent-submission capability if renderer and backend versions are ever distributed independently.
 3. Add a small Task Activity or diagnostic notice when a response resolves through `duplicateSubmission: true` if field troubleshooting needs it.
 
-See [[task-history]] and [[diagnostics]].
+## Semantic revision: the intent excludes runNow
+
+> [!important]
+> The submission signature no longer includes `runNow`. The UUID identifies the **intent**,
+> meaning the prompt and the routing that will carry it, not the queue-position hint
+> attached to one attempt.
+
+The original signature carried `runNow`, which left a live duplicate hazard. `runNow` is
+read from `state.prioritySubmit` and reset to `false` before the POST, and the Enter
+handler rewrites it from `event.ctrlKey` on every keypress. So this sequence minted two
+UUIDs for one piece of work:
+
+1. The user presses Ctrl+Enter. `runNow` is `true`. The POST is sent.
+2. The response is lost, or the request times out. This is ambiguous: the task may well
+   have been created. The composer correctly retains prompt, attachments, and pending
+   intent.
+3. The user presses plain Enter to retry the identical prompt. `runNow` is now `false`, so
+   the signature differs, so `resolveSubmissionId` mints a fresh UUID.
+4. If step 1 actually landed, the server sees an unknown UUID and creates a second task.
+
+That is precisely the failure the guard exists to prevent, reached through the guard's own
+key. Excluding `runNow` closes it: the retry reuses the original UUID and the server
+returns the original task.
+
+This cannot collide two deliberate separate submissions. The pending intent is retained
+**only** through ambiguous failures and is cleared on success, so deliberately resending
+the same prompt after an accepted task is new work with its own UUID. The regression-hunt
+note above about repeating identical prompt text still holds for the same reason.
+
+`preferIdleTerminal` is excluded on the same grounds. It is a routing preference the server
+may or may not honour, not part of the work being sent.
+
+Identity now lives in `public/submission-intent.js` as two pure functions,
+`submissionIntentSignature` and `resolveSubmissionId`, so the rule is unit tested rather
+than asserted against handler source text. `test/submission-intent.test.mjs` covers the
+Ctrl+Enter, ambiguous failure, plain Enter retry sequence directly, plus the changed-intent
+cases that must still mint a new UUID and the success-clears-intent case.
+
+> [!note]
+> Risk 3 in the list above is unchanged in kind but slightly wider: a caller reusing an
+> existing UUID with a different `runNow` and the same prompt, workflow, provider, and
+> settings now also receives the original task. That is the intended trade, since the
+> alternative is a duplicate row.
+
+## The deliberate resend, and why a duplicate 200 is not always a success
+
+Retaining the intent through failures creates a second-order case the original design did
+not cover:
+
+1. The user submits prompt P. The response is lost, but the server **did** create task N.
+2. The user never retries. Task N runs and finishes.
+3. Much later the user deliberately submits the identical prompt, wanting a second run.
+
+The retained intent still matches, so the server correctly returns finished task N with
+`duplicateSubmission: true` and a 200. Treated as an ordinary success, the browser cleared
+the composer, selected a finished task, and ran nothing. The user's second run silently did
+not happen.
+
+The composer now branches on the returned task's state, using the shared
+`isFinishedTaskStatus` from `public/task-history.js` rather than a second hand-written
+list:
+
+- **Finished** (`complete`, `failed`, `interrupted`, `cancelled`): not a success. Relay
+  drops the pending intent so the very next submission mints a fresh UUID and genuinely
+  runs, keeps the prompt and its attachments, selects the existing task, and shows an
+  informational notice naming it: *This exact prompt was already accepted as task N, which
+  has finished. Press Enter again to run it as a new task.*
+- **Still waiting or running**: this is the same live task the user asked for. Selecting it
+  and clearing the composer stays correct, with a quiet note saying which task it resolved
+  to.
+
+No server change was needed; the 200 already carries both the flag and the task state.
+
+> [!note]
+> The composer alert gained a third kind, `notice`, styled from `--signal-soft` rather than
+> the danger palette. An informational outcome must not be painted as an error the user
+> caused. See [[interface-layout]].
+
+## Abort copy must not claim the request was not sent
+
+The client timeout aborts the browser's wait; it does not stop the server. The original
+copy said *Nothing was sent, so you can send it again*, which is false: with the 45 second
+task-submit budget the task may well be persisted and already running. The shared `api()`
+helper now says only *It may still be processing the request*, which is also correct for
+cancel, retry, delete, pause, and reorder, since those share the helper. Task creation
+passes its own `timeoutMessage`, and its reassurance is earned rather than assumed: *The
+task may still have been created. Sending it again is safe and will not create a
+duplicate*, which holds precisely because the retained UUID resolves to the original task.
+
+See [[task-history]], [[interface-layout]], and [[diagnostics]].
 
 #relay #queue #idempotency #review #ship

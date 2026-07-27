@@ -1094,7 +1094,7 @@ test('completed Plan council stores one canonical Markdown plan without a duplic
           status: 'complete',
           finalPlan: '# Only final plan',
           stages: [],
-        });
+        }, { repoPath: task.repo_path });
         return { finalResponse: '# Only final plan', sessionId: task.thread_id, exitCode: 0 };
       },
       cancel() { return false; },
@@ -1104,7 +1104,11 @@ test('completed Plan council stores one canonical Markdown plan without a duplic
   try {
     const task = queue.enqueue(planInput('Single artifact', 'reviewer', directory));
     await waitFor(() => database.getTask(task.id).status === 'complete');
-    assert.equal(readFileSync(artifacts.planPath(task.id), 'utf8'), '# Only final plan\n');
+    assert.equal(
+      readFileSync(artifacts.planPath(task.id, task.repo_path), 'utf8'),
+      '# Only final plan\n',
+    );
+    assert.equal(existsSync(artifacts.planPath(task.id)), false);
     assert.equal(existsSync(join(artifacts.taskDirectory(task.id), 'result.md')), false);
   } finally {
     await queue.shutdown();
@@ -1187,6 +1191,98 @@ test('queued task request can be edited without changing routing, order, or atta
       () => queue.edit(task.id, { title: 'Too late', prompt: 'Do not save' }),
       /still waiting in the queue/,
     );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('automatic queued Execute tasks can switch between Claude and Codex before dispatch', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-switch-queued-provider-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { run() {}, cancel() { return false; } },
+  });
+
+  try {
+    queue.pause();
+    const task = queue.enqueue({
+      title: 'Switch provider',
+      prompt: 'Run this with the selected provider.',
+      thread: thread('saved-claude-conversation', directory),
+      provider: 'claude',
+      model: 'opus',
+      effort: 'high',
+      terminalLifecycle: 'disposable',
+      continuedFromTaskId: 41,
+      attachments: [{
+        name: 'switch-reference.png',
+        mimeType: 'image/png',
+        extension: 'png',
+        data: Buffer.from('89504e470d0a1a0a00000000', 'hex'),
+      }],
+    });
+    database.updateTask(task.id, { session_id: 'saved-claude-conversation' });
+
+    const codexTask = queue.edit(task.id, {
+      title: task.title,
+      prompt: task.prompt,
+      provider: 'codex',
+      model: 'gpt-test',
+      effort: 'xhigh',
+    });
+
+    assert.equal(codexTask.provider, 'codex');
+    assert.equal(codexTask.model, 'gpt-test');
+    assert.equal(codexTask.effort, 'xhigh');
+    assert.equal(codexTask.thread_id, null);
+    assert.equal(codexTask.thread_name, null);
+    assert.equal(codexTask.thread_source, null);
+    assert.equal(codexTask.session_id, null);
+    assert.equal(codexTask.continued_from_task_id, null);
+    assert.equal(codexTask.position, task.position);
+    assert.equal(codexTask.attachments.length, 1);
+    assert.match(database.listEvents(task.id).at(-1).message, /switched from Claude to Codex/i);
+    let markdown = readFileSync(join(artifacts.taskDirectory(task.id), 'task.md'), 'utf8');
+    assert.match(markdown, /Provider: codex/);
+    assert.match(markdown, /Model: gpt-test/);
+    assert.match(markdown, /switch-reference\.png/);
+    assert.doesNotMatch(markdown, /Continues task:/);
+
+    const claudeTask = queue.edit(task.id, {
+      title: task.title,
+      prompt: task.prompt,
+      provider: 'claude',
+      model: 'sonnet',
+      effort: 'max',
+    });
+    assert.equal(claudeTask.provider, 'claude');
+    assert.equal(claudeTask.model, 'sonnet');
+    assert.equal(claudeTask.effort, 'max');
+    assert.match(database.listEvents(task.id).at(-1).message, /switched from Codex to Claude/i);
+    markdown = readFileSync(join(artifacts.taskDirectory(task.id), 'task.md'), 'utf8');
+    assert.match(markdown, /Provider: claude/);
+    assert.match(markdown, /Model: sonnet/);
+
+    const legacy = queue.enqueue({
+      ...directInput('Legacy pinned task', 'legacy-provider-switch', directory),
+      model: 'gpt-test',
+      effort: 'high',
+    });
+    assert.throws(
+      () => queue.edit(legacy.id, {
+        title: legacy.title,
+        prompt: legacy.prompt,
+        provider: 'claude',
+        model: 'sonnet',
+        effort: 'high',
+      }),
+      /Only automatic queued Execute tasks/,
+    );
+    assert.equal(database.getTask(legacy.id).provider, 'codex');
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
@@ -1704,6 +1800,124 @@ test('a terminal reserved for closing rejects new, retried, and reassigned work'
       /terminal is closing/,
     );
   } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('automatic tasks without a preselected thread launch through the pool and release it after outcome', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-automatic-queue-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Automatic queue' });
+  const lifecycle = [];
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      lifecycle.push(`prepare:${task.id}`);
+      const updated = database.updateTask(task.id, {
+        thread_id: 'automatic-codex-thread',
+        thread_name: 'Automatic Codex',
+        thread_source: 'test',
+      });
+      artifacts.updateTaskAssignment(updated);
+      return updated;
+    },
+    async release(taskId) {
+      lifecycle.push(`release:${taskId}`);
+    },
+  };
+  const runner = {
+    async run(task) {
+      lifecycle.push(`run:${task.thread_id}`);
+      return { sessionId: task.thread_id, finalResponse: 'done', exitCode: 0 };
+    },
+    cancel() {
+      return false;
+    },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner, terminalPool });
+  try {
+    const task = queue.enqueue({
+      title: 'Automatic task',
+      prompt: 'Run without a selected Relay',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+    });
+    await waitFor(() => database.getTask(task.id).status === 'complete');
+    assert.deepEqual(lifecycle, [
+      `prepare:${task.id}`,
+      'run:automatic-codex-thread',
+      `release:${task.id}`,
+    ]);
+    assert.equal(database.getTask(task.id).thread_id, 'automatic-codex-thread');
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a saved disposable conversation can have only one queued or running continuation', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-automatic-conversation-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.setPaused(true);
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 4, claude: 4 },
+      active: { codex: 0, claude: 0 },
+    }),
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    terminalPool,
+    runner: { run: async () => ({ finalResponse: 'done', exitCode: 0 }), cancel: () => false },
+  });
+  const input = {
+    title: 'Continue conversation',
+    prompt: 'Continue',
+    repoPath: directory,
+    thread: { ...thread('saved-conversation', directory), provider: 'codex' },
+    provider: 'codex',
+    mode: 'execute',
+    terminalLifecycle: 'disposable',
+  };
+  try {
+    const first = queue.enqueue(input);
+    assert.throws(
+      () => queue.enqueue({ ...input, title: 'Duplicate continuation', prompt: 'Also continue' }),
+      /conversation already has queued or running work/,
+    );
+
+    const legacyDuplicate = database.createTask({
+      ...input,
+      title: 'Persisted duplicate',
+      prompt: 'Recovered duplicate',
+    });
+    database.setPaused(false);
+    assert.deepEqual(
+      queue.runnableTasks().map((task) => task.id),
+      [first.id],
+      'the scheduler serializes duplicate resume rows already present in the database',
+    );
+    database.setPaused(true);
+
+    database.updateTask(legacyDuplicate.id, { status: 'failed', error: 'retry me' });
+    assert.throws(
+      () => queue.retry(legacyDuplicate.id),
+      /conversation already has queued or running work/,
+    );
+  } finally {
+    await queue.shutdown();
     database.close();
     rmSync(directory, { recursive: true, force: true });
   }

@@ -14,6 +14,7 @@ import {
   normalizeTerminalLayout,
   shellQuote,
   terminalCommand,
+  terminalProcessIds,
   validateProjectPath,
 } from '../src/project-launcher.mjs';
 
@@ -52,6 +53,14 @@ test('project launcher validates folders and builds fixed provider commands', ()
       `cd ${shellQuote(project.path)} && ${codexRelayCommand(project.path)}`,
     );
     assert.equal(terminalCommand(project.path, 'claude'), `cd ${shellQuote(project.path)} && ${CLAUDE_RELAY_COMMAND}`);
+    assert.equal(
+      terminalCommand(project.path, 'claude', { resumeThreadId: 'claude-conversation' }),
+      `cd ${shellQuote(project.path)} && claude --dangerously-skip-permissions --resume 'claude-conversation'`,
+    );
+    assert.equal(
+      terminalCommand(project.path, 'codex', { resumeThreadId: 'codex-conversation' }),
+      `cd ${shellQuote(project.path)} && codex resume 'codex-conversation' --dangerously-bypass-approvals-and-sandbox --cd ${shellQuote(project.path)} --remote ws://127.0.0.1:4769`,
+    );
     assert.throws(() => terminalCommand(directory, 'custom'), /Unsupported AI provider/);
     assert.throws(() => validateProjectPath('relative'), /absolute/);
 
@@ -129,12 +138,15 @@ test('macOS shutdown closes only Terminal windows launched by Relay', async () =
   const directory = mkdtempSync(join(tmpdir(), 'relay-owned-terminals-'));
   const calls = [];
   let nextWindowId = 410;
+  // One snapshot enumerates the TTY before SIGKILL, then two empty observations drain it.
+  const processSnapshots = ['700\n701\n', '', '', '702\n', '', ''];
   const launcher = new ProjectLauncher({
     platform: 'darwin',
     run: async (...args) => {
       calls.push(args);
       if (args[0] === 'osascript' && args[1][1].includes('do script')) return { stdout: `${nextWindowId++}\n` };
       if (args[0] === 'osascript' && args[1][1].includes('return tty')) return { stdout: `ttys${nextWindowId}\n` };
+      if (args[0] === 'ps' && args[1][0] === '-t') return { stdout: processSnapshots.shift() ?? '' };
       return { stdout: '' };
     },
   });
@@ -146,11 +158,16 @@ test('macOS shutdown closes only Terminal windows launched by Relay', async () =
 
     const closed = await launcher.closeOwnedTerminals();
     assert.deepEqual(closed, { windowCount: 2, processCount: 0 });
-    const killCalls = calls.filter(([command]) => command === 'pkill');
+    const killCalls = calls.filter(([command]) => command === 'kill');
     assert.deepEqual(killCalls.map(([, args]) => args), [
-      ['-KILL', '-t', 'ttys412', '.*'],
-      ['-KILL', '-t', 'ttys412', '.*'],
+      ['-9', '700', '701'],
+      ['-9', '702'],
     ]);
+    assert.deepEqual(
+      calls.filter(([command, args]) => command === 'ps' && args[0] === '-t').map(([, args]) => args)[0],
+      ['-t', 'ttys412', '-o', 'pid='],
+    );
+    assert.equal(calls.some(([command]) => command === 'pgrep' || command === 'pkill'), false);
     const closeScripts = calls
       .filter(([command, args]) => command === 'osascript' && args[1].includes('then close window id'))
       .map(([, args]) => args[1]);
@@ -171,6 +188,7 @@ test('one bound Relay terminal can be closed without touching other owned window
   const calls = [];
   const launchIds = ['launch-codex', 'launch-claude'];
   let nextWindowId = 510;
+  const processSnapshots = ['811\n', '', ''];
   const launcher = new ProjectLauncher({
     platform: 'darwin',
     createId: () => launchIds.shift(),
@@ -178,6 +196,7 @@ test('one bound Relay terminal can be closed without touching other owned window
       calls.push(args);
       if (args[0] === 'osascript' && args[1][1].includes('do script')) return { stdout: `${nextWindowId++}\n` };
       if (args[0] === 'osascript' && args[1][1].includes('return tty')) return { stdout: 'ttys050\n' };
+      if (args[0] === 'ps' && args[1][0] === '-t') return { stdout: processSnapshots.shift() ?? '' };
       return { stdout: '' };
     },
   });
@@ -197,14 +216,29 @@ test('one bound Relay terminal can be closed without touching other owned window
       provider: 'codex',
       path: codex.path,
     });
+    assert.deepEqual(launcher.terminalForLaunch('launch-codex'), {
+      launchId: 'launch-codex',
+      threadId: 'codex-thread',
+      provider: 'codex',
+      path: codex.path,
+    });
     const closed = await launcher.closeOwnedTerminal('codex-thread');
     assert.equal(closed.threadId, 'codex-thread');
     assert.equal(launcher.terminalForThread('codex-thread'), null);
+    assert.equal(launcher.terminalForLaunch('launch-codex'), null);
     assert.equal(launcher.terminalForThread('claude-thread').launchId, 'launch-claude');
     const closeOneScript = calls.at(-1)[1][1];
     assert.match(closeOneScript, /close window id 510/);
     assert.doesNotMatch(closeOneScript, /511/);
-    assert.deepEqual(calls.at(-2).slice(0, 2), ['pkill', ['-KILL', '-t', 'ttys050', '.*']]);
+    assert.deepEqual(
+      calls.find(([command]) => command === 'kill').slice(0, 2),
+      ['kill', ['-9', '811']],
+    );
+    // One enumeration before SIGKILL plus two consecutive empty drain observations.
+    assert.equal(calls.filter(([command, args]) => (
+      command === 'ps' && args[0] === '-t' && args[1] === 'ttys050' && args[2] === '-o' && args[3] === 'pid='
+    )).length, 3);
+    assert.equal(calls.some(([command]) => command === 'pgrep' || command === 'pkill'), false);
 
     const shutdown = await launcher.closeOwnedTerminals();
     assert.deepEqual(shutdown, { windowCount: 1, processCount: 0 });
@@ -224,7 +258,8 @@ test('macOS terminal close does not close the window when its exact TTY cannot b
       calls.push([command, args]);
       if (command === 'osascript' && args[1].includes('do script')) return { stdout: '520\n' };
       if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys052\n' };
-      if (command === 'pkill') throw Object.assign(new Error('operation not permitted'), { code: 2 });
+      if (command === 'ps' && args[0] === '-t') return { stdout: '820\n821\n' };
+      if (command === 'kill') throw Object.assign(new Error('operation not permitted'), { code: 2 });
       return { stdout: '' };
     },
   });
@@ -239,7 +274,9 @@ test('macOS terminal close does not close the window when its exact TTY cannot b
       /Could not close the terminal: operation not permitted/,
     );
     assert.equal(launcher.terminalForThread('kill-failure-thread').launchId, launched.launchId);
-    assert.equal(calls.filter(([command]) => command === 'pkill').length, 1);
+    const killCalls = calls.filter(([command]) => command === 'kill');
+    assert.equal(killCalls.length, 1);
+    assert.deepEqual(killCalls[0][1], ['-9', '820', '821']);
     assert.equal(calls.filter(([command, args]) => (
       command === 'osascript' && args[1].includes('then close window id')
     )).length, 0);
@@ -258,7 +295,10 @@ test('macOS terminal close treats an already empty exact TTY as terminated', asy
       calls.push([command, args]);
       if (command === 'osascript' && args[1].includes('do script')) return { stdout: '521\n' };
       if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys053\n' };
-      if (command === 'pkill') throw Object.assign(new Error('no matching processes'), { code: 1 });
+      // ps reports an empty TTY through exit code 1 with no output on the standard stream.
+      if (command === 'ps' && args[0] === '-t') {
+        throw Object.assign(new Error('ps: no processes'), { code: 1, stdout: '' });
+      }
       return { stdout: '' };
     },
   });
@@ -270,12 +310,243 @@ test('macOS terminal close treats an already empty exact TTY as terminated', asy
 
     await launcher.closeOwnedTerminal('empty-tty-thread');
     assert.equal(launcher.terminalForThread('empty-tty-thread'), null);
+    assert.equal(calls.filter(([command]) => command === 'kill').length, 0);
     assert.equal(calls.filter(([command, args]) => (
       command === 'osascript' && args[1].includes('then close window id 521')
     )).length, 1);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('macOS terminal close waits for the exact TTY process table to drain', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-close-drain-'));
+  const calls = [];
+  // Enumeration, a process that survives one poll, then two consecutive empty observations.
+  const processSnapshots = ['440\n441\n', '440\n', '', ''];
+  let currentTime = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    createId: () => 'launch-drain',
+    now: () => currentTime,
+    delay: async (ms) => { currentTime += ms; },
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'osascript' && args[1].includes('do script')) return { stdout: '522\n' };
+      if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys054\n' };
+      if (command === 'ps' && args[0] === '-t') return { stdout: processSnapshots.shift() };
+      return { stdout: '' };
+    },
+  });
+  try {
+    const launched = await launcher.launch(directory, 'codex');
+    launcher.bindOwnedTerminal(launched.launchId, {
+      id: 'drain-thread', provider: 'codex', cwd: directory,
+    });
+
+    await launcher.closeOwnedTerminal('drain-thread');
+
+    const closeIndex = calls.findIndex(([command, args]) => (
+      command === 'osascript' && args[1].includes('then close window id 522')
+    ));
+    const processChecks = calls.filter(([command, args]) => command === 'ps' && args[0] === '-t');
+    const finalProcessCheck = calls.findLastIndex(([command, args]) => command === 'ps' && args[0] === '-t');
+    assert.equal(processChecks.length, 4);
+    assert.deepEqual(
+      calls.filter(([command]) => command === 'kill').map(([, args]) => args),
+      [['-9', '440', '441']],
+    );
+    assert.ok(closeIndex > finalProcessCheck);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('macOS terminal close stays open when the exact TTY does not drain', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-close-drain-timeout-'));
+  const calls = [];
+  const diagnostics = [];
+  let currentTime = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    createId: () => 'launch-drain-timeout',
+    now: () => currentTime,
+    delay: async (ms) => { currentTime += ms; },
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'osascript' && args[1].includes('do script')) return { stdout: '523\n' };
+      if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys055\n' };
+      if (command === 'ps' && args[0] === '-t') return { stdout: '550\n' };
+      return { stdout: '' };
+    },
+  });
+  try {
+    const launched = await launcher.launch(directory, 'claude');
+    launcher.bindOwnedTerminal(launched.launchId, {
+      id: 'drain-timeout-thread', provider: 'claude', cwd: directory,
+    });
+
+    await assert.rejects(
+      () => launcher.closeOwnedTerminal('drain-timeout-thread'),
+      /Processes on terminal ttys055 did not exit after SIGKILL/,
+    );
+    assert.equal(launcher.terminalForThread('drain-timeout-thread').launchId, launched.launchId);
+    assert.deepEqual(
+      calls.filter(([command]) => command === 'kill').map(([, args]) => args),
+      [['-9', '550']],
+    );
+    assert.equal(
+      diagnostics.some(({ event, details }) => (
+        event === 'terminal.close.failed'
+        && details.threadId === 'drain-timeout-thread'
+        && /did not exit after SIGKILL/.test(details.error)
+      )),
+      true,
+    );
+    assert.equal(
+      diagnostics.some(({ event }) => event === 'terminal.close.completed'),
+      false,
+    );
+    assert.equal(calls.some(([command, args]) => (
+      command === 'osascript' && args[1].includes('then close window id 523')
+    )), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('macOS terminal close enumerates the exact TTY with ps and kills those exact processes', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-close-ps-enumeration-'));
+  const calls = [];
+  // ps right-aligns identifiers, so the second line carries leading whitespace on purpose.
+  const processSnapshots = ['611\n 612\n613\n', '', ''];
+  let currentTime = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    createId: () => 'launch-ps-enumeration',
+    now: () => currentTime,
+    delay: async (ms) => { currentTime += ms; },
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'osascript' && args[1].includes('do script')) return { stdout: '524\n' };
+      if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys056\n' };
+      if (command === 'ps' && args[0] === '-t') return { stdout: processSnapshots.shift() ?? '' };
+      return { stdout: '' };
+    },
+  });
+  try {
+    const launched = await launcher.launch(directory, 'codex');
+    launcher.bindOwnedTerminal(launched.launchId, {
+      id: 'ps-enumeration-thread', provider: 'codex', cwd: directory,
+    });
+    const closeStart = calls.length;
+
+    await launcher.closeOwnedTerminal('ps-enumeration-thread');
+
+    const sequence = calls.slice(closeStart);
+    assert.deepEqual(
+      sequence.map(([command]) => command),
+      ['osascript', 'ps', 'kill', 'ps', 'ps', 'osascript'],
+    );
+    assert.match(sequence[0][1][1], /tty of first tab of targetWindow/);
+    assert.deepEqual(sequence[1][1], ['-t', 'ttys056', '-o', 'pid=']);
+    // The kill step must receive the enumerated identifiers. A mechanism that silently
+    // matches nothing, as pgrep and pkill -t do on Darwin 25, fails this assertion instead
+    // of reporting a vacuous success.
+    assert.deepEqual(sequence[2][1], ['-9', '611', '612', '613']);
+    assert.equal(sequence[2][1].every((argument) => typeof argument === 'string'), true);
+    assert.deepEqual(sequence[3][1], ['-t', 'ttys056', '-o', 'pid=']);
+    assert.deepEqual(sequence[4][1], ['-t', 'ttys056', '-o', 'pid=']);
+    assert.match(sequence[5][1][1], /close window id 524/);
+    assert.equal(calls.some(([command]) => command === 'pgrep' || command === 'pkill'), false);
+    assert.equal(launcher.terminalForThread('ps-enumeration-thread'), null);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('macOS terminal close fails closed when the exact TTY process table stays unreadable', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-close-unreadable-'));
+  const calls = [];
+  let currentTime = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    createId: () => 'launch-unreadable',
+    now: () => currentTime,
+    delay: async (ms) => { currentTime += ms; },
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'osascript' && args[1].includes('do script')) return { stdout: '525\n' };
+      if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys057\n' };
+      // Output that carries no usable identifier must never count as a drained TTY.
+      if (command === 'ps' && args[0] === '-t') {
+        throw Object.assign(new Error('ps failed'), { code: 1, stdout: 'unreadable process table\n' });
+      }
+      return { stdout: '' };
+    },
+  });
+  try {
+    const launched = await launcher.launch(directory, 'claude');
+    launcher.bindOwnedTerminal(launched.launchId, {
+      id: 'unreadable-thread', provider: 'claude', cwd: directory,
+    });
+
+    await assert.rejects(
+      () => launcher.closeOwnedTerminal('unreadable-thread'),
+      /Processes on terminal ttys057 did not exit after SIGKILL/,
+    );
+    assert.equal(launcher.terminalForThread('unreadable-thread').launchId, launched.launchId);
+    assert.equal(calls.some(([command, args]) => (
+      command === 'osascript' && args[1].includes('then close window id 525')
+    )), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('macOS terminal close rethrows an unexpected process enumeration failure', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-close-ps-failure-'));
+  const calls = [];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    createId: () => 'launch-ps-failure',
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'osascript' && args[1].includes('do script')) return { stdout: '526\n' };
+      if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys058\n' };
+      if (command === 'ps' && args[0] === '-t') {
+        throw Object.assign(new Error('ps: command not found'), { code: 127 });
+      }
+      return { stdout: '' };
+    },
+  });
+  try {
+    const launched = await launcher.launch(directory, 'codex');
+    launcher.bindOwnedTerminal(launched.launchId, {
+      id: 'ps-failure-thread', provider: 'codex', cwd: directory,
+    });
+
+    await assert.rejects(
+      () => launcher.closeOwnedTerminal('ps-failure-thread'),
+      /Could not close the terminal: ps: command not found/,
+    );
+    assert.equal(launcher.terminalForThread('ps-failure-thread').launchId, launched.launchId);
+    assert.equal(calls.some(([command]) => command === 'kill'), false);
+    assert.equal(calls.some(([command, args]) => (
+      command === 'osascript' && args[1].includes('then close window id 526')
+    )), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('terminal process identifiers ignore blank, padded, and non-numeric ps output', () => {
+  assert.deepEqual(terminalProcessIds('  501\n502\n\n'), ['501', '502']);
+  assert.deepEqual(terminalProcessIds('28236\n28246\n30848\n'), ['28236', '28246', '30848']);
+  assert.deepEqual(terminalProcessIds(''), []);
+  assert.deepEqual(terminalProcessIds('ttys040\n'), []);
+  assert.deepEqual(terminalProcessIds(null), []);
 });
 
 test('terminal ownership binding rejects mismatched and duplicate sessions', async () => {
@@ -314,6 +585,7 @@ test('terminal ownership binding rejects mismatched and duplicate sessions', asy
 test('runtime-recovered terminal ownership supports explicit close with TTY revalidation', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-runtime-terminal-'));
   const calls = [];
+  const processSnapshots = ['930\n', '', ''];
   const launcher = new ProjectLauncher({
     platform: 'darwin',
     createId: () => 'recovered-one',
@@ -329,7 +601,8 @@ test('runtime-recovered terminal ownership supports explicit close with TTY reva
     },
     run: async (command, args, options) => {
       calls.push([command, args, options]);
-      if (command === 'ps') return { stdout: 'ttys020\n' };
+      if (command === 'ps' && args[0] === '-p') return { stdout: 'ttys020\n' };
+      if (command === 'ps' && args[0] === '-t') return { stdout: processSnapshots.shift() ?? '' };
       if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys020\n' };
       return { stdout: '' };
     },
@@ -360,9 +633,13 @@ test('runtime-recovered terminal ownership supports explicit close with TTY reva
     assert.match(inspectScript, /count of tabs of targetWindow/);
     assert.match(inspectScript, /tty of first tab of targetWindow/);
     assert.match(inspectScript, /\/dev\/ttys020/);
-    assert.deepEqual(calls.find(([command]) => command === 'pkill').slice(0, 2), [
-      'pkill', ['-KILL', '-t', 'ttys020', '.*'],
+    assert.deepEqual(calls.find(([command, args]) => command === 'ps' && args[0] === '-t').slice(0, 2), [
+      'ps', ['-t', 'ttys020', '-o', 'pid='],
     ]);
+    assert.deepEqual(calls.find(([command]) => command === 'kill').slice(0, 2), [
+      'kill', ['-9', '930'],
+    ]);
+    assert.equal(calls.some(([command]) => command === 'pgrep' || command === 'pkill'), false);
     assert.match(calls.at(-1)[1][1], /close window id 710/);
     assert.equal(launcher.terminalForThread('existing-claude'), null);
   } finally {
@@ -401,6 +678,228 @@ test('runtime ownership is discarded when the same session moves to another term
     await launcher.recoverConnectedTerminals([thread]);
     assert.equal(await launcher.verifyTerminalForThread(thread), false);
     assert.equal(launcher.terminalForThread(thread.id), null);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime recovery does not steal a terminal while its owned launch is still binding', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-runtime-pending-launch-'));
+  let resolutions = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    runtimeResolver: {
+      resolve: async () => {
+        resolutions += 1;
+        return [];
+      },
+    },
+  });
+  try {
+    const path = validateProjectPath(directory).path;
+    launcher.trackOwnedTerminal({
+      launchId: 'pending-launch',
+      provider: 'codex',
+      path,
+      terminalWindowId: 725,
+    });
+
+    assert.deepEqual(await launcher.recoverConnectedTerminals([{
+      id: 'joining-thread',
+      provider: 'codex',
+      cwd: directory,
+    }]), []);
+    assert.equal(resolutions, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an intentionally closed session cannot be recovered from its draining connection', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-runtime-close-grace-'));
+  let clock = 1_000;
+  let resolutions = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    now: () => clock,
+    recoveryRetryMs: 5_000,
+    createId: () => 'recovered-after-grace',
+    runtimeResolver: {
+      resolve: async (threads) => {
+        resolutions += 1;
+        return threads.map((thread) => ({
+          threadId: thread.id,
+          provider: thread.provider,
+          path: thread.cwd,
+          terminalProcessId: 902,
+        }));
+      },
+    },
+    run: async () => ({ stdout: '' }),
+  });
+  const thread = {
+    id: 'closed-conversation',
+    provider: 'codex',
+    cwd: directory,
+  };
+  try {
+    const path = validateProjectPath(directory).path;
+    launcher.trackOwnedTerminal({
+      launchId: 'closed-launch',
+      provider: 'codex',
+      path,
+      terminalProcessId: 901,
+    });
+    launcher.bindOwnedTerminal('closed-launch', thread);
+    await launcher.closeOwnedLaunch('closed-launch');
+
+    assert.deepEqual(await launcher.recoverConnectedTerminals([thread]), []);
+    assert.equal(resolutions, 0);
+
+    clock += 5_001;
+    assert.equal((await launcher.recoverConnectedTerminals([thread])).length, 1);
+    assert.equal(resolutions, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an unbound resumed launch suppresses recovery by its expected conversation ID', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-runtime-unbound-resume-'));
+  let resolutions = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    recoveryRetryMs: 5_000,
+    runtimeResolver: {
+      resolve: async () => {
+        resolutions += 1;
+        return [];
+      },
+    },
+    run: async () => ({ stdout: '' }),
+  });
+  const thread = {
+    id: 'expected-resume-conversation',
+    provider: 'codex',
+    cwd: directory,
+  };
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'unbound-resume-launch',
+      provider: 'codex',
+      path: validateProjectPath(directory).path,
+      terminalProcessId: 903,
+      expectedThreadId: thread.id,
+    });
+    await launcher.closeOwnedLaunch('unbound-resume-launch');
+
+    assert.deepEqual(await launcher.recoverConnectedTerminals([thread]), []);
+    assert.equal(resolutions, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('terminal ownership refreshes a relaunched Claude pid only in the same window and tty', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-runtime-refresh-'));
+  const calls = [];
+  const diagnostics = [];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    run: async (command, args, options) => {
+      calls.push([command, args, options]);
+      if (command === 'ps' && args[0] === '-p') return { stdout: 'ttys040\n' };
+      if (command === 'ps' && args[0] === '-t') return { stdout: '' };
+      if (command === 'osascript' && args[1].includes('return tty')) return { stdout: '/dev/ttys040\n' };
+      return { stdout: '' };
+    },
+  });
+  try {
+    const canonicalDirectory = validateProjectPath(directory).path;
+    launcher.trackOwnedTerminal({
+      launchId: 'relaunched-claude',
+      provider: 'claude',
+      path: canonicalDirectory,
+      terminalWindowId: 730,
+      terminalTty: '/dev/ttys040',
+      runtimeProcessId: 920,
+    });
+    launcher.bindOwnedTerminal('relaunched-claude', {
+      id: 'relaunched-thread',
+      provider: 'claude',
+      cwd: directory,
+    });
+
+    assert.equal(launcher.refreshTerminalRuntimeIdentity('relaunched-thread', {
+      terminalWindowId: 731,
+      terminalTty: '/dev/ttys041',
+      runtimeProcessId: 921,
+    }), false);
+    assert.equal(launcher.refreshTerminalRuntimeIdentity('relaunched-thread', {
+      terminalWindowId: 730,
+      terminalTty: '/dev/ttys040',
+      runtimeProcessId: 922,
+    }), true);
+
+    await launcher.closeOwnedTerminal('relaunched-thread');
+    assert.deepEqual(calls.find(([command, args]) => command === 'ps' && args[0] === '-p').slice(0, 2), [
+      'ps', ['-p', '922', '-o', 'tty='],
+    ]);
+    assert.equal(
+      diagnostics.some(({ event, details }) => (
+        event === 'terminal.process.refreshed'
+        && details.previousRuntimeProcessId === 920
+        && details.runtimeProcessId === 922
+      )),
+      true,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime verification keeps ownership when a session restarts in the same window and tty', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-runtime-same-terminal-'));
+  let resolution = 0;
+  const diagnostics = [];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    createId: () => 'same-terminal',
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    runtimeResolver: {
+      resolve: async () => {
+        resolution += 1;
+        return [{
+          threadId: 'same-terminal-claude',
+          provider: 'claude',
+          path: directory,
+          runtimeProcessId: resolution === 1 ? 930 : 931,
+          terminalWindowId: 740,
+          terminalTty: '/dev/ttys050',
+        }];
+      },
+    },
+  });
+  const thread = {
+    id: 'same-terminal-claude',
+    provider: 'claude',
+    cwd: directory,
+    source: 'Claude interactive',
+    pid: 930,
+  };
+  try {
+    await launcher.recoverConnectedTerminals([thread]);
+    assert.equal(await launcher.verifyTerminalForThread({ ...thread, pid: 931 }), true);
+    assert.notEqual(launcher.terminalForThread(thread.id), null);
+    assert.equal(
+      diagnostics.some(({ event, details }) => (
+        event === 'terminal.recovery.process_refreshed'
+        && details.previousRuntimeProcessId === 930
+        && details.runtimeProcessId === 931
+      )),
+      true,
+    );
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

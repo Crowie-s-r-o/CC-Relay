@@ -104,3 +104,112 @@ test('Claude binding uses the launch UUID and ignores another new session in the
   assert.equal(launched.threadId, 'launch-claude');
   assert.deepEqual(bound, [['launch-claude', 'launch-claude']]);
 });
+
+test('resumed Claude binding uses the conversation ID while retaining a fresh native launch ID', async () => {
+  const calls = [];
+  const coordinator = new TerminalLaunchCoordinator({
+    launcher: {
+      launch: async (_path, _provider, _layout, options) => {
+        calls.push(options);
+        return {
+          launchId: 'fresh-native-launch',
+          expectedThreadId: options.resumeThreadId,
+          provider: 'claude',
+          path: '/work/project',
+        };
+      },
+      bindOwnedTerminal: (launchId, thread) => calls.push([launchId, thread.id]),
+    },
+    pollMs: 0,
+    delay: async () => {},
+    listSessions: async () => [
+      { id: 'saved-conversation', provider: 'claude', cwd: '/work/project' },
+    ],
+  });
+
+  const launched = await coordinator.launch(
+    '/work/project',
+    'claude',
+    null,
+    { resumeThreadId: 'saved-conversation' },
+  );
+  assert.equal(launched.launchId, 'fresh-native-launch');
+  assert.equal(launched.threadId, 'saved-conversation');
+  assert.deepEqual(calls, [
+    { resumeThreadId: 'saved-conversation' },
+    ['fresh-native-launch', 'saved-conversation'],
+  ]);
+});
+
+test('resumed Codex binding requires the new launch reservation on the saved conversation', async () => {
+  const calls = [];
+  const coordinator = new TerminalLaunchCoordinator({
+    launcher: {
+      launch: async (_path, _provider, _layout, options) => {
+        calls.push(options);
+        return {
+          launchId: 'fresh-codex-launch',
+          expectedThreadId: options.resumeThreadId,
+          provider: 'codex',
+          path: '/work/project',
+        };
+      },
+      bindOwnedTerminal: (launchId, thread) => calls.push([launchId, thread.id]),
+    },
+    pollMs: 0,
+    delay: async () => {},
+    threadIdForLaunch: (launchId) => (
+      launchId === 'fresh-codex-launch' ? 'saved-codex-conversation' : null
+    ),
+    listSessions: async () => [
+      {
+        id: 'saved-codex-conversation',
+        launchId: 'old-codex-launch',
+        provider: 'codex',
+        cwd: '/work/project',
+      },
+    ],
+  });
+
+  const launched = await coordinator.launch(
+    '/work/project',
+    'codex',
+    null,
+    { resumeThreadId: 'saved-codex-conversation' },
+  );
+  assert.equal(launched.launchId, 'fresh-codex-launch');
+  assert.equal(launched.threadId, 'saved-codex-conversation');
+  assert.deepEqual(calls, [
+    { resumeThreadId: 'saved-codex-conversation' },
+    ['fresh-codex-launch', 'saved-codex-conversation'],
+  ]);
+});
+
+test('a rejected session binding returns the exact launch for caller-owned cleanup', async () => {
+  const coordinator = new TerminalLaunchCoordinator({
+    launcher: {
+      launch: async () => ({
+        launchId: 'rejected-launch',
+        provider: 'codex',
+        path: '/work/project',
+      }),
+      bindOwnedTerminal: () => {
+        throw new Error('That connected session is already bound to another terminal launch.');
+      },
+    },
+    pollMs: 0,
+    delay: async () => {},
+    listSessions: async () => [{
+      id: 'saved-conversation',
+      launchId: 'rejected-launch',
+      provider: 'codex',
+      cwd: '/work/project',
+    }],
+  });
+
+  const launched = await coordinator.launch('/work/project', 'codex');
+  assert.equal(launched.launchId, 'rejected-launch');
+  assert.equal(launched.threadId, undefined);
+  assert.equal(launched.connectionStatus, 'binding_rejected');
+  assert.match(launched.bindingError, /already bound/);
+});

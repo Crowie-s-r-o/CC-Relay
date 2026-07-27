@@ -7,11 +7,12 @@ The source is publicly visible so developers can inspect how Relay interacts wit
 ## What it does
 
 - Persists tasks and state in local SQLite.
-- Lists connected Codex terminals and live Claude Code sessions instead of asking for repository paths.
+- Pins project folders and launches a fresh Claude or Codex terminal only when queued work receives a provider slot.
+- Stores per-project maximum Codex and Claude instance counts in the Launchpad.
 - Closes an idle Codex or Claude terminal only after verifying its exact native identity. On macOS, existing one-tab Terminal sessions can be recovered through their live process and TTY without targeting unrelated windows.
 - Supports provider-specific model and reasoning effort selection.
-- Runs exactly one Relay task at a time across all agents.
-- Bundles selected queued tasks into one Claude command that delegates the numbered list to parallel sub-agents.
+- Runs independent direct tasks concurrently up to each project's provider limits.
+- Keeps the legacy Codex parallel-bundle action for older persistent tasks while new work scales through project instance limits.
 - Waits five seconds after a genuine task failure, then automatically requeues the same task.
 - Refreshes visible queue, retry, task detail, and terminal state automatically every two seconds as a fallback to live updates.
 - Automatically starts the next queued task.
@@ -20,16 +21,16 @@ The source is publicly visible so developers can inspect how Relay interacts wit
 - Builds reviewed plans through a Claude author, Codex reviewer, and Claude revision loop.
 - Attaches local reference images to Execute and Plan council tasks.
 - Groups raw AI events into a live terminal panel with command output, tool calls, file changes, messages, filters, follow mode, and copyable logs.
-- Continues direct Codex or Claude tasks from the live terminal panel without changing sessions, models, or effort.
+- Continues a finished direct task by launching a new terminal and resuming its saved Claude or Codex conversation.
 - Supports pause, resume, cancel, retry, and delete.
-- Stores task prompts, JSONL events, results, and errors under `.data/tasks/`.
+- Stores internal task state under Relay's `.data/tasks/` and final Plan council Markdown under the selected project's `.data/tasks/`.
 - Includes a personal Codex plugin skill for managing the queue from Codex.
 
 ## Requirements
 
 - Node.js 24 or newer.
 - Codex CLI 0.144.5 or newer, installed and signed in with ChatGPT.
-- At least one connected Codex terminal or open Claude Code session.
+- At least one pinned project folder.
 - Claude Code CLI 2.1.211 or newer, installed and signed in with a Claude subscription for Claude execution and Plan council.
 
 ## Run
@@ -82,7 +83,7 @@ codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:
 To reconnect an existing Codex conversation, pass its session ID:
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox --cd . resume --remote ws://127.0.0.1:4769 <session-id>
+codex resume <session-id> --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769
 ```
 
 An already-running plain `codex` process cannot be attached retroactively. Restart it with `--remote` so Relay and the terminal share the same app-server.
@@ -99,31 +100,31 @@ Relay discovers live interactive and background Claude sessions through the offi
 
 ## How sessions and tasks work
 
-Relay starts one persistent local Codex app-server on port `4770`. A localhost WebSocket proxy on `ws://127.0.0.1:4769` forwards terminal traffic and records which thread each live client joined. Relay lists only terminals that are currently connected, joins the selected thread for a queued turn, streams events, and releases its own subscription when the turn ends.
+Relay starts one persistent local Codex app-server on port `4770`. A localhost WebSocket proxy on `ws://127.0.0.1:4769` forwards terminal traffic and binds each Relay-owned Codex launch to the thread that joined through its unique launch reservation.
 
-For Claude, Relay asks the official CLI for its active agent list. It records only session metadata returned by that command: session ID, name, process, workspace, kind, and busy state. Relay waits for a busy session to become idle, then runs `claude -p --resume <session-id>` with streaming JSON output, the selected model and effort, and guarded Auto permission mode. The turn reuses the selected conversation context and is appended to the same Claude transcript.
+Each pinned project stores separate maximum Codex and Claude instance counts from 1 through 8. A new task is persisted without a thread ID. When queue order and capacity allow it to run, Relay opens a fresh native terminal in that project, binds the launched provider session, runs the turn, and closes that exact native launch at completion, failure, cancellation, or interruption. Manually opened terminals are never closed by this automatic lifecycle.
 
-Direct Claude tasks run concurrently on different session IDs and sequentially within one session. With **Use an idle Relay when available** enabled, Relay can route a normal Claude submission to another unassigned idle Claude session in the same workspace. Restart Relay after upgrading so the renderer can detect the parallel Claude scheduler capability.
+For Claude, Relay uses the official `claude agents --json` discovery command. On macOS, it types the task into the exact Relay-owned Terminal.app window and mirrors the conversation transcript into Task Activity. On supported fallback paths it uses the installed Claude CLI headlessly.
 
-Claude does not expose Codex's local app-server protocol. The existing interactive Claude terminal does not redraw a turn produced by a second headless resume process. Relay's Terminal output panel is the live view, and the turn remains part of the same conversation when it is next resumed. This follows Claude Code's supported session behavior without terminal keystroke injection or private protocol access.
+The bound provider conversation ID is saved on the task before execution. **Continue session** creates a linked queue task, waits for provider capacity, opens another terminal, and resumes the saved ID with `claude --resume` or `codex resume`. Only one queued or running task may own a saved conversation at a time.
 
-The selected thread keeps its own working directory and conversation history. There is no repository path field in Relay.
+Existing task records that were created for persistent terminals retain their former session assignment and immediate follow-up behavior for compatibility.
 
 ### Project launchpad
 
-Pin favorite project folders in the top launchpad. Project cards are workspaces: selecting one scopes the visible sessions, queue, running state, and parallel Claude controls to that folder. Each card has separate Codex and Claude launch buttons. Codex opens a new unrestricted Terminal session connected to Relay; Claude opens an unrestricted CLI session. When a project card is active, **Launch terminal** reuses that folder without showing the folder picker and selects the new session as soon as it connects. **Pin folder** uses the native macOS folder picker, while **Add and launch** pins the folder and immediately opens the provider selected in Execute mode. Relay validates and resolves the chosen directory before launching a fixed command. It does not accept free-form terminal commands.
+Pin favorite project folders in the top Launchpad. Selecting a project scopes its queue, history, Planner, running state, provider settings, and automatic instance limits. The left composer panel sets the maximum Codex and Claude instances for that project. Terminal Settings controls placement and background launch behavior for the short-lived windows Relay creates.
 
 Each project has its own queue order, pause state, and FIFO barriers. A Plan council or other exclusive task in one project does not block eligible direct Codex work in another project. Provider-wide exclusive tasks are still serialized when they require the same shared runner.
 
-Pinned projects are stored in Relay's local SQLite database. The launcher currently targets macOS Terminal.app and requires a Relay restart after upgrading from a version without this backend capability.
+Pinned projects and their limits are stored in Relay's local SQLite database. The launcher targets macOS Terminal.app and Windows `cmd.exe`. Restart Relay after upgrading from a version without the disposable-pool backend capability.
 
-For Codex, Relay starts queued turns with workspace-write sandboxing and an unattended `never` approval policy. Codex can edit files and run commands inside the selected thread workspace. Network access and operations outside the workspace remain subject to Codex policy. Relay never uses the full-access bypass flag.
+For writable Codex work, Relay starts the interactive CLI with the unrestricted bypass flag and sends the turn with explicit `danger-full-access` sandboxing plus an unattended `never` approval policy. Planning stages remain explicitly read-only. Use Relay only in projects and environments you trust.
 
 Relay disables login-shell semantics for task commands. This avoids loading interactive shell startup files in unattended runs while preserving the inherited process environment.
 
-Queued Codex prompts and answers appear live in the selected terminal as well as Relay. Both providers wait for a selected busy session to become idle before starting. Avoid entering another prompt in that session while a Relay task is running.
+Queued prompts and answers appear in the temporary provider terminal as well as Relay. The pool owns that terminal for the task lifetime and closes it afterward.
 
-The composer has Execute and Forward-planning Turbo workflows. Execute has separate provider, session, model, and effort controls, plus an optional Plan council checkbox for creating a reviewed read-only plan instead of direct execution. Forward-planning Turbo has its own optional council pass before workers start. Codex choices come from the local app-server model catalog. Claude choices use supported official CLI aliases. Both are validated again when the task is queued. Press Enter in the prompt to add the task to the queue. Press Shift+Enter to insert a new line.
+The composer has Execute and Forward-planning Turbo workflows. Execute has provider, model, and effort controls, plus an optional Plan council checkbox for creating a reviewed read-only plan instead of direct execution. Forward-planning Turbo has its own optional council pass before workers start. Codex choices come from the local app-server model catalog. Claude choices use supported official CLI aliases. Both are validated again when the task is queued. Press Enter in the prompt to add the task to the queue. Press Shift+Enter to insert a new line.
 
 ## Terminal output
 
@@ -135,13 +136,13 @@ Highlights is the default view and removes low-value protocol noise such as empt
 
 Plan council is enabled from Execute when a prompt needs a reviewed plan rather than direct execution. It requires two different providers and currently uses this fixed read-only route:
 
-1. Claude Fable or Opus at max effort inspects the selected Codex workspace and writes a first implementation plan.
-2. Codex independently reviews the draft in the selected connected terminal with the chosen Codex model and effort.
+1. Claude Fable or Opus at max effort inspects the selected project and writes a first implementation plan.
+2. Codex independently reviews the draft with the chosen Codex model and effort.
 3. Claude receives the draft and Codex review, then returns a final revised plan.
 
 Claude runs through the official `claude` CLI with its existing subscription login. Codex runs through Relay's shared app-server with its existing ChatGPT login. Both planning agents are restricted to read-only work.
 
-The activity panel shows live stage progress, the expandable first draft and review, and a formatted final plan. Relay saves the same council record as `plan.json` and a readable combined `plan.md` file.
+The activity panel shows live stage progress, the expandable first draft and review, and a formatted final plan. Relay keeps the council checkpoint record in its own `.data/tasks/<task-id>/plan.json` and writes the final-only Markdown to `<project-root>/.data/tasks/<task-id>/plan.md`.
 
 ## Image attachments
 
@@ -155,15 +156,15 @@ Relay never converts image attachments into remote URLs and never calls an image
 
 Only tasks with `queued` status can move. Drag a queued card above or below another queued card, or use its arrow buttons. Running, completed, failed, cancelled, and interrupted tasks stay fixed. Relay validates the full queued task set before applying a reorder so stale browser state cannot silently overwrite newer queue changes.
 
-## Parallel Claude batches
+## Legacy parallel bundles
 
-Select two or more waiting task cards and choose **Run in parallel**. Relay replaces them with one Codex task sent to the currently selected Codex terminal. Its prompt preserves the original tasks as an ordered numbered list and instructs Codex to delegate independent items to sub-agents concurrently, verify the combined result, and return one consolidated summary.
+Persistent tasks created by an older backend can still be bundled into one Codex command on a selected live terminal. Disposable tasks do not expose this destructive replacement flow. Set a higher Codex project limit to run new independent tasks concurrently.
 
-### Forward-planning turbo
+All selected legacy tasks must belong to the chosen Codex session's workspace. Existing image attachments are copied into the combined task before the original task artifacts are removed. The normal 99-image and 20 MB total limits still apply.
 
-Turbo uses the selected Codex terminal as a read-only planner and dispatches its validated JSON dependency graph across other Codex terminals connected to the same workspace. Choose the planner and worker models, efforts, and worker count in the composer. Relay starts dependency-ready tasks concurrently and reuses workers until the graph is complete. Defaults prefer Sol high for planning and Luna high for execution with three workers.
+## Forward-planning Turbo
 
-All selected tasks must belong to the chosen Claude session's workspace. Existing image attachments are copied into the combined task before the original task artifacts are removed. The normal 99-image and 20 MB total limits still apply.
+Turbo allocates one disposable Codex planner plus the requested worker count, then dispatches its validated JSON dependency graph across that fleet. Choose planner and worker models, efforts, and worker count in the composer. The project's Codex maximum must be at least planner plus workers. Relay starts dependency-ready packages concurrently, reuses workers until the graph is complete, and closes the fleet when Turbo ends.
 
 ## Personal Codex plugin
 
@@ -187,12 +188,19 @@ Start a new Codex thread after installation. Invoke the skill as `$relay-queue:r
       01.png
       02.jpg
     plan.json
-    plan.md
     result.md
     error.txt
 ```
 
-The `.data` directory is ignored by Git.
+Completed Plan councils also create:
+
+```text
+<project-root>/
+  .data/tasks/<task-id>/
+    plan.md
+```
+
+Relay's own `.data` directory is ignored by Git. Relay does not edit a target project's `.gitignore`.
 
 ## License
 

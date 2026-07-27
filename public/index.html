@@ -29,16 +29,18 @@
     </header>
 
     <nav class="project-dock" aria-label="Favorite projects">
-      <div class="project-dock-heading">
-        <span class="eyebrow">Projects</span>
-        <strong>Launchpad</strong>
+      <div class="project-dock-bar">
+        <div class="project-dock-heading">
+          <span class="eyebrow">Projects</span>
+          <strong>Launchpad</strong>
+        </div>
+        <div class="project-dock-actions">
+          <button id="add-project-button" class="button secondary compact" type="button">+ Pin folder</button>
+          <button id="add-launch-project-button" class="button compact" type="button">+ Add and launch</button>
+        </div>
       </div>
       <div id="project-list" class="project-list">
         <span class="project-empty">Loading pinned projects</span>
-      </div>
-      <div class="project-dock-actions">
-        <button id="add-project-button" class="button secondary compact" type="button">+ Pin folder</button>
-        <button id="add-launch-project-button" class="button compact" type="button">+ Add and launch</button>
       </div>
     </nav>
 
@@ -49,6 +51,7 @@
             <span class="eyebrow">New work</span>
             <h2>Queue a prompt</h2>
           </div>
+          <button id="planner-button" class="queue-heading-button" type="button" aria-haspopup="dialog" aria-controls="planner-modal">Planner</button>
         </div>
 
         <form id="task-form">
@@ -71,40 +74,62 @@
 
           <section id="execute-config" class="agent-selector" role="tabpanel" aria-labelledby="mode-execute">
             <input id="provider-id" name="provider" type="hidden" value="codex">
-            <div class="agent-tabs" hidden aria-hidden="true">
-              <button
-                id="provider-codex"
-                class="agent-tab selected"
-                type="button"
-                role="tab"
-                aria-selected="true"
-                aria-controls="terminal-panel"
-                data-provider="codex"
-              >
-                <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
-                <span class="agent-tab-copy">
-                  <strong>Codex</strong>
-                  <small id="provider-codex-count">Checking</small>
-                </span>
-                <span class="agent-availability" aria-hidden="true"></span>
-              </button>
-              <button
-                id="provider-claude"
-                class="agent-tab"
-                type="button"
-                role="tab"
-                aria-selected="false"
-                aria-controls="terminal-panel"
-                tabindex="-1"
-                data-provider="claude"
-              >
-                <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
-                <span class="agent-tab-copy">
-                  <strong>Claude</strong>
-                  <small id="provider-claude-count">Not connected</small>
-                </span>
-                <span class="agent-availability" aria-hidden="true"></span>
-              </button>
+            <!--
+              Each provider card is a shell around two independent controls: the role="tab"
+              button that selects the provider, and a sibling stepper that edits this project's
+              maximum instances. The stepper is never nested inside the button, so clicking,
+              focusing, typing, or using its spinner never changes the selected provider.
+            -->
+            <div id="provider-tabs" class="agent-tabs">
+              <div class="agent-tab-shell" data-provider="codex">
+                <button
+                  id="provider-codex"
+                  class="agent-tab selected"
+                  type="button"
+                  role="tab"
+                  aria-selected="true"
+                  aria-controls="terminal-panel"
+                  data-provider="codex"
+                >
+                  <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
+                  <span class="agent-tab-copy">
+                    <strong>Codex</strong>
+                    <small id="provider-codex-count">Checking</small>
+                  </span>
+                  <span class="agent-availability" aria-hidden="true"></span>
+                </button>
+                <div class="agent-tab-pool">
+                  <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
+                  <input id="max-codex-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Codex instances">
+                  <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
+                  <small id="codex-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                </div>
+              </div>
+              <div class="agent-tab-shell" data-provider="claude">
+                <button
+                  id="provider-claude"
+                  class="agent-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="terminal-panel"
+                  tabindex="-1"
+                  data-provider="claude"
+                >
+                  <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
+                  <span class="agent-tab-copy">
+                    <strong>Claude</strong>
+                    <small id="provider-claude-count">Not connected</small>
+                  </span>
+                  <span class="agent-availability" aria-hidden="true"></span>
+                </button>
+                <div class="agent-tab-pool">
+                  <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
+                  <input id="max-claude-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Claude instances">
+                  <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
+                  <small id="claude-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                </div>
+              </div>
             </div>
 
             <section id="plan-config" class="council-config execute-council-config" aria-labelledby="council-config-title">
@@ -130,7 +155,11 @@
                   <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
                 </div>
                 <strong>Claude</strong>
-                <small>Inspects the project and writes the first plan.</small>
+                <small>Inspects the project and writes the first plan in the selected terminal.</small>
+                <label id="plan-author-terminal-field" for="plan-author-terminal" hidden>
+                  <span>Terminal</span>
+                  <select id="plan-author-terminal" name="authorThreadId"></select>
+                </label>
                 <label for="plan-author-model">
                   <span>Model</span>
                   <select id="plan-author-model" name="authorModel">
@@ -235,25 +264,30 @@
 
           <fieldset id="terminal-panel" class="terminal-fieldset" role="tabpanel" aria-labelledby="provider-codex">
             <div class="terminal-heading-row">
-              <div id="terminal-legend" class="terminal-legend">Run in terminal</div>
+              <div id="terminal-legend" class="terminal-legend">Automatic terminal pool</div>
               <div id="connection-help" class="connection-help">
-                <button id="launch-codex-button" class="button primary compact" type="button">Launch Codex</button>
-                <button id="launch-claude-button" class="button compact launch-claude-button" type="button">Launch Claude</button>
+                <span id="legacy-terminal-launch-buttons">
+                  <button id="launch-codex-button" class="button primary compact" type="button">Launch Codex</button>
+                  <button id="launch-claude-button" class="button compact launch-claude-button" type="button">Launch Claude</button>
+                </span>
                 <button id="terminal-settings-button" class="button compact terminal-settings-button" type="button" aria-haspopup="dialog" aria-controls="terminal-settings-modal">Settings</button>
               </div>
             </div>
             <p id="session-message" class="field-help" role="status">Finding connected Codex terminals.</p>
-            <div class="terminal-task-options">
-              <label id="idle-terminal-route" class="terminal-task-option"><input id="prefer-idle-terminal" type="checkbox"> Use an idle Relay when available</label>
-            </div>
-            <input id="thread-id" name="threadId" type="hidden">
-            <div id="terminal-list" class="terminal-list" role="radiogroup" aria-label="Connected Codex terminals"></div>
-            <div id="terminal-close-row" class="terminal-close-row" data-state="unavailable">
-              <span class="terminal-close-copy">
-                <strong id="terminal-close-label">Close selected terminal</strong>
-                <small id="terminal-close-reason" role="status">Select a terminal to see whether Relay owns its native window.</small>
-              </span>
-              <button id="close-terminal-button" class="button danger compact terminal-close-button" type="button" disabled>Close selected</button>
+            <p id="terminal-pool-controls" class="terminal-pool-note" hidden>Relay opens a fresh terminal when a queued task gets a slot and closes it when the task ends. Continue session relaunches the provider and resumes the saved conversation.</p>
+            <div id="legacy-terminal-controls">
+              <div class="terminal-task-options">
+                <label id="idle-terminal-route" class="terminal-task-option"><input id="prefer-idle-terminal" type="checkbox"> Use an idle Relay when available</label>
+              </div>
+              <input id="thread-id" name="threadId" type="hidden">
+              <div id="terminal-list" class="terminal-list" role="radiogroup" aria-label="Connected Codex terminals"></div>
+              <div id="terminal-close-row" class="terminal-close-row" data-state="unavailable">
+                <span class="terminal-close-copy">
+                  <strong id="terminal-close-label">Close selected terminal</strong>
+                  <small id="terminal-close-reason" role="status">Select a terminal to see whether Relay owns its native window.</small>
+                </span>
+                <button id="close-terminal-button" class="button danger compact terminal-close-button" type="button" disabled>Close selected</button>
+              </div>
             </div>
           </fieldset>
 
@@ -346,6 +380,8 @@
             <p class="attachment-limits">Up to 99 images, 5 MB each, 20 MB total.</p>
           </section>
 
+          <p id="composer-alert" class="composer-alert" role="status" aria-live="polite" hidden></p>
+
           <div class="form-footer">
             <span id="form-message" role="status"></span>
             <button id="task-submit-button" class="button primary" type="submit">Add to queue</button>
@@ -428,6 +464,26 @@
               <span id="plan-status" class="plan-status">Preparing</span>
             </div>
             <div id="plan-stage-rail" class="plan-stage-rail" aria-label="Plan council progress"></div>
+            <div id="plan-execution-panel" class="plan-execution-panel" hidden tabindex="-1" aria-labelledby="plan-execution-title">
+              <span class="plan-execution-step" aria-hidden="true">04</span>
+              <div class="plan-execution-main">
+                <div class="plan-execution-heading">
+                  <div>
+                    <small>Next step</small>
+                    <span id="plan-execution-title">Execute this reviewed plan</span>
+                  </div>
+                  <small>Creates a linked Execute task</small>
+                </div>
+                <div class="plan-execution-controls">
+                  <label for="plan-execution-relay">
+                    <span>Execution Relay</span>
+                    <select id="plan-execution-relay"></select>
+                  </label>
+                  <button id="plan-execution-button" class="button primary compact" type="button">Execute plan</button>
+                </div>
+                <p id="plan-execution-message" role="status"></p>
+              </div>
+            </div>
             <div id="plan-agent-summary" class="plan-agent-summary"></div>
             <div id="plan-waiting" class="plan-waiting" role="status">The council is preparing the first draft.</div>
             <details id="plan-draft-section" class="plan-source" hidden>
@@ -449,20 +505,6 @@
                 <span>Canonical file</span>
                 <code id="plan-artifact-path"></code>
                 <a id="plan-artifact-link" href="#" target="_blank" rel="noreferrer">Open plan.md</a>
-              </div>
-              <div id="plan-execution-panel" class="plan-execution-panel" hidden>
-                <div class="plan-execution-heading">
-                  <span>Execute reviewed plan</span>
-                  <small>Choose any opened Relay in this workspace</small>
-                </div>
-                <div class="plan-execution-controls">
-                  <label for="plan-execution-relay">
-                    <span>Opened Relay</span>
-                    <select id="plan-execution-relay"></select>
-                  </label>
-                  <button id="plan-execution-button" class="button primary compact" type="button">Execute plan</button>
-                </div>
-                <p id="plan-execution-message" role="status"></p>
               </div>
               <div id="plan-final" class="markdown-document"></div>
             </article>
@@ -568,6 +610,36 @@
       </section>
     </main>
 
+    <dialog id="planner-modal" class="terminal-settings-modal planner-modal" aria-labelledby="planner-title">
+      <div class="terminal-settings-card planner-card">
+        <div class="terminal-settings-header">
+          <div>
+            <h2 id="planner-title">Planner</h2>
+            <p id="planner-subtitle">Saved plans and AI task breakdown for this project.</p>
+          </div>
+          <button id="planner-close" class="terminal-settings-close" type="button" aria-label="Close planner">×</button>
+        </div>
+        <div id="planner-body" class="planner-body">
+          <aside class="planner-sidebar" aria-label="Saved plans">
+            <div class="planner-sidebar-head">
+              <span>Plans</span>
+              <button id="planner-new-plan" class="button compact" type="button">+ New plan</button>
+            </div>
+            <div id="planner-plan-list" class="planner-plan-list" role="list" aria-label="Saved plans for this project"></div>
+          </aside>
+          <div id="planner-detail" class="planner-detail"></div>
+        </div>
+        <p id="planner-message" class="planner-message" role="status"></p>
+        <!--
+          Run progress is announced through one dedicated live region that is
+          written only when its sentence changes. #planner-detail deliberately
+          carries no aria-live: it is rebuilt whenever the board structure
+          changes, which would announce the entire dialog on every poll.
+        -->
+        <p id="planner-run-announce" class="sr-only" role="status" aria-live="polite"></p>
+      </div>
+    </dialog>
+
     <dialog id="task-edit-modal" class="terminal-settings-modal task-edit-modal" aria-labelledby="task-edit-title">
       <div class="terminal-settings-card">
         <div class="terminal-settings-header">
@@ -578,6 +650,27 @@
           <button id="task-edit-close" class="terminal-settings-close" type="button" aria-label="Close task editor">×</button>
         </div>
         <div class="task-edit-body">
+          <fieldset id="task-edit-execution" class="task-edit-execution" hidden>
+            <legend>Execution</legend>
+            <div class="task-edit-settings-grid">
+              <label for="task-edit-provider">
+                <span>AI provider</span>
+                <select id="task-edit-provider">
+                  <option value="codex">Codex</option>
+                  <option value="claude">Claude</option>
+                </select>
+              </label>
+              <label for="task-edit-model">
+                <span>Model</span>
+                <select id="task-edit-model"></select>
+              </label>
+              <label for="task-edit-effort">
+                <span>Effort</span>
+                <select id="task-edit-effort"></select>
+              </label>
+            </div>
+            <small id="task-edit-execution-hint">Changing providers starts this task in a fresh conversation.</small>
+          </fieldset>
           <label for="task-edit-prompt">Task request</label>
           <textarea id="task-edit-prompt" maxlength="12000" rows="8"></textarea>
           <p id="task-edit-message" role="status"></p>

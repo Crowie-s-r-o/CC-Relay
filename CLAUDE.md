@@ -18,11 +18,13 @@ Before editing:
 
 ## Product summary
 
-Relay is a local sequential task queue for subscription-authenticated Codex and Claude Code sessions.
+Relay is a local task queue for subscription-authenticated Codex and Claude Code tools.
 
 - It does not call OpenAI or Anthropic model APIs directly.
-- It discovers already-open local AI sessions.
-- It queues prompts and runs exactly one Relay task at a time.
+- It launches a fresh provider terminal only when queued work receives a project slot.
+- It closes the exact Relay-owned native terminal when that work ends.
+- It saves provider conversation IDs so an explicit continuation can relaunch and resume them.
+- It keeps legacy discovery and selected-session routing only for tasks created by older Relay versions.
 - It can execute through either Codex or Claude.
 - It can run a three-stage, two-provider planning council.
 - It stores tasks, events, plans, results, and local image attachments.
@@ -31,8 +33,8 @@ Relay is a local sequential task queue for subscription-authenticated Codex and 
 The primary user is a developer who may have several projects and AI sessions open at once. Their main questions are:
 
 1. What is running now?
-2. What runs next?
-3. Which provider, session, model, and effort will receive this prompt?
+2. What runs next, and which project provider limit is it waiting for?
+3. Which project, provider, model, and effort will receive this prompt?
 4. What did the agent actually do?
 5. Did the task finish, fail, retry, or require attention?
 
@@ -60,13 +62,16 @@ Users can:
 
 - Pin favorite project folders.
 - Remove pinned folders.
+- Set separate maximum Codex and Claude instances from 1 through 8 for each project.
 - Launch Codex in a project.
 - Launch Claude in a project.
 - Add a folder without launching it.
 - Add a folder and immediately launch the selected provider.
 - Open a native folder picker.
 
-The macOS launcher uses Terminal.app. The Windows launcher opens `cmd.exe`. Pinned projects persist in SQLite.
+The macOS launcher uses Terminal.app. The Windows launcher opens `cmd.exe`. Pinned projects and provider limits persist in SQLite.
+
+Current queued work does not require users to keep these manually launched terminals open. Relay allocates short-lived terminals from the selected project's provider limits, gives every native launch a unique ownership ID, and closes only that exact launch at the task's terminal outcome.
 
 Interactive terminal launch commands intentionally use unrestricted flags:
 
@@ -84,12 +89,14 @@ The composer exposes Execute and Forward-planning Turbo as its workflow choices.
 #### Execute
 
 - Choose Codex or Claude through provider tabs with distinct icons.
-- Show the live count for each provider.
-- Choose a connected session belonging to that provider.
+- Show active and maximum instance counts for each provider.
+- Choose the selected project and use its automatic provider pool.
 - Choose a model.
 - Choose reasoning effort.
 - Remember model and effort independently for Codex and Claude while switching tabs.
-- Send the prompt to the selected session.
+- Send the prompt to the queue without requiring an open terminal or existing conversation.
+
+Every fresh Execute task starts a new conversation. **Continue session** creates a linked queue task that waits for the same project's capacity, opens a new terminal, and resumes the saved conversation with `claude --resume <session-id>` or `codex resume <session-id>`. Relay permits only one queued or running owner of a saved conversation.
 
 #### Plan council in Execute
 
@@ -106,7 +113,7 @@ The configuration must expose:
 - Codex reviewer model.
 - Codex reviewer effort.
 - Claude readiness.
-- Selected Codex review terminal readiness.
+- The selected project's Claude and Codex pool capacity.
 
 The task activity view must nicely preview:
 
@@ -117,25 +124,23 @@ The task activity view must nicely preview:
 - Prominent formatted final revised plan.
 - Failure or waiting state for an incomplete council.
 
-Relay persists the same record as `plan.json`, `plan.md`, and `result.md`.
+Relay persists its checkpoint record and result under Relay's task artifacts. The final reviewed plan is written to `<project-root>/.data/tasks/<task-id>/plan.md`, never to a Relay project folder when the plan belongs to another project.
 
-### Connected session selection
+### Automatic terminal pools and legacy session selection
 
-Relay lists only live connected sessions.
+On a backend with `capabilities.disposableTerminalPools`, the left composer panel shows the selected project's maximum Codex and Claude instances instead of a live terminal picker. A new task has no `thread_id` until Relay launches and binds its provider terminal.
 
-Codex sessions are terminals connected through Relay's shared app-server endpoint. Claude sessions come from the official `claude agents --json` command.
+Capacity is project-local and provider-specific. Direct Execute and Planner work require one slot for the chosen provider. Plan council atomically requires one Claude and one Codex slot. Turbo requires one Codex planner plus its configured worker count, and also one Claude slot when its terminal council is enabled.
 
-Every session option may include:
+When a task reaches a runnable queue position, Relay must:
 
-- Provider icon.
-- Conversation name or prompt preview.
-- Workspace name and full path.
-- Live or busy state.
-- Source.
-- Short session ID.
-- Claude process ID.
+1. Reserve the complete required capacity before launching.
+2. Start a fresh native terminal in the exact project directory.
+3. Bind only the provider session proven to belong to that unique native launch.
+4. Persist the conversation ID before running the task.
+5. Close that exact Relay-owned launch after completion, failure, cancellation, or interruption.
 
-Session selection must remain obvious and keyboard accessible. Provider switching filters the session list. Empty states must explain how to connect the selected provider.
+Existing persistent task rows retain their selected sessions for compatibility. Only that compatibility UI lists live Codex sessions from Relay's shared app-server and Claude sessions from `claude agents --json`.
 
 ### Connection helper and terminal launch
 
@@ -148,6 +153,8 @@ The connection helper must retain:
 - Unrestricted-access warning.
 - Capability state that displays `Restart Relay to launch` when an older backend is still running.
 
+These manual launch controls are project tools and a legacy compatibility path. They are not how current queued tasks acquire terminals.
+
 ### Prompt composer
 
 The prompt composer must preserve:
@@ -158,7 +165,7 @@ The prompt composer must preserve:
 - Mode-specific placeholder and label.
 - Clear disabled and validation states.
 - No separate task title field.
-- No repository path field. Workspace comes from the selected live session.
+- No repository path field. Workspace comes from the selected Launchpad project.
 
 Adding a new task must not switch the activity panel away from the task the user is currently inspecting. When there is no explicit selection, the running task should be selected automatically.
 
@@ -184,7 +191,9 @@ The composer should state whether images go to the selected Execute provider or 
 
 The queue must preserve:
 
-- Exactly one running Relay task at a time.
+- Per-project Codex and Claude capacity limits, with independent work allowed across projects.
+- At most one queued or running disposable task per saved conversation ID.
+- Atomic capacity for Plan council and Turbo so a partially launched fleet cannot strand a task.
 - Independently scrollable task list.
 - Fixed queue heading and controls.
 - Automatic refresh.
@@ -196,14 +205,13 @@ The queue must preserve:
 - Stable completed duration.
 - Drag-and-drop reorder for queued tasks only.
 - Move up and Move down buttons for accessible reordering.
-- Checkbox selection for queued tasks that should become one parallel Claude batch.
-- A contextual batch bar showing selected count, live Claude session, Clear, and Run in parallel.
+- Checkbox selection and the contextual parallel bundle bar for eligible legacy persistent Codex tasks only.
 - Clear selected-task state.
 - Cancel, retry, and delete actions where valid.
 
-Genuine failures remain visible for five seconds and then automatically requeue at the end of the waiting list. Repeated failures repeat this cycle. User cancellations and shutdown interruptions do not automatically retry.
+Eligible genuine failures remain visible for five seconds and then automatically requeue at the end of the waiting list, up to the configured retry limit. User cancellations and shutdown interruptions do not automatically retry.
 
-Users can select at least two queued tasks and replace them with one Codex task sent to the currently selected Codex terminal. The combined prompt tells Codex to delegate the original prompts concurrently to separate sub-agents and presents them as an ordered numbered list. All selected tasks must match the selected Codex terminal workspace. Their images are copied before the originals are removed. The Relay scheduler remains sequential because parallelism happens inside Codex's single queue slot.
+Users can select at least two eligible legacy queued tasks and replace them with one Codex task sent to the currently selected Codex terminal. Disposable tasks never expose this destructive replacement flow. New work uses a higher project Codex limit or Forward-planning Turbo for concurrency.
 
 ### Task activity and results
 
@@ -281,9 +289,9 @@ Preserve or improve:
 
 - Semantic buttons instead of clickable generic elements.
 - Visible keyboard focus.
-- Execute and Plan mode tab semantics.
+- Execute and Forward-planning Turbo mode tab semantics.
 - Codex and Claude provider tab semantics.
-- Session radiogroup behavior.
+- Legacy session radiogroup behavior.
 - Left, Right, Home, and End navigation where currently supported.
 - Keyboard queue reordering controls.
 - Accessible names for icon-only actions.
@@ -314,7 +322,8 @@ Do not change backend behavior as part of a visual redesign unless a UI requirem
 ### Important backend files
 
 - `src/server.mjs`: local HTTP API, static assets, server-sent events, and provider validation.
-- `src/queue.mjs`: strict sequential scheduling, automatic retry, pause, cancellation, and shutdown.
+- `src/queue.mjs`: per-project pool scheduling, legacy per-session routing, automatic retry, pause, cancellation, and shutdown.
+- `src/disposable-terminal-pool.mjs`: capacity reservation, fresh or resumed native launches, provider binding, and exact cleanup.
 - `src/codex-app-server.mjs`: shared Codex connection and task turns.
 - `src/claude-session-registry.mjs`: live Claude session discovery.
 - `src/claude-execution-runner.mjs`: direct Claude task execution.

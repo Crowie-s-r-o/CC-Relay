@@ -5,7 +5,223 @@ import test from 'node:test';
 import {
   ClaudeExecutionRunner,
   consumeClaudeStreamMessage,
+  parseAgentTaskNotification,
 } from '../src/claude-execution-runner.mjs';
+
+// Record shapes below are copied from a real team session transcript
+// (~/.claude/projects/-Users-patrikkelemen-WebstormProjects-documi-ai/3511cec2-....jsonl),
+// with the agent briefing shortened.
+const AGENT_LAUNCH = {
+  type: 'assistant',
+  message: {
+    content: [{
+      type: 'tool_use',
+      id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+      name: 'Agent',
+      input: {
+        description: 'dev-2: standby core developer',
+        subagent_type: 'fullstack-engineer',
+        prompt: 'You are dev-2, a standby core developer on the dev-team for the documi-ai repo.',
+      },
+    }],
+  },
+};
+
+const ASYNC_LAUNCH_TEXT = 'Async agent launched successfully. (This tool result is internal metadata.)\n'
+  + "agentId: a21d93d8cd05ec4fb (internal ID - do not mention to user.)\n"
+  + 'The agent is working in the background. You will be notified automatically when it completes.';
+
+const AGENT_LAUNCHED = {
+  type: 'user',
+  toolUseResult: {
+    isAsync: true,
+    status: 'async_launched',
+    agentId: 'a21d93d8cd05ec4fb',
+    description: 'dev-2: standby core developer',
+    resolvedModel: 'claude-opus-5[1m]',
+  },
+  message: {
+    content: [{
+      tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+      type: 'tool_result',
+      content: [{ type: 'text', text: ASYNC_LAUNCH_TEXT }],
+    }],
+  },
+};
+
+const TASK_NOTIFICATION = '<task-notification>\n'
+  + '<task-id>a21d93d8cd05ec4fb</task-id>\n'
+  + '<tool-use-id>toolu_012M2JjykSAMBUw7JewJMYeX</tool-use-id>\n'
+  + '<output-file>/private/tmp/claude-501/tasks/a21d93d8cd05ec4fb.output</output-file>\n'
+  + '<status>completed</status>\n'
+  + '<summary>Agent "dev-2: standby core developer" finished</summary>\n'
+  + '<note>A task-notification fires each time this agent stops.</note>\n'
+  + '<result>Standing by for assignment.</result>\n'
+  + '<usage><subagent_tokens>29359</subagent_tokens><tool_uses>0</tool_uses><duration_ms>2632</duration_ms></usage>\n'
+  + '</task-notification>';
+
+function turnContext() {
+  return { cwd: '/tmp/repo', tools: new Map(), finalResponse: '', sessionId: 'one', error: null };
+}
+
+test('Claude sub-agent launches carry agent metadata on the mcpToolCall envelope', () => {
+  const context = turnContext();
+  const [started] = consumeClaudeStreamMessage(AGENT_LAUNCH, context);
+  const [completed] = consumeClaudeStreamMessage(AGENT_LAUNCHED, context);
+
+  // Envelope stays exactly what older consumers and stored events expect.
+  assert.equal(started.event.type, 'item/started');
+  assert.equal(started.event.item.type, 'mcpToolCall');
+  assert.equal(started.event.item.server, 'Claude Code');
+  assert.equal(started.event.item.tool, 'Agent');
+  assert.equal(started.event.item.arguments.subagent_type, 'fullstack-engineer');
+
+  assert.equal(started.event.item.subAgent, true);
+  assert.equal(started.event.item.toolUseId, 'toolu_012M2JjykSAMBUw7JewJMYeX');
+  assert.equal(started.event.item.agentName, 'dev-2: standby core developer');
+  assert.equal(started.event.item.agentType, 'fullstack-engineer');
+  assert.match(started.message, /sub-agent "dev-2: standby core developer"/i);
+
+  // The tool call completes in milliseconds while the agent keeps working.
+  assert.equal(completed.event.type, 'item/completed');
+  assert.equal(completed.event.item.status, 'completed');
+  assert.equal(completed.event.item.backgrounded, true);
+  assert.equal(completed.event.item.agentId, 'a21d93d8cd05ec4fb');
+  assert.match(completed.message, /working in the background/i);
+});
+
+test('a backgrounded sub-agent is recognized from the tool result text alone', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, context);
+  const [completed] = consumeClaudeStreamMessage({
+    type: 'user',
+    message: {
+      content: [{
+        tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+        type: 'tool_result',
+        content: [{ type: 'text', text: ASYNC_LAUNCH_TEXT }],
+      }],
+    },
+  }, context);
+
+  assert.equal(completed.event.item.backgrounded, true);
+  assert.equal(completed.event.item.agentId, 'a21d93d8cd05ec4fb');
+});
+
+test('a sub-agent that answers inline is not marked backgrounded', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, context);
+  const [completed] = consumeClaudeStreamMessage({
+    type: 'user',
+    message: {
+      content: [{
+        tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+        type: 'tool_result',
+        content: [{ type: 'text', text: 'Reviewed the queue and found no regressions.' }],
+      }],
+    },
+  }, context);
+
+  assert.equal(completed.event.item.backgrounded, false);
+  assert.equal(completed.event.item.agentId, undefined);
+  assert.match(completed.message, /finished/i);
+});
+
+test('other Claude tools keep their existing item shape', () => {
+  const context = turnContext();
+  const [started] = consumeClaudeStreamMessage({
+    type: 'assistant',
+    message: {
+      content: [{ type: 'tool_use', id: 'tool-read', name: 'Read', input: { file_path: '/tmp/repo/app.js' } }],
+    },
+  }, context);
+
+  assert.equal(started.event.item.type, 'mcpToolCall');
+  assert.equal(started.event.item.tool, 'Read');
+  assert.equal(started.event.item.subAgent, undefined);
+  assert.equal(started.event.item.agentName, undefined);
+  assert.equal(started.message, 'Claude started: Read');
+});
+
+test('a task notification resolves the sub-agent that its tool use launched', () => {
+  const context = turnContext();
+  const emitted = consumeClaudeStreamMessage({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    timestamp: '2026-07-27T17:29:03.085Z',
+    sessionId: '3511cec2-8700-4dc2-b33d-482682f5734c',
+    content: TASK_NOTIFICATION,
+  }, context);
+
+  assert.equal(emitted.length, 1);
+  assert.deepEqual(emitted[0].event, {
+    type: 'claude/agent-finished',
+    provider: 'claude',
+    toolUseId: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+    agentId: 'a21d93d8cd05ec4fb',
+    status: 'completed',
+    summary: 'Agent "dev-2: standby core developer" finished',
+    agentName: 'dev-2: standby core developer',
+  });
+  assert.equal(emitted[0].message, 'Agent "dev-2: standby core developer" finished');
+});
+
+test('the enqueue and remove copies of one notification report a single finish', () => {
+  const context = turnContext();
+  const enqueued = consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'enqueue', content: TASK_NOTIFICATION,
+  }, context);
+  const removed = consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'remove', content: TASK_NOTIFICATION,
+  }, context);
+
+  assert.equal(enqueued.length, 1);
+  assert.equal(removed.length, 0);
+});
+
+test('a resumed sub-agent reports again through the tool use that woke it', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'enqueue', content: TASK_NOTIFICATION,
+  }, context);
+  const resumed = consumeClaudeStreamMessage({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    content: TASK_NOTIFICATION.replace(
+      '<tool-use-id>toolu_012M2JjykSAMBUw7JewJMYeX</tool-use-id>',
+      '<tool-use-id>toolu_01GL9D1R3PPMn2Vh2NHRERXA</tool-use-id>',
+    ),
+  }, context);
+
+  assert.equal(resumed.length, 1);
+  assert.equal(resumed[0].event.toolUseId, 'toolu_01GL9D1R3PPMn2Vh2NHRERXA');
+  assert.equal(resumed[0].event.agentId, 'a21d93d8cd05ec4fb');
+});
+
+test('queue operations that are not task notifications stay invisible', () => {
+  const context = turnContext();
+  const agentMessage = consumeClaudeStreamMessage({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    content: '<agent-message from="fullstack-engineer">\nTask #1 is implemented.\n</agent-message>',
+  }, context);
+  const dequeue = consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'dequeue', content: null,
+  }, context);
+
+  assert.equal(agentMessage.length, 0);
+  assert.equal(dequeue.length, 0);
+  assert.equal(parseAgentTaskNotification('<task-notification></task-notification>'), null);
+  assert.equal(parseAgentTaskNotification(undefined), null);
+});
+
+test('a failed sub-agent notification keeps its reported status', () => {
+  const notification = parseAgentTaskNotification(
+    TASK_NOTIFICATION.replace('<status>completed</status>', '<status>failed</status>'),
+  );
+  assert.equal(notification.status, 'failed');
+  assert.equal(notification.agentName, 'dev-2: standby core developer');
+});
 
 test('Claude stream events pair tool use with its result', () => {
   const context = { cwd: '/tmp/repo', tools: new Map(), finalResponse: '', sessionId: 'one', error: null };

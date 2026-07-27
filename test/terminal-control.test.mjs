@@ -37,6 +37,20 @@ test('Turbo planner and worker assignments protect every participating Relay', (
   assert.equal(taskUsesTerminal(task, 'unrelated'), false);
 });
 
+test('Plan council protects both its Claude author and Codex reviewer terminals', () => {
+  const task = {
+    id: 22,
+    status: 'queued',
+    mode: 'plan',
+    thread_id: 'codex-reviewer',
+    author_thread_id: 'claude-author',
+  };
+
+  assert.equal(taskUsesTerminal(task, 'codex-reviewer'), true);
+  assert.equal(taskUsesTerminal(task, 'claude-author'), true);
+  assert.equal(taskUsesTerminal(task, 'unrelated'), false);
+});
+
 test('only an idle terminal with verified native identity can close', () => {
   assert.deepEqual(terminalControlState([], 'relay-one', null), {
     owned: false,

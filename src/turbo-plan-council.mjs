@@ -239,8 +239,9 @@ export class TurboPlanCouncilReviewer {
   constructor(options = {}) {
     const config = options || {};
     const injectedRunner = typeof config.run === 'function' ? config : null;
-    const { claude, claudeRunner } = injectedRunner ? {} : config;
+    const { claude, claudeRunner, terminalExecution = false } = injectedRunner ? {} : config;
     this.claude = injectedRunner || claude || claudeRunner;
+    this.terminalExecution = terminalExecution === true;
     if (!this.claude || typeof this.claude.run !== 'function') {
       throw new TypeError('TurboPlanCouncilReviewer needs an injected Claude runner.');
     }
@@ -293,14 +294,40 @@ export class TurboPlanCouncilReviewer {
           workerCount: request.workerCount,
           attachmentPaths: paths,
         });
-      started = this.claude.run(prompt, {
-        cwd: request.task.repo_path || request.task.cwd,
-        model: request.model,
-        effort: request.effort,
-        attachmentPaths: paths,
-        onEvent: request.onEvent || (() => {}),
-        onStderr: request.onStderr || (() => {}),
-      });
+      if (this.terminalExecution) {
+        const threadId = request.task.turbo?.councilThreadId;
+        if (!threadId) {
+          throw new TurboPlanCouncilError('Turbo Plan council needs its disposable Claude terminal session.');
+        }
+        started = this.claude.run({
+          ...request.task,
+          id: request.parentTaskId,
+          mode: 'execute',
+          provider: 'claude',
+          prompt,
+          thread_id: threadId,
+          thread_name: request.task.turbo?.councilThreadName || 'Turbo Claude council',
+          thread_source: request.task.turbo?.councilThreadSource || 'Relay managed terminal pool',
+          model: request.model,
+          effort: request.effort,
+          require_terminal: true,
+          read_only: true,
+        }, {
+          onEvent: request.onEvent || (() => {}),
+          onStderr: request.onStderr || (() => {}),
+        });
+      } else {
+        started = this.claude.run(prompt, {
+          cwd: request.task.repo_path || request.task.cwd,
+          model: request.model,
+          effort: request.effort,
+          attachmentPaths: paths,
+          // Owning parent task id, so a cancel targets this parent's stage and nothing else.
+          owner: request.parentTaskId,
+          onEvent: request.onEvent || (() => {}),
+          onStderr: request.onStderr || (() => {}),
+        });
+      }
     } catch (error) {
       this.finish(request, error);
       return;
@@ -345,7 +372,7 @@ export class TurboPlanCouncilReviewer {
     this.queue = retained;
     if (this.active && matches(this.active)) {
       try {
-        const activeCancelled = this.claude.cancel();
+        const activeCancelled = this.claude.cancel(this.active.parentTaskId);
         if (activeCancelled) {
           this.active.cancelRequested = true;
           cancelled = true;

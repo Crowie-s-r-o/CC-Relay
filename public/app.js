@@ -6,13 +6,17 @@ import {
   filterEventEntries,
   groupEventEntries,
   eventStreamStats,
+  isSubAgentEntry,
+  subAgentEntryState,
 } from './event-stream.js';
 import { taskDurationLabel, formatElapsedDuration } from './task-time.js';
 import { clipboardImageFiles } from './clipboard-images.js';
+import { projectColorClass, projectColorClasses } from './project-colors.js';
 import { parallelClaudeRestartRequired, projectQueueRestartRequired } from './project-queue-state.js';
 import { terminalClosePresentation } from './terminal-close-state.js';
 import { idleExecutionThreadId, runningDirectTask, selectedExecutionProvider, selectedWorkflowMode } from './task-routing.js';
-import { activityBuckets, periodRange, shiftPeriod, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
+import { activityBuckets, isFinishedTaskStatus, periodRange, shiftPeriod, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
+import { resolveSubmissionId, submissionIntentSignature } from './submission-intent.js';
 import {
   buildQueueReorderRequest,
   createQueueSnapshot,
@@ -45,6 +49,49 @@ import {
   continuationPresentation,
   continuationSubmission,
 } from './task-continuation-state.js';
+import { escapeHtml } from './escape-html.js';
+import {
+  availableProviderSelection,
+  providerInstallationState,
+} from './provider-availability.js';
+import {
+  breakdownIsActive,
+  breakdownStatusPresentation,
+  canQueueProposals,
+  moveProposal,
+  plannerCapable,
+  pruneSelection,
+  removeProposal,
+  selectedProposals,
+  updateProposalField,
+} from './planner-state.js';
+import {
+  activeWaveIndex,
+  addProposal,
+  blockedReasonLabel,
+  breakdownNoteLabel,
+  canRunPlan,
+  computeWaves,
+  defaultRunSelection,
+  dependencyIds,
+  dependencyLabel,
+  dependsOnTransitively,
+  planRunIsActive,
+  plannerBoardSignature,
+  plannerV2Capable,
+  proposalStatus,
+  pruneDanglingDependencies,
+  runAnnouncement,
+  runProgressSummary,
+  runnableSelection,
+  runStartBlockReason,
+  runStatusPresentation,
+  runStepFor,
+  shouldAdoptServerProposals,
+  stepEditingLocked,
+  stepStatusPresentation,
+  toggleDependency,
+} from './planner-board.js';
 
 const EFFORT_DESCRIPTIONS = {
   low: 'Fastest for small, well-scoped work.',
@@ -59,6 +106,10 @@ const MAX_IMAGE_ATTACHMENTS = 99;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+const API_TIMEOUT_MS = 20_000;
+// Task creation carries image data, so it gets a wider budget than a status read.
+const TASK_SUBMIT_TIMEOUT_MS = 45_000;
 
 function effortOptions(values) {
   return values.map((reasoningEffort) => ({
@@ -140,6 +191,7 @@ const state = {
   threadLoadSequence: 0,
   submitting: false,
   pendingSubmission: null,
+  poolLimitSaving: false,
   prioritySubmit: false,
   draggedTaskId: null,
   queueDrag: null,
@@ -163,6 +215,10 @@ const state = {
   planExecutionSubmitting: false,
   editingTaskId: null,
   taskEditSubmitting: false,
+  taskEditProvider: null,
+  taskEditOriginalProvider: null,
+  taskEditExecutionDirty: false,
+  taskEditSettings: null,
   planExecutionTargets: new Map(),
   detailCopyContent: {},
   modelCatalogs: {
@@ -173,15 +229,45 @@ const state = {
   threadExecutionSettings: initialComposerState.threadExecutionSettings,
   planSettings: initialComposerState.planSettings,
   turboSettings: initialComposerState.turboSettings,
+  planner: {
+    open: false,
+    loading: false,
+    busy: false,
+    plans: [],
+    selectedPlanId: null,
+    plan: null,
+    breakdown: null,
+    proposals: [],
+    selection: new Set(),
+    breakdownSessionId: null,
+    queueSessionId: null,
+    showRaw: false,
+    pollTimer: null,
+    // Planner v2: dependency board, plan runs, and refinement.
+    run: null,
+    notes: [],
+    runSessionId: null,
+    runPreferIdle: false,
+    // Everything the never-clobber guarantee rests on: ids with unsaved local
+    // text, whether a save is on the wire, and the signature of the markup the
+    // board was last built from.
+    dirtyProposalIds: new Set(),
+    saveInFlight: false,
+    boardSignature: null,
+    announcement: '',
+    selectionAttemptId: null,
+  },
 };
 
 const elements = {
   form: document.querySelector('#task-form'),
   formMessage: document.querySelector('#form-message'),
+  composerAlert: document.querySelector('#composer-alert'),
   submitButton: document.querySelector('#task-submit-button'),
   codexStatus: document.querySelector('#codex-status'),
   codexStatusLabel: document.querySelector('#codex-status-label'),
   providerInput: document.querySelector('#provider-id'),
+  providerTabsContainer: document.querySelector('#provider-tabs'),
   modeTabs: [...document.querySelectorAll('.mode-tab')],
   executeConfig: document.querySelector('#execute-config'),
   turboConfig: document.querySelector('#turbo-config'),
@@ -196,6 +282,8 @@ const elements = {
   effortSliderValue: document.querySelector('#effort-slider-value'),
   effortSliderSteps: document.querySelector('#effort-slider-steps'),
   planAuthorModel: document.querySelector('#plan-author-model'),
+  planAuthorTerminalField: document.querySelector('#plan-author-terminal-field'),
+  planAuthorTerminal: document.querySelector('#plan-author-terminal'),
   planCouncilEnabled: document.querySelector('#plan-council-enabled'),
   planCouncilRoute: document.querySelector('#plan-council-route'),
   planCouncilReadiness: document.querySelector('#plan-council-readiness'),
@@ -224,6 +312,13 @@ const elements = {
   turboReadiness: document.querySelector('#turbo-readiness'),
   turboNote: document.querySelector('#turbo-note'),
   terminalPanel: document.querySelector('#terminal-panel'),
+  terminalPoolControls: document.querySelector('#terminal-pool-controls'),
+  legacyTerminalControls: document.querySelector('#legacy-terminal-controls'),
+  legacyTerminalLaunchButtons: document.querySelector('#legacy-terminal-launch-buttons'),
+  maxCodexInstances: document.querySelector('#max-codex-instances'),
+  maxClaudeInstances: document.querySelector('#max-claude-instances'),
+  codexPoolUsage: document.querySelector('#codex-pool-usage'),
+  claudePoolUsage: document.querySelector('#claude-pool-usage'),
   terminalLegend: document.querySelector('#terminal-legend'),
   threadInput: document.querySelector('#thread-id'),
   terminalList: document.querySelector('#terminal-list'),
@@ -339,11 +434,26 @@ const elements = {
   detailAttachmentsCount: document.querySelector('#detail-attachments-count'),
   detailAttachments: document.querySelector('#detail-attachments'),
   taskEditModal: document.querySelector('#task-edit-modal'),
+  taskEditExecution: document.querySelector('#task-edit-execution'),
+  taskEditProvider: document.querySelector('#task-edit-provider'),
+  taskEditModel: document.querySelector('#task-edit-model'),
+  taskEditEffort: document.querySelector('#task-edit-effort'),
+  taskEditExecutionHint: document.querySelector('#task-edit-execution-hint'),
   taskEditPrompt: document.querySelector('#task-edit-prompt'),
   taskEditMessage: document.querySelector('#task-edit-message'),
   taskEditClose: document.querySelector('#task-edit-close'),
   taskEditCancel: document.querySelector('#task-edit-cancel'),
   taskEditSave: document.querySelector('#task-edit-save'),
+  plannerButton: document.querySelector('#planner-button'),
+  plannerModal: document.querySelector('#planner-modal'),
+  plannerSubtitle: document.querySelector('#planner-subtitle'),
+  plannerClose: document.querySelector('#planner-close'),
+  plannerBody: document.querySelector('#planner-body'),
+  plannerRunAnnounce: document.querySelector('#planner-run-announce'),
+  plannerNewPlan: document.querySelector('#planner-new-plan'),
+  plannerPlanList: document.querySelector('#planner-plan-list'),
+  plannerDetail: document.querySelector('#planner-detail'),
+  plannerMessage: document.querySelector('#planner-message'),
   headerRunningTasks: document.querySelector('#header-running-tasks'),
   projectList: document.querySelector('#project-list'),
   addProjectButton: document.querySelector('#add-project-button'),
@@ -392,25 +502,47 @@ async function loadTerminalDisplays() {
   elements.terminalLayoutDisplay.value = String(Math.min(selectedDisplay, Math.max(0, displays.length - 1)));
 }
 
+/*
+ * Every request is bounded. Without an abort a hung fetch leaves the composer stuck on
+ * its in-flight state forever, which reads as "Relay refuses to add the task".
+ */
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-  });
-  const body = await response.json();
+  const { timeoutMs = API_TIMEOUT_MS, timeoutMessage = null, ...fetchOptions } = options;
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  let response;
+  try {
+    response = await fetch(path, {
+      ...fetchOptions,
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(fetchOptions.headers || {}),
+      },
+    });
+  } catch (error) {
+    if (controller.signal.aborted) {
+      const seconds = Math.round(timeoutMs / 1000);
+      /*
+       * Aborting the fetch stops the browser waiting; it does not stop the server. The
+       * request may have been received and completed. This copy must never claim that
+       * nothing happened. Callers that know their own retry is safe say so themselves
+       * through timeoutMessage.
+       */
+      throw new Error(
+        timeoutMessage?.(seconds)
+        || `Relay did not answer within ${seconds} seconds. It may still be processing the request.`,
+      );
+    }
+    throw new Error(`Relay is unreachable. ${error.message}`);
+  } finally {
+    window.clearTimeout(timer);
+  }
+  const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(body.error || `Request failed with status ${response.status}.`);
   }
   return body;
-}
-
-function escapeHtml(value) {
-  const div = document.createElement('div');
-  div.textContent = value ?? '';
-  return div.innerHTML;
 }
 
 function projectProvider() {
@@ -431,6 +563,44 @@ function sameProjectPath(left, right) {
 
 function activeProject() {
   return state.projects.find((project) => sameProjectPath(project.path, state.activeProjectPath)) || null;
+}
+
+function usesDisposableTerminalPools() {
+  return state.status?.capabilities?.disposableTerminalPools === true;
+}
+
+function providerIsMissing(provider) {
+  return providerInstallationState(state.status, provider) === 'missing';
+}
+
+function reconcileProviderSelection() {
+  if (
+    state.submitting
+    || state.taskMode !== 'execute'
+    || isExecuteCouncilEnabled()
+  ) {
+    return false;
+  }
+  const provider = availableProviderSelection(state.status, state.selectedProvider);
+  if (provider === state.selectedProvider) return false;
+  state.selectedProvider = provider;
+  state.selectedThreadId = null;
+  state.taskScope = 'workspace';
+  void loadModels(provider);
+  return true;
+}
+
+function projectInstanceLimits(project = activeProject()) {
+  return {
+    codex: Number(project?.max_codex_instances || 1),
+    claude: Number(project?.max_claude_instances || 1),
+  };
+}
+
+function projectIdentityColorClass(path) {
+  const projectIndex = state.projects.findIndex((project) => sameProjectPath(project.path, path));
+  if (projectIndex < 0) return projectColorClass(path);
+  return projectColorClasses(state.projects.map((project) => project.path))[projectIndex];
 }
 
 function projectTasks() {
@@ -480,6 +650,7 @@ function restoreProjectComposerState(path) {
   const session = state.projectComposerStore.load(path);
   elements.prompt.value = session.prompt;
   elements.formMessage.textContent = '';
+  setComposerAlert('');
   state.attachments = session.attachments;
   state.selectedThreadId = session.selectedThreadId;
   state.selectedProvider = session.selectedProvider;
@@ -522,17 +693,19 @@ function renderProjects() {
     elements.projectList.innerHTML = '<span class="project-empty">Pin a folder for one-click terminal launch</span>';
     return;
   }
-  elements.projectList.innerHTML = state.projects.map((project) => {
+  const colorClasses = projectColorClasses(state.projects.map((project) => project.path));
+  elements.projectList.innerHTML = state.projects.map((project, index) => {
     const activity = projectActivity(project.path);
     return `
-    <article class="project-chip ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}" data-activity="${activity.state}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
-      <span class="project-pin" aria-hidden="true">${escapeHtml(project.name.slice(0, 1).toUpperCase())}</span>
-      <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(compactProjectPath(project.path))}</small><span class="project-activity"><i aria-hidden="true"></i>${escapeHtml(activity.label)}</span></span>
-      <span class="project-launchers">
-        <button class="project-launch project-launch-codex" type="button" data-project-action="launch" data-provider="codex" aria-label="Launch Codex in ${escapeHtml(project.name)}"><span aria-hidden="true">&gt;_</span> Codex</button>
-        <button class="project-launch project-launch-claude" type="button" data-project-action="launch" data-provider="claude" aria-label="Launch Claude in ${escapeHtml(project.name)}"><svg class="project-launch-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5v13M1.5 8h13M3.4 3.4l9.2 9.2M12.6 3.4l-9.2 9.2" /></svg><span>Claude</span></button>
-        <button class="project-unpin" type="button" data-project-action="delete" aria-label="Unpin ${escapeHtml(project.name)}" ${state.projects.length === 1 ? 'disabled title="Add another project before unpinning the selected project"' : ''}>×</button>
-      </span>
+    <article class="project-chip ${colorClasses[index]} ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}" data-activity="${activity.state}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
+      <div class="project-chip-head">
+        <span class="project-pin" aria-hidden="true">${escapeHtml(project.name.slice(0, 1).toUpperCase())}</span>
+        <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(compactProjectPath(project.path))}</small></span>
+      </div>
+      <div class="project-chip-foot">
+        <span class="project-activity"><i aria-hidden="true"></i><strong>${escapeHtml(activity.status)}</strong><span>${escapeHtml(activity.label)}</span></span>
+      </div>
+      <button class="project-unpin" type="button" data-project-action="delete" aria-label="Unpin ${escapeHtml(project.name)}" ${state.projects.length === 1 ? 'disabled title="Add another project before unpinning the selected project"' : ''}>×</button>
     </article>
   `;
   }).join('');
@@ -546,7 +719,8 @@ function projectActivity(path) {
     const task = running[0];
     return {
       state: 'running',
-      label: `${running.length} running${queued.length ? ` · ${queued.length} waiting` : ''} · #${task.id} ${compactText(task.prompt, 34)}`,
+      status: 'Running',
+      label: `#${task.id} ${compactText(task.prompt, 42)}${queued.length ? ` · ${queued.length} waiting` : ''}`,
     };
   }
   if (queued.length > 0) {
@@ -571,18 +745,23 @@ function projectActivity(path) {
     });
     return {
       state: 'queued',
+      status: staleClaudeScheduler || staleScheduler ? 'Restart needed' : 'Waiting',
       label: staleClaudeScheduler
-        ? `${queued.length} waiting · Restart Relay for parallel Claude projects`
+        ? `${queued.length} queued · Restart Relay for parallel Claude projects`
         : staleScheduler
-        ? `${queued.length} waiting · Restart Relay for separate project queues`
-        : `${queued.length} task${queued.length === 1 ? '' : 's'} waiting`,
+        ? `${queued.length} queued · Restart Relay for separate project queues`
+        : `${queued.length} task${queued.length === 1 ? '' : 's'} queued`,
     };
   }
   const latest = tasks.reduce((current, task) => !current || task.id > current.id ? task : current, null);
   if (latest && ['failed', 'interrupted'].includes(latest.status)) {
-    return { state: 'error', label: `Needs attention · Task #${latest.id} ${latest.status}` };
+    return { state: 'error', status: 'Attention', label: `Task #${latest.id} ${latest.status}` };
   }
-  return { state: 'idle', label: latest?.status === 'complete' ? `Idle · Last completed #${latest.id}` : 'Idle' };
+  return {
+    state: 'idle',
+    status: 'Idle',
+    label: latest?.status === 'complete' ? `Last completed #${latest.id}` : 'Ready for work',
+  };
 }
 
 function relayActivity(thread) {
@@ -698,6 +877,17 @@ async function waitForProjectThread(path, provider, previousIds = new Set()) {
       candidateObservations = thread ? 1 : 0;
     }
     if (thread && candidateObservations >= 2) {
+      if (
+        provider === 'claude'
+        && isExecuteCouncilEnabled()
+        && isPlanCouncilTerminalExecutionEnabled()
+      ) {
+        state.planSettings.authorThreadId = thread.id;
+        renderPlanControls();
+        renderThreads();
+        elements.formMessage.textContent = `Claude author terminal is ready in ${workspaceName(path)}.`;
+        return thread;
+      }
       if (!providerEligibleForComposer(state, provider)) {
         elements.formMessage.textContent = incompatibleComposerProviderMessage(provider, path);
         return thread;
@@ -834,8 +1024,9 @@ function renderAttachmentComposer() {
       state.attachments = state.attachments.filter(
         (attachment) => attachment.id !== button.dataset.removeAttachment,
       );
-      elements.formMessage.textContent = '';
+      setComposerAlert('');
       renderAttachmentComposer();
+      updateSubmitState();
     });
   }
 }
@@ -890,13 +1081,18 @@ async function mergeImageFiles(fileList, existingAttachments) {
 
 async function addImageFiles(fileList) {
   if (state.status?.capabilities?.imageAttachments !== true) {
-    elements.formMessage.textContent = 'Restart Relay once to enable image attachments.';
+    setComposerAlert('Restart Relay once to enable image attachments.');
     return;
   }
   const result = await mergeImageFiles(fileList, state.attachments);
   state.attachments = result.attachments;
-  elements.formMessage.textContent = result.errors.join(' ');
+  // Attachment problems belong to the composer, not to the shared status channel. A clean
+  // add writes nothing, so the live region stays quiet when there is nothing to say.
+  if (result.errors.length > 0) {
+    setComposerAlert(result.errors.join(' '), 'validation');
+  }
   renderAttachmentComposer();
+  updateSubmitState();
 }
 
 function followUpAttachmentsAvailable() {
@@ -1146,6 +1342,51 @@ function toolResultText(result) {
   return (result?.content || []).map((item) => item?.text || '').filter(Boolean).join('\n');
 }
 
+const SUB_AGENT_STATUS_LABELS = {
+  running: 'Running',
+  backgrounded: 'In background',
+  finished: 'Finished',
+};
+
+// Presentation for one sub-agent run. `item` is the launch tool call when this stream saw it;
+// a task notification that arrived without its launch (a resumed agent, or a notification
+// written before the launch record) still renders from the notification alone.
+function subAgentPresentation(entry, item, common) {
+  const finished = entry.agentFinishedEvent?.payload || null;
+  const agentState = subAgentEntryState(entry);
+  const reportedStatus = String(finished?.status || '').trim().toLowerCase();
+  const failed = item?.status === 'failed' || (Boolean(reportedStatus) && reportedStatus !== 'completed');
+  const startedAt = entryFirstEvent(entry)?.created_at || null;
+  const endedAt = entry.agentFinishedEvent?.created_at || entryLastEvent(entry)?.created_at || null;
+  // A notification can be recorded before the launch it resolves, which would otherwise
+  // report a nonsense duration. Only a forward interval is shown.
+  const elapsed = startedAt && endedAt
+    ? new Date(endedAt).getTime() - new Date(startedAt).getTime()
+    : 0;
+  const summary = String(finished?.summary || '').trim();
+  const launchOutput = failed ? toolResultText(item?.result) : '';
+  const prompt = String(item?.arguments?.prompt || '').trim();
+  return {
+    ...common,
+    kind: 'agent',
+    glyph: '↳',
+    state: failed ? 'error' : (agentState === 'finished' ? 'success' : 'running'),
+    title: 'Sub-agent',
+    name: String(item?.agentName || finished?.agentName || '').trim() || 'unnamed agent',
+    agentType: String(item?.agentType || '').trim(),
+    agentState,
+    live: agentState !== 'finished',
+    status: failed
+      ? (reportedStatus ? `${reportedStatus.charAt(0).toUpperCase()}${reportedStatus.slice(1)}` : 'Failed to start')
+      : SUB_AGENT_STATUS_LABELS[agentState],
+    duration: agentState === 'finished' && elapsed > 0 ? formatElapsedDuration(startedAt, endedAt) : '',
+    // The summary repeats the agent name on a clean finish, so it only earns a line when it
+    // carries news: a non-standard outcome, or a notification with no launch signal to sit on.
+    note: summary && (failed || !item) ? summary : '',
+    body: `${eventOutputMarkup(prompt, { label: 'brief' })}${eventOutputMarkup(launchOutput, { label: 'launch output', open: true })}`,
+  };
+}
+
 function eventPresentation(entry, task) {
   const item = entryItem(entry);
   const lastEvent = entryLastEvent(entry);
@@ -1160,6 +1401,12 @@ function eventPresentation(entry, task) {
     status: eventStatusLabel(entry),
     duration,
   };
+
+  // Sub-agent runs read as their own signal: a team session is the reason a Claude task can
+  // stay live for hours, so "who is working" must be legible without opening tool arguments.
+  if (isSubAgentEntry(entry)) {
+    return subAgentPresentation(entry, item, common);
+  }
 
   if (item?.type === 'commandExecution') {
     const command = item.command || item.commands?.join(' ') || 'Command details unavailable';
@@ -1341,18 +1588,25 @@ function eventPresentation(entry, task) {
     || payloadType === 'claude/completed'
     || payloadType === 'claude/waiting'
     || payloadType === 'claude/progress'
+    || payloadType === 'claude/input-required'
+    || payloadType === 'claude/input-resumed'
     || payloadType === 'claude/session-initializing') {
     const waiting = payloadType === 'claude/waiting';
+    const inputRequired = payloadType === 'claude/input-required';
+    const inputResumed = payloadType === 'claude/input-resumed';
     // claude/progress carries healthy terminal-turn heartbeats and cancellation notices.
     // Render it as a quiet note so a long turn does not accumulate warning-styled entries.
     const progress = payloadType === 'claude/progress';
     return {
       ...common,
       kind: waiting ? 'error' : 'note',
-      quiet: progress || (payloadType !== 'claude/waiting' && payloadType !== 'claude/session-initializing'),
+      quiet: progress || inputResumed
+        || (!inputRequired && payloadType !== 'claude/waiting' && payloadType !== 'claude/session-initializing'),
       glyph: '✳',
-      title: (waiting || progress) ? 'Claude session busy' : 'Claude session',
-      status: (waiting || progress) ? 'waiting' : common.status,
+      title: inputRequired
+        ? 'Claude needs input'
+        : (waiting || progress) ? 'Claude session busy' : 'Claude session',
+      status: inputRequired ? 'input needed' : (waiting || progress) ? 'waiting' : common.status,
       body: waiting
         ? eventOutputMarkup(lastEvent.message, { label: 'details', open: true })
         : eventTextMarkup(lastEvent.message),
@@ -1444,6 +1698,26 @@ function renderEventEntryInner(p, time) {
     return `${head}<div class="term-response ${p.headerless ? 'is-headerless' : ''}"><div class="event-message-body term-response-body">${escapeHtml(p.message)}</div></div>`;
   }
 
+  if (p.kind === 'agent') {
+    const meta = [
+      p.agentType ? `<span class="term-agent-type">${escapeHtml(p.agentType)}</span>` : '',
+      p.duration ? `<span>ran ${escapeHtml(p.duration)}</span>` : '',
+    ].filter(Boolean).join('<span class="term-sep" aria-hidden="true">·</span>');
+    const live = p.live ? '<i class="term-agent-live" aria-hidden="true"></i>' : '';
+    return `
+      <div class="term-signal-row">
+        <span class="term-glyph" aria-hidden="true">${escapeHtml(p.glyph)}</span>
+        <span class="term-signal-title">${escapeHtml(p.title)}</span>
+        <span class="term-signal-inline term-agent-name">${escapeHtml(p.name)}</span>
+        <span class="term-signal-state term-agent-state" data-agent-state="${escapeHtml(p.agentState)}">${live}${escapeHtml(p.status)}</span>
+        <time class="term-time">${escapeHtml(time)}</time>
+      </div>
+      ${meta ? `<div class="term-agent-meta">${meta}</div>` : ''}
+      ${p.note ? `<p class="term-agent-note">${escapeHtml(p.note)}</p>` : ''}
+      ${p.body || ''}
+    `;
+  }
+
   const inline = p.inline ? `<span class="term-signal-inline">${p.inline}</span>` : '';
   const status = p.status ? `<span class="term-signal-state">${escapeHtml(p.status)}</span>` : '';
   const row = `
@@ -1475,7 +1749,19 @@ function eventCopyText(entry, task) {
   const lines = [
     `[${formatEventTime(event?.created_at)}] ${providerLabel(presentation.provider)} · ${presentation.title} · ${presentation.status}`,
   ];
-  if (item?.type === 'commandExecution') {
+  if (isSubAgentEntry(entry)) {
+    lines.push(presentation.agentType
+      ? `${presentation.name} (${presentation.agentType})`
+      : presentation.name);
+    const summary = String(entry.agentFinishedEvent?.payload?.summary || '').trim();
+    if (summary) {
+      lines.push(summary);
+    }
+    const brief = String(item?.arguments?.prompt || '').trim();
+    if (brief) {
+      lines.push(brief);
+    }
+  } else if (item?.type === 'commandExecution') {
     lines.push(item.command || 'Command details unavailable');
     if (item.aggregatedOutput) {
       lines.push(item.aggregatedOutput);
@@ -1586,6 +1872,10 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   const session = taskContinuationSession(task);
   const supportsDirectFollowUp = state.status?.capabilities?.taskDirectFollowUp === true;
   const supportsTaskSteering = state.status?.capabilities?.taskSteering === true;
+  const resumableSession = task.terminal_lifecycle === 'disposable'
+    && state.status?.capabilities?.resumableDisposableSessions === true
+    && Boolean(task.thread_id)
+    && task.status !== 'running';
   const busy = ['queued', 'running'].includes(task.status)
     || (session && session.status !== 'idle')
     || state.tasks.some((candidate) => (
@@ -1598,6 +1888,7 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
     supportsDirectFollowUp,
     supportsTaskSteering,
     sessionConnected: Boolean(session),
+    resumableSession,
     busy,
     taskRunning: task.status === 'running',
     provider: task.provider,
@@ -1689,7 +1980,9 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
   const previousScrollTop = elements.detailEvents.scrollTop;
   const grouped = groupEventEntries(events);
   const visible = filterEventEntries(grouped, state.eventFilter);
-  const stats = eventStreamStats(grouped);
+  // A turn that is no longer running owns no live sub-agents, however its last notification
+  // landed, so the active count clears with the turn instead of stranding a number.
+  const stats = eventStreamStats(grouped, { turnEnded: task.status !== 'running' });
   state.selectedTaskEvents = events;
   state.selectedTaskForEvents = task;
   state.visibleEventEntries = visible;
@@ -1697,13 +1990,22 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
   const stateLabels = {
     queued: 'Waiting',
     running: 'Live',
+    'input-required': 'Input needed',
     complete: 'Finished',
     failed: 'Failed',
     cancelled: 'Cancelled',
     interrupted: 'Interrupted',
   };
-  elements.eventSessionState.dataset.state = task.status;
-  elements.eventSessionState.querySelector('span').textContent = stateLabels[task.status] || 'Recorded';
+  let awaitingTerminalInput = false;
+  for (const event of events) {
+    if (event.payload?.type === 'claude/input-required') awaitingTerminalInput = true;
+    if (event.payload?.type === 'claude/input-resumed') awaitingTerminalInput = false;
+  }
+  const sessionState = task.status === 'running' && awaitingTerminalInput
+    ? 'input-required'
+    : task.status;
+  elements.eventSessionState.dataset.state = sessionState;
+  elements.eventSessionState.querySelector('span').textContent = stateLabels[sessionState] || 'Recorded';
   elements.eventSummary.textContent = `${visible.length}/${grouped.length} signals`;
   elements.eventSummary.title = `${visible.length} of ${grouped.length} signals · ${events.length} raw events`;
   renderTerminalStatusBar(task);
@@ -1713,6 +2015,7 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     <span><b>${stats.files}</b><small>file changes</small></span>
     <span><b>${stats.messages}</b><small>messages</small></span>
     <span class="${stats.errors ? 'has-errors' : ''}"><b>${stats.errors}</b><small>errors</small></span>
+    ${stats.agents ? `<span class="has-agents"><b>${stats.agents}</b><small>sub-agents</small></span>` : ''}
     ${stats.running ? `<span class="is-running"><b>${stats.running}</b><small>active</small></span>` : ''}
   `;
   elements.copyEventsButton.disabled = visible.length === 0;
@@ -1762,6 +2065,7 @@ function providerIconClass(provider) {
 
 function threadDisplayName(thread) {
   if (!thread) return 'terminal';
+  if (thread.automatic) return thread.title || `Automatic ${providerLabel(thread.provider)}`;
   return threadProvider(thread) === 'claude' ? thread.title : `Relay ${relayNumber(thread)}`;
 }
 
@@ -1797,7 +2101,18 @@ function taskRelayLabel(task) {
   if (thread && threadProvider(thread) === 'codex') return `Relay ${relayNumber(thread)}`;
   if (thread) return `Claude · ${thread.title || 'session'}`;
   if (task.thread_name) return task.provider === 'codex' ? `Relay · ${task.thread_name}` : `Claude · ${task.thread_name}`;
+  if (task.terminal_lifecycle === 'disposable') {
+    if (task.mode === 'plan') return 'Automatic Claude + Codex';
+    if (task.mode === 'turbo') return 'Automatic Codex fleet';
+    return `Automatic ${providerLabel(task.provider)} instance`;
+  }
   return task.mode === 'turbo' ? 'Multiple Relays' : 'Unassigned Relay';
+}
+
+function assignmentTargetLabel(thread) {
+  return threadProvider(thread) === 'codex'
+    ? `Relay ${relayNumber(thread)}`
+    : `Claude · ${thread.title || 'session'}`;
 }
 
 function turboIdentity(threadId, storedTitle, fallback = 'Unassigned') {
@@ -1955,7 +2270,7 @@ function isExecuteCouncilEnabled() {
 function incompatibleComposerProviderMessage(provider, path = null) {
   const prefix = path ? `${providerLabel(provider)} is connected in ${workspaceName(path)}. ` : '';
   return isExecuteCouncilEnabled()
-    ? `${prefix}The interactive Claude session is listed as Execute only. Plan council stays enabled and uses the signed-in Claude CLI automatically; choose a Codex Relay for review.`
+    ? `${prefix}Choose the Claude session in the Plan council author terminal field, then choose a Codex Relay for review.`
     : `${prefix}Forward-planning Turbo keeps its Codex planner Relay selected.`;
 }
 
@@ -2011,12 +2326,32 @@ function isClaudePlanReady() {
   return Boolean(state.status?.claude?.available && state.status?.claude?.authenticated);
 }
 
+function isPlanCouncilTerminalExecutionEnabled() {
+  return state.status?.capabilities?.planCouncilTerminalExecution === true;
+}
+
+function planClaudeAuthorThreads() {
+  return projectThreads('claude').filter((thread) => thread.terminalControl?.owned === true);
+}
+
+function selectedPlanClaudeAuthorThread() {
+  return planClaudeAuthorThreads().find(
+    (thread) => thread.id === state.planSettings.authorThreadId,
+  ) || null;
+}
+
 function claudePlanIssue() {
   if (state.status?.capabilities?.planCouncil !== true) {
     return 'Restart Relay to enable Plan council';
   }
-  if (state.status?.claude?.available !== true) {
-    return 'Claude Code CLI is unavailable';
+  // The probe runs in the background after listen. Until it answers, Claude is unknown
+  // rather than unavailable, and saying otherwise reads as a broken CLI right after boot.
+  const installation = providerInstallationState(state.status, 'claude');
+  if (installation === 'checking') {
+    return 'Checking the Claude CLI';
+  }
+  if (installation === 'missing') {
+    return 'Claude Code CLI is not installed';
   }
   if (state.status?.claude?.authenticated !== true) {
     return 'Claude CLI is signed out. Run claude auth login; Relay will detect it automatically';
@@ -2026,6 +2361,19 @@ function claudePlanIssue() {
 
 function isDirectClaudeEnabled() {
   return state.status?.capabilities?.directClaudeExecution === true;
+}
+
+/*
+ * A failed `claude agents --json` probe now keeps the last known good session list and sets
+ * lastError, so sessions and an error can arrive together. That is staleness, not an
+ * outage: the sessions stay listed and selectable, and this note stays quiet. Only a
+ * failure with nothing cached says the check itself did not complete.
+ */
+function claudeDiscoveryNote() {
+  if (!state.connection?.claudeDiscoveryError) return '';
+  return state.threads.some((thread) => threadProvider(thread) === 'claude')
+    ? ' The Claude session list may be out of date; the last check did not finish. Relay retries automatically.'
+    : ' The last Claude session check did not finish. Relay retries automatically.';
 }
 
 function hasSelectedCodexThread() {
@@ -2044,12 +2392,39 @@ function setReadiness(element, ready, readyText, missingText) {
 function renderPlanControls() {
   const settings = state.planSettings;
   const models = state.modelCatalogs.codex;
+  const automatic = usesDisposableTerminalPools();
+  const terminalExecution = isPlanCouncilTerminalExecutionEnabled() && !automatic;
+  const authorThreads = terminalExecution ? planClaudeAuthorThreads() : [];
+  if (terminalExecution && !settings.authorThreadId) {
+    settings.authorThreadId = authorThreads.find((thread) => thread.status === 'idle')?.id
+      || authorThreads[0]?.id
+      || null;
+  }
+  const selectedAuthor = terminalExecution ? selectedPlanClaudeAuthorThread() : null;
   let model = models.find((item) => item.model === settings.reviewerModel);
   if (!model) {
     model = models.find((item) => item.isDefault) || models[0] || null;
     settings.reviewerModel = model?.model || '';
   }
 
+  elements.planAuthorTerminalField.hidden = !terminalExecution;
+  if (terminalExecution) {
+    const unavailableSelection = settings.authorThreadId && !selectedAuthor
+      ? `<option value="${escapeHtml(settings.authorThreadId)}">Selected terminal unavailable</option>`
+      : '';
+    const empty = authorThreads.length === 0 && !unavailableSelection
+      ? '<option value="">Launch a Claude Relay first</option>'
+      : '';
+    elements.planAuthorTerminal.innerHTML = [
+      unavailableSelection,
+      empty,
+      ...authorThreads.map((thread) => (
+        `<option value="${escapeHtml(thread.id)}">${escapeHtml(thread.title)} · ${escapeHtml(thread.status === 'idle' ? 'idle' : thread.status)}</option>`
+      )),
+    ].join('');
+    elements.planAuthorTerminal.value = settings.authorThreadId || '';
+    elements.planAuthorTerminal.disabled = authorThreads.length === 0;
+  }
   elements.planAuthorModel.value = settings.authorModel;
   elements.planReviewerModel.innerHTML = models.map((item) => `
     <option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>
@@ -2074,15 +2449,27 @@ function renderPlanControls() {
 
   setReadiness(
     elements.planClaudeReady,
-    isClaudePlanReady(),
-    `Claude author ready via CLI${state.status?.claude?.version ? ` · ${state.status.claude.version}` : ''}`,
-    claudePlanIssue(),
+    isClaudePlanReady() && (!terminalExecution || Boolean(selectedAuthor)),
+    terminalExecution
+      ? `Claude author terminal selected · ${selectedAuthor?.title || 'ready'}`
+      : `Claude author ready via CLI${state.status?.claude?.version ? ` · ${state.status.claude.version}` : ''}`,
+    claudePlanIssue() || (terminalExecution
+      ? 'Launch and choose a Relay-owned Claude author terminal'
+      : ''),
   );
   setReadiness(
     elements.planCodexReady,
-    hasSelectedCodexThread(),
-    'Codex review terminal selected',
-    'Choose a connected Codex review terminal',
+    automatic
+      ? Boolean(state.status?.codex?.available && state.status?.codex?.authenticated)
+      : hasSelectedCodexThread(),
+    automatic
+      ? `Codex reviewer pool ready · max ${projectInstanceLimits().codex}`
+      : 'Codex review terminal selected',
+    automatic
+      ? providerIsMissing('codex')
+        ? 'Codex CLI is not installed'
+        : 'Codex CLI is signed out or its status check failed'
+      : 'Choose a connected Codex review terminal',
   );
 }
 
@@ -2193,35 +2580,110 @@ function renderTurboControls() {
   ].join('');
   elements.turboCouncilReviewerEffort.value = council.councilClaudeEffort;
   elements.turboCouncilReviewerEffort.disabled = reviewerEffortValues.length === 0;
+  const automatic = usesDisposableTerminalPools();
   const available = turboWorkerThreads().length;
   const councilIssue = turboCouncilIssue();
-  const ready = hasSelectedCodexThread() && available >= settings.workerCount && !councilIssue;
+  const requiredCodexInstances = settings.workerCount + 1;
+  const maxCodexInstances = projectInstanceLimits().codex;
+  const ready = automatic
+    ? !providerIsMissing('codex') && maxCodexInstances >= requiredCodexInstances && !councilIssue
+    : hasSelectedCodexThread() && available >= settings.workerCount && !councilIssue;
   elements.turboReadiness.dataset.state = ready ? 'ready' : 'missing';
   elements.turboReadiness.textContent = ready
-    ? `Ready · ${council.councilEnabled ? council.councilOrder.map(providerLabel).join(' → ') : 'Codex'} + ${settings.workerCount} workers`
-    : councilIssue || `Need ${settings.workerCount + 1} terminals · ${hasSelectedCodexThread() ? available + 1 : 0} connected here`;
+    ? automatic
+      ? `Ready · ${requiredCodexInstances} of ${maxCodexInstances} Codex slots`
+      : `Ready · ${council.councilEnabled ? council.councilOrder.map(providerLabel).join(' → ') : 'Codex'} + ${settings.workerCount} workers`
+    : councilIssue || (automatic
+      ? providerIsMissing('codex')
+        ? 'Codex CLI is not installed'
+        : `Raise Codex max instances to at least ${requiredCodexInstances}`
+      : `Need ${requiredCodexInstances} terminals · ${hasSelectedCodexThread() ? available + 1 : 0} connected here`);
   elements.turboNote.textContent = !council.councilEnabled
-    ? 'The selected Codex Relay plans in read-only mode. Relay reads its JSON graph and dispatches ready tasks across the worker fleet.'
+    ? automatic
+      ? 'Relay launches one disposable Codex planner and the requested worker fleet, then closes every terminal when Turbo ends.'
+      : 'The selected Codex Relay plans in read-only mode. Relay reads its JSON graph and dispatches ready tasks across the worker fleet.'
     : council.councilFirstProvider === 'claude'
-      ? 'Claude authors the graph first. The selected Codex Relay reviews and corrects it before Relay dispatches workers.'
-      : 'The selected Codex Relay authors the graph first. Claude reviews and corrects it before Relay dispatches workers.';
+      ? automatic
+        ? 'Claude authors the graph first. A disposable Codex planner reviews it before Relay launches the worker turns.'
+        : 'Claude authors the graph first. The selected Codex Relay reviews and corrects it before Relay dispatches workers.'
+      : automatic
+        ? 'A disposable Codex planner authors the graph. Claude reviews it before Relay dispatches the worker turns.'
+        : 'The selected Codex Relay authors the graph first. Claude reviews and corrects it before Relay dispatches workers.';
+}
+
+function attachmentLimitIssue() {
+  if (state.attachments.length > MAX_IMAGE_ATTACHMENTS) {
+    return `Attach at most ${MAX_IMAGE_ATTACHMENTS} images.`;
+  }
+  if (state.attachments.some((attachment) => attachment.size > MAX_IMAGE_BYTES)) {
+    return 'Each image must be smaller than 5 MB.';
+  }
+  const totalBytes = state.attachments.reduce((total, attachment) => total + attachment.size, 0);
+  return totalBytes > MAX_TOTAL_IMAGE_BYTES ? 'Images may total at most 20 MB.' : '';
+}
+
+function providerInstallationIssue() {
+  if (!usesDisposableTerminalPools()) return '';
+  const required = state.taskMode === 'turbo'
+    ? [
+      'codex',
+      ...(state.turboSettings.councilEnabled ? ['claude'] : []),
+    ]
+    : isExecuteCouncilEnabled()
+      ? ['codex', 'claude']
+      : [state.selectedProvider];
+  const missing = required.filter((provider) => providerIsMissing(provider));
+  if (missing.length === 0) return '';
+  const labels = missing.map((provider) => `${providerLabel(provider)} CLI`);
+  return `${labels.join(' and ')} ${labels.length === 1 ? 'is' : 'are'} not installed. Install ${labels.length === 1 ? 'it' : 'them'} and Relay will enable ${labels.length === 1 ? 'this provider' : 'these providers'} automatically.`;
+}
+
+/*
+ * Submit is gated on input validity and confirmed CLI installation only. Readiness that
+ * depends on a live process list
+ * (a Relay missing from the last /api/threads answer, authentication, or a worker count)
+ * is deliberately NOT a gate: that list is replaced wholesale every four seconds, so
+ * gating on it made the button flicker to disabled and produced a false
+ * "Choose a connected terminal" for a session that was in fact connected. Those
+ * conditions are validated at submit time instead, where the message can be exact.
+ */
+function composerValidationIssue() {
+  if (!elements.prompt.value.trim()) return 'Write a prompt before adding the task.';
+  if (usesDisposableTerminalPools()) {
+    if (!activeProject()) return 'Choose a project before adding the task.';
+  } else if (!state.selectedThreadId) {
+    return 'Choose a connected Relay before adding the task.';
+  }
+  return providerInstallationIssue() || attachmentLimitIssue();
 }
 
 function updateSubmitState() {
-  const hasThread = hasSelectedCodexThread();
-  const ready = isExecuteCouncilEnabled()
-    ? state.planSettings.enabled && hasThread && isClaudePlanReady() && Boolean(state.planSettings.reviewerModel)
-    : state.taskMode === 'turbo'
-      ? hasThread && turboWorkerThreads().length >= state.turboSettings.workerCount && !turboCouncilIssue()
-    : state.threads.some(
-      (thread) => thread.id === state.selectedThreadId && threadProvider(thread) === state.selectedProvider,
-    );
-  elements.submitButton.disabled = state.submitting || !ready;
+  const issue = composerValidationIssue();
+  elements.submitButton.disabled = state.submitting || Boolean(issue);
+  elements.submitButton.title = state.submitting ? '' : issue;
   elements.submitButton.textContent = state.submitting
     ? isExecuteCouncilEnabled() ? 'Starting council' : state.taskMode === 'turbo' ? 'Starting turbo' : 'Adding task'
     : isExecuteCouncilEnabled()
       ? 'Build reviewed plan'
       : state.taskMode === 'turbo' ? 'Plan and execute' : 'Add to queue';
+}
+
+/*
+ * kind 'validation' marks a complaint the user can fix by editing the composer, so it
+ * disappears as soon as they do. A 'failure' from the server stays until the next attempt:
+ * it is the only record that the prompt still sitting in the box was never accepted.
+ */
+function setComposerAlert(message, kind = 'failure') {
+  elements.composerAlert.textContent = message || '';
+  elements.composerAlert.hidden = !message;
+  elements.composerAlert.dataset.kind = message ? kind : '';
+}
+
+function setComposerPending(pending) {
+  state.submitting = pending;
+  elements.form.dataset.pending = pending ? 'true' : 'false';
+  elements.form.setAttribute('aria-busy', String(pending));
+  updateSubmitState();
 }
 
 function renderPromptCopy() {
@@ -2252,12 +2714,15 @@ function selectMode(mode, { focus = false } = {}) {
   elements.executeConfig.hidden = mode !== 'execute';
   elements.turboConfig.hidden = mode !== 'turbo';
   renderPromptCopy();
-  elements.terminalLegend.textContent = mode === 'turbo' ? 'Planner terminal' : 'Run in terminal';
+  elements.terminalLegend.textContent = usesDisposableTerminalPools()
+    ? 'Automatic terminal pool'
+    : mode === 'turbo' ? 'Planner terminal' : 'Run in terminal';
 
   if (!providerEligibleForComposer(state, state.selectedProvider)) {
     state.selectedProvider = 'codex';
     state.selectedThreadId = null;
   }
+  reconcileProviderSelection();
   renderProviderTabs();
   renderExecutionControls();
   renderPlanControls();
@@ -2302,40 +2767,89 @@ async function loadModels(provider) {
 
 function providerInfo(provider) {
   const fromServer = state.providers.find((item) => item.id === provider);
-  if (fromServer) {
-    return fromServer;
-  }
   const connectedCount = state.threads.filter((thread) => threadProvider(thread) === provider).length;
+  const runtime = state.status?.[provider];
   return {
+    ...(fromServer || {}),
     id: provider,
-    label: providerLabel(provider),
-    available: provider === 'codex' && Boolean(state.connection?.connected),
-    connectedCount,
+    label: fromServer?.label || providerLabel(provider),
+    available: runtime?.pending === false
+      ? runtime.available === true
+      : Boolean(fromServer?.available || connectedCount > 0),
+    authenticated: runtime?.authenticated === true,
+    pending: runtime?.pending === true,
+    connectedCount: fromServer?.connectedCount ?? connectedCount,
   };
 }
 
 function renderProviderTabs() {
   const codex = providerInfo('codex');
   const claude = providerInfo('claude');
-  elements.providerCodexCount.textContent = codex.connectedCount > 0
-    ? `${codex.connectedCount} live`
-    : codex.available ? 'Ready' : 'Unavailable';
-  elements.providerClaudeCount.textContent = claude.connectedCount > 0
-    ? `${claude.connectedCount} live`
-    : claude.available
-      ? isDirectClaudeEnabled() ? 'CLI ready' : 'Restart Relay'
-      : 'Not connected';
+  const automatic = usesDisposableTerminalPools();
+  const pool = sameProjectPath(state.status?.terminalPool?.repoPath, state.activeProjectPath)
+    ? state.status.terminalPool
+    : null;
+  const limits = projectInstanceLimits();
+  const codexInstallation = providerInstallationState(state.status, 'codex');
+  const claudeInstallation = providerInstallationState(state.status, 'claude');
+  elements.providerTabsContainer.hidden = !automatic;
+  elements.providerTabsContainer.setAttribute('aria-hidden', String(!automatic));
+  elements.providerCodexCount.textContent = automatic
+    ? codexInstallation === 'checking'
+      ? 'Checking installation'
+      : codexInstallation === 'missing'
+        ? 'Not installed'
+        : codex.authenticated
+          ? `${Number(pool?.active?.codex || 0)} / ${limits.codex} active`
+          : state.status?.codex?.reason === 'signed_out' ? 'Sign in required' : 'Auth check failed'
+    : codex.connectedCount > 0
+      ? `${codex.connectedCount} live`
+      : codex.available ? 'Ready' : 'Unavailable';
+  elements.providerClaudeCount.textContent = automatic
+    ? claudeInstallation === 'checking'
+      ? 'Checking installation'
+      : claudeInstallation === 'missing'
+        ? 'Not installed'
+        : claude.authenticated
+          ? `${Number(pool?.active?.claude || 0)} / ${limits.claude} active`
+          : state.status?.claude?.reason === 'signed_out' ? 'Sign in required' : 'Auth check failed'
+    : claude.connectedCount > 0
+      ? `${claude.connectedCount} live`
+      : claude.available
+        ? isDirectClaudeEnabled() ? 'CLI ready' : 'Restart Relay'
+        : 'Not connected';
 
   for (const tab of elements.providerTabs) {
     const selected = tab.dataset.provider === state.selectedProvider;
     const info = providerInfo(tab.dataset.provider);
-    tab.disabled = false;
+    const installation = providerInstallationState(state.status, tab.dataset.provider);
+    const missing = automatic && installation === 'missing';
+    tab.disabled = missing;
+    tab.title = missing
+      ? `Install the ${providerLabel(tab.dataset.provider)} CLI to enable this provider.`
+      : '';
     tab.classList.toggle('selected', selected);
-    tab.dataset.state = info.connectedCount > 0 ? 'live' : info.available ? 'ready' : 'unavailable';
+    tab.dataset.state = installation === 'checking'
+      ? 'checking'
+      : missing
+        ? 'unavailable'
+        : info.connectedCount > 0 ? 'live' : 'ready';
     tab.setAttribute('aria-selected', String(selected));
     tab.tabIndex = selected ? 0 : -1;
   }
 
+  elements.maxCodexInstances.disabled = !activeProject()
+    || state.poolLimitSaving
+    || (automatic && codexInstallation === 'missing');
+  elements.maxClaudeInstances.disabled = !activeProject()
+    || state.poolLimitSaving
+    || (automatic && claudeInstallation === 'missing');
+  elements.maxCodexInstances.title = automatic && codexInstallation === 'missing'
+    ? 'Install the Codex CLI to configure Codex instances.'
+    : '';
+  elements.maxClaudeInstances.title = automatic && claudeInstallation === 'missing'
+    ? 'Install the Claude CLI to configure Claude instances.'
+    : '';
   elements.providerInput.value = state.selectedProvider;
   elements.terminalPanel.setAttribute('aria-labelledby', `provider-${state.selectedProvider}`);
 }
@@ -2383,21 +2897,21 @@ function renderHeaderRunningTasks() {
     const response = update?.text || 'Waiting for the first agent response';
     return `
       <button
-        class="header-running-task"
+        class="header-running-task ${projectIdentityColorClass(task.repo_path)}"
         type="button"
         data-running-task-id="${task.id}"
         data-provider="${escapeHtml(taskProvider(task))}"
       >
-        <span class="header-running-task-topline">
+        <span class="header-running-meta">
           <i aria-hidden="true"></i>
-          <b>Task ${String(task.id).padStart(3, '0')}</b>
-          <span title="${escapeHtml(task.repo_path)}">${escapeHtml(project)} · ${escapeHtml(relay)}</span>
+          <b>#${String(task.id).padStart(3, '0')}</b>
+          <span class="header-running-loc" title="${escapeHtml(task.repo_path)}">${escapeHtml(project)} · ${escapeHtml(relay)}</span>
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
-        <strong title="${escapeHtml(task.prompt)}">${escapeHtml(compactText(task.prompt, 120))}</strong>
+        <strong class="header-running-prompt" title="${escapeHtml(task.prompt)}">${escapeHtml(compactText(task.prompt, 96))}</strong>
         <span class="header-running-response" data-provider="${escapeHtml(updateProvider)}" title="${escapeHtml(response)}">
           <b>${escapeHtml(providerLabel(updateProvider))}</b>
-          <span>${escapeHtml(compactText(response, 260))}</span>
+          <span>${escapeHtml(compactText(response, 200))}</span>
         </span>
       </button>
     `;
@@ -2410,6 +2924,18 @@ function renderHeaderRunningTasks() {
   }
 }
 
+/*
+ * Multiple tasks run at once, so "the" running task no longer exists. When a selection
+ * has to be inferred, the most recently started run is the one the user just caused.
+ */
+function mostRecentlyStartedRunningTask(tasks) {
+  return (tasks || [])
+    .filter((task) => task.status === 'running')
+    .sort((left, right) => (
+      new Date(right.started_at || 0) - new Date(left.started_at || 0) || right.id - left.id
+    ))[0] || null;
+}
+
 function renderStatus() {
   if (!state.status) {
     return;
@@ -2420,14 +2946,23 @@ function renderStatus() {
   const codexReady = Boolean(codex.available && codex.authenticated && codex.appServer?.connected);
   const claudeReady = Boolean(claude?.available && claude?.authenticated);
   const relayReady = codexReady || claudeReady;
+  /*
+   * Both providers are probed in the background after listen, so for the first moment after
+   * every Relay start neither reports available yet. That is "not known", not "not there",
+   * and rendering it as unavailable opens every launch with a false broken-backend banner.
+   * A provider still pending keeps the neutral checking state until it answers.
+   */
+  const providersChecking = !relayReady && ['codex', 'claude'].some(
+    (provider) => providerInstallationState(state.status, provider) === 'checking',
+  );
   const scopedTasks = projectTasks();
   const queuedCount = scopedTasks.filter((task) => task.status === 'queued').length;
-  const runningTask = scopedTasks.find((task) => task.status === 'running') || null;
+  const runningInProject = scopedTasks.filter((task) => task.status === 'running');
   const staleProjectScheduler = projectQueueRestartRequired({
     supported: state.status.capabilities?.projectQueueIsolation,
     paused,
     queuedCount,
-    projectRunning: Boolean(runningTask),
+    projectRunning: runningInProject.length > 0,
     otherProjectRunning: state.tasks.some((task) => (
       task.status === 'running' && !sameProjectPath(task.repo_path, state.activeProjectPath)
     )),
@@ -2438,8 +2973,10 @@ function renderStatus() {
     runningTasks: state.tasks,
   });
 
-  elements.codexStatus.dataset.state = relayReady ? 'online' : 'offline';
-  elements.codexStatusLabel.textContent = relayReady ? 'Relay online' : 'Relay unavailable';
+  elements.codexStatus.dataset.state = relayReady ? 'online' : providersChecking ? 'checking' : 'offline';
+  elements.codexStatusLabel.textContent = relayReady
+    ? 'Relay online'
+    : providersChecking ? 'Checking Relay' : 'Relay unavailable';
   elements.pauseButton.textContent = paused ? 'Resume queue' : 'Pause queue';
   elements.pauseButton.classList.toggle('primary', paused);
   elements.pauseButton.disabled = !state.activeProjectPath;
@@ -2457,8 +2994,10 @@ function renderStatus() {
       ? `Restart Relay to activate this project's independent queue · ${queuedCount} waiting`
       : paused
       ? `${queuedCount} task${queuedCount === 1 ? '' : 's'} waiting while paused`
-      : runningTask
-        ? `Task ${runningTask.id} is running · ${queuedCount} waiting`
+      : runningInProject.length > 1
+        ? `${runningInProject.length} tasks running · ${queuedCount} waiting`
+      : runningInProject.length === 1
+        ? `Task ${runningInProject[0].id} is running · ${queuedCount} waiting`
         : `${queuedCount} waiting · queue ready`;
   }
 }
@@ -2496,7 +3035,16 @@ function renderTasks() {
 
   const historyActive = state.taskView === 'history';
   const queuedIds = historyActive ? [] : visibleTasks.filter((task) => task.status === 'queued').map((task) => task.id);
-  state.parallelTaskIds = new Set([...state.parallelTaskIds].filter((id) => queuedIds.includes(id)));
+  // Reordering applies to every queued task; batching applies only to direct
+  // execute work, so the batch selection is pruned against its own narrower set.
+  const batchableIds = historyActive ? [] : visibleTasks
+    .filter((task) => (
+      task.status === 'queued'
+      && (task.mode || 'execute') === 'execute'
+      && task.terminal_lifecycle !== 'disposable'
+    ))
+    .map((task) => task.id);
+  state.parallelTaskIds = new Set([...state.parallelTaskIds].filter((id) => batchableIds.includes(id)));
   renderParallelBatchBar();
   let previousHistoryDate = '';
   elements.taskList.innerHTML = visibleTasks.map((task) => {
@@ -2506,11 +3054,29 @@ function renderTasks() {
     previousHistoryDate = historyDate;
     const queueIndex = queuedIds.indexOf(task.id);
     const queued = queueIndex !== -1;
+    /*
+     * The parallel batch replaces the selected tasks with one combined Codex
+     * task, destroying the original rows. A breakdown, Plan council, or Turbo
+     * task owns state outside the queue (a plan's breakdown row, a council
+     * checkpoint, a dependency graph), so destroying its row bricks that work:
+     * a batched breakdown leaves its plan pointing at a task that no longer
+     * exists. Only direct execute tasks may be batched. The server rejects the
+     * rest as well; this keeps the checkbox from ever offering it.
+     */
+    const batchable = queued
+      && (task.mode || 'execute') === 'execute'
+      && task.terminal_lifecycle !== 'disposable';
     const turboMarker = turboPlanMarker(task);
     const turboPlanner = task.mode === 'turbo' ? turboPlannerIdentity(task) : null;
-    const assignable = queued && task.mode === 'execute' && task.provider === 'codex';
+    const assignable = queued
+      && task.mode === 'execute'
+      && task.terminal_lifecycle !== 'disposable'
+      && (
+        task.provider === 'codex'
+        || (task.provider === 'claude' && state.status?.capabilities?.queuedClaudeAssignment === true)
+      );
     const assignmentTargets = assignable ? state.threads.filter((thread) => (
-      threadProvider(thread) === 'codex'
+      threadProvider(thread) === task.provider
       && sameProjectPath(thread.cwd, task.repo_path)
       && thread.id !== task.thread_id
     )) : [];
@@ -2532,7 +3098,7 @@ function renderTasks() {
       >
         <div class="task-topline">
           <span class="task-identity">
-            ${queued ? `<input class="parallel-task-check" type="checkbox" aria-label="Select task ${task.id} for parallel Codex execution" ${state.parallelTaskIds.has(task.id) ? 'checked' : ''}>` : ''}
+            ${batchable ? `<input class="parallel-task-check" type="checkbox" aria-label="Select task ${task.id} for parallel Codex execution" ${state.parallelTaskIds.has(task.id) ? 'checked' : ''}>` : ''}
             ${reorderable ? '<span class="drag-grip" draggable="true" role="button" tabindex="0" aria-label="Drag task to reorder">⠿</span>' : ''}
             ${agentBadgeMarkup(task, 'task-agent-icon')}
             <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
@@ -2549,7 +3115,7 @@ function renderTasks() {
         ${turboFleetMarkup(task)}
         ${state.assigningTaskId === task.id ? `
           <div class="task-assignment-options" aria-label="Assign task ${task.id} to another Relay">
-            ${assignmentTargets.map((thread) => `<button type="button" data-assign-thread="${escapeHtml(thread.id)}">Relay ${relayNumber(thread)} <span>${escapeHtml(thread.status)}</span></button>`).join('')}
+            ${assignmentTargets.map((thread) => `<button type="button" data-assign-thread="${escapeHtml(thread.id)}">${escapeHtml(assignmentTargetLabel(thread))} <span>${escapeHtml(thread.status)}</span></button>`).join('')}
           </div>
         ` : ''}
         <div class="task-footer">
@@ -2721,14 +3287,31 @@ function submissionThreadId({ runNow = false } = {}) {
   }) || state.selectedThreadId;
 }
 
+/*
+ * REMOVABLE BLOCK: client-side pre-POST idle settle.
+ *
+ * This is the only thing that can delay task creation, and it exists purely for the
+ * launch-to-enqueue race: a Relay launched a moment ago has not connected yet, and
+ * without the wait the task is pinned to the busy Relay the user is looking at.
+ * The three second ceiling is deliberate. Once the backend resolves an idle Relay at
+ * dispatch time, delete IDLE_SETTLE_* and this function, and call submissionThreadId
+ * directly at the one call site in the submit handler. Nothing else depends on it.
+ *
+ * It refreshes with render: false so the wait can never rewrite the selection it is
+ * resolving, which is what made a submission land on a different Relay than the one
+ * the user picked.
+ */
+const IDLE_SETTLE_ATTEMPTS = 6;
+const IDLE_SETTLE_INTERVAL_MS = 500;
+
 async function settleIdleSubmissionThread({ runNow = false } = {}) {
   const immediate = submissionThreadId({ runNow });
   if (runNow || !state.preferIdleTerminal || state.taskMode !== 'execute' || !providerSupportsIdleRouting()) return immediate;
   const selected = state.threads.find((thread) => thread.id === state.selectedThreadId);
   if (immediate !== state.selectedThreadId || selected?.status === 'idle') return immediate;
-  for (let attempt = 0; attempt < 6; attempt += 1) {
-    await new Promise((resolve) => window.setTimeout(resolve, 500));
-    await loadThreads();
+  for (let attempt = 0; attempt < IDLE_SETTLE_ATTEMPTS; attempt += 1) {
+    await new Promise((resolve) => window.setTimeout(resolve, IDLE_SETTLE_INTERVAL_MS));
+    await loadThreads({ render: false });
     const routed = submissionThreadId({ runNow });
     if (routed !== state.selectedThreadId) return routed;
   }
@@ -2740,8 +3323,13 @@ function canAssignTaskToThread(taskId, threadId) {
   const thread = state.threads.find((item) => item.id === threadId);
   return task?.status === 'queued'
     && task.mode === 'execute'
-    && task.provider === 'codex'
-    && threadProvider(thread || {}) === 'codex'
+    && task.terminal_lifecycle !== 'disposable'
+    && ['codex', 'claude'].includes(task.provider)
+    && threadProvider(thread || {}) === task.provider
+    && (
+      task.provider === 'codex'
+      || state.status?.capabilities?.queuedClaudeAssignment === true
+    )
     && sameProjectPath(task.repo_path, thread?.cwd);
 }
 
@@ -2770,8 +3358,18 @@ function renderParallelBatchBar() {
     ? `${workspaceName(selectedThread.cwd)} · ${selectedThread.title}`
     : 'Select a live Codex terminal';
   const supported = state.status?.capabilities?.parallelCodexBatch === true;
-  elements.parallelRunButton.disabled = selectedCount < 2 || !selectedThread || !supported;
-  elements.parallelRunButton.textContent = supported ? 'Run in parallel' : 'Restart Relay to enable';
+  /*
+   * Every task in one batch must belong to the selected Codex terminal's workspace. The
+   * project-bounded queue implies this today; stating it explicitly means the invariant
+   * does not silently depend on which tasks happen to be visible.
+   */
+  const workspaceMismatch = Boolean(selectedThread) && state.tasks.some((task) => (
+    state.parallelTaskIds.has(task.id) && !sameProjectPath(task.repo_path, selectedThread.cwd)
+  ));
+  elements.parallelRunButton.disabled = selectedCount < 2 || !selectedThread || !supported || workspaceMismatch;
+  elements.parallelRunButton.textContent = !supported
+    ? 'Restart Relay to enable'
+    : workspaceMismatch ? 'Same workspace only' : 'Run in parallel';
 }
 
 async function runParallelBatch() {
@@ -3133,7 +3731,7 @@ async function selectTask(taskId) {
   }
   elements.detailActions.replaceChildren();
 
-  if (task.status === 'queued') {
+  if (task.status === 'queued' && task.mode !== 'breakdown') {
     const editButton = actionButton('Edit', () => openTaskEditor(task), 'quiet');
     const editingSupported = state.status?.capabilities?.queuedTaskEditing === true;
     const preparing = state.status?.planningTaskIds?.includes(task.id);
@@ -3147,18 +3745,38 @@ async function selectTask(taskId) {
     elements.detailActions.append(actionButton('Cancel', () => taskAction(task.id, 'cancel'), 'danger'));
   }
   if (['failed', 'cancelled', 'interrupted'].includes(task.status) && !isFailedSessionFollowUp(task)) {
-    const retryTarget = task.mode === 'plan' ? selectedPlanReviewThread(task) : null;
+    const retryTarget = task.mode === 'plan' && task.terminal_lifecycle !== 'disposable'
+      ? selectedPlanReviewThread(task)
+      : null;
     const retryLabel = retryTarget ? `Resume on Relay ${relayNumber(retryTarget)}` : task.mode === 'plan' ? 'Resume council' : 'Retry';
     const retryButton = actionButton(
       retryLabel,
       () => {
-        const currentTarget = task.mode === 'plan' ? selectedPlanReviewThread(task) : null;
-        return taskAction(task.id, 'retry', currentTarget ? { threadId: currentTarget.id } : null);
+        const currentTarget = task.mode === 'plan' && task.terminal_lifecycle !== 'disposable'
+          ? selectedPlanReviewThread(task)
+          : null;
+        const authorTarget = task.mode === 'plan'
+          && task.terminal_lifecycle !== 'disposable'
+          && isPlanCouncilTerminalExecutionEnabled()
+          ? selectedPlanClaudeAuthorThread()
+          : null;
+        const retryAssignment = currentTarget || authorTarget
+          ? {
+            ...(currentTarget ? { threadId: currentTarget.id } : {}),
+            ...(authorTarget ? { authorThreadId: authorTarget.id } : {}),
+          }
+          : null;
+        return taskAction(task.id, 'retry', retryAssignment);
       },
       'primary',
     );
     if (task.mode === 'plan') retryButton.dataset.planRetry = String(task.id);
     elements.detailActions.append(retryButton);
+  }
+  if (task.status === 'complete' && task.mode === 'plan') {
+    const executeButton = actionButton('Execute plan', revealPlanExecution, 'primary');
+    executeButton.dataset.planExecutionShortcut = String(task.id);
+    elements.detailActions.append(executeButton);
   }
   if (task.status !== 'running') {
     elements.detailActions.append(actionButton('Delete', () => deleteTask(task.id), 'danger quiet'));
@@ -3179,21 +3797,29 @@ async function loadSnapshot() {
     api('/api/tasks'),
   ]);
   state.status = statusBody;
+  reconcileProviderSelection();
   state.tasks = tasksBody.tasks;
   state.runningTasks = statusBody.runningTasks
     || state.tasks.filter((task) => task.status === 'running');
   await loadProjects();
   hydrateThreadExecutionSettings(state, state.tasks);
+  renderProviderTabs();
   renderExecutionControls();
   const launcherEnabled = state.status?.capabilities?.projectLauncher === true;
-  elements.launchCodexButton.disabled = !launcherEnabled;
-  elements.launchClaudeButton.disabled = !launcherEnabled;
+  elements.launchCodexButton.disabled = !launcherEnabled || providerIsMissing('codex');
+  elements.launchClaudeButton.disabled = !launcherEnabled || providerIsMissing('claude');
   renderTerminalCloseControl();
 
+  /*
+   * Several tasks can run at once. Keep whatever the user is inspecting; only when that
+   * selection is gone fall back to the most recently started running task, so a refresh
+   * cannot swing the activity panel between concurrent runs.
+   */
+  const scopedTasks = projectTasks();
   const selectedTaskStillExists = state.selectedTaskId
-    && projectTasks().some((task) => task.id === state.selectedTaskId);
+    && scopedTasks.some((task) => task.id === state.selectedTaskId);
   if (!selectedTaskStillExists) {
-    state.selectedTaskId = projectTasks().find((task) => task.status === 'running')?.id || null;
+    state.selectedTaskId = mostRecentlyStartedRunningTask(scopedTasks)?.id || null;
   }
 
   if (!state.selectedTaskId) {
@@ -3212,15 +3838,26 @@ async function loadSnapshot() {
   }
 }
 
-async function load() {
-  if (state.loadPromise) {
+/*
+ * Concurrent refresh requests are deduplicated. A caller that has just written to the
+ * server passes fresh: true: joining an in-flight snapshot that was requested before the
+ * write returns pre-write data, which is how a newly created task could vanish from the
+ * list and lose its selection immediately after being added.
+ */
+async function load({ fresh = false } = {}) {
+  if (!fresh && state.loadPromise) {
     return state.loadPromise;
   }
-  state.loadPromise = loadSnapshot();
+  const previous = state.loadPromise;
+  const pending = (async () => {
+    if (previous) await previous.catch(() => {});
+    return loadSnapshot();
+  })();
+  state.loadPromise = pending;
   try {
-    return await state.loadPromise;
+    return await pending;
   } finally {
-    state.loadPromise = null;
+    if (state.loadPromise === pending) state.loadPromise = null;
   }
 }
 
@@ -3313,6 +3950,10 @@ async function closeSelectedTerminal() {
 }
 
 function selectProvider(provider, { focus = false } = {}) {
+  if (usesDisposableTerminalPools() && providerIsMissing(provider)) {
+    elements.formMessage.textContent = `Install the ${providerLabel(provider)} CLI and Relay will enable it automatically.`;
+    return;
+  }
   const councilClosed = isExecuteCouncilEnabled() && provider !== 'codex';
   if (councilClosed) {
     state.planSettings.enabled = false;
@@ -3338,8 +3979,101 @@ function selectProvider(provider, { focus = false } = {}) {
   }
 }
 
+function renderAutomaticTerminalPool() {
+  const project = activeProject();
+  const limits = projectInstanceLimits(project);
+  const active = sameProjectPath(state.status?.terminalPool?.repoPath, project?.path)
+    ? state.status.terminalPool.active || {}
+    : {};
+  elements.terminalPoolControls.hidden = false;
+  elements.legacyTerminalControls.hidden = true;
+  elements.legacyTerminalLaunchButtons.hidden = true;
+  elements.terminalLegend.textContent = 'Automatic terminal pool';
+  if (!state.submitting) state.selectedThreadId = null;
+  elements.threadInput.value = '';
+
+  if (document.activeElement !== elements.maxCodexInstances) {
+    elements.maxCodexInstances.value = String(limits.codex);
+  }
+  if (document.activeElement !== elements.maxClaudeInstances) {
+    elements.maxClaudeInstances.value = String(limits.claude);
+  }
+  elements.maxCodexInstances.disabled = !project || state.poolLimitSaving;
+  elements.maxClaudeInstances.disabled = !project || state.poolLimitSaving;
+  if (providerIsMissing('codex')) elements.maxCodexInstances.disabled = true;
+  if (providerIsMissing('claude')) elements.maxClaudeInstances.disabled = true;
+  elements.codexPoolUsage.textContent = `${Number(active.codex || 0)} active · max ${limits.codex}`;
+  elements.claudePoolUsage.textContent = `${Number(active.claude || 0)} active · max ${limits.claude}`;
+
+  if (!project) {
+    elements.sessionMessage.textContent = 'Choose a pinned project to configure its automatic terminal instances.';
+  } else if (state.taskMode === 'turbo') {
+    elements.sessionMessage.textContent = `Turbo will launch one planner plus ${state.turboSettings.workerCount} disposable Codex workers in ${project.name}.`;
+  } else if (isExecuteCouncilEnabled()) {
+    elements.sessionMessage.textContent = `Plan council will launch one Claude author and one Codex reviewer in ${project.name}.`;
+  } else {
+    elements.sessionMessage.textContent = `New ${providerLabel(state.selectedProvider)} tasks launch disposable terminals in ${project.name}.`;
+  }
+
+  renderProviderTabs();
+  renderPlanControls();
+  renderTurboControls();
+  refreshPlanTaskActions();
+  updateSubmitState();
+}
+
+async function saveProjectInstanceLimits() {
+  const project = activeProject();
+  if (!project || state.poolLimitSaving) return;
+  const codex = Number(elements.maxCodexInstances.value);
+  const claude = Number(elements.maxClaudeInstances.value);
+  if (
+    !Number.isInteger(codex) || codex < 1 || codex > 8
+    || !Number.isInteger(claude) || claude < 1 || claude > 8
+  ) {
+    elements.formMessage.textContent = 'Max instances must be whole numbers from 1 to 8.';
+    renderAutomaticTerminalPool();
+    return;
+  }
+  state.poolLimitSaving = true;
+  renderAutomaticTerminalPool();
+  try {
+    const body = await api(`/api/projects/${project.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        maxCodexInstances: codex,
+        maxClaudeInstances: claude,
+      }),
+    });
+    state.projects = state.projects.map((item) => item.id === body.project.id ? body.project : item);
+    if (state.status?.terminalPool) {
+      state.status.terminalPool.limits = { codex, claude };
+    }
+    elements.formMessage.textContent = `Automatic limits saved for ${body.project.name}.`;
+  } catch (error) {
+    elements.formMessage.textContent = error.message;
+  } finally {
+    state.poolLimitSaving = false;
+    renderAutomaticTerminalPool();
+  }
+}
+
 function renderThreads() {
-  if (!providerEligibleForComposer(state, state.selectedProvider)) {
+  if (usesDisposableTerminalPools()) {
+    renderAutomaticTerminalPool();
+    return;
+  }
+  elements.terminalPoolControls.hidden = true;
+  elements.legacyTerminalControls.hidden = false;
+  elements.legacyTerminalLaunchButtons.hidden = false;
+  /*
+   * A submission in flight owns the composer routing. Background thread polling runs
+   * every four seconds and used to be able to reassign the Relay, and even flip the
+   * provider, between the user pressing Enter and the POST leaving the browser. While a
+   * submission is pending this render only paints; it never rewrites the selection.
+   */
+  const selectionLocked = state.submitting;
+  if (!selectionLocked && !providerEligibleForComposer(state, state.selectedProvider)) {
     state.selectedProvider = 'codex';
     const selectedThread = state.threads.find((thread) => thread.id === state.selectedThreadId);
     if (selectedThread && threadProvider(selectedThread) !== 'codex') {
@@ -3349,18 +4083,28 @@ function renderThreads() {
   }
   const directExecute = state.taskMode === 'execute' && !isExecuteCouncilEnabled();
   const selectableThreads = projectThreads(directExecute ? null : 'codex');
-  const councilClaudeThreads = isExecuteCouncilEnabled() ? projectThreads('claude') : [];
+  const terminalCouncil = isExecuteCouncilEnabled() && isPlanCouncilTerminalExecutionEnabled();
+  const councilClaudeThreads = isExecuteCouncilEnabled() && !terminalCouncil
+    ? projectThreads('claude')
+    : [];
   const visibleThreads = [...selectableThreads, ...councilClaudeThreads];
   const isClaude = state.selectedProvider === 'claude';
   elements.idleTerminalRoute.hidden = isClaude || state.taskMode !== 'execute' || isExecuteCouncilEnabled();
   elements.preferIdleTerminal.checked = state.preferIdleTerminal;
   const directClaudeEnabled = isDirectClaudeEnabled();
   const launcherEnabled = state.status?.capabilities?.projectLauncher === true;
-  elements.launchCodexButton.disabled = !launcherEnabled;
-  elements.launchClaudeButton.disabled = !launcherEnabled;
-  elements.launchClaudeButton.title = isExecuteCouncilEnabled()
-    ? 'Launches a separate interactive Claude session. Plan council uses the signed-in Claude CLI automatically.'
+  elements.launchCodexButton.disabled = !launcherEnabled || providerIsMissing('codex');
+  elements.launchClaudeButton.disabled = !launcherEnabled || providerIsMissing('claude');
+  elements.launchCodexButton.title = providerIsMissing('codex')
+    ? 'Install the Codex CLI to launch Codex.'
     : '';
+  elements.launchClaudeButton.title = isExecuteCouncilEnabled()
+    ? providerIsMissing('claude')
+      ? 'Install the Claude CLI to launch Claude.'
+      : terminalCouncil
+        ? 'Launch a Claude terminal, then use it for the Plan council author and revision stages.'
+        : 'Launches a separate interactive Claude session. Plan council uses the signed-in Claude CLI automatically.'
+    : providerIsMissing('claude') ? 'Install the Claude CLI to launch Claude.' : '';
   elements.terminalLegend.textContent = isExecuteCouncilEnabled()
     ? 'Codex review Relay'
     : state.taskMode === 'turbo'
@@ -3373,7 +4117,9 @@ function renderThreads() {
     directExecute
       ? 'Connected Codex and Claude sessions'
       : isExecuteCouncilEnabled()
-        ? 'Codex review Relays and Execute-only Claude sessions'
+        ? terminalCouncil
+          ? 'Codex review Relays'
+          : 'Codex review Relays and Execute-only Claude sessions'
         : 'Connected Codex terminals',
   );
   elements.launchCommand.textContent = isClaude
@@ -3384,7 +4130,7 @@ function renderThreads() {
     : 'Starts Codex through Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
   const availableIds = new Set(selectableThreads.map((thread) => thread.id));
   const previouslySelectedThreadId = state.selectedThreadId;
-  if (!availableIds.has(state.selectedThreadId)) {
+  if (!selectionLocked && !availableIds.has(state.selectedThreadId)) {
     state.selectedThreadId = selectableThreads[0]?.id || null;
     const selectedThread = selectableThreads[0];
     const selectedThreadProvider = selectedThread ? threadProvider(selectedThread) : state.selectedProvider;
@@ -3413,11 +4159,11 @@ function renderThreads() {
       </div>
     `;
     elements.threadInput.value = '';
-    elements.sessionMessage.textContent = isClaude
+    elements.sessionMessage.textContent = (isClaude
       ? directClaudeEnabled
         ? '0 live Claude sessions. Relay checks the official Claude agent list.'
         : 'Claude discovery will activate on the next normal Relay restart.'
-      : 'Relay is online and waiting for a Codex terminal.';
+      : 'Relay is online and waiting for a Codex terminal.') + claudeDiscoveryNote();
     updateSubmitState();
     elements.connectionHelp.open = true;
     elements.connectionHelpTitle.textContent = isClaude ? 'Open a Claude Code session' : 'Connect another Codex terminal';
@@ -3474,7 +4220,7 @@ function renderThreads() {
   for (const option of elements.terminalList.querySelectorAll('.terminal-option')) {
     option.addEventListener('click', () => applyThreadSelection(option.dataset.threadId));
     option.addEventListener('dragover', (event) => {
-      if (!canAssignTaskToThread(state.draggedTaskId, option.dataset.threadId) || threadProvider(state.threads.find((thread) => thread.id === option.dataset.threadId)) === 'claude') return;
+      if (!canAssignTaskToThread(state.draggedTaskId, option.dataset.threadId)) return;
       event.preventDefault();
       event.dataTransfer.dropEffect = 'move';
       option.classList.add('task-drop-target');
@@ -3503,11 +4249,13 @@ function renderThreads() {
   }
 
   elements.threadInput.value = state.selectedThreadId;
-  elements.sessionMessage.textContent = isExecuteCouncilEnabled()
-    ? `${selectableThreads.length} live Codex Relay${selectableThreads.length === 1 ? '' : 's'} available for review. ${councilClaudeThreads.length} interactive Claude session${councilClaudeThreads.length === 1 ? '' : 's'} shown as Execute only; Plan council authors and revises through the signed-in Claude CLI automatically.`
+  elements.sessionMessage.textContent = (isExecuteCouncilEnabled()
+    ? terminalCouncil
+      ? `${selectableThreads.length} live Codex Relay${selectableThreads.length === 1 ? '' : 's'} available for review. Choose the Claude author terminal in the Plan council card.`
+      : `${selectableThreads.length} live Codex Relay${selectableThreads.length === 1 ? '' : 's'} available for review. ${councilClaudeThreads.length} interactive Claude session${councilClaudeThreads.length === 1 ? '' : 's'} shown as Execute only; Plan council authors and revises through the signed-in Claude CLI automatically.`
     : state.taskMode === 'turbo'
       ? `${visibleThreads.length} live Codex terminals. Choose the ${state.turboSettings.councilEnabled && state.turboSettings.councilOrder?.[0] === 'claude' ? 'Codex reviewer' : 'planner'}; Relay uses other terminals in this workspace as workers.`
-    : `${visibleThreads.length} live Relay session${visibleThreads.length === 1 ? '' : 's'}. Select one to choose its provider, model, and effort.`;
+    : `${visibleThreads.length} live Relay session${visibleThreads.length === 1 ? '' : 's'}. Select one to choose its provider, model, and effort.`) + claudeDiscoveryNote();
   updateSubmitState();
   elements.connectionHelpTitle.textContent = isClaude
     ? 'Open another Claude Code session'
@@ -3527,7 +4275,7 @@ function renderThreads() {
   }
 }
 
-async function loadThreads({ silent = true } = {}) {
+async function loadThreads({ silent = true, render = true } = {}) {
   const requestSequence = ++state.threadLoadSequence;
   if (!silent) {
     elements.sessionMessage.textContent = 'Checking live terminal connections.';
@@ -3540,6 +4288,9 @@ async function loadThreads({ silent = true } = {}) {
     state.threads = threads;
     state.connection = connection;
     state.providers = providers;
+    // render: false refreshes routing data without touching the composer. Used by the
+    // submission path, which must not re-render the Relay picker under an in-flight POST.
+    if (!render) return;
     renderThreads();
     renderParallelBatchBar();
   } catch (error) {
@@ -3562,6 +4313,18 @@ function selectedPlanReviewThread(task) {
 }
 
 function eligiblePlanExecutionThreads(task) {
+  if (usesDisposableTerminalPools()) {
+    return ['codex', 'claude']
+      .filter((provider) => !providerIsMissing(provider))
+      .map((provider) => ({
+        id: `automatic:${provider}`,
+        provider,
+        cwd: task.repo_path,
+        title: `Automatic ${providerLabel(provider)} instance`,
+        source: 'Relay managed terminal pool',
+        automatic: true,
+      }));
+  }
   return state.threads.filter((thread) => (
     ['codex', 'claude'].includes(threadProvider(thread))
     && sameProjectPath(thread.cwd, task.repo_path)
@@ -3586,7 +4349,9 @@ function renderPlanExecutionOptions(task) {
   if (threads.length === 0) {
     const option = document.createElement('option');
     option.value = '';
-    option.textContent = 'No opened Relay in this workspace';
+    option.textContent = usesDisposableTerminalPools()
+      ? 'No installed providers'
+      : 'No opened Relay in this workspace';
     elements.planExecutionRelay.append(option);
   } else {
     for (const thread of threads) {
@@ -3615,18 +4380,46 @@ function planExecutionIssue(task, target = selectedPlanExecutionTarget(task)) {
   return '';
 }
 
+function revealPlanExecution() {
+  if (elements.planExecutionPanel.hidden) return;
+  const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  elements.planExecutionPanel.scrollIntoView({
+    block: 'nearest',
+    behavior: reducedMotion ? 'auto' : 'smooth',
+  });
+  window.requestAnimationFrame(() => {
+    const focusTarget = elements.planExecutionButton.disabled
+      ? elements.planExecutionPanel
+      : elements.planExecutionButton;
+    focusTarget.focus({ preventScroll: true });
+  });
+}
+
 function refreshPlanTaskActions(task = null) {
   const selectedTask = task
     || state.tasks.find((item) => item.id === state.selectedTaskId)
     || state.selectedTaskForEvents;
   if (!selectedTask || selectedTask.mode !== 'plan') return;
+  const executeShortcut = elements.detailActions.querySelector('[data-plan-execution-shortcut]');
+  if (executeShortcut) {
+    executeShortcut.disabled = state.planExecutionSubmitting;
+    executeShortcut.textContent = state.planExecutionSubmitting ? 'Queuing plan' : 'Execute plan';
+  }
   const retryButton = elements.detailActions.querySelector('[data-plan-retry]');
   if (retryButton) {
-    const retryTarget = selectedPlanReviewThread(selectedTask);
+    const automatic = selectedTask.terminal_lifecycle === 'disposable';
+    const retryTarget = automatic ? null : selectedPlanReviewThread(selectedTask);
+    const authorTarget = !automatic && isPlanCouncilTerminalExecutionEnabled()
+      ? selectedPlanClaudeAuthorThread()
+      : null;
     retryButton.textContent = retryTarget ? `Resume on Relay ${relayNumber(retryTarget)}` : 'Resume council';
     const retryIssue = state.status?.capabilities?.planCouncilResume !== true
       ? 'Restart Relay to enable safe checkpoint resume.'
-      : !isClaudePlanReady() ? claudePlanIssue() : '';
+      : !isClaudePlanReady()
+        ? claudePlanIssue()
+        : !automatic && isPlanCouncilTerminalExecutionEnabled() && !authorTarget
+          ? 'Choose a Relay-owned Claude author terminal before resuming.'
+          : '';
     retryButton.disabled = Boolean(retryIssue);
     retryButton.title = retryIssue;
   }
@@ -3638,11 +4431,11 @@ function refreshPlanTaskActions(task = null) {
     elements.planExecutionButton.textContent = state.planExecutionSubmitting
       ? 'Queuing plan'
       : target
-        ? `Execute with ${providerLabel(threadProvider(target))} on ${threadDisplayName(target)}`
+        ? `Execute plan with ${providerLabel(threadProvider(target))} on ${threadDisplayName(target)}`
         : 'Execute plan';
     elements.planExecutionButton.disabled = Boolean(issue) || state.planExecutionSubmitting;
     elements.planExecutionButton.title = issue;
-    elements.planExecutionMessage.textContent = issue || `Ready to queue on ${threadDisplayName(target)}. The local plan file stays ignored by Git.`;
+    elements.planExecutionMessage.textContent = issue || `Creates a new linked task on ${threadDisplayName(target)}. The reviewed plan stays unchanged and can be executed again.`;
     elements.planExecutionMessage.dataset.state = issue ? 'error' : 'ready';
   }
 }
@@ -3663,7 +4456,13 @@ async function executeReviewedPlan(sourceTask) {
     const body = await api(`/api/tasks/${sourceTask.id}/execute-plan`, {
       method: 'POST',
       body: JSON.stringify({
-        threadId: thread.id,
+        ...(thread.automatic
+          ? {
+            projectPath: sourceTask.repo_path,
+            terminalLifecycle: 'disposable',
+            terminalLayout: terminalLayout(),
+          }
+          : { threadId: thread.id }),
         provider,
         model: execution.model,
         effort: execution.effort || null,
@@ -3703,7 +4502,16 @@ async function submitTaskContinuation(event) {
   event.preventDefault();
   const sourceTask = state.selectedTaskForEvents;
   const prompt = elements.continuationInput.value.trim();
-  if (!sourceTask || !prompt || state.continuationSubmitting || !taskContinuationSession(sourceTask)) return;
+  const resumableSession = sourceTask?.terminal_lifecycle === 'disposable'
+    && state.status?.capabilities?.resumableDisposableSessions === true
+    && Boolean(sourceTask.thread_id)
+    && sourceTask.status !== 'running';
+  if (
+    !sourceTask
+    || !prompt
+    || state.continuationSubmitting
+    || (!taskContinuationSession(sourceTask) && !resumableSession)
+  ) return;
   let request;
   try {
     const attachments = state.continuationAttachments.get(sourceTask.id) || [];
@@ -3732,7 +4540,7 @@ async function submitTaskContinuation(event) {
       method: 'POST',
       body: JSON.stringify(request.body),
     });
-    if (!body.steered && !body.followUpStarted) {
+    if (!body.steered && !body.followUpStarted && !body.continuationQueued) {
       throw new Error('Relay did not confirm a direct same-session follow-up. Your message was not queued.');
     }
     state.continuationDrafts.delete(sourceTask.id);
@@ -3743,7 +4551,10 @@ async function submitTaskContinuation(event) {
       elements.continuationAttachmentInput.value = '';
     }
     await load();
-    if (state.selectedTaskForEvents?.id === sourceTask.id) {
+    if (body.continuationQueued && body.task?.id) {
+      state.selectedTaskId = body.task.id;
+      await loadTask(body.task.id);
+    } else if (state.selectedTaskForEvents?.id === sourceTask.id) {
       elements.continuationMessage.dataset.kind = 'success';
       elements.continuationMessage.textContent = body.steered
         ? 'Update delivered to the active turn.'
@@ -3777,20 +4588,79 @@ function openTaskEditor(task) {
     window.alert('Restart Relay to edit queued tasks.');
     return;
   }
+  const executionEditable = state.status?.capabilities?.queuedTaskProviderSwitch === true
+    && task.mode === 'execute'
+    && task.terminal_lifecycle === 'disposable';
   state.editingTaskId = task.id;
   state.taskEditSubmitting = false;
+  state.taskEditProvider = executionEditable ? task.provider : null;
+  state.taskEditOriginalProvider = executionEditable ? task.provider : null;
+  state.taskEditExecutionDirty = false;
+  state.taskEditSettings = executionEditable ? {
+    codex: { model: '', effort: '' },
+    claude: { model: '', effort: '' },
+    [task.provider]: { model: task.model || '', effort: task.effort || '' },
+  } : null;
+  elements.taskEditExecution.hidden = !executionEditable;
   elements.taskEditPrompt.value = task.prompt;
   elements.taskEditMessage.textContent = '';
   elements.taskEditSave.disabled = false;
   elements.taskEditCancel.disabled = false;
   elements.taskEditClose.disabled = false;
+  elements.taskEditProvider.disabled = false;
+  elements.taskEditModel.disabled = false;
+  elements.taskEditEffort.disabled = false;
+  if (executionEditable) renderTaskEditExecution();
   elements.taskEditModal.showModal();
   requestAnimationFrame(() => elements.taskEditPrompt.focus());
+}
+
+function renderTaskEditExecution() {
+  const provider = state.taskEditProvider;
+  const settings = state.taskEditSettings?.[provider];
+  if (!provider || !settings) return;
+  elements.taskEditProvider.innerHTML = ['codex', 'claude'].map((candidate) => {
+    const unavailable = providerIsMissing(candidate)
+      && candidate !== state.taskEditOriginalProvider;
+    return `<option value="${candidate}"${unavailable ? ' disabled' : ''}>${providerLabel(candidate)}${unavailable ? ' · not installed' : ''}</option>`;
+  }).join('');
+  const models = state.modelCatalogs[provider] || [];
+  const selectedModel = models.find((item) => item.model === settings.model) || null;
+  const effectiveModel = selectedModel || models.find((item) => item.isDefault) || models[0] || null;
+  elements.taskEditProvider.value = provider;
+  elements.taskEditModel.innerHTML = [
+    `<option value="">${escapeHtml(providerLabel(provider))} default</option>`,
+    ...models.map((item) => (
+      `<option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>`
+    )),
+  ].join('');
+  elements.taskEditModel.value = selectedModel?.model || '';
+
+  const efforts = effectiveModel?.supportedReasoningEfforts || [];
+  if (settings.effort && !efforts.some((item) => item.reasoningEffort === settings.effort)) {
+    settings.effort = '';
+  }
+  elements.taskEditEffort.innerHTML = [
+    `<option value="">Model default${effectiveModel?.defaultReasoningEffort ? ` · ${escapeHtml(effectiveModel.defaultReasoningEffort)}` : ''}</option>`,
+    ...efforts.map((item) => (
+      `<option value="${escapeHtml(item.reasoningEffort)}">${escapeHtml(item.reasoningEffort)}</option>`
+    )),
+  ].join('');
+  elements.taskEditEffort.value = settings.effort;
+  elements.taskEditEffort.disabled = state.taskEditSubmitting || efforts.length === 0;
+  const switching = provider !== state.taskEditOriginalProvider;
+  elements.taskEditExecutionHint.textContent = switching
+    ? `This task will switch to ${providerLabel(provider)} and start in a fresh conversation.`
+    : `Changing providers starts this task in a fresh conversation. ${effectiveModel?.description || ''}`.trim();
 }
 
 function closeTaskEditor() {
   if (state.taskEditSubmitting) return;
   state.editingTaskId = null;
+  state.taskEditProvider = null;
+  state.taskEditOriginalProvider = null;
+  state.taskEditExecutionDirty = false;
+  state.taskEditSettings = null;
   elements.taskEditModal.close();
 }
 
@@ -3806,12 +4676,26 @@ async function saveTaskEdit() {
   elements.taskEditSave.disabled = true;
   elements.taskEditCancel.disabled = true;
   elements.taskEditClose.disabled = true;
+  elements.taskEditProvider.disabled = true;
+  elements.taskEditModel.disabled = true;
+  elements.taskEditEffort.disabled = true;
   try {
+    const execution = state.taskEditExecutionDirty && state.taskEditProvider
+      ? {
+        provider: state.taskEditProvider,
+        model: state.taskEditSettings?.[state.taskEditProvider]?.model || null,
+        effort: state.taskEditSettings?.[state.taskEditProvider]?.effort || null,
+      }
+      : {};
     await api(`/api/tasks/${state.editingTaskId}`, {
       method: 'PATCH',
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, ...execution }),
     });
     state.editingTaskId = null;
+    state.taskEditProvider = null;
+    state.taskEditOriginalProvider = null;
+    state.taskEditExecutionDirty = false;
+    state.taskEditSettings = null;
     elements.taskEditModal.close();
     await load();
   } catch (error) {
@@ -3821,28 +4705,1374 @@ async function saveTaskEdit() {
     elements.taskEditSave.disabled = false;
     elements.taskEditCancel.disabled = false;
     elements.taskEditClose.disabled = false;
+    elements.taskEditProvider.disabled = false;
+    elements.taskEditModel.disabled = false;
+    renderTaskEditExecution();
   }
 }
 
+// ----- Planner: saved plans, dependency board, and plan runs -----
+
+let plannerProposalSaveTimer = null;
+
+function plannerProjectSessions() {
+  if (usesDisposableTerminalPools()) {
+    return ['codex', 'claude']
+      .filter((provider) => !providerIsMissing(provider))
+      .map((provider) => ({
+        id: `automatic:${provider}`,
+        provider,
+        cwd: state.activeProjectPath,
+        title: `Automatic ${providerLabel(provider)} instance`,
+        source: 'Relay managed terminal pool',
+        status: 'idle',
+        automatic: true,
+      }));
+  }
+  return state.threads.filter((thread) => (
+    !state.activeProjectPath || sameProjectPath(thread.cwd, state.activeProjectPath)
+  ));
+}
+
+function plannerSessionOptions(selectedId) {
+  const sessions = plannerProjectSessions();
+  if (sessions.length === 0) {
+    return `<option value="">${usesDisposableTerminalPools() ? 'No installed providers' : 'No live sessions in this project'}</option>`;
+  }
+  const options = sessions.map((thread) => {
+    const provider = threadProvider(thread);
+    const busy = thread.status && thread.status !== 'idle' ? ' · busy' : '';
+    const label = `${threadDisplayName(thread)} · ${providerLabel(provider)}${busy}`;
+    const selected = thread.id === selectedId ? ' selected' : '';
+    return `<option value="${escapeHtml(thread.id)}" data-provider="${escapeHtml(provider)}"${selected}>${escapeHtml(label)}</option>`;
+  });
+  return `<option value="">${usesDisposableTerminalPools() ? 'Choose a provider' : 'Choose a live session'}</option>${options.join('')}`;
+}
+
+/**
+ * Model and effort for a plan run come from the composer's own per-terminal
+ * memory, so a run uses exactly the settings the user last chose for that
+ * Relay. The planner deliberately does not add a second model picker.
+ */
+function plannerRunSettings(threadId) {
+  const thread = plannerProjectSessions().find((item) => item.id === threadId);
+  if (!thread) return null;
+  const provider = threadProvider(thread);
+  const remembered = state.threadExecutionSettings?.[threadId];
+  const settings = remembered && remembered.provider === provider
+    ? remembered
+    : state.executionSettings?.[provider];
+  return { provider, model: settings?.model || '', effort: settings?.effort || '' };
+}
+
+function plannerTerminalRequest(threadId) {
+  const settings = plannerRunSettings(threadId);
+  if (!settings) return null;
+  if (usesDisposableTerminalPools()) {
+    return {
+      provider: settings.provider,
+      projectPath: state.activeProjectPath,
+      terminalLifecycle: 'disposable',
+      terminalLayout: terminalLayout(),
+    };
+  }
+  return { threadId, provider: settings.provider };
+}
+
+function setPlannerMessage(message) {
+  elements.plannerMessage.textContent = message || '';
+}
+
+async function openPlanner() {
+  if (state.planner.open) return;
+  state.planner.open = true;
+  state.planner.selectedPlanId = null;
+  clearPlannerPlan();
+  state.planner.showRaw = false;
+  setPlannerMessage('');
+  const project = activeProject();
+  elements.plannerSubtitle.textContent = project
+    ? `Saved plans for ${project.name}.`
+    : 'Select a project to use the Planner.';
+  if (!elements.plannerModal.open) elements.plannerModal.showModal();
+  if (!plannerCapable(state.status)) {
+    renderPlannerUnsupported();
+    return;
+  }
+  if (!state.activeProjectPath) {
+    elements.plannerPlanList.innerHTML = '';
+    elements.plannerDetail.innerHTML = '<div class="planner-empty"><p>Select a Launchpad project before using the Planner.</p></div>';
+    return;
+  }
+  await loadPlans();
+}
+
+function closePlanner() {
+  if (elements.plannerModal.open) elements.plannerModal.close();
+}
+
+function renderPlannerUnsupported() {
+  elements.plannerPlanList.innerHTML = '';
+  elements.plannerDetail.innerHTML = '<div class="planner-empty planner-restart"><h3>Restart Relay to use the Planner</h3><p>This Relay build is newer than the running backend. Restart Relay to enable saved plans and AI task breakdown.</p></div>';
+}
+
+async function loadPlans() {
+  if (!state.activeProjectPath || !plannerCapable(state.status)) return;
+  state.planner.loading = true;
+  try {
+    const body = await api(`/api/plans?projectPath=${encodeURIComponent(state.activeProjectPath)}`);
+    state.planner.plans = Array.isArray(body.plans) ? body.plans : [];
+    if (state.planner.selectedPlanId && !state.planner.plans.some((plan) => plan.id === state.planner.selectedPlanId)) {
+      state.planner.selectedPlanId = null;
+      clearPlannerPlan();
+    }
+    renderPlannerPlanList();
+    if (!state.planner.plan) renderPlannerDetailEmpty();
+  } catch (error) {
+    setPlannerMessage(error.message);
+  } finally {
+    state.planner.loading = false;
+  }
+}
+
+function renderPlannerPlanList() {
+  if (!plannerCapable(state.status)) { elements.plannerPlanList.innerHTML = ''; return; }
+  const plans = state.planner.plans;
+  if (plans.length === 0) {
+    elements.plannerPlanList.innerHTML = '<p class="planner-plan-empty">No saved plans yet.</p>';
+    return;
+  }
+  elements.plannerPlanList.innerHTML = plans.map((plan) => {
+    const active = plan.id === state.planner.selectedPlanId ? ' selected' : '';
+    const count = plan.breakdown ? plan.breakdown.proposalCount : 0;
+    const summary = plan.breakdown
+      ? `${count} step${count === 1 ? '' : 's'}`
+      : 'No breakdown';
+    const run = plan.run || null;
+    const progress = run ? runProgressSummary(run) : null;
+    const runLine = run
+      ? `<em class="planner-plan-run" data-tone="${escapeHtml(runStatusPresentation(run).tone)}">${escapeHtml(progress.label || runStatusPresentation(run).label)}</em>`
+      : '';
+    return `<button type="button" class="planner-plan-item${active}" role="listitem" data-plan-id="${escapeHtml(String(plan.id))}">
+      <strong>${escapeHtml(plan.name)}</strong>
+      <small>${escapeHtml(summary)}${plan.updated_at ? ` · ${escapeHtml(plannerRelativeTime(plan.updated_at))}` : ''}</small>
+      ${runLine}
+    </button>`;
+  }).join('');
+}
+
+/** Compact "updated" stamp for the plan library. */
+function plannerRelativeTime(value) {
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) return '';
+  const seconds = Math.max(0, Math.round((Date.now() - time) / 1000));
+  if (seconds < 60) return 'just now';
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(time).toLocaleDateString();
+}
+
+function renderPlannerDetailEmpty() {
+  elements.plannerDetail.innerHTML = '<div class="planner-empty"><p>Select a plan, or create a new one, to edit its brief and break it into dependency-aware steps.</p></div>';
+}
+
+function clearPlannerPlan() {
+  state.planner.plan = null;
+  state.planner.breakdown = null;
+  state.planner.run = null;
+  state.planner.notes = [];
+  state.planner.proposals = [];
+  state.planner.selection = new Set();
+  state.planner.selectionAttemptId = null;
+  state.planner.dirtyProposalIds = new Set();
+  state.planner.boardSignature = null;
+}
+
+function plannerAttemptId() {
+  return state.planner.breakdown ? state.planner.breakdown.id : null;
+}
+
+/**
+ * Apply a plan payload. `adoptProposals` is the never-clobber switch: a
+ * background refresh passes false whenever the user has unsaved edits, so only
+ * the run and breakdown status move while the proposals stay exactly as typed.
+ */
+function applyPlannerPlan(plan, { adoptProposals = true } = {}) {
+  state.planner.plan = plan || null;
+  const breakdown = plan?.breakdown || null;
+  state.planner.breakdown = breakdown;
+  state.planner.run = plan?.run || null;
+  state.planner.notes = Array.isArray(breakdown?.notes) ? breakdown.notes : [];
+  if (!adoptProposals) return;
+  /*
+   * A newly started breakdown or refinement is the latest attempt but it is
+   * PENDING and carries no proposals yet. Adopting it would blank the board:
+   * the previous attempt's steps, the run bar, and the Stop button all
+   * disappear, and a failed refinement would leave nothing to recover from.
+   * Keep showing the last completed attempt instead, read-only, until the new
+   * attempt actually lands.
+   */
+  const incoming = Array.isArray(breakdown?.proposals) ? breakdown.proposals : [];
+  if (incoming.length === 0 && breakdown?.status !== 'complete' && state.planner.proposals.length > 0) {
+    return;
+  }
+  const previousIds = state.planner.proposals.map((proposal) => proposal.id);
+  const previousSelection = state.planner.selection;
+  state.planner.proposals = pruneDanglingDependencies(incoming.map((proposal) => ({
+    ...proposal,
+    dependsOn: dependencyIds(proposal),
+  })));
+  state.planner.dirtyProposalIds = new Set();
+  const attemptId = plannerAttemptId();
+  /*
+   * Only a COMPLETE attempt may latch the selection marker. Latching against a
+   * pending attempt leaves the selection empty, and because the id then matches
+   * when the attempt completes, the reseed never runs again: every breakdown
+   * and refinement would finish with nothing selected and Run plan disabled.
+   */
+  if (breakdown?.status === 'complete' && state.planner.selectionAttemptId !== attemptId) {
+    // A new attempt reseeds the checkboxes. It never re-selects a step the
+    // latest run already completed, and never re-checks a surviving step the
+    // user had deliberately unchecked. See defaultRunSelection.
+    state.planner.selection = defaultRunSelection(
+      state.planner.proposals,
+      state.planner.run,
+      previousSelection,
+      { knownIds: previousIds },
+    );
+    state.planner.selectionAttemptId = attemptId;
+  } else {
+    state.planner.selection = pruneSelection(state.planner.proposals, state.planner.selection);
+  }
+}
+
+/**
+ * True while a newer attempt is running against steps that are still the
+ * previous completed attempt's. The board stays visible but read-only.
+ */
+function plannerAttemptPending() {
+  return breakdownIsActive(state.planner.breakdown) && state.planner.proposals.length > 0;
+}
+
+/**
+ * Proposals are editable only while the latest attempt is complete. This is
+ * exactly the server's PATCH rule, mirrored so the board never offers an edit
+ * that would come back as a 409. It covers both a pending attempt and a failed
+ * one sitting on top of the previous attempt's steps.
+ */
+function plannerProposalsEditable() {
+  return state.planner.breakdown?.status === 'complete';
+}
+
+async function selectPlan(planId) {
+  setPlannerMessage('');
+  stopPlannerPoll();
+  try {
+    const body = await api(`/api/plans/${planId}`);
+    state.planner.selectedPlanId = body.plan.id;
+    state.planner.selectionAttemptId = null;
+    applyPlannerPlan(body.plan);
+    state.planner.runSessionId = state.planner.run?.sessionId || state.planner.runSessionId;
+    renderPlannerPlanList();
+    renderPlannerDetail();
+    maybeStartPlannerPoll();
+  } catch (error) {
+    setPlannerMessage(error.message);
+  }
+}
+
+function renderPlannerDetail() {
+  const plan = state.planner.plan;
+  if (!plan) { renderPlannerDetailEmpty(); return; }
+  const active = breakdownIsActive(state.planner.breakdown);
+  elements.plannerDetail.innerHTML = `
+    <div class="planner-editor">
+      <div class="planner-editor-head">
+        <input id="planner-plan-name" class="planner-plan-name" type="text" maxlength="200" aria-label="Plan name" value="${escapeHtml(plan.name)}">
+        <div class="planner-editor-actions">
+          <button id="planner-save" class="button compact" type="button">Save</button>
+          <button id="planner-delete" class="button danger compact" type="button">Delete</button>
+        </div>
+      </div>
+      <textarea id="planner-plan-content" class="planner-plan-content" aria-label="Plan brief" placeholder="Write the implementation brief. It can be long: goals, constraints, file boundaries, and how each part is verified.">${escapeHtml(plan.content)}</textarea>
+      <section class="planner-breakdown" aria-label="Task breakdown">
+        <div class="planner-breakdown-head">
+          <span class="eyebrow">Task breakdown</span>
+          <h3>Break this plan into dependency-aware steps</h3>
+        </div>
+        <div class="planner-breakdown-controls">
+          <label class="planner-field">
+            <span>${usesDisposableTerminalPools() ? 'Provider' : 'Session'}</span>
+            <select id="planner-breakdown-session">${plannerSessionOptions(state.planner.breakdownSessionId)}</select>
+          </label>
+          <label class="planner-field planner-field-guidance">
+            <span>Guidance <small>optional</small></span>
+            <textarea id="planner-guidance" rows="2" maxlength="8000" placeholder="Optional: how to split the work, ordering, or what to skip."></textarea>
+          </label>
+          <button id="planner-request-breakdown" class="button primary compact" type="button"${active ? ' disabled' : ''}>Break into steps</button>
+        </div>
+        <div id="planner-breakdown-body" class="planner-breakdown-body"></div>
+      </section>
+    </div>`;
+  renderPlannerBoard();
+}
+
+const PLANNER_PORT_GLYPHS = {
+  complete: '✓',
+  failed: '!',
+  cancelled: '×',
+  blocked: '⊘',
+  queued: '·',
+  waiting: '·',
+};
+
+function plannerPortMarkup(status) {
+  if (status === 'running' || status === 'retrying') {
+    return '<i class="planner-step-spinner" aria-hidden="true"></i>';
+  }
+  return `<b aria-hidden="true">${escapeHtml(PLANNER_PORT_GLYPHS[status] || '·')}</b>`;
+}
+
+function plannerStepErrorExcerpt(step) {
+  const text = String(step?.error || '').trim();
+  if (!text) return '';
+  return text.length > 240 ? `${text.slice(0, 240)}…` : text;
+}
+
+/** Full board rebuild. Only called when plannerBoardSignature changes. */
+function renderPlannerBoard() {
+  const container = elements.plannerDetail.querySelector('#planner-breakdown-body');
+  if (!container) return;
+  const breakdown = state.planner.breakdown;
+  const proposals = state.planner.proposals;
+  const capable = plannerV2Capable(state.status);
+  const presentation = breakdownStatusPresentation(breakdown);
+  const parts = [
+    `<div class="planner-breakdown-status" data-tone="${escapeHtml(presentation.tone)}"><i aria-hidden="true"></i><span>${escapeHtml(presentation.label)}</span></div>`,
+  ];
+  if (breakdown && ['failed', 'cancelled'].includes(breakdown.status) && breakdown.error) {
+    parts.push(`<p class="planner-breakdown-error">${escapeHtml(breakdown.error)}</p>`);
+  }
+  if (breakdown && breakdown.status === 'complete' && !breakdown.parsed) {
+    parts.push(`<details class="planner-raw"${state.planner.showRaw ? ' open' : ''}><summary>Raw response (no steps could be extracted)</summary><pre>${escapeHtml(breakdown.raw_response || '')}</pre></details>`);
+  }
+  const notes = (state.planner.notes || [])
+    .map((note) => breakdownNoteLabel(note, proposals))
+    .filter(Boolean);
+  if (notes.length > 0) {
+    parts.push(`<ul class="planner-notes" aria-label="Dependency parse notes">${notes
+      .map((note) => `<li>${escapeHtml(note)}</li>`)
+      .join('')}</ul>`);
+  }
+  const attemptPending = plannerAttemptPending();
+  const readOnly = !plannerProposalsEditable();
+  if (attemptPending) {
+    const attempt = Number(breakdown?.attempt ?? 0);
+    parts.push(`<p class="planner-attempt-banner" role="status">${escapeHtml(
+      `${attempt > 0 ? `Attempt ${attempt}` : 'A new attempt'} is running. These are the steps from the last completed attempt and they stay read only until the new one lands.`,
+    )}</p>`);
+  }
+  if (proposals.length > 0) {
+    parts.push(renderPlannerBoardHead(proposals, capable, breakdown, readOnly));
+    const { waves, unresolvable } = computeWaves(proposals);
+    parts.push('<div class="planner-waves">');
+    waves.forEach((wave, index) => {
+      parts.push(renderPlannerWave(wave, index, { proposals, waves, capable, readOnly }));
+    });
+    if (unresolvable.length > 0) {
+      parts.push(renderPlannerUnresolvedWave(unresolvable, { proposals, capable, readOnly }));
+    }
+    parts.push('</div>');
+  }
+  /*
+   * The run bar is mounted whenever a run exists, not only when proposals are
+   * present. It carries the live progress and the ONLY Stop control, so a
+   * pending refinement must never be able to take it away mid-run.
+   */
+  if (proposals.length > 0 || state.planner.run) {
+    parts.push(renderPlannerRunBar(capable, proposals.length > 0));
+  }
+  if (breakdown && breakdown.status === 'complete') {
+    parts.push(renderPlannerRefine(capable));
+  } else if (breakdown && ['failed', 'cancelled'].includes(breakdown.status) && proposals.length > 0) {
+    // A failed attempt cannot be refined again (the server rejects a zero
+    // proposal latest attempt) and PATCH is closed too, so the recovery path
+    // has to be named here rather than left for the user to find.
+    parts.push(renderPlannerAttemptRecovery(breakdown));
+  }
+  container.innerHTML = parts.join('');
+  state.planner.boardSignature = plannerBoardSignature(proposals, state.planner.run, {
+    attemptId: plannerAttemptId(),
+    attemptStatus: breakdown?.status || '',
+    capable,
+  });
+  updatePlannerRunProgress();
+  updatePlannerQueueButton();
+}
+
+function renderPlannerBoardHead(proposals, capable, breakdown, readOnly) {
+  const allSelected = proposals.every((proposal) => state.planner.selection.has(proposal.id));
+  const canAdd = capable && !readOnly;
+  return `<div class="planner-proposals-head">
+    <label class="planner-select-all"><input id="planner-select-all" type="checkbox"${allSelected ? ' checked' : ''}> Select all</label>
+    <span>${escapeHtml(String(state.planner.selection.size))} of ${escapeHtml(String(proposals.length))} selected</span>
+    <button id="planner-add-step" class="button compact" type="button"${canAdd ? '' : ' disabled'}${capable ? '' : ' title="Restart Relay to author steps by hand."'}>+ Add step</button>
+  </div>`;
+}
+
+function renderPlannerWave(wave, index, context) {
+  const meta = index === 0
+    ? `${wave.length} step${wave.length === 1 ? '' : 's'} · no dependencies`
+    : `${wave.length} step${wave.length === 1 ? '' : 's'} · runs after wave ${index}`;
+  return `<section class="planner-wave" data-wave="${index + 1}" aria-label="Wave ${index + 1}">
+    <div class="planner-wave-head">
+      <span class="planner-wave-label">Wave ${index + 1}</span>
+      <span class="planner-wave-meta">${escapeHtml(meta)}</span>
+      <span class="planner-wave-progress" data-wave-index="${index}"></span>
+    </div>
+    <ol class="planner-steps">${wave
+      .map((proposal) => renderPlannerStep(proposal, context))
+      .join('')}</ol>
+  </section>`;
+}
+
+function renderPlannerUnresolvedWave(unresolvable, context) {
+  return `<section class="planner-wave planner-wave-unresolved" aria-label="Steps that cannot run">
+    <div class="planner-wave-head">
+      <span class="planner-wave-label">Cannot run</span>
+      <span class="planner-wave-meta">${unresolvable.length} step${unresolvable.length === 1 ? '' : 's'} depend on each other in a cycle</span>
+    </div>
+    <p class="planner-wave-note">Edit the dependencies below so at least one of these steps can start.</p>
+    <ol class="planner-steps">${unresolvable
+      .map((proposal) => renderPlannerStep(proposal, context))
+      .join('')}</ol>
+  </section>`;
+}
+
+function renderPlannerStep(proposal, { proposals, capable, readOnly }) {
+  const run = state.planner.run;
+  const index = proposals.findIndex((item) => item.id === proposal.id);
+  const number = index + 1;
+  const status = proposalStatus(proposal.id, run);
+  const chip = stepStatusPresentation(status, run?.status);
+  // readOnly covers a board showing an older attempt's steps, where the server
+  // would reject the PATCH anyway. stepEditingLocked covers a step this run
+  // already owns.
+  const locked = readOnly || stepEditingLocked(proposal.id, run);
+  const checked = state.planner.selection.has(proposal.id) ? ' checked' : '';
+  const deps = dependencyLabel(proposal, proposals);
+  const readonly = locked ? ' readonly' : '';
+  const disabled = locked ? ' disabled' : '';
+  return `<li class="planner-step" data-proposal-id="${escapeHtml(proposal.id)}" data-state="${escapeHtml(status)}" data-locked="${locked ? 'true' : 'false'}">
+    <label class="planner-step-select">
+      <input class="planner-step-check" type="checkbox"${checked}${disabled}>
+      <span class="sr-only">Include step ${number} in the plan run</span>
+    </label>
+    <span class="planner-step-port" data-state="${escapeHtml(status)}">${plannerPortMarkup(status)}<span class="sr-only">${escapeHtml(chip.label)}</span></span>
+    <div class="planner-step-main">
+      <div class="planner-step-head">
+        <code class="planner-step-number">${escapeHtml(String(number).padStart(2, '0'))}</code>
+        <input class="planner-step-title" type="text" maxlength="300" value="${escapeHtml(proposal.title || '')}" aria-label="Step ${number} title"${readonly}>
+        <span class="planner-step-chip" data-tone="${escapeHtml(chip.tone)}" data-state="${escapeHtml(chip.state)}">${escapeHtml(chip.label)}</span>
+      </div>
+      <textarea class="planner-step-prompt" rows="3" maxlength="12000" aria-label="Step ${number} prompt"${readonly}>${escapeHtml(proposal.prompt || '')}</textarea>
+      <p class="planner-step-deps">${deps ? escapeHtml(`Runs ${deps}`) : 'No dependencies'}</p>
+      ${capable ? renderPlannerDependencyPicker(proposal, proposals, number, locked) : ''}
+      <p class="planner-step-reason" hidden></p>
+      <div class="planner-step-outcome" hidden>
+        <p class="planner-step-error-text"></p>
+        <button type="button" class="planner-step-open text-button" hidden></button>
+      </div>
+    </div>
+    <div class="planner-step-controls">
+      <button type="button" class="planner-step-move" data-direction="up" aria-label="Move step ${number} up"${index === 0 ? ' disabled' : disabled}>↑</button>
+      <button type="button" class="planner-step-move" data-direction="down" aria-label="Move step ${number} down"${index === proposals.length - 1 ? ' disabled' : disabled}>↓</button>
+      <button type="button" class="planner-step-remove" aria-label="Remove step ${number}"${disabled}>×</button>
+    </div>
+  </li>`;
+}
+
+function renderPlannerDependencyPicker(proposal, proposals, number, locked) {
+  const current = dependencyIds(proposal);
+  const options = proposals
+    .filter((other) => other.id !== proposal.id)
+    .map((other) => {
+      const otherNumber = proposals.findIndex((item) => item.id === other.id) + 1;
+      const isChecked = current.includes(String(other.id));
+      // Offering an edge that would close a cycle only to have it refused is
+      // worse than showing it unavailable up front.
+      const wouldCycle = !isChecked && dependsOnTransitively(proposals, other.id, proposal.id);
+      const optionDisabled = locked || wouldCycle;
+      const title = wouldCycle ? ' title="This would create a dependency cycle."' : '';
+      return `<label class="planner-dep-option${optionDisabled ? ' disabled' : ''}"${title}>
+        <input type="checkbox" class="planner-dep-check" data-dependency-id="${escapeHtml(String(other.id))}" data-cycle="${wouldCycle ? 'true' : 'false'}"${isChecked ? ' checked' : ''}${optionDisabled ? ' disabled' : ''}>
+        <span>${escapeHtml(`${String(otherNumber).padStart(2, '0')} ${other.title || 'Untitled step'}`)}</span>
+      </label>`;
+    })
+    .join('');
+  if (!options) return '';
+  // The plain-text sentence above already states the dependencies; this
+  // disclosure is the editor, so its summary is an action, not a repeat.
+  return `<details class="planner-step-deps-edit">
+    <summary>Edit dependencies<span class="planner-dep-count">${current.length}</span></summary>
+    <div class="planner-dep-picker" role="group" aria-label="Dependencies for step ${number}">${options}</div>
+  </details>`;
+}
+
+function renderPlannerRunBar(capable, hasProposals = true) {
+  const run = state.planner.run;
+  const status = runStatusPresentation(run);
+  const active = planRunIsActive(run);
+  if (!capable) {
+    if (!hasProposals) return '';
+    return `<div class="planner-run" data-state="unsupported">
+      <div class="planner-run-controls">
+        <label class="planner-field">
+          <span>${usesDisposableTerminalPools() ? 'Provider' : 'Queue on'}</span>
+          <select id="planner-queue-session">${plannerSessionOptions(state.planner.queueSessionId)}</select>
+        </label>
+        <button id="planner-queue-selected" class="button primary compact" type="button">Queue selected tasks</button>
+      </div>
+      <p class="planner-run-note planner-restart-note">Restart Relay to run this plan wave by wave, add steps by hand, and refine the breakdown. The running backend predates plan runs.</p>
+    </div>`;
+  }
+  const settings = plannerRunSettings(state.planner.runSessionId);
+  const settingsLine = settings && (settings.model || settings.effort)
+    ? `Uses ${escapeHtml(settings.model || 'the default model')}${settings.effort ? ` · ${escapeHtml(settings.effort)}` : ''} from the composer for this ${usesDisposableTerminalPools() ? 'provider' : 'Relay'}.`
+    : `Uses the composer settings for the chosen ${usesDisposableTerminalPools() ? 'provider' : 'Relay'}.`;
+  return `<div class="planner-run" data-state="${escapeHtml(status.state)}">
+    <div class="planner-run-head">
+      <span id="planner-run-pill" class="planner-run-pill" data-tone="${escapeHtml(status.tone)}">${escapeHtml(status.label)}</span>
+      <span id="planner-run-progress" class="planner-run-progress"></span>
+    </div>
+    <div id="planner-run-progressbar" class="planner-run-bar" role="progressbar" aria-label="Plan run progress" aria-valuemin="0"><i></i></div>
+    <div class="planner-run-controls">
+      ${hasProposals ? `<label class="planner-field">
+        <span>${usesDisposableTerminalPools() ? 'Provider' : 'Run on'}</span>
+        <select id="planner-run-session">${plannerSessionOptions(state.planner.runSessionId)}</select>
+      </label>
+      ${usesDisposableTerminalPools() ? '' : `<label class="planner-run-option"><input id="planner-run-prefer-idle" type="checkbox"${state.planner.runPreferIdle ? ' checked' : ''}> Use an idle Relay when available</label>`}
+      <button id="planner-run-start" class="button primary compact" type="button">Run plan</button>` : ''}
+      ${active ? '<button id="planner-run-stop" class="button danger compact" type="button">Stop run</button>' : ''}
+    </div>
+    <p id="planner-run-blocked" class="planner-run-blocked" hidden></p>
+    <p class="planner-run-note">${hasProposals ? `${settingsLine} Nothing runs until you start the run.` : 'This run is still tracked while the new breakdown attempt finishes.'}${active ? ' Stopping enqueues no further steps; tasks already running continue and stay cancellable from the queue.' : ''}</p>
+  </div>`;
+}
+
+/**
+ * Recovery for a failed or cancelled attempt that landed on top of steps the
+ * user still has. Refine is closed (the server rejects a zero-proposal latest
+ * attempt) and so is the proposals PATCH, so the only way forward is the
+ * breakdown task itself. Say so, and point straight at it.
+ */
+function renderPlannerAttemptRecovery(breakdown) {
+  const taskId = breakdown?.task_id ? String(breakdown.task_id) : '';
+  const attempt = Number(breakdown?.attempt ?? 0);
+  const label = attempt > 0 ? `Attempt ${attempt}` : 'The latest attempt';
+  return `<section class="planner-attempt-recovery" aria-label="Recover the failed attempt">
+    <p><strong>${escapeHtml(`${label} did not produce steps.`)}</strong> The steps above are from the last completed attempt and are read only until this attempt is resolved. Retry the breakdown task, or start a new breakdown above.</p>
+    ${taskId ? `<button type="button" class="planner-step-open text-button" data-open-task="${escapeHtml(taskId)}" title="Open the breakdown task in Task Activity">Open breakdown task #${escapeHtml(taskId)}</button>` : ''}
+  </section>`;
+}
+
+function renderPlannerRefine(capable) {
+  const active = breakdownIsActive(state.planner.breakdown);
+  const attempt = Number(state.planner.breakdown?.attempt ?? state.planner.plan?.breakdownCount ?? 0);
+  const attemptNote = attempt > 0
+    ? `Attempt ${attempt}. Refine sends your current edited steps for revision.`
+    : 'Refine sends your current edited steps for revision.';
+  /*
+   * Refining is deliberately allowed while a run is in flight. The run holds
+   * its own step snapshot, so a new attempt cannot corrupt it, and blocking
+   * here created a one-way door: recovering from a failed step mid-run would
+   * have required Stop, which is latched and cannot be resumed. The only bar
+   * is the one the server actually enforces, an attempt already in progress.
+   */
+  const reason = !capable
+    ? 'Restart Relay to refine a breakdown.'
+    : active
+      ? 'A breakdown attempt is already running.'
+      : '';
+  return `<section class="planner-refine" aria-label="Refine the breakdown">
+    <label class="planner-field" for="planner-refine-feedback">
+      <span>Refine breakdown</span>
+      <textarea id="planner-refine-feedback" rows="2" maxlength="8000" placeholder="What should change? Merge steps 2 and 3, split the migration, add a verification step at the end."${reason ? ' disabled' : ''}></textarea>
+    </label>
+    <div class="planner-refine-foot">
+      <span class="planner-refine-note">${escapeHtml(reason || attemptNote)}</span>
+      <button id="planner-refine-start" class="button compact" type="button"${reason ? ' disabled' : ''}>Refine breakdown</button>
+    </div>
+  </section>`;
+}
+
+/**
+ * Targeted live update. This is what the poll calls: it never replaces markup,
+ * so a step the user is typing into keeps its caret, its IME composition, and
+ * its native undo history while the run advances around it.
+ */
+function updatePlannerRunProgress() {
+  const root = elements.plannerDetail;
+  if (!root) return;
+  const run = state.planner.run;
+  const proposals = state.planner.proposals;
+  const readOnly = !plannerProposalsEditable();
+  root.querySelectorAll('.planner-step').forEach((node) => {
+    const id = node.dataset.proposalId;
+    const proposal = proposals.find((item) => String(item.id) === id);
+    const status = proposalStatus(id, run);
+    const chip = stepStatusPresentation(status, run?.status);
+    // Must mirror renderPlannerStep exactly, or the next poll silently unlocks
+    // a board the server would reject edits from.
+    const locked = readOnly || stepEditingLocked(id, run);
+    const step = runStepFor(run, id);
+    if (node.dataset.state !== status) {
+      node.dataset.state = status;
+      const port = node.querySelector('.planner-step-port');
+      if (port) {
+        // Rewrite the port only on a real change so a running spinner is not
+        // restarted by every refresh.
+        port.dataset.state = status;
+        port.innerHTML = `${plannerPortMarkup(status)}<span class="sr-only">${escapeHtml(chip.label)}</span>`;
+      }
+    }
+    const chipNode = node.querySelector('.planner-step-chip');
+    if (chipNode && chipNode.textContent !== chip.label) {
+      chipNode.textContent = chip.label;
+      chipNode.dataset.tone = chip.tone;
+      chipNode.dataset.state = chip.state;
+    }
+    if (node.dataset.locked !== String(locked)) {
+      node.dataset.locked = String(locked);
+      const index = proposals.findIndex((item) => String(item.id) === id);
+      const title = node.querySelector('.planner-step-title');
+      const prompt = node.querySelector('.planner-step-prompt');
+      if (title) title.readOnly = locked;
+      if (prompt) prompt.readOnly = locked;
+      const check = node.querySelector('.planner-step-check');
+      if (check) check.disabled = locked;
+      const removeButton = node.querySelector('.planner-step-remove');
+      if (removeButton) removeButton.disabled = locked;
+      node.querySelectorAll('.planner-step-move').forEach((control) => {
+        // Recompute the boundary state rather than trusting the current
+        // disabled flag, so unlocking cannot leave a usable control disabled.
+        const atEdge = control.dataset.direction === 'up' ? index <= 0 : index >= proposals.length - 1;
+        control.disabled = locked || atEdge;
+      });
+      node.querySelectorAll('.planner-dep-check').forEach((control) => {
+        control.disabled = locked || control.dataset.cycle === 'true';
+      });
+    }
+    const reason = node.querySelector('.planner-step-reason');
+    if (reason) {
+      const text = status === 'blocked' && proposal ? blockedReasonLabel(proposal, proposals, run) : '';
+      if (reason.textContent !== text) reason.textContent = text;
+      reason.hidden = !text;
+    }
+    const outcome = node.querySelector('.planner-step-outcome');
+    if (outcome) {
+      const errorText = status === 'failed' ? plannerStepErrorExcerpt(step) : '';
+      const errorNode = outcome.querySelector('.planner-step-error-text');
+      if (errorNode && errorNode.textContent !== errorText) errorNode.textContent = errorText;
+      if (errorNode) errorNode.hidden = !errorText;
+      const openNode = outcome.querySelector('.planner-step-open');
+      if (openNode) {
+        const taskId = step?.taskId ? String(step.taskId) : '';
+        const label = taskId ? `Open task #${taskId}` : '';
+        if (openNode.dataset.openTask !== taskId) {
+          openNode.dataset.openTask = taskId;
+          openNode.title = taskId ? `Open task #${taskId} in Task Activity` : '';
+        }
+        if (openNode.textContent !== label) openNode.textContent = label;
+        openNode.hidden = !taskId;
+      }
+      outcome.hidden = !errorText && !step?.taskId;
+    }
+  });
+  const { waves } = computeWaves(proposals);
+  const active = activeWaveIndex(waves, run);
+  root.querySelectorAll('.planner-wave-progress').forEach((node) => {
+    const index = Number(node.dataset.waveIndex);
+    const wave = waves[index] || [];
+    const complete = wave.filter((proposal) => proposalStatus(proposal.id, run) === 'complete').length;
+    const text = run && wave.length > 0 ? `${complete} of ${wave.length} complete` : '';
+    if (node.textContent !== text) node.textContent = text;
+    const section = node.closest('.planner-wave');
+    if (section) section.dataset.active = String(run ? index === active : false);
+  });
+  const progress = runProgressSummary(run);
+  const progressNode = root.querySelector('#planner-run-progress');
+  if (progressNode) {
+    const text = run ? progress.label : 'No run yet. Select the steps to run, then start the run.';
+    if (progressNode.textContent !== text) progressNode.textContent = text;
+  }
+  const pill = root.querySelector('#planner-run-pill');
+  if (pill) {
+    const status = runStatusPresentation(run);
+    if (pill.textContent !== status.label) pill.textContent = status.label;
+    pill.dataset.tone = status.tone;
+  }
+  const bar = root.querySelector('#planner-run-progressbar');
+  if (bar) {
+    const total = Math.max(progress.total, 0);
+    const percent = total > 0 ? Math.round((progress.complete / total) * 100) : 0;
+    bar.style.setProperty('--planner-progress', String(percent));
+    bar.setAttribute('aria-valuenow', String(progress.complete));
+    bar.setAttribute('aria-valuemax', String(Math.max(total, 1)));
+    bar.hidden = !run;
+  }
+  updatePlannerRunButton();
+  updatePlannerQueueButton();
+  const announcement = runAnnouncement(waves, run);
+  if (announcement !== state.planner.announcement) {
+    state.planner.announcement = announcement;
+    if (elements.plannerRunAnnounce) elements.plannerRunAnnounce.textContent = announcement;
+  }
+}
+
+function updatePlannerSelectionSummary() {
+  const countEl = elements.plannerDetail.querySelector('.planner-proposals-head span');
+  if (countEl) countEl.textContent = `${state.planner.selection.size} of ${state.planner.proposals.length} selected`;
+  const selectAll = elements.plannerDetail.querySelector('#planner-select-all');
+  if (selectAll) {
+    selectAll.checked = state.planner.proposals.length > 0
+      && state.planner.proposals.every((proposal) => state.planner.selection.has(proposal.id));
+  }
+  updatePlannerRunButton();
+  updatePlannerQueueButton();
+}
+
+function updatePlannerRunButton() {
+  const button = elements.plannerDetail.querySelector('#planner-run-start');
+  if (!button) return;
+  const session = elements.plannerDetail.querySelector('#planner-run-session');
+  const hasSession = Boolean(session && session.value);
+  const count = state.planner.selection.size;
+  const blocked = runStartBlockReason(state.planner.run);
+  button.disabled = !canRunPlan({
+    hasSession,
+    selectedCount: count,
+    run: state.planner.run,
+    busy: state.planner.busy,
+  });
+  const label = planRunIsActive(state.planner.run)
+    ? 'Run in progress'
+    : blocked ? 'Previous run draining'
+      : count > 0 ? `Run ${count} step${count === 1 ? '' : 's'}` : 'Run plan';
+  if (button.textContent !== label) button.textContent = label;
+  if (button.title !== blocked) button.title = blocked;
+  // The reason must be readable, not only a tooltip on a disabled control.
+  const note = elements.plannerDetail.querySelector('#planner-run-blocked');
+  if (note) {
+    if (note.textContent !== blocked) note.textContent = blocked;
+    note.hidden = !blocked || planRunIsActive(state.planner.run);
+  }
+}
+
+function updatePlannerQueueButton() {
+  const button = elements.plannerDetail.querySelector('#planner-queue-selected');
+  if (!button) return;
+  const session = elements.plannerDetail.querySelector('#planner-queue-session');
+  const hasSession = Boolean(session && session.value);
+  const count = state.planner.selection.size;
+  button.disabled = state.planner.busy || !canQueueProposals({ hasSession, selectedCount: count });
+  button.textContent = count > 0
+    ? `Queue ${count} task${count === 1 ? '' : 's'}`
+    : 'Queue selected tasks';
+}
+
+function refreshPlannerSessions() {
+  // Only replace the options when they actually change, so a periodic refresh
+  // does not close a dropdown the user has open or reset an unchanged selection.
+  const selects = [
+    ['#planner-breakdown-session', 'breakdownSessionId'],
+    ['#planner-queue-session', 'queueSessionId'],
+    ['#planner-run-session', 'runSessionId'],
+  ];
+  for (const [selector, key] of selects) {
+    const node = elements.plannerDetail.querySelector(selector);
+    if (!node) continue;
+    const next = plannerSessionOptions(node.value || state.planner[key]);
+    if (next !== node.innerHTML) {
+      node.innerHTML = next;
+      updatePlannerRunButton();
+      updatePlannerQueueButton();
+    }
+  }
+}
+
+function plannerNeedsPoll() {
+  return state.planner.open
+    && (breakdownIsActive(state.planner.breakdown) || planRunIsActive(state.planner.run));
+}
+
+function maybeStartPlannerPoll() {
+  if (plannerNeedsPoll()) startPlannerPoll();
+  else stopPlannerPoll();
+}
+
+function startPlannerPoll() {
+  if (state.planner.pollTimer) return;
+  state.planner.pollTimer = setInterval(() => {
+    refreshPlannerFromServer().catch(() => {});
+  }, 2500);
+}
+
+function stopPlannerPoll() {
+  if (state.planner.pollTimer) {
+    clearInterval(state.planner.pollTimer);
+    state.planner.pollTimer = null;
+  }
+}
+
+/**
+ * Background refresh. GET /api/plans/:id also reconciles an active run, so it
+ * is the safe live path. Proposals are adopted only when nothing is unsaved,
+ * and the board markup is rebuilt only when its structure actually changed.
+ */
+async function refreshPlannerFromServer() {
+  const planId = state.planner.selectedPlanId;
+  if (!planId) { stopPlannerPoll(); return; }
+  try {
+    const body = await api(`/api/plans/${planId}`);
+    if (state.planner.selectedPlanId !== planId) return;
+    const adoptProposals = shouldAdoptServerProposals({
+      hasDirtyEdits: state.planner.dirtyProposalIds.size > 0,
+      saveInFlight: state.planner.saveInFlight,
+      localAttemptId: plannerAttemptId(),
+      serverAttemptId: body.plan?.breakdown?.id ?? null,
+    });
+    applyPlannerPlan(body.plan, { adoptProposals });
+    const capable = plannerV2Capable(state.status);
+    const signature = plannerBoardSignature(state.planner.proposals, state.planner.run, {
+      attemptId: plannerAttemptId(),
+      attemptStatus: state.planner.breakdown?.status || '',
+      capable,
+    });
+    if (signature !== state.planner.boardSignature) renderPlannerBoard();
+    else updatePlannerRunProgress();
+    if (!plannerNeedsPoll()) {
+      stopPlannerPoll();
+      loadPlans().catch(() => {});
+    }
+  } catch {}
+}
+
+async function createPlan() {
+  if (!plannerCapable(state.status) || !state.activeProjectPath) return;
+  setPlannerMessage('');
+  try {
+    const body = await api('/api/plans', {
+      method: 'POST',
+      body: JSON.stringify({ projectPath: state.activeProjectPath, name: 'Untitled plan', content: '' }),
+    });
+    await loadPlans();
+    await selectPlan(body.plan.id);
+    const nameInput = elements.plannerDetail.querySelector('#planner-plan-name');
+    if (nameInput) { nameInput.focus(); nameInput.select(); }
+  } catch (error) {
+    setPlannerMessage(error.message);
+  }
+}
+
+async function savePlan() {
+  const plan = state.planner.plan;
+  if (!plan) return;
+  const nameInput = elements.plannerDetail.querySelector('#planner-plan-name');
+  const contentInput = elements.plannerDetail.querySelector('#planner-plan-content');
+  const name = nameInput ? nameInput.value.trim() : plan.name;
+  if (!name) { setPlannerMessage('A plan name is required.'); return; }
+  const content = contentInput ? contentInput.value : plan.content;
+  setPlannerMessage('Saving.');
+  try {
+    const body = await api(`/api/plans/${plan.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ name, content }),
+    });
+    state.planner.plan = { ...state.planner.plan, ...body.plan };
+    setPlannerMessage('Saved.');
+    renderPlannerPlanList();
+    loadPlans().catch(() => {});
+  } catch (error) {
+    setPlannerMessage(error.message);
+  }
+}
+
+async function deletePlan() {
+  const plan = state.planner.plan;
+  if (!plan) return;
+  if (!window.confirm(`Delete plan "${plan.name}"? This cannot be undone.`)) return;
+  try {
+    await api(`/api/plans/${plan.id}`, { method: 'DELETE' });
+    state.planner.selectedPlanId = null;
+    clearPlannerPlan();
+    stopPlannerPoll();
+    setPlannerMessage('Plan deleted.');
+    await loadPlans();
+    renderPlannerDetailEmpty();
+  } catch (error) {
+    setPlannerMessage(error.message);
+  }
+}
+
+async function requestBreakdown() {
+  const plan = state.planner.plan;
+  if (!plan || state.planner.busy) return;
+  const sessionSelect = elements.plannerDetail.querySelector('#planner-breakdown-session');
+  const guidanceInput = elements.plannerDetail.querySelector('#planner-guidance');
+  const threadId = sessionSelect ? sessionSelect.value : '';
+  if (!threadId) { setPlannerMessage(usesDisposableTerminalPools() ? 'Choose Codex or Claude for the breakdown.' : 'Choose a live session to run the breakdown.'); return; }
+  const terminalRequest = plannerTerminalRequest(threadId);
+  const provider = terminalRequest?.provider || sessionSelect.selectedOptions[0]?.dataset.provider || 'codex';
+  const guidance = guidanceInput ? guidanceInput.value.trim() : '';
+  const nameInput = elements.plannerDetail.querySelector('#planner-plan-name');
+  const contentInput = elements.plannerDetail.querySelector('#planner-plan-content');
+  state.planner.busy = true;
+  setPlannerMessage('Saving the plan, then starting the breakdown.');
+  try {
+    // Persist the current brief so the breakdown uses the latest text.
+    const saved = await api(`/api/plans/${plan.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        name: (nameInput ? nameInput.value.trim() : plan.name) || plan.name,
+        content: contentInput ? contentInput.value : plan.content,
+      }),
+    });
+    state.planner.plan = { ...state.planner.plan, ...saved.plan };
+    state.planner.breakdownSessionId = threadId;
+    const body = await api(`/api/plans/${plan.id}/breakdown`, {
+      method: 'POST',
+      body: JSON.stringify({ ...terminalRequest, guidance }),
+    });
+    state.planner.selectionAttemptId = null;
+    applyPlannerPlan({ ...state.planner.plan, breakdown: body.breakdown, run: state.planner.run });
+    setPlannerMessage(usesDisposableTerminalPools()
+      ? 'Breakdown queued in the automatic terminal pool. Its progress shows in the task queue.'
+      : 'Breakdown queued on the session. Its progress shows in the task queue.');
+    renderPlannerDetail();
+    maybeStartPlannerPoll();
+    load().catch(() => {});
+  } catch (error) {
+    setPlannerMessage(error.message);
+  } finally {
+    state.planner.busy = false;
+    updatePlannerRunButton();
+    updatePlannerQueueButton();
+  }
+}
+
+/**
+ * Persist proposals. Dirty ids are cleared only for entries whose local value
+ * still matches what was sent, so a keystroke that lands while the PATCH is in
+ * flight keeps its id dirty and stays protected from the next refresh.
+ */
+async function persistProposals() {
+  const plan = state.planner.plan;
+  if (!plan) return false;
+  const sent = state.planner.proposals.map((proposal) => ({
+    id: proposal.id,
+    title: proposal.title || '',
+    prompt: proposal.prompt || '',
+    dependsOn: dependencyIds(proposal),
+  }));
+  state.planner.saveInFlight = true;
+  try {
+    await api(`/api/plans/${plan.id}/breakdown`, {
+      method: 'PATCH',
+      body: JSON.stringify({ proposals: sent }),
+    });
+    for (const entry of sent) {
+      const current = state.planner.proposals.find((proposal) => proposal.id === entry.id);
+      if (!current) { state.planner.dirtyProposalIds.delete(entry.id); continue; }
+      const unchanged = (current.title || '') === entry.title
+        && (current.prompt || '') === entry.prompt
+        && dependencyIds(current).join('+') === entry.dependsOn.join('+');
+      if (unchanged) state.planner.dirtyProposalIds.delete(entry.id);
+    }
+    return true;
+  } catch (error) {
+    setPlannerMessage(error.message);
+    return false;
+  } finally {
+    state.planner.saveInFlight = false;
+  }
+}
+
+function schedulePersistProposals() {
+  clearTimeout(plannerProposalSaveTimer);
+  plannerProposalSaveTimer = setTimeout(() => { persistProposals().catch(() => {}); }, 700);
+}
+
+/**
+ * Flush any debounced edit before an action that depends on server state.
+ *
+ * This throws when the save fails. Refine and Run are seeded from the persisted
+ * proposals, so proceeding after a failed flush would send the server's older
+ * copy and then discard the user's newer edits when the result is adopted. A
+ * second tab that already moved the breakdown on is the realistic cause.
+ */
+async function flushProposalEdits() {
+  clearTimeout(plannerProposalSaveTimer);
+  if (state.planner.proposals.length === 0) return;
+  const saved = await persistProposals();
+  if (!saved) throw new Error('Your latest step edits could not be saved, so nothing was started. Reopen the plan to load the current steps and try again.');
+}
+
+function markProposalDirty(id) {
+  state.planner.dirtyProposalIds.add(id);
+}
+
+async function queueSelectedProposals() {
+  const plan = state.planner.plan;
+  if (!plan || state.planner.busy) return;
+  const sessionSelect = elements.plannerDetail.querySelector('#planner-queue-session');
+  const threadId = sessionSelect ? sessionSelect.value : '';
+  if (!threadId) { setPlannerMessage(usesDisposableTerminalPools() ? 'Choose Codex or Claude for these tasks.' : 'Choose a live session to queue the tasks on.'); return; }
+  const terminalRequest = plannerTerminalRequest(threadId);
+  const provider = terminalRequest?.provider || sessionSelect.selectedOptions[0]?.dataset.provider || 'codex';
+  const chosen = selectedProposals(state.planner.proposals, state.planner.selection);
+  if (chosen.length === 0) { setPlannerMessage('Select at least one task to queue.'); return; }
+  state.planner.busy = true;
+  updatePlannerQueueButton();
+  setPlannerMessage(`Queueing ${chosen.length} task${chosen.length === 1 ? '' : 's'}.`);
+  try {
+    // Persist any in-progress edits before queueing the selected proposals.
+    await flushProposalEdits();
+    const body = await api(`/api/plans/${plan.id}/breakdown/queue`, {
+      method: 'POST',
+      body: JSON.stringify({ proposals: chosen, ...terminalRequest }),
+    });
+    const count = Array.isArray(body.tasks) ? body.tasks.length : chosen.length;
+    const target = plannerProjectSessions().find((thread) => thread.id === threadId);
+    setPlannerMessage(`Queued ${count} task${count === 1 ? '' : 's'} on ${target ? threadDisplayName(target) : 'the selected provider'}.`);
+    state.planner.selection = new Set();
+    updatePlannerSelectionSummary();
+    const proposalSelects = elements.plannerDetail.querySelectorAll('.planner-step-check, #planner-select-all');
+    proposalSelects.forEach((input) => { input.checked = false; });
+    load().catch(() => {});
+  } catch (error) {
+    setPlannerMessage(error.message);
+  } finally {
+    state.planner.busy = false;
+    updatePlannerQueueButton();
+  }
+}
+
+/**
+ * Start a plan run. Nothing here executes on its own: the run exists only
+ * because the user pressed this button, exactly like the v1 queue action.
+ */
+async function startPlanRun() {
+  const plan = state.planner.plan;
+  if (!plan || state.planner.busy) return;
+  const sessionSelect = elements.plannerDetail.querySelector('#planner-run-session');
+  const threadId = sessionSelect ? sessionSelect.value : '';
+  if (!threadId) { setPlannerMessage(usesDisposableTerminalPools() ? 'Choose Codex or Claude for this run.' : 'Choose a live session to run the plan on.'); return; }
+  /*
+   * Re-validate against the run as it stands at press time, not as it stood
+   * when the checkboxes were seeded. A refinement landing mid-run can select
+   * steps that were only in flight then; if the run has since completed them,
+   * running again would repeat finished work on stale consent.
+   */
+  const { runnable: chosen, dropped } = runnableSelection(
+    state.planner.proposals,
+    state.planner.selection,
+    state.planner.run,
+  );
+  if (dropped.length > 0) {
+    for (const proposal of dropped) state.planner.selection.delete(proposal.id);
+    updatePlannerSelectionSummary();
+    const boxes = elements.plannerDetail.querySelectorAll('.planner-step-check');
+    boxes.forEach((box) => {
+      const id = box.closest('[data-proposal-id]')?.dataset.proposalId;
+      if (dropped.some((proposal) => String(proposal.id) === id)) box.checked = false;
+    });
+  }
+  if (chosen.length === 0) {
+    setPlannerMessage(dropped.length > 0
+      ? 'Every selected step was already completed by the current run. Select the steps you want to run again.'
+      : 'Select at least one step to run.');
+    return;
+  }
+  const settings = plannerRunSettings(threadId);
+  const terminalRequest = plannerTerminalRequest(threadId);
+  state.planner.busy = true;
+  updatePlannerRunButton();
+  setPlannerMessage(`Starting the plan run with ${chosen.length} step${chosen.length === 1 ? '' : 's'}.${
+    dropped.length > 0 ? ` ${dropped.length} step${dropped.length === 1 ? '' : 's'} the current run already completed ${dropped.length === 1 ? 'was' : 'were'} left out.` : ''
+  }`);
+  try {
+    await flushProposalEdits();
+    const body = await api(`/api/plans/${plan.id}/run`, {
+      method: 'POST',
+      body: JSON.stringify({
+        proposalIds: chosen.map((proposal) => proposal.id),
+        ...terminalRequest,
+        preferIdleTerminal: !usesDisposableTerminalPools() && state.planner.runPreferIdle,
+        ...(settings?.model ? { model: settings.model } : {}),
+        ...(settings?.effort ? { effort: settings.effort } : {}),
+      }),
+    });
+    state.planner.runSessionId = threadId;
+    if (body.plan) applyPlannerPlan({ ...body.plan, run: body.run || body.plan.run || null }, { adoptProposals: false });
+    else state.planner.run = body.run || null;
+    const target = plannerProjectSessions().find((thread) => thread.id === threadId);
+    setPlannerMessage(`Plan run started on ${target ? threadDisplayName(target) : 'the selected provider'}.`);
+    renderPlannerBoard();
+    maybeStartPlannerPoll();
+    load().catch(() => {});
+    loadPlans().catch(() => {});
+  } catch (error) {
+    setPlannerMessage(error.message);
+  } finally {
+    state.planner.busy = false;
+    updatePlannerRunButton();
+  }
+}
+
+async function stopPlanRun() {
+  const plan = state.planner.plan;
+  if (!plan || state.planner.busy) return;
+  state.planner.busy = true;
+  updatePlannerRunButton();
+  setPlannerMessage('Stopping the plan run.');
+  try {
+    const body = await api(`/api/plans/${plan.id}/run/stop`, { method: 'POST', body: JSON.stringify({}) });
+    if (body.plan) applyPlannerPlan({ ...body.plan, run: body.run || body.plan.run || null }, { adoptProposals: false });
+    else state.planner.run = body.run || null;
+    setPlannerMessage('Plan run stopped. No further steps will be enqueued. Tasks already running continue and can be cancelled from the queue.');
+    renderPlannerBoard();
+    maybeStartPlannerPoll();
+    loadPlans().catch(() => {});
+  } catch (error) {
+    setPlannerMessage(error.message);
+  } finally {
+    state.planner.busy = false;
+    updatePlannerRunButton();
+  }
+}
+
+async function refineBreakdown() {
+  const plan = state.planner.plan;
+  if (!plan || state.planner.busy) return;
+  const input = elements.plannerDetail.querySelector('#planner-refine-feedback');
+  const feedback = input ? input.value.trim() : '';
+  if (!feedback) { setPlannerMessage('Describe what should change before refining.'); return; }
+  state.planner.busy = true;
+  setPlannerMessage('Saving your current steps, then starting the refinement.');
+  try {
+    // The refinement is seeded with the steps as they are edited right now, so
+    // they must be persisted before the attempt starts.
+    await flushProposalEdits();
+    const sessionId = usesDisposableTerminalPools()
+      ? `automatic:${state.planner.breakdown?.provider || 'codex'}`
+      : state.planner.breakdown?.session_id || state.planner.breakdownSessionId || '';
+    const thread = plannerProjectSessions().find((item) => item.id === sessionId);
+    const terminalRequest = plannerTerminalRequest(sessionId);
+    const body = await api(`/api/plans/${plan.id}/breakdown/refine`, {
+      method: 'POST',
+      body: JSON.stringify({
+        feedback,
+        ...(terminalRequest || (sessionId
+          ? { threadId: sessionId, provider: thread ? threadProvider(thread) : (state.planner.breakdown?.provider || 'codex') }
+          : {})),
+      }),
+    });
+    state.planner.selectionAttemptId = null;
+    applyPlannerPlan({ ...state.planner.plan, breakdown: body.breakdown, run: state.planner.run });
+    setPlannerMessage(usesDisposableTerminalPools()
+      ? 'Refinement queued in the automatic terminal pool. Your current steps were sent for revision.'
+      : 'Refinement queued on the session. Your current steps were sent for revision.');
+    renderPlannerDetail();
+    maybeStartPlannerPoll();
+    load().catch(() => {});
+  } catch (error) {
+    setPlannerMessage(error.message);
+  } finally {
+    state.planner.busy = false;
+  }
+}
+
+function addPlannerStep() {
+  if (!plannerV2Capable(state.status)) return;
+  if (state.planner.breakdown?.status !== 'complete') {
+    setPlannerMessage('Break the plan into steps first, then add your own.');
+    return;
+  }
+  const next = addProposal(state.planner.proposals, { title: 'New step', prompt: '' });
+  const added = next[next.length - 1];
+  state.planner.proposals = next;
+  state.planner.selection.add(added.id);
+  markProposalDirty(added.id);
+  renderPlannerBoard();
+  const node = elements.plannerDetail.querySelector(`[data-proposal-id="${CSS.escape(added.id)}"] .planner-step-title`);
+  if (node) { node.focus(); node.select(); }
+  persistProposals().catch(() => {});
+}
+
+elements.plannerButton.addEventListener('click', () => { openPlanner().catch((error) => setPlannerMessage(error.message)); });
+elements.plannerClose.addEventListener('click', closePlanner);
+elements.plannerModal.addEventListener('click', (event) => {
+  if (event.target === elements.plannerModal) closePlanner();
+});
+elements.plannerModal.addEventListener('close', () => {
+  state.planner.open = false;
+  stopPlannerPoll();
+});
+elements.plannerNewPlan.addEventListener('click', () => { createPlan().catch((error) => setPlannerMessage(error.message)); });
+elements.plannerPlanList.addEventListener('click', (event) => {
+  const item = event.target.closest('[data-plan-id]');
+  if (item) selectPlan(Number(item.dataset.planId));
+});
+elements.plannerDetail.addEventListener('click', (event) => {
+  const move = event.target.closest('.planner-step-move');
+  if (move) {
+    const id = move.closest('[data-proposal-id]')?.dataset.proposalId;
+    if (id) {
+      state.planner.proposals = moveProposal(state.planner.proposals, id, move.dataset.direction === 'up' ? -1 : 1);
+      renderPlannerBoard();
+      persistProposals().catch(() => {});
+    }
+    return;
+  }
+  const remove = event.target.closest('.planner-step-remove');
+  if (remove) {
+    const id = remove.closest('[data-proposal-id]')?.dataset.proposalId;
+    if (id) {
+      // Removing a step must also drop every reference to it, so the payload
+      // stays a self-consistent graph.
+      state.planner.proposals = pruneDanglingDependencies(removeProposal(state.planner.proposals, id));
+      state.planner.selection.delete(id);
+      state.planner.dirtyProposalIds.delete(id);
+      renderPlannerBoard();
+      persistProposals().catch(() => {});
+    }
+    return;
+  }
+  const open = event.target.closest('.planner-step-open');
+  if (open && open.dataset.openTask) {
+    const taskId = Number(open.dataset.openTask);
+    closePlanner();
+    state.taskView = 'queue';
+    localStorage.setItem('relay.taskView', state.taskView);
+    renderTasks();
+    selectTask(taskId).catch((error) => { elements.queueSummary.textContent = error.message; });
+    return;
+  }
+  if (event.target.closest('#planner-add-step')) { addPlannerStep(); return; }
+  if (event.target.closest('#planner-save')) { savePlan(); return; }
+  if (event.target.closest('#planner-delete')) { deletePlan(); return; }
+  if (event.target.closest('#planner-request-breakdown')) { requestBreakdown(); return; }
+  if (event.target.closest('#planner-run-start')) { startPlanRun(); return; }
+  if (event.target.closest('#planner-run-stop')) { stopPlanRun(); return; }
+  if (event.target.closest('#planner-refine-start')) { refineBreakdown(); return; }
+  if (event.target.closest('#planner-queue-selected')) { queueSelectedProposals(); }
+});
+elements.plannerDetail.addEventListener('input', (event) => {
+  const li = event.target.closest('[data-proposal-id]');
+  if (!li) return;
+  const id = li.dataset.proposalId;
+  if (event.target.classList.contains('planner-step-title')) {
+    state.planner.proposals = updateProposalField(state.planner.proposals, id, 'title', event.target.value);
+    markProposalDirty(id);
+    schedulePersistProposals();
+  } else if (event.target.classList.contains('planner-step-prompt')) {
+    state.planner.proposals = updateProposalField(state.planner.proposals, id, 'prompt', event.target.value);
+    markProposalDirty(id);
+    schedulePersistProposals();
+  }
+});
+elements.plannerDetail.addEventListener('change', (event) => {
+  if (event.target.id === 'planner-select-all') {
+    state.planner.selection = event.target.checked
+      ? new Set(state.planner.proposals.map((proposal) => proposal.id))
+      : new Set();
+    elements.plannerDetail.querySelectorAll('.planner-step-check').forEach((input) => {
+      if (!input.disabled) input.checked = event.target.checked;
+    });
+    updatePlannerSelectionSummary();
+    return;
+  }
+  if (event.target.classList.contains('planner-step-check')) {
+    const id = event.target.closest('[data-proposal-id]')?.dataset.proposalId;
+    if (id) {
+      if (event.target.checked) state.planner.selection.add(id);
+      else state.planner.selection.delete(id);
+      updatePlannerSelectionSummary();
+    }
+    return;
+  }
+  if (event.target.classList.contains('planner-dep-check')) {
+    const id = event.target.closest('[data-proposal-id]')?.dataset.proposalId;
+    const dependencyId = event.target.dataset.dependencyId;
+    if (id && dependencyId) {
+      state.planner.proposals = toggleDependency(state.planner.proposals, id, dependencyId);
+      markProposalDirty(id);
+      renderPlannerBoard();
+      persistProposals().catch(() => {});
+    }
+    return;
+  }
+  if (event.target.id === 'planner-queue-session') {
+    state.planner.queueSessionId = event.target.value;
+    updatePlannerQueueButton();
+    return;
+  }
+  if (event.target.id === 'planner-run-session') {
+    state.planner.runSessionId = event.target.value;
+    updatePlannerRunButton();
+    const note = elements.plannerDetail.querySelector('.planner-run-note');
+    const settings = plannerRunSettings(event.target.value);
+    if (note && settings) {
+      note.textContent = `Uses ${settings.model || 'the default model'}${settings.effort ? ` · ${settings.effort}` : ''} from the composer for this Relay. Nothing runs until you start the run.`;
+    }
+    return;
+  }
+  if (event.target.id === 'planner-run-prefer-idle') {
+    state.planner.runPreferIdle = event.target.checked;
+    return;
+  }
+  if (event.target.id === 'planner-breakdown-session') {
+    state.planner.breakdownSessionId = event.target.value;
+  }
+});
+
 elements.form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  /*
+   * A submission already in flight owns the composer. A repeated Enter is a deliberate
+   * quiet no-op: turning it into a second POST or an error message reintroduces the false
+   * "missing terminal" report from task 274. See wiki/task-history.md.
+   */
   if (state.submitting) {
     return;
   }
+  setComposerAlert('');
   elements.formMessage.textContent = '';
+
+  const validationIssue = composerValidationIssue();
+  if (validationIssue) {
+    setComposerAlert(validationIssue, 'validation');
+    return;
+  }
+
   let submissionMode;
   try {
     submissionMode = selectedWorkflowMode(elements.modeTabs);
   } catch (error) {
-    elements.formMessage.textContent = error.message;
+    setComposerAlert(error.message);
     return;
   }
   if (submissionMode !== state.taskMode) {
-    elements.formMessage.textContent = 'Workflow selection changed unexpectedly. Select the workflow again before adding the task.';
+    setComposerAlert('Workflow selection changed unexpectedly. Select the workflow again before adding the task.');
     return;
   }
   if (submissionMode === 'execute' && elements.planCouncilEnabled.checked !== state.planSettings.enabled) {
-    elements.formMessage.textContent = 'Plan council selection changed unexpectedly. Choose it again before adding the task.';
+    setComposerAlert('Plan council selection changed unexpectedly. Choose it again before adding the task.');
     return;
   }
   const councilRequested = submissionMode === 'execute' && state.planSettings.enabled;
@@ -3851,16 +6081,41 @@ elements.form.addEventListener('submit', async (event) => {
     try {
       submissionProvider = selectedExecutionProvider(elements.providerTabs);
     } catch (error) {
-      elements.formMessage.textContent = error.message;
+      setComposerAlert(error.message);
       return;
     }
     if (submissionProvider !== state.selectedProvider) {
-      elements.formMessage.textContent = 'Provider selection changed unexpectedly. Select Codex or Claude again before adding the task.';
+      setComposerAlert('Provider selection changed unexpectedly. Select Codex or Claude again before adding the task.');
       return;
     }
     if (councilRequested && submissionProvider !== 'codex') {
-      elements.formMessage.textContent = 'Plan council needs a connected Codex review terminal.';
+      setComposerAlert('Plan council needs a connected Codex review terminal.');
       return;
+    }
+  }
+  /*
+   * Workflow readiness is validated here rather than by disabling the button. These
+   * conditions depend on a live process list that is replaced every four seconds, so as
+   * a gate they made the composer unusable for a moment at a time; as a submit-time check
+   * they produce an exact message and never block a valid prompt.
+   */
+  if (councilRequested && !state.planSettings.reviewerModel) {
+    setComposerAlert('Choose a Codex reviewer model before building the reviewed plan.');
+    return;
+  }
+  if (submissionMode === 'turbo') {
+    if (usesDisposableTerminalPools()) {
+      const required = state.turboSettings.workerCount + 1;
+      if (projectInstanceLimits().codex < required) {
+        setComposerAlert(`Turbo needs ${required} Codex instances. Raise this project's Codex maximum before adding the task.`);
+        return;
+      }
+    } else {
+      const availableWorkers = turboWorkerThreads().length;
+      if (availableWorkers < state.turboSettings.workerCount) {
+        setComposerAlert(`Turbo needs ${state.turboSettings.workerCount} worker Relay${state.turboSettings.workerCount === 1 ? '' : 's'} connected in this workspace. ${availableWorkers} ${availableWorkers === 1 ? 'is' : 'are'} available.`);
+        return;
+      }
     }
   }
   const formData = new FormData(elements.form);
@@ -3873,45 +6128,85 @@ elements.form.addEventListener('submit', async (event) => {
   }
   const runNow = state.prioritySubmit;
   state.prioritySubmit = false;
+  /*
+   * Idle routing has two implementations. The backend resolves a free Relay at dispatch
+   * time when it advertises dispatchIdleRouting, so the browser posts immediately and only
+   * declares the stored preference; the server itself forces it off for anything other
+   * than a non-priority Execute task. An older backend still needs the client settle loop,
+   * which is the one thing that can delay task creation.
+   */
+  const automaticTerminals = usesDisposableTerminalPools();
+  const dispatchIdleRouting = state.status?.capabilities?.dispatchIdleRouting === true
+    && !automaticTerminals;
   const attachments = state.attachments.map((attachment) => ({
     name: attachment.name,
     mimeType: attachment.mimeType,
     data: attachment.data,
   }));
-  const submissionSignature = JSON.stringify({
-    submissionMode,
+  /*
+   * The signature identifies the intent, not the queue-position hint. runNow is excluded
+   * on purpose: Ctrl+Enter, an ambiguous failure, then a plain Enter retry is one intent
+   * and must reuse one UUID, or a first POST whose response was merely lost becomes a
+   * second task. See public/submission-intent.js and [[duplicate-submission-review]].
+   */
+  const submissionSignature = submissionIntentSignature({
+    mode: submissionMode,
     councilRequested,
-    submissionProvider,
-    selectedThreadId: state.selectedThreadId,
+    provider: submissionProvider,
+    threadId: automaticTerminals
+      ? `automatic:${state.activeProjectPath || ''}`
+      : state.selectedThreadId,
     prompt: formData.get('prompt'),
     execution,
     planSettings: state.planSettings,
     turboSettings: state.turboSettings,
-    attachments: state.attachments.map(({ id, name, mimeType, size }) => ({ id, name, mimeType, size })),
-    runNow,
+    attachments: state.attachments,
   });
-  const submissionId = state.pendingSubmission?.signature === submissionSignature
-    ? state.pendingSubmission.id
-    : window.crypto.randomUUID();
+  const submissionId = resolveSubmissionId(
+    state.pendingSubmission,
+    submissionSignature,
+    () => window.crypto.randomUUID(),
+  );
   state.pendingSubmission = { id: submissionId, signature: submissionSignature };
-  state.submitting = true;
-  updateSubmitState();
+  setComposerPending(true);
+  /*
+   * Everything the user typed stays exactly where it is until the server has accepted the
+   * task. Nothing below clears the prompt or the attachments inside this try, so any
+   * failure leaves the composer ready for an immediate retry with the same submissionId.
+   */
+  let createdTask = null;
+  let duplicateSubmission = false;
+  let acceptedThreadId = null;
   try {
-    const routedThreadId = await settleIdleSubmissionThread({ runNow });
-    if (!routedThreadId) {
-      elements.formMessage.textContent = 'Choose a connected AI session first.';
+    const routedThreadId = automaticTerminals
+      ? null
+      : dispatchIdleRouting
+        ? state.selectedThreadId
+        : await settleIdleSubmissionThread({ runNow });
+    if (!automaticTerminals && !routedThreadId) {
+      setComposerAlert('Choose a connected AI session first.');
+      return;
+    }
+
+    if (
+      councilRequested
+      && isPlanCouncilTerminalExecutionEnabled()
+      && !automaticTerminals
+      && !state.planSettings.authorThreadId
+    ) {
+      setComposerAlert('Launch and choose a Claude author terminal before building the reviewed plan.');
       return;
     }
 
     if (councilRequested && !isClaudePlanReady()) {
-      elements.formMessage.textContent = claudePlanIssue();
+      setComposerAlert(claudePlanIssue());
       return;
     }
 
     if (submissionMode === 'turbo') {
       const councilIssue = turboCouncilIssue();
       if (councilIssue) {
-        elements.formMessage.textContent = councilIssue;
+        setComposerAlert(councilIssue);
         return;
       }
     }
@@ -3923,7 +6218,16 @@ elements.form.addEventListener('submit', async (event) => {
       ? {
         mode: 'plan',
         councilEnabled: true,
-        threadId: routedThreadId,
+        ...(automaticTerminals
+          ? {
+            projectPath: state.activeProjectPath,
+            terminalLifecycle: 'disposable',
+            terminalLayout: terminalLayout(),
+          }
+          : { threadId: routedThreadId }),
+        ...(isPlanCouncilTerminalExecutionEnabled() && !automaticTerminals
+          ? { authorThreadId: state.planSettings.authorThreadId }
+          : {}),
         prompt: formData.get('prompt'),
         authorProvider: 'claude',
         authorModel: state.planSettings.authorModel,
@@ -3937,7 +6241,13 @@ elements.form.addEventListener('submit', async (event) => {
       : submissionMode === 'turbo'
         ? {
           mode: 'turbo',
-          threadId: routedThreadId,
+          ...(automaticTerminals
+            ? {
+              projectPath: state.activeProjectPath,
+              terminalLifecycle: 'disposable',
+              terminalLayout: terminalLayout(),
+            }
+            : { threadId: routedThreadId }),
           prompt: formData.get('prompt'),
           plannerModel: state.turboSettings.plannerModel,
           plannerEffort: state.turboSettings.plannerEffort || null,
@@ -3951,49 +6261,115 @@ elements.form.addEventListener('submit', async (event) => {
         : {
         mode: 'execute',
         provider: submissionProvider,
-        threadId: routedThreadId,
+        ...(automaticTerminals
+          ? {
+            projectPath: state.activeProjectPath,
+            terminalLifecycle: 'disposable',
+            terminalLayout: terminalLayout(),
+          }
+          : { threadId: routedThreadId }),
         prompt: formData.get('prompt'),
         model: execution.model,
         effort: execution.effort || null,
         attachments,
         runNow,
+        // Sent only when the backend advertises the capability, so an older backend never
+        // receives a field it does not know about. The server decides whether to honour it.
+        ...(dispatchIdleRouting ? { preferIdleTerminal: state.preferIdleTerminal } : {}),
       };
     requestBody.submissionId = submissionId;
     const body = await api('/api/tasks', {
       method: 'POST',
       body: JSON.stringify(requestBody),
+      timeoutMs: TASK_SUBMIT_TIMEOUT_MS,
+      // The abort stops the browser waiting, not the server, so the task may well exist.
+      // Resending is nonetheless safe because the retained submissionId resolves to it.
+      timeoutMessage: (seconds) => `Relay did not answer within ${seconds} seconds. The task may still have been created. Sending it again is safe and will not create a duplicate.`,
     });
-    if (submissionMode === 'execute' && !councilRequested) {
-      const acceptedThreadId = body.task.thread_id || routedThreadId;
-      rememberThreadExecution(state, body.task.provider || submissionProvider, acceptedThreadId, {
-        model: body.task.model || execution.model,
-        effort: body.task.effort || execution.effort,
-      }, { source: 'task', taskId: body.task.id });
-      if (state.selectedThreadId === acceptedThreadId) {
-        renderExecutionControls();
-      }
-    }
+    createdTask = body.task;
+    duplicateSubmission = body.duplicateSubmission === true;
+    acceptedThreadId = createdTask.thread_id || routedThreadId || null;
+  } catch (error) {
+    setComposerAlert(error.message);
+  } finally {
+    setComposerPending(false);
+  }
+
+  if (!createdTask) {
+    return;
+  }
+
+  /*
+   * A duplicate that resolved to an already finished task is NOT a successful add. The
+   * sequence: a submission whose response was lost did create a task, the user never
+   * retried, that task ran to completion, and much later the user deliberately sends the
+   * identical prompt wanting a second run. The retained intent still matches, so the
+   * server correctly returns the old finished task. Treating that as a normal success
+   * would clear the composer, select a finished task, and run nothing at all.
+   *
+   * So: drop the pending intent (the next submit mints a fresh UUID and genuinely runs),
+   * keep the prompt and its attachments, select the existing task, and say plainly what
+   * happened. A duplicate that is still waiting or running is a real in-flight task, and
+   * selecting it while clearing the composer remains correct there.
+   */
+  if (duplicateSubmission && isFinishedTaskStatus(createdTask.status)) {
+    state.pendingSubmission = null;
     state.taskView = 'queue';
     state.taskScope = 'workspace';
-    state.selectedTaskId = body.task.id;
-    state.pendingSubmission = null;
-    state.parallelTaskIds.clear();
+    state.selectedTaskId = createdTask.id;
     localStorage.setItem('relay.taskView', state.taskView);
-    elements.prompt.value = '';
-    if (councilRequested) {
-      state.planSettings.enabled = false;
-      renderPlanControls();
-      renderExecutionControls();
-      renderPromptCopy();
+    setComposerAlert(
+      `This exact prompt was already accepted as task ${createdTask.id}, which has finished. Press Enter again to run it as a new task.`,
+      'notice',
+    );
+    try {
+      await load({ fresh: true });
+    } catch (error) {
+      elements.queueSummary.textContent = error.message;
     }
-    state.attachments = [];
-    renderAttachmentComposer();
-    await load();
+    return;
+  }
+
+  /*
+   * The task exists on the server from here on. Nothing below may be reported as a failed
+   * add: a refresh problem is a refresh problem, and the old code reported it in the
+   * composer after the prompt had already been cleared.
+   */
+  if (submissionMode === 'execute' && !councilRequested) {
+    rememberThreadExecution(state, createdTask.provider || submissionProvider, acceptedThreadId, {
+      model: createdTask.model || execution.model,
+      effort: createdTask.effort || execution.effort,
+    }, { source: 'task', taskId: createdTask.id });
+    if (state.selectedThreadId === acceptedThreadId) {
+      renderExecutionControls();
+    }
+  }
+  state.taskView = 'queue';
+  state.taskScope = 'workspace';
+  state.selectedTaskId = createdTask.id;
+  state.pendingSubmission = null;
+  state.parallelTaskIds.clear();
+  localStorage.setItem('relay.taskView', state.taskView);
+  elements.prompt.value = '';
+  if (councilRequested) {
+    state.planSettings.enabled = false;
+    renderPlanControls();
+    renderExecutionControls();
+    renderPromptCopy();
+  }
+  state.attachments = [];
+  renderAttachmentComposer();
+  updateSubmitState();
+  if (duplicateSubmission) {
+    // Still waiting or running, so this is the same live task the user already asked for.
+    // Selecting it and clearing the composer is right; say which one it resolved to.
+    setComposerAlert(`This prompt was already queued as task ${createdTask.id}. Showing that task instead of adding a second one.`, 'notice');
+  }
+  try {
+    // fresh: true so this cannot join a snapshot requested before the task existed.
+    await load({ fresh: true });
   } catch (error) {
-    elements.formMessage.textContent = error.message;
-  } finally {
-    state.submitting = false;
-    updateSubmitState();
+    elements.queueSummary.textContent = error.message;
   }
 });
 
@@ -4186,6 +6562,22 @@ elements.preferIdleTerminal.addEventListener('change', () => {
   state.preferIdleTerminal = elements.preferIdleTerminal.checked;
   localStorage.setItem('relay.preferIdleTerminal', String(state.preferIdleTerminal));
 });
+/*
+ * The instance steppers live inside the provider tabs, which sit inside the task form. Enter
+ * in a number field is an implicit form submission, so an unguarded Return while editing a
+ * maximum would queue the prompt. Blurring instead commits the value through the change
+ * listener below exactly once. The steppers are siblings of the tab buttons, never children,
+ * so no click, key, or spinner interaction here reaches provider selection.
+ */
+for (const input of [elements.maxCodexInstances, elements.maxClaudeInstances]) {
+  input.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    input.blur();
+  });
+}
+elements.maxCodexInstances.addEventListener('change', saveProjectInstanceLimits);
+elements.maxClaudeInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.addProjectButton.addEventListener('click', () => chooseProject(false));
 elements.addLaunchProjectButton.addEventListener('click', () => chooseProject(true));
 elements.projectList.addEventListener('click', async (event) => {
@@ -4219,6 +6611,14 @@ elements.projectList.addEventListener('keydown', (event) => {
   const project = state.projects.find((item) => item.id === Number(chip.dataset.projectId));
   if (project) selectProject(project.path);
 });
+for (const tab of elements.providerTabs) {
+  tab.addEventListener('click', () => selectProvider(tab.dataset.provider, { focus: true }));
+  tab.addEventListener('keydown', (event) => {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    event.preventDefault();
+    selectProvider(tab.dataset.provider === 'codex' ? 'claude' : 'codex', { focus: true });
+  });
+}
 elements.modelSelect.addEventListener('input', () => {
   updateSelectedExecution({ model: elements.modelSelect.value, effort: '' });
   renderExecutionControls();
@@ -4250,6 +6650,11 @@ elements.attachmentDropzone.addEventListener('drop', async (event) => {
   event.preventDefault();
   delete elements.attachmentDropzone.dataset.dragging;
   await addImageFiles(event.dataTransfer.files || []);
+});
+elements.planAuthorTerminal.addEventListener('change', () => {
+  state.planSettings.authorThreadId = elements.planAuthorTerminal.value || null;
+  renderPlanControls();
+  updateSubmitState();
 });
 elements.planAuthorModel.addEventListener('input', () => {
   state.planSettings.authorModel = elements.planAuthorModel.value;
@@ -4329,21 +6734,25 @@ document.addEventListener('click', (event) => {
     setTurboCouncilHelp(false);
   }
 });
+// Keep the submit gate in step with what the user has actually typed.
+elements.prompt.addEventListener('input', () => {
+  if (elements.composerAlert.dataset.kind === 'validation' && !composerValidationIssue()) {
+    setComposerAlert('');
+  }
+  updateSubmitState();
+});
 elements.prompt.addEventListener('keydown', (event) => {
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing) {
     return;
   }
   event.preventDefault();
-  if (elements.submitButton.disabled) {
-    elements.formMessage.textContent = isExecuteCouncilEnabled()
-      ? !isClaudePlanReady()
-        ? claudePlanIssue()
-        : 'Choose a connected Codex review terminal before sending.'
-      : state.taskMode === 'turbo'
-        ? turboCouncilIssue() || `Turbo needs one planner and ${state.turboSettings.workerCount} worker terminals connected in this workspace.`
-      : state.selectedProvider === 'claude'
-        ? 'Connect a Claude session before sending.'
-        : 'Choose a connected terminal before sending.';
+  // Progress, not a rejection. A second Enter during an in-flight submission stays quiet.
+  if (state.submitting) {
+    return;
+  }
+  const issue = composerValidationIssue();
+  if (issue) {
+    setComposerAlert(issue, 'validation');
     return;
   }
   state.prioritySubmit = event.ctrlKey;
@@ -4425,9 +6834,34 @@ elements.terminalSettingsModal.addEventListener('click', (event) => {
 elements.taskEditClose.addEventListener('click', closeTaskEditor);
 elements.taskEditCancel.addEventListener('click', closeTaskEditor);
 elements.taskEditSave.addEventListener('click', saveTaskEdit);
+elements.taskEditProvider.addEventListener('change', () => {
+  if (!['codex', 'claude'].includes(elements.taskEditProvider.value)) return;
+  state.taskEditProvider = elements.taskEditProvider.value;
+  state.taskEditExecutionDirty = true;
+  renderTaskEditExecution();
+});
+elements.taskEditModel.addEventListener('change', () => {
+  const settings = state.taskEditSettings?.[state.taskEditProvider];
+  if (!settings) return;
+  settings.model = elements.taskEditModel.value;
+  state.taskEditExecutionDirty = true;
+  renderTaskEditExecution();
+});
+elements.taskEditEffort.addEventListener('change', () => {
+  const settings = state.taskEditSettings?.[state.taskEditProvider];
+  if (!settings) return;
+  settings.effort = elements.taskEditEffort.value;
+  state.taskEditExecutionDirty = true;
+});
 elements.taskEditModal.addEventListener('cancel', (event) => {
   if (state.taskEditSubmitting) event.preventDefault();
-  else state.editingTaskId = null;
+  else {
+    state.editingTaskId = null;
+    state.taskEditProvider = null;
+    state.taskEditOriginalProvider = null;
+    state.taskEditExecutionDirty = false;
+    state.taskEditSettings = null;
+  }
 });
 elements.taskEditModal.addEventListener('click', (event) => {
   if (event.target === elements.taskEditModal) closeTaskEditor();
@@ -4625,7 +7059,12 @@ events.addEventListener('change', (event) => {
     if (change.threads) {
       operations.push(loadThreads());
     }
-    Promise.all(operations).catch(console.error);
+    if (change.plans && state.planner.open) {
+      operations.push(refreshPlannerFromServer());
+    }
+    Promise.all(operations)
+      .then(() => { if (state.planner.open) refreshPlannerSessions(); })
+      .catch(console.error);
   }, 150);
 });
 
@@ -4640,7 +7079,9 @@ Promise.all([load(), loadThreads({ silent: false }), loadModels('codex'), loadMo
 });
 
 setInterval(() => {
-  loadThreads({ silent: true }).catch(console.error);
+  loadThreads({ silent: true })
+    .then(() => { if (state.planner.open) refreshPlannerSessions(); })
+    .catch(console.error);
 }, 4_000);
 
 setInterval(() => {

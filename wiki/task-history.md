@@ -14,14 +14,14 @@ The apparent loss of older tasks after project workspace support was introduced 
 
 The selected Launchpad project is always the outer boundary for the queue and history. Switching projects immediately replaces the visible task cards, queue counts, history ledger, and statistics with tasks whose stored `repo_path` matches the selected project. Project paths use normalized exact matching.
 
-Inside a selected project, the queue heading has a two-state task-scope control:
+Inside a selected project, current automatic mode shows tasks across that complete project because disposable tasks are not attached to an already open Relay before launch. A legacy backend or legacy selected-session view retains the two-state task-scope control:
 
 - **This Relay** restricts the project task list to the selected terminal session.
 - **All Relays** shows tasks from every Relay in the selected project.
 
 **All Relays** always means every Relay inside the selected project. It never spans projects. The underlying SQLite records remain global and are not deleted or moved when the visible project changes.
 
-The internal broad-scope value remains `workspace` for compatibility, but queue scope is intentionally not persisted. Relay starts in **All Relays**, and project or provider changes restore **All Relays**. Selecting a live terminal changes only the execution target and never narrows the task list. **This Relay** activates only through the explicit scope control and lasts for the current project and provider context.
+The internal broad-scope value remains `workspace` for compatibility, but queue scope is intentionally not persisted. Relay starts in **All Relays**, and project or provider changes restore **All Relays**. In current automatic mode there is no live terminal selection to narrow the list. In the legacy view, selecting a live terminal changes only the execution target and never narrows the task list. **This Relay** activates only through the explicit compatibility scope control and lasts for the current project and provider context.
 
 > [!important]
 > Project composer snapshots must not store task scope. Restoring a prompt, workflow, provider, or selected execution terminal must never restore a stale Relay-only queue filter.
@@ -45,7 +45,10 @@ After any successful composer submission, Relay switches to **Queue**, restores 
 
 ## Idempotent composer submission
 
-The task form acquires `state.submitting` before its first asynchronous idle-routing wait. A second click, Enter event, or programmatic submit during that window returns immediately. The button disables and shows its existing starting label for the complete routing and request lifetime.
+The task form acquires `state.submitting` before its first asynchronous idle-routing wait. A second click, Enter event, or programmatic submit during that window returns immediately. The prompt keyboard handler checks this active-submission state before interpreting a disabled button as a readiness failure. The button disables and shows its existing starting label for the complete routing and request lifetime.
+
+> [!important]
+> A disabled composer button can mean either **submission in progress** or **submission unavailable**. Repeated Enter while `state.submitting` is true must be a quiet no-op. It must not replace **Adding task** with a missing-terminal error. The screenshot attached to task 274 exposed this false failure message. The earlier prompt shown in that screenshot never reached the task API, while the later report task 274 validated, persisted, and started in milliseconds on the same Relay.
 
 Every composer intent receives a UUID v4 `submissionId`. The intent signature includes workflow, provider, explicitly selected session, prompt, execution settings, Plan council or Turbo settings, attachment identities, and priority choice. Relay retains the same UUID after an ambiguous failure while that intent stays unchanged. This matters when the server committed a task but its response was lost, or when a later idle-routing pass chooses a different destination. Successful acceptance clears the pending intent, so deliberately submitting the same prompt later remains valid.
 
@@ -63,15 +66,17 @@ See [[duplicate-submission-review]].
 
 Task Activity includes a **Continue session** dock for direct Codex and Claude tasks. When the selected Codex task is running, the dock uses `POST /api/tasks/:id/steer` and Codex `turn/steer` to add the message to that exact active turn. No task record or queue position is created, Task Activity remains on the running task, and the accepted user message appears in its event rail. The request includes the expected active turn ID so a completion race fails visibly instead of routing the message elsewhere.
 
-When the source task is no longer running, `POST /api/tasks/:id/follow-up` starts the next provider turn immediately against the exact original `thread_id`. Relay reuses the source task row and event rail, keeps the stored original prompt unchanged, records the follow-up as a user-message event, and updates that task with the latest turn outcome. It does not call `queue.enqueue()`, create `continued_from_task_id`, change task selection, or increase the task count. `/api/tasks/:id/continue` is retained only as a direct-behavior alias for clients that already use that path.
+When a disposable source task is no longer running, `POST /api/tasks/:id/follow-up` creates a linked queue task with `continued_from_task_id` and the original conversation ID. Relay selects that new task. When a provider slot is free, the pool launches a new native terminal in the same project and resumes Claude with `--resume` or Codex with `codex resume`. The new terminal receives a new native launch ID, but the provider keeps the saved conversation ID. Relay closes the new terminal when the continuation ends.
 
-The server requires the exact original session to remain connected, idle, and in the same workspace. A queued or running task that reserves the session blocks submission. If the provider becomes busy between validation and dispatch, the immediate runner rejects instead of waiting. A failed, cancelled, or interrupted follow-up is marked as a same-session follow-up so automatic retry and the generic Retry action cannot place the source prompt in the queue. The user can send it again only through **Continue session**.
+Only one queued or running task may own a saved disposable conversation. The route checks for a conflict, `TaskQueue.enqueue()` repeats the guard after asynchronous provider validation, manual retry repeats it, and the scheduler serializes duplicate persisted rows defensively. A continuation can wait for project capacity, but it never moves to another conversation or starts a second concurrent resume of the same ID.
 
-When the original session is offline or busy, the input remains editable so a draft is not lost, while Send stays disabled with the exact reason. Relay never moves a follow-up to another terminal, waits behind other work, creates fresh hidden context, or falls back to `POST /api/tasks`. Plan council and Turbo tasks do not expose the dock because they span multiple providers or terminals rather than one coherent conversation. Enter sends and Shift+Enter inserts a line break.
+Finished legacy persistent tasks retain the former immediate path. Their follow-up starts against the exact connected original `thread_id`, reuses the source task row and event rail, and rejects when that terminal is offline or busy. `/api/tasks/:id/continue` remains an alias for clients that already use that path.
+
+The input stays editable while a disposable conversation is waiting on another linked task, and Send is disabled with **Conversation busy**. A disposable task whose terminal closed remains resumable as long as it established a conversation ID. A task cancelled before binding does not falsely advertise resume. Plan council and Turbo tasks do not expose the dock because they span multiple conversations. Enter sends and Shift+Enter inserts a line break.
 
 The continuation dock accepts PNG, JPEG, and WebP images through a minimal **Add images** file control or clipboard paste. It shows only the selected count and a **Clear images** action. Text and image drafts are retained independently per selected task while navigating Task Activity and are cleared only after the provider accepts the follow-up. The existing per-request limits apply: 99 images, 5 MB per image, and 20 MB total.
 
-Finished Codex and Claude follow-ups validate images through `decodeImageAttachments()`, append them to the existing task's artifact list with new non-colliding `image-n` IDs, and pass only the newly attached images to that provider turn. Earlier task images remain visible in Task Activity but are not resent. Running Codex steering stages the new files, sends them as `localImage` entries in the same `turn/steer` `UserInput[]`, and commits them only after Codex accepts the exact active turn. A rejected steer removes the staged files and database metadata so resubmission cannot duplicate them.
+Disposable finished-task continuations validate images through `decodeImageAttachments()` and store them on the linked task. Legacy immediate follow-ups append new non-colliding `image-n` IDs to the source task and pass only the newly attached images to that turn. Earlier task images remain visible but are not resent. Running Codex steering stages the new files, sends them as `localImage` entries in the same `turn/steer` `UserInput[]`, and commits them only after Codex accepts the exact active turn. A rejected steer removes the staged files and database metadata so resubmission cannot duplicate them.
 
 > [!important]
 > Follow-up images require `/api/status` to advertise `capabilities.taskFollowUpAttachments`. A newer renderer must disable the image control against an older backend because older follow-up routes ignore an unknown `attachments` field. Never silently send image-bearing follow-ups without this capability gate.
@@ -79,7 +84,7 @@ Finished Codex and Claude follow-ups validate images through `decodeImageAttachm
 Static UI assets can update while an older Relay backend is still running. A finished task requires `/api/status` to advertise `capabilities.taskDirectFollowUp`. Without it, the renderer shows **Restart required** and disables Send, even when text is present. This gate intentionally rejects the old ordinary-task compatibility route. A running Codex task can still steer when `capabilities.taskSteering` is available because that route already has a no-queue contract.
 
 > [!important]
-> Every **Continue session** submission is immediate and never creates or queues a task. Running Codex updates steer the current turn. Finished Codex and Claude tasks start the next turn in the same task and session. A busy session rejects the send. Running Claude turns do not support live steering yet, so Relay keeps the draft editable but disables submission until the turn finishes.
+> `capabilities.resumableDisposableSessions` is the explicit promise that a finished disposable task may create a linked continuation. Running Codex updates still steer the current turn. Finished legacy tasks still use immediate same-terminal follow-up. Running Claude turns do not support live steering, so Relay keeps the draft editable but disables submission until the turn finishes.
 
 History supports day, Monday-to-Sunday week, and calendar-month periods with previous, next, and today navigation. Its scope follows the existing project and Relay filters, so statistics describe either one explicitly selected Relay or all Relays in the selected project. The selected view and period are browser display preferences under `relay.taskView` and `relay.historyPeriod`; the selected date resets to the current period when the app loads.
 
@@ -109,21 +114,27 @@ The summary reports tasks created in the selected period, successful completions
 
 ## Parallel Codex batches
 
-Queue task checkboxes can combine two or more waiting tasks into one command for the currently selected Codex terminal. Relay does not execute those tasks itself and does not route them through Claude. It creates one replacement Codex task whose prompt contains an ordered numbered list and explicit instructions to delegate independent items to sub-agents, wait for every result, verify the combined work, and return one consolidated summary.
+Eligible legacy persistent queue task checkboxes can combine two or more waiting tasks into one command for the currently selected Codex terminal. Relay does not execute those tasks itself and does not route them through Claude. It creates one replacement Codex task whose prompt contains an ordered numbered list and explicit instructions to delegate independent items to sub-agents, wait for every result, verify the combined work, and return one consolidated summary. Disposable tasks never expose this destructive replacement action; increase the project Codex maximum or use Turbo instead.
 
 The selected tasks must share the selected Codex terminal's workspace. Their image attachments are copied into the replacement task before the original queued records are removed.
 
 > [!important]
-> The selected terminal is the source of truth. Do not add a second terminal selector to the parallel batch bar or restore Claude-specific routing.
+> For eligible legacy rows, the selected terminal is the source of truth. Do not add a second terminal selector to the parallel batch bar or restore Claude-specific routing.
+
+## Planner breakdowns as queue work
+
+The [[planner]] runs an AI task breakdown as an ordinary `mode: 'breakdown'` queue task on the chosen provider. In current automatic mode, the task launches a disposable terminal only when it receives a project slot. It appears in Queue and History like any other work and follows the same project scope, cancellation, and retry rules. It is **not** exclusive: `isSingleSessionTask` groups it with direct Codex and Claude execution. Plan council and Turbo keep their exclusive barriers.
+
+Its parsed proposals are reviewed in the Planner and only become normal `mode: 'execute'` tasks through an explicit user action: **Queue selected tasks** for a flat batch, or **Run plan** for a dependency-ordered plan run that enqueues each step as its dependencies complete. Both use the same `queue.enqueue` path as the composer, so a plan-run step is indistinguishable from a composer task in Queue, History, and Task Activity, including cancel and retry. Nothing in a breakdown auto-executes.
 
 ## Priority submission shortcut
 
-The shortcut label is **Run now**. Ctrl+Enter submits the composer as a priority task assigned to the currently selected Relay, even when **Use an idle Relay when available** is enabled. Relay assigns it a queue position before every task that is still waiting. If the selected Relay is already active, it waits without interrupting that work. Enter keeps normal append-to-queue behavior and may still use idle-Relay routing when that preference is enabled. Shift+Enter inserts a newline. The three shortcut hints render as separately spaced groups rather than one dot-separated sentence.
+The shortcut label is **Run now**. Ctrl+Enter submits the composer as a priority task and Relay assigns it a queue position before every task that is still waiting in the project. It does not bypass the project's provider instance limits or interrupt active work. Enter keeps normal append-to-queue behavior. Shift+Enter inserts a newline. A legacy persistent submission remains pinned to its selected Relay and opts out of idle routing when prioritized.
 
 The client sends `runNow: true`, `TaskQueue.enqueue()` records a priority event, and `RelayDatabase.createTask()` chooses a position below the current minimum queued position in the same project. This applies consistently to Execute, Plan council, and Forward-planning turbo without moving tasks in other Launchpads.
 
 > [!note]
-> Priority intent and idle routing are deliberately separate: **Run now** changes queue priority but never changes the selected Relay assignment.
+> Priority and capacity are deliberately separate. **Run now** changes queue position, never the provider instance limit.
 
 ## Project queue isolation
 
@@ -152,28 +163,33 @@ The visibly selected workflow and provider are authoritative when the task form 
 > [!important]
 > **Execute + Codex** constructs `mode: execute` with `provider: codex` while its Plan council checkbox is off. The same visible workflow constructs the internal `mode: plan` with `provider: council` only when the user explicitly checks Plan council. Never infer council intent from an ambiguous or inconsistent composer selection.
 
-Plan council is an option inside Execute rather than a standalone workflow category. Its switch starts unchecked, and the Claude author, Codex reviewer, Claude revision route and readiness details remain hidden until enabled. Enabling it selects Codex because the route needs a Codex review Relay, hides the direct execution settings, changes the primary action to **Build reviewed plan**, and sends `councilEnabled: true`. It does not disable the provider tabs. Choosing Claude turns the option off and continues as direct Claude execution. Leaving Execute or successfully submitting also resets the switch. The task API still rejects internal `mode: plan` submissions without the explicit flag. A previously submitted Plan council task remains a plan task because task detail shows persisted task configuration, not the next composer submission.
+Plan council is an option inside Execute rather than a standalone workflow category. Its switch starts unchecked, and the Claude author, Codex reviewer, Claude revision route and readiness details remain hidden until enabled. Enabling it hides direct execution settings, changes the primary action to **Build reviewed plan**, and sends `councilEnabled: true`. Current automatic mode supplies one Claude author terminal and one Codex reviewer terminal from the project pool. The legacy compatibility path still uses explicit `authorThreadId` and `threadId` assignments. Choosing Claude in the ordinary direct-provider flow turns the option off and continues as direct Claude execution. Leaving Execute or successfully submitting also resets the switch.
 
 > [!note]
-> A completed Execute Plan council exposes one canonical, Git-ignored `plan.md` and an **Execute reviewed plan** panel. Its selector contains all currently opened Codex and Claude Relays in the same workspace. Relay creates a normal linked Execute task containing the original request, final reviewed plan, canonical path, and copied references. It never implements automatically when planning completes. Failed councils expose **Resume** and keep completed stage checkpoints. See [[plan-council]].
+> A completed Execute Plan council exposes one canonical project-local `plan.md` at `<project-root>/.data/tasks/<task-id>/plan.md` and an **Execute reviewed plan** panel. Its selector chooses Codex or Claude in automatic mode. Relay creates a linked disposable Execute task containing the original request, final reviewed plan, canonical path, and copied references. It never implements automatically when planning completes. Failed councils expose **Resume**, relaunch their saved conversations, and keep completed stage checkpoints. See [[plan-council]].
 
 The routing checks live in `public/task-routing.js` and are covered by `test/task-routing.test.mjs`.
 
 ## Terminal assignment
 
-Queued Codex execute tasks can move to another connected terminal in the same workspace. Each task card exposes an **Assign** control when another eligible terminal exists, and the same task can be dragged onto a numbered Relay terminal card. Running, completed, Plan council, Turbo, and Claude tasks cannot be reassigned.
+Disposable tasks are assigned to a provider pool, not a pre-existing terminal. They cannot be manually reassigned or dragged onto a live session. A queued task has no `thread_id` until its fresh terminal binds, and its launch is governed by project capacity. The automatic renderer does not offer legacy Assign or parallel-bundle controls for these rows.
+
+Legacy persistent Codex and Claude Execute tasks can move to another connected terminal of the same provider in the same workspace. Each legacy task card exposes an **Assign** control when another eligible terminal exists. Claude assignment requires `capabilities.queuedClaudeAssignment`, so refreshed assets do not call an older backend.
 
 The server validates the task status, provider, mode, live terminal connection, and normalized workspace path before changing `thread_id`, `thread_name`, and `thread_source`. It also updates the persisted task artifact and records a queue event.
 
 > [!important]
 > Reassignment never moves work to another workspace and never interrupts a running task.
 
-The composer offers **Use an idle Relay when available** above the terminal list. This preference is stored under `relay.preferIdleTerminal`. For direct Codex and Claude execution, the selected terminal remains the route only when its connection reports idle and it has no queued or running direct task. Otherwise Relay uses the first terminal of the selected provider in the current workspace that meets both conditions. Claude routing is enabled only when `/api/status` advertises `capabilities.parallelClaudeExecution`, so a refreshed renderer cannot promise parallel routing while an older Node scheduler is still running.
+> [!note]
+> A legacy direct Claude task whose selected terminal reports busy remains queued with no `started_at` until that session is idle, idle routing finds another destination, or the user assigns another same-workspace Claude Relay. Current disposable tasks wait for the project's Claude capacity and launch a fresh terminal. See [[claude-busy-dispatch]].
+
+The legacy composer offers **Use an idle Relay when available** above its terminal list. This preference is stored under `relay.preferIdleTerminal`. Disposable work does not idle-route because it launches exactly the provider terminal it needs.
 
 > [!note]
 > Task 208 on July 21, 2026 exposed the old Codex-only routing condition and global direct Claude lock while task 207 was running on another Claude UUID. Relay now routes within the selected provider and gives each direct Claude session independent runner ownership.
 
-Execute tasks always resume their assigned Codex or Claude session, including the destination chosen by idle routing. Codex terminal clients display the turn live. Claude's headless resume process streams into Relay Task Activity and updates the same transcript, but the interactive Claude TUI does not redraw that second process's output. See [[diagnostics]].
+Fresh disposable Execute tasks always start new conversations. Retries and explicit continuations resume their persisted Codex or Claude conversation IDs in newly launched terminals. On macOS the owned Claude terminal displays the turn and Relay mirrors its transcript into Task Activity. See [[disposable-terminal-pools]] and [[diagnostics]].
 
 > [!important]
 > Do not restore background fresh-context execution. A separately created app-server thread is visible in Relay Task Activity but not in the selected native terminal, which makes that terminal appear stalled.
@@ -184,10 +200,10 @@ Execute tasks always resume their assigned Codex or Claude session, including th
 > [!note]
 > A newly launched Relay can take a few seconds to join discovery. When idle routing is enabled and the selected Relay is busy, submission allows a three-second discovery grace period before falling back to the selected Relay. This prevents work from being pinned behind a busy Relay when a terminal launch was already in progress. Task 155 on July 20, 2026 exposed the race: enqueue validation ran about two seconds before the new Relay joined.
 
-Direct Codex and direct Claude tasks execute concurrently across distinct terminal sessions and sequentially within each session. An active direct task from either provider does not block an eligible direct task on another free session. Normal FIFO and exclusive barriers are evaluated within each exact `repo_path`: a running Plan council in one project does not block a head direct task in another project, and a project Plan council may start while direct work is active elsewhere. Plan council and Turbo remain exclusive queue entries, so an exclusive head waits for that project's active direct tasks and later direct tasks do not jump past it. Relay still starts at most one provider-wide or multi-terminal exclusive task globally because those runners own shared resources.
+Direct Codex and direct Claude tasks execute concurrently up to the selected project's provider limits. A saved conversation remains sequential even when the limit is higher. Normal FIFO and exclusive barriers are evaluated within each exact `repo_path`: a running Plan council in one project does not block eligible direct work in another project. Plan council and Turbo remain exclusive queue entries and reserve their complete provider requirement before execution.
 
 > [!important]
-> Treat `mode = execute` with `provider = claude` as direct execution for project scheduling, not as a project-wide exclusive entry. Reserve its `thread_id` exactly like a direct Codex Relay. `ClaudeExecutionRunner` tracks active processes by task ID and session ID, allowing different sessions to overlap while rejecting duplicate work on one session. Cancellation remains scoped to the selected task.
+> Treat `mode = execute` with `provider = claude` as direct execution for project scheduling, not as a project-wide exclusive entry. Before launch, reserve one Claude project slot. After binding, reserve its conversation ID as well. `ClaudeExecutionRunner` tracks active processes by task ID and session ID, allowing different conversations to overlap while rejecting duplicate work on one conversation.
 
 While a Turbo parent is executing its graph, the scheduler has a narrow resource-aware exception inside that project: queued direct Codex tasks may use Relays that are not reserved by active direct work, Turbo workers, a planner still preparing its graph, or a look-ahead planner whose `plannerBusy` flag is true. It scans that project's direct tasks across intervening queued Turbo, Plan council, and Claude entries, but never starts another non-direct task or a second exclusive task. Other projects follow their own normal queue heads and FIFO barriers. A direct task targeting a reserved worker or planner remains queued. When Turbo execution ends, the normal project exclusive FIFO barrier returns. See [[turbo-execution]].
 

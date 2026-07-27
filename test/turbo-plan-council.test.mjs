@@ -136,6 +136,42 @@ test('review forwards Claude options and events, then returns the parsed correct
   assert.equal(output.finalResponse, output.text);
 });
 
+test('terminal execution sends the council stage through its disposable Claude conversation', async () => {
+  const calls = [];
+  const reviewer = new TurboPlanCouncilReviewer({
+    terminalExecution: true,
+    claude: {
+      async run(task, callbacks) {
+        calls.push({ task, callbacks });
+        return { finalResponse: JSON.stringify(reviewed('terminal review')) };
+      },
+      cancel() { return false; },
+    },
+  });
+  const output = await reviewer.review({
+    parentTaskId: 22,
+    task: {
+      id: 22,
+      prompt: 'Review in Terminal.',
+      repo_path: '/workspace/relay',
+      turbo: {
+        councilThreadId: 'claude-council-thread',
+        councilThreadName: 'Claude council terminal',
+      },
+    },
+    draftPlan: draft,
+    workerCount: 1,
+    claudeModel: 'opus',
+    claudeEffort: 'max',
+  });
+  assert.equal(calls[0].task.id, 22);
+  assert.equal(calls[0].task.thread_id, 'claude-council-thread');
+  assert.equal(calls[0].task.require_terminal, true);
+  assert.equal(calls[0].task.model, 'opus');
+  assert.match(calls[0].task.prompt, /Codex has already produced the draft graph/);
+  assert.equal(output.plan.summary, 'terminal review');
+});
+
 test('reviews run in FIFO order with only one Claude stage active', async () => {
   const starts = [];
   const finishes = [];

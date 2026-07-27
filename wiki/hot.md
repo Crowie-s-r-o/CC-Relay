@@ -7,7 +7,46 @@ type: hot
 # Current Relay Notes
 
 > [!important]
-> Direct Claude Execute now runs the turn **inside** the interactive terminal on macOS when Relay owns an exactly resolvable single-tab Terminal.app window for the session. It types a bracketed-paste prompt through `osascript` (Automation permission only; System Events keystrokes are Accessibility-gated and unused) and mirrors the session `.jsonl` transcript into Task Activity. Readiness is registration plus idle in `claude agents --json` (a trust-prompt session is not registered), so even a freshly launched terminal's first turn runs visibly. Immediately before typing, Relay re-verifies the window, tty, and pid against a fresh discovery read because macOS recycles tty names; a mismatch aborts with nothing typed. A terminal-driven turn uses the session's own model and effort; its `claude/started` event carries `sessionMode: 'terminal'`. Non-darwin, unowned terminals, and Plan council keep the headless path. Every failure at or after injection is non-retryable so the queue never double-executes a turn. See [[claude-terminal-visibility]] and [[diagnostics]].
+> Relay now detects Codex and Claude CLI installation independently and disables only providers confirmed missing. Signed-out CLIs remain installed and selectable, while pending or transiently failed probes stay neutral and retry automatically. A selected missing provider falls back to the installed alternative, and later Codex installation or sign-in starts the shared app-server automatically. See [[provider-installation-detection]], [[disposable-terminal-pools]], and [[task-add-reliability]].
+
+> [!important]
+> Disposable Codex continuation now binds through the exact new launch reservation even when an older client still reports the same saved conversation. Native recovery cannot steal a terminal while its launch is binding or resurrect an intentionally closed conversation from a draining proxy connection. A rejected or timed-out resume is closed exactly once and never retried automatically, so **Continue session** cannot fan out into repeated terminals. Restart Relay before manually retrying an affected continuation. See [[codex-disposable-resume-review]], [[disposable-terminal-pools]], and [[automatic-retry-safety]].
+
+> [!important]
+> macOS terminal cleanup now enumerates the freshly verified exact TTY with `ps -t <tty> -o pid=` and SIGKILLs exactly those identifiers with `kill -9`. On Darwin 25 the `-t` filter of `pgrep` and `pkill` matches nothing, so the previous `pkill` call killed no processes, the `pgrep` drain counted its empty results as success, and task 320 recorded a completed close whose live session was re-bound three seconds later. The same `ps` snapshot now drives the drain gate: two consecutive empty observations before the exact window closes, and a TTY that does not drain within two seconds stays open and retains ownership. Never reintroduce `pgrep -t` or `pkill -t` here. See [[terminal-close-review]].
+
+> [!important]
+> Current queue submissions use per-project disposable terminal pools. The left composer panel sets maximum Codex and Claude instances from 1 through 8. A fresh task has no preselected session: Relay launches its required terminals only when capacity is available, binds each exact native launch, runs the task, and closes that launch at every terminal outcome. Finished direct tasks retain their saved conversation ID, so **Continue session** creates a linked queue task that relaunches Claude with `--resume` or Codex with `codex resume`. Only one queued or running task may own a saved conversation. Existing persistent task rows retain legacy routing for compatibility. See [[disposable-terminal-pools]], [[project-workspaces]], and [[task-history]].
+
+> [!important]
+> A waiting automatic Execute task can now switch between Claude and Codex from **Edit**. The editor validates the destination model and effort. A provider change keeps the task, position, prompt, and images but clears provider-specific conversation identity and starts fresh. Legacy persistent tasks and workflow-owned Plan council, Turbo, and breakdown tasks cannot switch. Advertised as `capabilities.queuedTaskProviderSwitch`. See [[queued-provider-switching]].
+
+> [!important]
+> Execute Plan council now saves its final Markdown under the source workspace at `<project-root>/.data/tasks/<id>/plan.md`, derived from the task's persisted `repo_path`. Internal `plan.json` checkpoints stay in Relay's data directory. Opening an older completed council migrates its final-only artifact and removes the former Relay-local copy. Relay does not edit the target project's `.gitignore`. See [[plan-council]] and [[project-workspaces]].
+
+> [!important]
+> Writable Codex Execute turns now reset both `thread/resume` and `turn/start` to explicit full access. Codex app-server persists a turn sandbox policy into subsequent turns, so the former omission allowed a read-only Plan council or Turbo stage to poison every later Execute task on that session even though Relay logged `readOnly: false`. Tasks 283 and 291 reproduced this on the Documi Relay. Planning remains explicitly read-only. Restart Relay to load the fix. See [[codex-sandbox-isolation]].
+
+> [!important]
+> Unsent work targeting a busy Claude terminal now stays **queued** instead of becoming falsely **running**. A synchronous dispatch guard reserves the session while preserving edit, cancel, reorder, and same-workspace Claude reassignment. The task starts only when the selected session is idle or idle routing moves it to another free Claude Relay. Task 284 proved why: `documi-ai-73` had a live background review agent and an existing terminal draft, so typing was unsafe, but the old scheduler still showed Live. Restart Relay to load the scheduler and `capabilities.queuedClaudeAssignment`. See [[claude-busy-dispatch]] and [[parallel-project-queues]].
+
+> [!important]
+> Adding a task is now local-validation-only and never blocks on a provider CLI. `ClaudeRuntimeStatus.current()` and the Codex probe are cache reads refreshed in the background with bounded async probes; they were `execFileSync` with no timeout, which blocked the whole event loop on every Claude, Plan council, and Turbo submission. Claude session discovery keeps its **last known good** list on a transient failure instead of caching an empty one, which is what used to make live sessions vanish and reject the add. The add path reads warm caches and falls back to last-known-good, then to the workspace from that session's previous task; it rejects only a session Relay has never seen. Claude auth blocks an add only on a completed signed-out probe, never on a pending or errored one. Restart Relay to load it. See [[task-add-reliability]].
+
+> [!important]
+> Idle-Relay routing now happens at **dispatch**, not in the browser before posting. The client posts immediately with `preferIdleTerminal`; the server keeps the selected session when it is free and otherwise moves the task to a free idle session of the same provider in the same workspace, never crossing a workspace. Persisted as `prefer_idle_terminal`, advertised as `capabilities.dispatchIdleRouting`. Guard rail: `schedule()` runs `runNext()` and `planAhead()` in one tick and `planAhead()` depends on state `runner.run()` writes synchronously, so routing is gated behind a synchronous `shouldRouteIdle()` check. An unconditional `await` before `runner.run()` silently disables Turbo forward planning. See [[parallel-project-queues]].
+
+> [!note]
+> `ClaudeRunner` keys plan stages per owner. It previously held one global slot and its `cancel()` ignored its argument, so a Plan council stage timeout stopped whichever Claude stage was newest. Plan council itself stays deliberately globally exclusive (single-task fields plus `sharedExclusiveAvailable`); that never blocks cross-project direct Codex or Claude work and can be widened later as its own change. See [[parallel-project-queues]].
+
+> [!important]
+> A completed Execute Plan council promotes implementation as visible step **04** directly after the council stages. Task Activity also provides a primary **Execute plan** shortcut that scrolls and focuses this handoff. The user chooses Codex or Claude, and Relay creates a linked disposable Execute task in the source project without changing or automatically running the reviewed plan. See [[plan-council]] and [[interface-layout]].
+
+> [!important]
+> A terminal-driven Claude Execute task now stays running when the interactive session becomes idle without a final transcript record. That state can mean `AskUserQuestion` is waiting in Terminal.app and Claude may not flush the question record until after the answer. Relay emits **Input needed**, keeps the exact task and session reserved, resumes mirroring after the terminal answer, and still stops on cancellation, terminal closure, or the 45-minute inactivity ceiling. That ceiling now measures continuous inactivity instead of total turn time, so a session that keeps working never fails on duration alone (task 320) while an unanswered prompt still releases its task after a full idle window. Task 270 exposed the former four-poll false failure. See [[claude-terminal-input]] and [[claude-terminal-visibility]].
+
+> [!important]
+> Direct Claude Execute runs the turn **inside** the interactive terminal on macOS when Relay owns an exactly resolvable single-tab Terminal.app window for the session. Before typing a configured task, Relay verifies the live session id, pid, workspace, window, and tty, stops only that Claude pid, and restores the same UUID in the same tab with the pinned Claude binary plus the selected `--model` and `--effort`. It waits for the replacement pid to register idle, re-verifies the terminal, types a bracketed-paste prompt through `osascript`, and mirrors the session `.jsonl` transcript into Task Activity. If no busy or transcript evidence appears after 1.5 seconds, Relay re-verifies again and sends at most one separate Return. Every ambiguous relaunch or post-injection failure is non-retryable, so Relay never repeats a launch or prompt automatically. Three real Terminal.app turns on July 25 proved fresh, resumed, and 281-line visible submission with Opus at max effort. Non-darwin and unowned direct sessions keep the headless path. A current macOS Plan council now requires this terminal path instead of falling back. See [[claude-terminal-visibility]], [[claude-terminal-settings-review]], [[claude-terminal-submit-review]], and [[diagnostics]].
 
 > [!warning]
 > Terminal cleanup hazard, learned the hard way (July 24, 2026): macOS recycles tty names, so a tty captured earlier can point at a different session later. Never kill, close, or send to a terminal by a stale tty name; verify live session identity (session id, pid, and cwd) at action time. A spike cleanup that violated this killed an unrelated Claude session. See [[claude-terminal-visibility]].
@@ -16,13 +55,37 @@ type: hot
 > Relay uses a custom source-available, view-only license. Public users may inspect the source but receive no permission to run, copy, modify, redistribute, incorporate, or derive another project from it. Do not call this open source. See [[licensing]].
 
 > [!note]
+> The Planner is a per-project saved plan library reached from the composer heading. Its AI breakdown enqueues an ordinary `mode: 'breakdown'` queue task on a chosen live session, parses the structured output tolerantly, and stores review-before-queue proposals on the plan. `breakdownUpdateForTask` is a reconciler (self-heals `failed -> running -> complete`, never clobbers user edits). Backend advertises `capabilities.planner`; an older running backend shows **Restart Relay to use the Planner**. See [[planner]].
+
+> [!important]
+> Planner v2 turns the Planner into an orchestrator. The breakdown contract now returns `{id, title, prompt, dependsOn}` and stores **resolved internal proposal ids** in `dependsOn`, never the model's labels; unknown refs, self-refs, and cycle-closing edges are pruned deterministically with a note on the breakdown row. A **plan run** (`POST /api/plans/:id/run`, `/run/stop`) is a reconciler hooked to the queue `changed` listener, not a second scheduler: a step whose dependencies are complete becomes an ordinary `mode: 'execute'` task through `queue.enqueue`, carrying `preferIdleTerminal` so independent steps fan out across idle same-workspace sessions. Each step's submission id is a deterministic hash of plan+run+proposal, which is what makes re-entry (enqueue emits `changed` synchronously) impossible to double-enqueue. `blocked` and a `failed` run are derived every pass, never latched, so the ordinary task retry is the un-block mechanism; `stopped` is the one latched status. Boot order is `queue.start()` then `planRuns.reconcileAll()`. Advertised as `capabilities.plannerV2`. See [[planner]].
+
+> [!warning]
+> Guard-before-await is a real bug shape in `src/server.mjs`, not a theoretical one. A route that validates, then awaits the request body, a live session, or the model list, and only then writes, can be cleared twice by two overlapping submissions (second tab, double dispatch). Planner v2 found it on `POST /api/plans/:id/run` (would have minted two task sets for one plan) and on both breakdown routes. The fix is to re-check synchronously immediately before the write, ideally inside the module that owns the invariant so it defends itself: `planRuns.startConflict()` runs again inside `start()`, and `requireNoBreakdownInProgress` runs again right before `createPlanBreakdown`. A guard carrying `statusCode` on the error reaches the client with the right code through the generic handler. See [[planner]].
+
+> [!warning]
+> Deleting a queued Planner breakdown task used to be a **silent permanent plan lockout**: the breakdown row stayed `pending` forever, so every planner route refused work until the plan was deleted. Deletion is still allowed and now marks the row `failed`, and the parallel Codex batch route rejects any non-`execute` mode instead of deleting a breakdown, council, or Turbo task out from under its owner. See [[planner]].
+
+> [!warning]
+> `mode: 'breakdown'` is **no longer globally exclusive**. `TaskQueue.isSingleSessionTask` replaced `isDirectExecutionTask` at all five scheduling and reservation sites, so a breakdown serializes only on its own session. The load-bearing half is `reservedThreadIds()`: a running breakdown now reserves its own session, and without that, dropping exclusivity would let a second task start on the session it is using. `planAhead()` had to learn the same reservation, because Turbo look-ahead starts a real turn on its planner session and previously only avoided Turbo's own threads. Plan council and Turbo barriers are untouched and pinned by `test/breakdown-scheduling.test.mjs`. See [[planner]] and [[parallel-project-queues]].
+
+> [!note]
+> `escapeHtml` (now `public/escape-html.js`) is a pure helper that also escapes `"` and `'`, closing an attribute-injection XSS path (Finding 19). Use it for every attribute interpolation. A Content-Security-Policy for the local UI remains a tracked backlog item. See [[diagnostics]].
+
+> [!note]
 > The launchpad now treats pinned projects as selectable workspace cards. See [[project-workspaces]].
 
 > [!note]
 > One Launchpad is always selected whenever pinned projects exist. Activating it again keeps it selected, stale selection recovery chooses an available project, and the final pinned project cannot be removed. There is no **All Projects** state. See [[project-workspaces]].
 
 > [!note]
-> Project launch chips match the compact reference: selected cards retain blue and provider accents, while unselected cards mute their tile, text, activity, and launch controls to neutral gray. Controls use regular monospace labels, thin borders, and no selected-card shadow. Electron is locked to 100 percent zoom. See [[project-workspaces]] and [[interface-layout]].
+> Launchpad cards are project selectors and live status surfaces, not provider launch surfaces. They contain no Codex or Claude buttons. Each card leads with **Running**, **Waiting**, **Restart needed**, **Attention**, or **Idle**, followed by task detail. See [[project-workspaces]] and [[interface-layout]].
+
+> [!note]
+> The Launchpad desktop band is 104px high with one 42px horizontal card row. Each 330px card keeps its name and activity on that row, and the rail scrolls horizontally rather than clipping a second row. Color hashing resolves collisions across visible projects, so up to six pinned projects use distinct palette colors; the matching global running-task card shares the resolved project identity. See [[project-workspaces]] and [[interface-layout]].
+
+> [!note]
+> Project-card unpin is a dedicated final grid column at the far-right edge. Keep it outside the name sub-grid; nesting it inside `.project-chip-head` visibly places the close control in the middle. See [[project-workspaces]] and [[interface-layout]].
 
 > [!note]
 > Task records persist in SQLite. The selected Launchpad project always bounds the visible queue and history; switching projects immediately swaps task cards, counts, and statistics. See [[task-history]].
@@ -45,13 +108,19 @@ type: hot
 > Composer submission is idempotent. The browser locks before asynchronous idle routing, retains one UUID for an unchanged intent through ambiguous failures, and the backend requires and uniquely persists that UUID. Repeated delivery returns the original task instead of creating another row. Restart Relay to load the database migration and server guard. See [[task-history]] and [[duplicate-submission-review]].
 
 > [!note]
+> Repeated Enter while the composer already shows **Adding task** is a quiet no-op. The disabled button during submission is progress, not evidence that the selected Relay disconnected. The screenshot attached to task 274 captured a second Enter replacing progress with a false missing-terminal error. The earlier pictured prompt never reached the API, while the report task itself was accepted immediately on the same Relay. See [[task-history]].
+
+> [!note]
 > The queue defaults to **All Relays**. Startup, project changes, and provider changes restore that broad view; selecting an execution terminal does not narrow it. **This Relay** is explicit and temporary. See [[task-history]].
 
 > [!note]
-> Task queues follow the selected Launchpad project and may narrow to the selected terminal session. Workspace columns are user-resizable, and launch/send diagnostics are persisted locally. See [[task-history]], [[interface-layout]], and [[diagnostics]].
+> Task queues follow the selected Launchpad project. Current disposable work uses the complete project view because no live terminal is selected before launch. Legacy session-scoped history remains available for older task rows. Workspace columns are user-resizable, and launch/send diagnostics are persisted locally. See [[task-history]], [[interface-layout]], and [[diagnostics]].
 
 > [!note]
 > The header center is a global horizontally scrollable feed containing only currently running tasks across every project. Each card shows project, Relay, duration, prompt, and the latest actual Codex or Claude response; selecting it opens that task in its project. Queue and History remain project-scoped. See [[interface-layout]] and [[project-workspaces]].
+
+> [!note]
+> Design round 2 (July 24, 2026) restructured markup, not just CSS, for the three called-out areas. The header running feed dropped its persistent bordered pill so the empty state is a compact **No tasks running** chip, never a giant void, and running cards are a three-tier meta/prompt/response grid. The Launchpad became a full-width wrapping grid of roomy two-row project cards (name, path, activity, Codex/Claude launch) instead of a cramped scroll strip, with the desktop band raised to 192px and the header, dock, workspace, and task-list heights moved as one set. The mode-tab workflow label wraps in full and the Task queue heading stays on one line. Launchpad CSS was consolidated into the base block and its stale 2026 and horizontal-flex responsive overrides deleted rather than layered. See [[interface-layout]].
 
 > [!note]
 > Terminal output now uses the refined execution-ledger hierarchy documented in [[interface-layout]].
@@ -89,13 +158,13 @@ type: hot
 > Per-terminal effort state distinguishes provisional defaults, persisted task values, and unsent user choices. Task history replaces only provisional defaults; polling never replaces a user choice. This fixes the startup race where task 171 showed `xhigh` while its Relay slider showed `low`. See [[interface-layout]].
 
 > [!note]
-> Direct execution Model and Effort controls render below the Relay picker so their settings clearly belong to the selected Relay. See [[interface-layout]].
+> Current direct execution Model and Effort controls render below the automatic pool controls and belong to the selected provider in the active project. A legacy backend renders them below its Relay picker. See [[interface-layout]].
 
 > [!note]
-> **Run in parallel** bundles selected waiting tasks into one numbered Codex command sent to the currently selected Codex terminal. Codex receives explicit sub-agent instructions. See [[task-history]].
+> **Run in parallel** is a legacy persistent-task action that bundles selected waiting tasks into one numbered Codex command sent to the selected Codex terminal. Disposable work uses project limits or Turbo instead. See [[task-history]].
 
 > [!note]
-> Forward-planning turbo uses a read-only Codex planner and a dependency-aware Relay scheduler across multiple live worker terminals. Defaults are Sol high for planning, Luna high for execution, and three workers. See [[turbo-execution]].
+> Forward-planning Turbo uses a read-only Codex planner and a dependency-aware Relay scheduler across a disposable Codex fleet. The project maximum must fit one planner plus the configured worker count before the workflow starts. See [[turbo-execution]] and [[disposable-terminal-pools]].
 
 > [!note]
 > Turbo queue cards now show **Forward plan**, **Planning ahead**, **Plan ready**, or **Workers running** alongside the canonical queue status. A free planner can prepare the next queued Turbo parent while another parent executes; planning does not change queue position or start the parent early. See [[turbo-execution]].
@@ -119,13 +188,13 @@ type: hot
 > Council capability does not imply Claude authentication. Relay distinguishes an installed but signed-out Claude CLI from an old backend, preserves `loggedIn: false` JSON even when `claude auth status --json` exits with code 1, and rechecks authentication while running. Use `claude auth login`; Council enables automatically after sign-in without another restart. See [[diagnostics]].
 
 > [!important]
-> Execute Plan council is a checkpointed Claude author, Codex reviewer, Claude revision state machine. Failures never retry automatically. Manual resume preserves completed stages, each active stage emits heartbeats, and the final deliverable is one canonical `.data/tasks/<id>/plan.md`. See [[plan-council]] and [[diagnostics]].
+> Execute Plan council is a checkpointed Claude author, Codex reviewer, Claude revision state machine. Failures never retry automatically. Manual resume preserves completed stages, each active stage emits heartbeats, and the final deliverable is one canonical `<project-root>/.data/tasks/<id>/plan.md`. See [[plan-council]] and [[diagnostics]].
 
 > [!note]
 > A completed Execute Plan council can be queued on any selected Codex or Claude Relay in the same workspace. The linked Execute task receives the original request, final reviewed plan, canonical file path, and copied reference images. Planning completion never starts implementation automatically. See [[plan-council]] and [[task-history]].
 
 > [!note]
-> The completed-plan panel now keeps the local Git-ignored `plan.md` path visible and includes its own opened-Relay selector for same-workspace Codex and Claude sessions. An older backend shows **Restart to open** and a disabled execution explanation instead of hiding the feature. Task 194 was canonicalized to final-only `plan.md` with no duplicate `result.md`. See [[plan-council]] and [[plan-council-review]].
+> The completed-plan panel keeps the project-local `plan.md` path visible and offers Codex or Claude execution through the project's disposable pool. An older backend uses the opened-Relay selector. Task 194 was canonicalized to final-only `plan.md` with no duplicate `result.md`. See [[plan-council]] and [[plan-council-review]].
 
 > [!note]
 > Both optional Plan council entry cards use the same shared component, primary label, compact neutral review shell, and interaction states in Execute and Forward-planning Turbo. Turbo adds only its help disclosure and workflow-specific supporting sentence. See [[interface-layout]].
@@ -134,7 +203,7 @@ type: hot
 > Execute and Turbo Plan council now share the complete refined surface: neutral rounded shell, single checked-state focus treatment, provider-accented route nodes, rounded settings, and a central arrow handoff. Disabled routes are hidden consistently. Execute retains only its revision and readiness details; Turbo retains only order selection and help. See [[interface-layout]].
 
 > [!note]
-> Ctrl+Enter is labeled **Run now**, prioritizes a new submission on the currently selected Relay, and bypasses the optional idle-Relay router. It does not interrupt active work. Shortcut hints are visually separated. See [[task-history]].
+> Ctrl+Enter is labeled **Run now** and prioritizes a new submission inside the active project without bypassing provider limits or interrupting active work. The selected-Relay and idle-routing behavior remains only for legacy persistent submissions. See [[task-history]].
 
 > [!note]
 > Newly launched Codex terminals can accept their first Relay task even before Codex has persisted a rollout. Relay falls through from the expected `thread/resume` missing-rollout error to `turn/start`. See [[project-workspaces]].
@@ -155,10 +224,10 @@ type: hot
 > Queue and terminal state refresh automatically. The interface intentionally has no manual Refresh buttons, and connection copy should describe automatic discovery. See [[interface-layout]].
 
 > [!note]
-> Connected Codex terminals are numbered as Relay workers. Queued Codex tasks can be assigned by button or dropped onto another Relay in the same workspace, and direct submissions can opt into idle-terminal routing. See [[task-history]] and [[interface-layout]].
+> Connected Codex terminals are still numbered for legacy history and manually launched interactive sessions. Current disposable tasks cannot be assigned or dropped onto one of them. See [[task-history]] and [[interface-layout]].
 
 > [!note]
-> Idle-terminal routing gives a newly launched Relay up to three seconds to connect when the selected Relay is busy, avoiding a launch-to-enqueue race that otherwise pins the task to the busy Relay. See [[task-history]].
+> Legacy idle-terminal routing gives a newly launched Relay up to three seconds to connect when the selected Relay is busy. Current disposable routing instead reserves project capacity and binds the exact task-owned launch. See [[task-history]].
 
 > [!note]
 > Relay numbers and names are persisted per Codex thread and remain unchanged when terminals reconnect, disconnect, or are reordered. See [[task-history]].
@@ -179,13 +248,13 @@ type: hot
 > Cross-project direct execution has no Relay project-count limit. Generated coverage runs one Codex and one Claude task simultaneously across twelve projects, with twelve serving only as a practical test size. An older backend that queues Claude behind another project's session shows a targeted restart warning. See [[project-workspaces]] and [[parallel-claude-review]].
 
 > [!note]
-> Execute tasks always target their assigned terminal session. Established Claude transcripts use `--resume`; a newly launched Claude terminal is initialized once with its exact assigned session UUID after live identity and workspace revalidation. Idle routing may choose another free session from the same provider and workspace. Background fresh-context routing remains removed. See [[task-history]] and [[project-workspaces]].
+> Fresh disposable Execute tasks intentionally have no assigned session and always start a new conversation in a new terminal. Retries and explicit continuations relaunch and resume the saved conversation. Legacy persistent Execute tasks retain assigned-session and idle-routing behavior. See [[task-history]], [[project-workspaces]], and [[disposable-terminal-pools]].
 
 > [!note]
 > A freshly launched Claude terminal can be discovered before its first transcript exists. Direct execution now handles that exact resume failure by starting the first task with the same session UUID after verifying the live interactive process and workspace. Expected probe stderr is suppressed; stale, background-only, cross-workspace, and cancelled sessions never start the fallback. Discovery still deduplicates repeated IDs and prefers the interactive terminal. See [[project-workspaces]], [[diagnostics]], and [[claude-fresh-session-review]].
 
 > [!note]
-> Execute Plan council keeps connected interactive Claude sessions visible as disabled **Execute only** Relay entries. Only Codex Relays are selectable reviewers, and the signed-in Claude CLI authors and revises automatically. This prevents a successful Claude launch from appearing missing while preserving council routing. See [[project-workspaces]] and [[interface-layout]].
+> Current Execute Plan council requires one Claude slot and one Codex slot in the selected project. Relay launches and binds both exact terminals automatically, runs the three-stage read-only route, and closes them at the terminal outcome. Older backends retain explicit terminal assignment or the isolated CLI route. See [[plan-council]], [[diagnostics]], [[interface-layout]], and [[disposable-terminal-pools]].
 
 > [!note]
 > Composer routing follows the visibly selected workflow and provider. The only workflow tabs are Execute and Forward-planning Turbo. Plan council is an explicit per-prompt option inside both, and inconsistent visual and internal selection is rejected. See [[task-history]], [[interface-layout]], and [[diagnostics]].
@@ -221,7 +290,7 @@ type: hot
 > Terminal launch is now a compact button with adjacent settings. The modal owns command, diagnostics, grid controls, and a persisted option that launches the new terminal minimized behind other windows. See [[interface-layout]].
 
 > [!note]
-> Direct Execute no longer shows Codex and Claude provider switchers. It shows both providers' live sessions in one Relay picker; selecting a session chooses its provider and updates Model and Effort. Separate **Launch Codex** and **Launch Claude** buttons replace the generic launch action. See [[interface-layout]] and [[project-workspaces]].
+> Current Direct Execute shows Codex and Claude provider tabs plus the selected project's maximum and active instance counts. It does not require a live-session picker. Fresh work opens a new provider terminal only when a queue slot is available, then closes that exact owned terminal when the task ends. Legacy backends retain the live-session picker and manual launch buttons. See [[disposable-terminal-pools]], [[interface-layout]], and [[project-workspaces]].
 
 > [!note]
 > Native Codex launches reserve the selected workspace for the next proxy client, and the proxy applies it to `thread/start.cwd`. Shell `cd` and Codex `--cd` are insufficient with Codex CLI 0.144.5, while workspace metadata in the WebSocket URL is rejected by that CLI. See [[project-workspaces]].
@@ -230,10 +299,10 @@ type: hot
 > Closing Relay now waits for queued work to stop, then closes only native terminal windows or process trees launched by that Relay process before the backend and Electron app exit. Normal quit and update installation share this exact-ID cleanup path. See [[project-workspaces]], [[desktop-updates]], and [[diagnostics]].
 
 > [!note]
-> The selected Relay has a guarded **Close** action for terminals with exact native identity. Normal launches bind Claude by its injected interactive session UUID and Codex through a dedicated one-use loopback proxy endpoint. On macOS, Relay can also recover an existing one-tab Terminal window through the exact Claude PID or Codex proxy socket, process PID, and TTY. Queued, running, and retry-scheduled direct, Plan council, and Turbo assignments still block closure. See [[project-workspaces]], [[interface-layout]], and [[diagnostics]].
+> Current queued work closes its exact task-owned native launch automatically at the terminal outcome. The guarded selected-Relay **Close** action remains a legacy compatibility control for manually launched terminals with exact native identity. See [[disposable-terminal-pools]], [[project-workspaces]], [[interface-layout]], and [[diagnostics]].
 
 > [!note]
-> **Close selected terminal** is always visible directly beneath the Relay cards. An older backend labels the action **Restart required**. After restart, existing macOS one-tab Terminal sessions are checked automatically, while ambiguous, multi-tab, moved, and task-protected sessions remain disabled. See [[terminal-close-review]] and [[interface-layout]].
+> On a current backend, the composer replaces the selected-terminal controls with per-project Codex and Claude maximum instance controls. **Close selected terminal** appears only in the legacy compatibility UI. See [[disposable-terminal-pools]], [[terminal-close-review]], and [[interface-layout]].
 
 > [!important]
 > macOS terminal Close must terminate every process on the exact verified one-tab TTY before closing its exact Terminal.app window. Closing the window first triggers Terminal.app's running-process confirmation and does not complete automatically. Explicit Close and Relay shutdown share this sequence. See [[terminal-close-review]].
