@@ -17,13 +17,20 @@ function isPairableItemEvent(event) {
     && ['item/started', 'item/updated', 'item/completed'].includes(event.payload.type);
 }
 
+function liveClaudeMessageId(event) {
+  if (event?.payload?.type !== 'claude/message') return '';
+  return typeof event.payload.liveMessageId === 'string'
+    ? event.payload.liveMessageId.trim()
+    : '';
+}
+
 // A Claude sub-agent launch. Legacy stored events carry the same mcpToolCall envelope without
 // the marker, so they keep rendering as ordinary connected-tool signals.
 export function isSubAgentItem(item) {
   return Boolean(item && item.type === 'mcpToolCall' && item.subAgent === true);
 }
 
-// Claude reports a finished sub-agent through a task notification, which Relay records as a
+// Claude reports a finished sub-agent through a task notification, which CC Relay records as a
 // claude/agent-finished event carrying the tool use that launched (or last resumed) the agent.
 export function isAgentFinishedEvent(event) {
   return event?.payload?.type === 'claude/agent-finished';
@@ -37,6 +44,7 @@ export function groupEventEntries(events) {
   const list = events || [];
   const entries = [];
   const entriesByItemId = new Map();
+  const entriesByLiveMessageId = new Map();
   // A backgrounded sub-agent's task notification can be written to the transcript before the
   // launch record it belongs to, so the fold targets are collected before grouping starts.
   const subAgentItemIds = new Set();
@@ -65,6 +73,42 @@ export function groupEventEntries(events) {
   };
 
   for (const event of list) {
+    const messageId = liveClaudeMessageId(event);
+    if (messageId) {
+      let entry = entriesByLiveMessageId.get(messageId);
+      if (!entry) {
+        entry = {
+          id: `live-message-${event.id}`,
+          events: [],
+          liveMessageText: '',
+          liveMessageEvent: null,
+          startedEvent: null,
+          updatedEvent: null,
+          completedEvent: null,
+          agentFinishedEvent: null,
+        };
+        entriesByLiveMessageId.set(messageId, entry);
+        entries.push(entry);
+      }
+      entry.events.push(event);
+      if (typeof event.payload.liveDelta === 'string') {
+        entry.liveMessageText += event.payload.liveDelta;
+      } else {
+        // Compatibility with live message events written before delta-only storage.
+        entry.liveMessageText = String(event.payload.text || event.message || '');
+      }
+      const text = entry.liveMessageText.trim();
+      entry.liveMessageEvent = {
+        ...event,
+        message: text,
+        payload: {
+          ...event.payload,
+          text,
+        },
+      };
+      continue;
+    }
+
     const finishedToolUseId = agentFinishedToolUseId(event);
     // A notification whose tool use is a known sub-agent launch resolves that signal. Any
     // other notification (a resumed agent reports through the SendMessage that woke it) keeps
@@ -111,7 +155,7 @@ export function entryItem(entry) {
 }
 
 export function entryLastEvent(entry) {
-  return entry?.completedEvent || entry?.events?.at(-1) || null;
+  return entry?.completedEvent || entry?.liveMessageEvent || entry?.events?.at(-1) || null;
 }
 
 export function entryFirstEvent(entry) {

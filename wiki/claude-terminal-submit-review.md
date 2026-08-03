@@ -12,7 +12,7 @@ type: review
 
 Task 263 proves the original bracketed-paste Apple Event can leave Claude's large-paste placeholder in the composer without starting a turn. The fix adds one guarded separate Return after 1.5 seconds with no busy or transcript evidence. The guard repeats exact terminal identity resolution, drains complete and partial transcript growth, re-reads session state, and checks cancellation. Any uncertainty after the paste is non-retryable.
 
-The code path is safe to ship, but confidence stays Medium until one restarted Relay run proves the exact Claude 2.1.218 large-paste widget accepts the separate production Apple Event end to end.
+The code path is safe to ship, but confidence stays Medium until one restarted CC Relay run proves the exact Claude 2.1.218 large-paste widget accepts the separate production Apple Event end to end.
 
 ### Quality Panel (RAG)
 
@@ -29,11 +29,11 @@ The code path is safe to ship, but confidence stays Medium until one restarted R
 
 1. `src/claude-terminal-executor.mjs`, `watchTurn`: the original Return can start immediately after the last idle read. A second Return may then arrive while Claude is busy. The mitigation is that the action is sent only once after 1.5 seconds, and a submitted composer is already cleared, so it cannot re-submit the same prompt.
 2. `src/claude-terminal-executor.mjs`, `defaultSubmit`: empty `Terminal.doScript` behavior and Claude's large-paste widget are external version-sensitive contracts. A controlled Terminal probe emitted byte `0d`, but a production retry after restart remains required.
-3. `src/claude-terminal-executor.mjs`, `defaultInject`: a pre-existing user draft can still merge with Relay's paste. This is existing Issue 3 and is outside the task 263 regression.
+3. `src/claude-terminal-executor.mjs`, `defaultInject`: a pre-existing user draft can still merge with CC Relay's paste. This is existing Issue 3 and is outside the task 263 regression.
 
 ### Top Improvements
 
-1. Restart Relay and retry one large multiline Claude task to validate the production Apple Event path.
+1. Restart CC Relay and retry one large multiline Claude task to validate the production Apple Event path.
 2. Keep the `claude/progress` submit-recovery event in diagnostics so future Claude or Terminal changes are distinguishable from session launch failures.
 3. Re-run the controlled integration check after Claude CLI upgrades that alter the paste widget or session-status timing.
 
@@ -41,7 +41,7 @@ The code path is safe to ship, but confidence stays Medium until one restarted R
 
 **Ship with Mitigations**
 
-Restart Relay before validation. Inspect or clear the text left by task 263 before manually retrying so the stale prompt cannot be submitted alongside the retry.
+Restart CC Relay before validation. Inspect or clear the text left by task 263 before manually retrying so the stale prompt cannot be submitted alongside the retry.
 
 ### Confirmed Issues
 
@@ -67,7 +67,7 @@ No material risk. Work is constant per affected turn and occurs only during the 
 ### Test Gaps
 
 - Automated unit coverage is adequate: **Yes**. It covers the happy path, delayed evidence race, identity mismatch, cancellation, Apple Event failure, single-action idempotency, and queue-safe error classification.
-- The remaining gap is a real restarted Relay run against the installed Terminal.app and Claude 2.1.218 TUI. Unit doubles cannot prove external Apple Event interpretation.
+- The remaining gap is a real restarted CC Relay run against the installed Terminal.app and Claude 2.1.218 TUI. Unit doubles cannot prove external Apple Event interpretation.
 
 ### Positive Improvements
 
@@ -78,11 +78,22 @@ No material risk. Work is constant per affected turn and occurs only during the 
 
 ### July 25 Production Addendum
 
-Task 266 did not exercise this fix because Relay server pid `33680` started before the guarded-submit executor file was written. Its raw task events had no separate-submit progress event and its error used the previous no-start wording.
+Task 266 did not exercise this fix because CC Relay server pid `33680` started before the guarded-submit executor file was written. Its raw task events had no separate-submit progress event and its error used the previous no-start wording.
 
 The current executor then completed three real turns in the exact affected Terminal.app tab: a fresh `hi`, a resumed exact-`OK` prompt, and a resumed 281-line paste. All three submitted and produced visible transcript responses. The session UUID, window `53148`, and `/dev/ttys015` stayed constant while the verified Claude pid changed. The active process command line proved `--model opus --effort max`.
 
 The 281-line run submitted on the original bracketed-paste Apple Event, so it did not trigger the one-shot separate Return. That particular external branch remains proven by the controlled carriage-return probe and automated race coverage, not by a production trigger. The broader user-facing submission failure is resolved and live-validated through the deterministic settings relaunch described in [[claude-terminal-settings-review]].
+
+Task 341 later exposed two remaining resume-specific gaps: an empty submit Apple Event could
+report success without moving Claude Code 2.1.220, and one transient busy sample permanently
+suppressed recovery before a false human-input pause. The guarded action is now nonempty, and
+transcript bytes rather than sticky busy status prove submission. See
+[[claude-resumed-council-submit-review]] for the incident trace and ship review.
+
+Task 15 later superseded that evidence rule. Arbitrary transcript bytes no longer prove
+submission; only the exact complete delivered prompt does. Structured `AskUserQuestion`
+evidence is also required before CC Relay reports **Input needed**. See
+[[claude-continuation-compaction-recovery-review]].
 
 See [[claude-terminal-visibility]], [[diagnostics]], and [[hot]].
 

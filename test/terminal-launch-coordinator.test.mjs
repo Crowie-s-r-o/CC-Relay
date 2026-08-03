@@ -85,6 +85,33 @@ test('a missing native handle or unreliable initial discovery skips automatic bi
   assert.deepEqual(released, ['launch-one']);
 });
 
+test('a terminal shell startup failure skips discovery and preserves the exact launch for cleanup', async () => {
+  const released = [];
+  let discoveries = 0;
+  const coordinator = new TerminalLaunchCoordinator({
+    launcher: {
+      launch: async () => ({
+        launchId: 'shell-timeout-launch',
+        provider: 'claude',
+        path: '/work/project',
+        connectionStatus: 'shell_not_ready',
+        bindingError: 'The new terminal shell did not become ready.',
+      }),
+      releaseLaunchReservation: (launchId) => released.push(launchId),
+    },
+    listSessions: async () => {
+      discoveries += 1;
+      return [];
+    },
+  });
+
+  const launched = await coordinator.launch('/work/project', 'claude');
+  assert.equal(launched.connectionStatus, 'shell_not_ready');
+  assert.equal(launched.launchId, 'shell-timeout-launch');
+  assert.equal(discoveries, 0);
+  assert.deepEqual(released, ['shell-timeout-launch']);
+});
+
 test('Claude binding uses the launch UUID and ignores another new session in the same project', async () => {
   const bound = [];
   const coordinator = new TerminalLaunchCoordinator({
@@ -138,6 +165,42 @@ test('resumed Claude binding uses the conversation ID while retaining a fresh na
   assert.deepEqual(calls, [
     { resumeThreadId: 'saved-conversation' },
     ['fresh-native-launch', 'saved-conversation'],
+  ]);
+});
+
+test('initialized Claude binding uses the saved UUID while retaining a fresh native launch ID', async () => {
+  const calls = [];
+  const coordinator = new TerminalLaunchCoordinator({
+    launcher: {
+      launch: async (_path, _provider, _layout, options) => {
+        calls.push(options);
+        return {
+          launchId: 'fresh-native-launch',
+          expectedThreadId: options.initializeThreadId,
+          provider: 'claude',
+          path: '/work/project',
+        };
+      },
+      bindOwnedTerminal: (launchId, thread) => calls.push([launchId, thread.id]),
+    },
+    pollMs: 0,
+    delay: async () => {},
+    listSessions: async () => [
+      { id: 'saved-empty-session', provider: 'claude', cwd: '/work/project' },
+    ],
+  });
+
+  const launched = await coordinator.launch(
+    '/work/project',
+    'claude',
+    null,
+    { initializeThreadId: 'saved-empty-session' },
+  );
+  assert.equal(launched.launchId, 'fresh-native-launch');
+  assert.equal(launched.threadId, 'saved-empty-session');
+  assert.deepEqual(calls, [
+    { initializeThreadId: 'saved-empty-session' },
+    ['fresh-native-launch', 'saved-empty-session'],
   ]);
 });
 

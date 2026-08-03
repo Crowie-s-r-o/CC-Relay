@@ -9,13 +9,28 @@ import {
   isSubAgentEntry,
   subAgentEntryState,
 } from './event-stream.js';
-import { taskDurationLabel, formatElapsedDuration } from './task-time.js';
+import { taskDurationLabel, formatElapsedDuration, taskLifecycleDates } from './task-time.js';
 import { clipboardImageFiles } from './clipboard-images.js';
-import { projectColorClass, projectColorClasses } from './project-colors.js';
+import {
+  PROJECT_COLOR_COUNT,
+  PROJECT_COLOR_PRESETS,
+  normalizeProjectColor,
+  projectColorClass,
+  projectColorClasses,
+  projectColorTokens,
+} from './project-colors.js';
+import { ProjectCompletionNotifications } from './project-completion-notifications.js';
 import { parallelClaudeRestartRequired, projectQueueRestartRequired } from './project-queue-state.js';
 import { terminalClosePresentation } from './terminal-close-state.js';
 import { idleExecutionThreadId, runningDirectTask, selectedExecutionProvider, selectedWorkflowMode } from './task-routing.js';
 import { activityBuckets, isFinishedTaskStatus, periodRange, shiftPeriod, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
+import {
+  dateFromLocalInput,
+  localDateInputValue,
+  standupCopyText,
+  standupSections,
+  tasksForStandupDay,
+} from './standup-summary.js';
 import { resolveSubmissionId, submissionIntentSignature } from './submission-intent.js';
 import {
   buildQueueReorderRequest,
@@ -38,22 +53,43 @@ import {
   turboCouncilRequest,
 } from './turbo-council-state.js';
 import {
+  normalizePlanCouncilSettings,
+  planCouncilRequest,
+} from './plan-council-state.js';
+import {
   executionSettingsForThread,
   freshProjectComposerState,
   hydrateThreadExecutionSettings,
+  normalizeProjectTerminalSettings,
   ProjectComposerStore,
   providerEligibleForComposer,
   rememberThreadExecution,
 } from './project-composer-state.js';
 import {
+  continuationDispatchOutcome,
   continuationPresentation,
   continuationSubmission,
+  draftInputValue,
+  unconfirmedDraft,
 } from './task-continuation-state.js';
+import {
+  normalizeTaskPrompts,
+  taskPromptHistoryPreview,
+  taskPromptHistoryText,
+} from './task-prompt-history.js';
+import {
+  buildSessionTurns,
+  sessionConversationText,
+  sessionHistoryCountLabel,
+  sessionStateLabel,
+} from './task-session-history.js';
 import { escapeHtml } from './escape-html.js';
+import { markdownPreviewText, renderMarkdown } from './markdown.js';
 import {
   availableProviderSelection,
   providerInstallationState,
 } from './provider-availability.js';
+import { defaultEffortForModel } from './model-effort.js';
 import {
   breakdownIsActive,
   breakdownStatusPresentation,
@@ -131,12 +167,12 @@ function catalogModel(model, displayName, description, options = {}) {
 
 const FALLBACK_MODELS = {
   codex: [
-    catalogModel('gpt-5.6-sol', 'GPT-5.6-Sol', 'Detail and polish for complex, open-ended work.', { isDefault: true, defaultEffort: 'low', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }),
-    catalogModel('gpt-5.6-terra', 'GPT-5.6-Terra', 'Fast everyday model for exploration and implementation.', { defaultEffort: 'medium', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }),
-    catalogModel('gpt-5.6-luna', 'GPT-5.6-Luna', 'Clear and repeatable work with predictable output.', { defaultEffort: 'medium', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-    catalogModel('gpt-5.5', 'GPT-5.5', 'Previous-generation general coding model.', { defaultEffort: 'medium', efforts: ['low', 'medium', 'high', 'xhigh'] }),
-    catalogModel('gpt-5.4', 'GPT-5.4', 'Strong coding and tool use for pinned workflows.', { defaultEffort: 'medium', efforts: ['low', 'medium', 'high', 'xhigh'] }),
-    catalogModel('gpt-5.4-mini', 'GPT-5.4-Mini', 'Smaller model for quick, narrow tasks.', { defaultEffort: 'medium', efforts: ['low', 'medium', 'high', 'xhigh'] }),
+    catalogModel('gpt-5.6-sol', 'GPT-5.6-Sol', 'Detail and polish for complex, open-ended work.', { isDefault: true, defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }),
+    catalogModel('gpt-5.6-terra', 'GPT-5.6-Terra', 'Fast everyday model for exploration and implementation.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] }),
+    catalogModel('gpt-5.6-luna', 'GPT-5.6-Luna', 'Clear and repeatable work with predictable output.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
+    catalogModel('gpt-5.5', 'GPT-5.5', 'Previous-generation general coding model.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'] }),
+    catalogModel('gpt-5.4', 'GPT-5.4', 'Strong coding and tool use for pinned workflows.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'] }),
+    catalogModel('gpt-5.4-mini', 'GPT-5.4-Mini', 'Smaller model for quick, narrow tasks.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'] }),
     catalogModel('gpt-5.3-codex-spark', 'GPT-5.3-Codex-Spark', 'Near-instant text-only iteration when available.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh'] }),
   ],
   claude: [
@@ -151,16 +187,93 @@ const FALLBACK_MODELS = {
 
 const initialComposerState = freshProjectComposerState();
 
+function currentTheme() {
+  return document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+}
+
+function renderThemeToggle() {
+  const toggle = document.querySelector('#theme-toggle');
+  const label = document.querySelector('#theme-toggle-label');
+  if (!toggle || !label) return;
+  const nextTheme = currentTheme() === 'dark' ? 'light' : 'dark';
+  const nextLabel = nextTheme === 'dark' ? 'dark' : 'light';
+  toggle.setAttribute('aria-label', `Use ${nextLabel} mode`);
+  toggle.title = `Use ${nextLabel} mode`;
+  toggle.setAttribute('aria-pressed', String(currentTheme() === 'dark'));
+  label.textContent = nextTheme === 'dark' ? 'Dark' : 'Light';
+}
+
+function setTheme(theme, { persist = true } = {}) {
+  const nextTheme = theme === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = nextTheme;
+  document.documentElement.style.colorScheme = nextTheme;
+  if (persist) localStorage.setItem('relay.theme', nextTheme);
+  renderThemeToggle();
+}
+
+setTheme(currentTheme(), { persist: false });
+
+function currentHeaderPosition() {
+  return document.documentElement.dataset.headerPosition === 'bottom' ? 'bottom' : 'top';
+}
+
+function renderHeaderPositionToggle() {
+  const toggle = document.querySelector('#header-position-toggle');
+  const icon = document.querySelector('#header-position-icon');
+  const label = document.querySelector('#header-position-label');
+  if (!toggle || !icon || !label) return;
+  const isBottom = currentHeaderPosition() === 'bottom';
+  const nextPosition = isBottom ? 'top' : 'bottom';
+  toggle.setAttribute('aria-label', `Move monitor bar to ${nextPosition}`);
+  toggle.title = `Move monitor bar to ${nextPosition}`;
+  toggle.setAttribute('aria-pressed', String(isBottom));
+  icon.textContent = isBottom ? '↑' : '↓';
+  label.textContent = isBottom ? 'Top' : 'Bottom';
+}
+
+function syncHeaderHeight() {
+  const header = document.querySelector('.app-header');
+  if (!header) return;
+  document.documentElement.style.setProperty(
+    '--app-header-height',
+    `${Math.ceil(header.getBoundingClientRect().height)}px`,
+  );
+}
+
+function setHeaderPosition(position, { persist = true } = {}) {
+  const nextPosition = position === 'bottom' ? 'bottom' : 'top';
+  document.documentElement.dataset.headerPosition = nextPosition;
+  if (persist) localStorage.setItem('relay.headerPosition', nextPosition);
+  renderHeaderPositionToggle();
+  requestAnimationFrame(syncHeaderHeight);
+}
+
+setHeaderPosition(currentHeaderPosition(), { persist: false });
+
 const state = {
   tasks: [],
   runningTasks: [],
   projects: [],
   activeProjectPath: localStorage.getItem('relay.activeProjectPath') || null,
-  taskScope: 'workspace',
+  projectConfigLoaded: false,
+  activeProjectSaveSequence: 0,
   taskView: localStorage.getItem('relay.taskView') === 'history' ? 'history' : 'queue',
   historyPeriod: ['day', 'week', 'month'].includes(localStorage.getItem('relay.historyPeriod'))
     ? localStorage.getItem('relay.historyPeriod') : 'week',
   historyAnchor: new Date(),
+  standupDate: '',
+  standupLength: ['short', 'standard', 'detailed'].includes(localStorage.getItem('relay.standupLength'))
+    ? localStorage.getItem('relay.standupLength') : 'standard',
+  standupTasks: [],
+  standupBlockers: [],
+  standupClipboardText: '',
+  standupTaskCount: 0,
+  standupIncludedTaskCount: 0,
+  standupProvider: null,
+  standupGenerating: false,
+  standupError: '',
+  standupRequestSequence: 0,
+  standupCopyTimer: null,
   panelWidths: (() => {
     try {
       const saved = JSON.parse(localStorage.getItem('relay.panelWidths') || '{}');
@@ -185,6 +298,7 @@ const state = {
   selectedProvider: initialComposerState.selectedProvider,
   taskMode: initialComposerState.taskMode,
   projectComposerStore: new ProjectComposerStore(),
+  projectCompletionNotifications: new ProjectCompletionNotifications(localStorage),
   reorderPending: false,
   loadPromise: null,
   taskLoadSequence: 0,
@@ -192,13 +306,26 @@ const state = {
   submitting: false,
   pendingSubmission: null,
   poolLimitSaving: false,
+  projectSettingsSaving: false,
+  projectColorTargetId: null,
+  projectColorDraft: null,
+  projectColorSaving: false,
+  importingTasks: false,
   prioritySubmit: false,
   draggedTaskId: null,
   queueDrag: null,
   assigningTaskId: null,
   closingThreadId: null,
   closingThreadLabel: null,
-  preferIdleTerminal: localStorage.getItem('relay.preferIdleTerminal') === 'true',
+  killingSessionTaskId: null,
+  // `${taskId}:${turnId}:prompt|response|earlier` to the disclosure state the user chose.
+  // A Map, not a Set: an explicit collapse has to survive the two-second refresh as
+  // firmly as an explicit expansion, and only a recorded false can outrank the
+  // default-open newest turn.
+  expandedSessionTurns: new Map(),
+  preferIdleTerminal: initialComposerState.terminalSettings.preferIdleTerminal,
+  keepTerminalOpen: initialComposerState.terminalSettings.keepTerminalOpen,
+  terminalSettings: initialComposerState.terminalSettings,
   parallelTaskIds: new Set(),
   attachments: initialComposerState.attachments,
   eventFilter: 'all',
@@ -282,10 +409,18 @@ const elements = {
   effortSliderValue: document.querySelector('#effort-slider-value'),
   effortSliderSteps: document.querySelector('#effort-slider-steps'),
   planAuthorModel: document.querySelector('#plan-author-model'),
+  planAuthorEffort: document.querySelector('#plan-author-effort'),
   planAuthorTerminalField: document.querySelector('#plan-author-terminal-field'),
   planAuthorTerminal: document.querySelector('#plan-author-terminal'),
   planCouncilEnabled: document.querySelector('#plan-council-enabled'),
+  planCouncilOrder: document.querySelector('#plan-council-order'),
+  planCouncilOrderButtons: [...document.querySelectorAll('[data-plan-council-first]')],
   planCouncilRoute: document.querySelector('#plan-council-route'),
+  planCouncilClaudeRole: document.querySelector('#plan-council-claude-role'),
+  planCouncilCodexRole: document.querySelector('#plan-council-codex-role'),
+  planCouncilClaudeCopy: document.querySelector('#plan-council-claude-copy'),
+  planCouncilCodexCopy: document.querySelector('#plan-council-codex-copy'),
+  planCouncilRevisionCopy: document.querySelector('#plan-council-revision-copy'),
   planCouncilReadiness: document.querySelector('#plan-council-readiness'),
   planReviewerModel: document.querySelector('#plan-reviewer-model'),
   planReviewerEffort: document.querySelector('#plan-reviewer-effort'),
@@ -299,6 +434,7 @@ const elements = {
   turboCouncilEnabled: document.querySelector('#turbo-council-enabled'),
   turboCouncilHelpButton: document.querySelector('#turbo-council-help-button'),
   turboCouncilHelp: document.querySelector('#turbo-council-help'),
+  turboPlanningCount: document.querySelector('#turbo-planning-count'),
   turboCouncilOrder: document.querySelector('#turbo-council-order'),
   turboCouncilOrderButtons: [...document.querySelectorAll('[data-council-first]')],
   turboCouncilRoute: document.querySelector('#turbo-council-route'),
@@ -313,6 +449,9 @@ const elements = {
   turboNote: document.querySelector('#turbo-note'),
   terminalPanel: document.querySelector('#terminal-panel'),
   terminalPoolControls: document.querySelector('#terminal-pool-controls'),
+  keepTerminalOpenOption: document.querySelector('#keep-terminal-open-option'),
+  keepTerminalOpen: document.querySelector('#keep-terminal-open'),
+  keepTerminalOpenHelp: document.querySelector('#keep-terminal-open-help'),
   legacyTerminalControls: document.querySelector('#legacy-terminal-controls'),
   legacyTerminalLaunchButtons: document.querySelector('#legacy-terminal-launch-buttons'),
   maxCodexInstances: document.querySelector('#max-codex-instances'),
@@ -347,7 +486,9 @@ const elements = {
   terminalLayoutDisplay: document.querySelector('#terminal-layout-display'),
   terminalLaunchBackground: document.querySelector('#terminal-launch-background'),
   pauseButton: document.querySelector('#pause-button'),
-  taskScopeButton: document.querySelector('#task-scope-button'),
+  themeToggle: document.querySelector('#theme-toggle'),
+  headerPositionToggle: document.querySelector('#header-position-toggle'),
+  appHeader: document.querySelector('.app-header'),
   taskViewButtons: [...document.querySelectorAll('[data-task-view]')],
   queueSummary: document.querySelector('#queue-summary'),
   taskList: document.querySelector('#task-list'),
@@ -360,6 +501,37 @@ const elements = {
   historyPeriodCaption: document.querySelector('#history-period-caption'),
   historyMetrics: document.querySelector('#history-metrics'),
   historyActivity: document.querySelector('#history-activity'),
+  standupButton: document.querySelector('#standup-button'),
+  importTasksButton: document.querySelector('#import-tasks-button'),
+  clearTaskNotificationsButton: document.querySelector('#clear-task-notifications-button'),
+  taskImportStatus: document.querySelector('#task-import-status'),
+  standupModal: document.querySelector('#standup-modal'),
+  standupSubtitle: document.querySelector('#standup-subtitle'),
+  standupClose: document.querySelector('#standup-close'),
+  standupCancel: document.querySelector('#standup-cancel'),
+  standupDate: document.querySelector('#standup-date'),
+  standupLength: document.querySelector('#standup-length'),
+  standupScopeLabel: document.querySelector('#standup-scope-label'),
+  standupCount: document.querySelector('#standup-count'),
+  standupGeneratorProvider: document.querySelector('#standup-generator-provider'),
+  standupGeneratorNote: document.querySelector('#standup-generator-note'),
+  standupDateLabel: document.querySelector('#standup-date-label'),
+  standupSourceNote: document.querySelector('#standup-source-note'),
+  standupSheet: document.querySelector('#standup-sheet'),
+  standupResults: document.querySelector('#standup-results'),
+  standupTaskList: document.querySelector('#standup-task-list'),
+  standupTaskCount: document.querySelector('#standup-task-count'),
+  standupTaskEmpty: document.querySelector('#standup-task-empty'),
+  standupBlockerList: document.querySelector('#standup-blocker-list'),
+  standupBlockerCount: document.querySelector('#standup-blocker-count'),
+  standupBlockerEmpty: document.querySelector('#standup-blocker-empty'),
+  standupLoadingList: document.querySelector('#standup-loading-list'),
+  standupEmpty: document.querySelector('#standup-empty'),
+  standupEmptyTitle: document.querySelector('#standup-empty-title'),
+  standupEmptyMessage: document.querySelector('#standup-empty-message'),
+  standupCopyStatus: document.querySelector('#standup-copy-status'),
+  standupGenerate: document.querySelector('#standup-generate'),
+  standupCopy: document.querySelector('#standup-copy'),
   parallelBatchBar: document.querySelector('#parallel-batch-bar'),
   parallelSelectionCount: document.querySelector('#parallel-selection-count'),
   parallelSessionSelect: document.querySelector('#parallel-session-select'),
@@ -376,6 +548,14 @@ const elements = {
   resultSection: document.querySelector('#result-section'),
   detailResult: document.querySelector('#detail-result'),
   detailResultPreview: document.querySelector('#detail-result-preview'),
+  sessionStrip: document.querySelector('#session-strip'),
+  sessionStripContext: document.querySelector('#session-strip-context'),
+  sessionStripState: document.querySelector('#session-strip-state'),
+  sessionStripMessage: document.querySelector('#session-strip-message'),
+  sessionKillButton: document.querySelector('#session-kill-button'),
+  sessionHistory: document.querySelector('#session-history'),
+  sessionHistoryCount: document.querySelector('#session-history-count'),
+  sessionHistoryTurns: document.querySelector('#session-history-turns'),
   contentCopyButtons: [...document.querySelectorAll('[data-copy-content]')],
   detailEvents: document.querySelector('#detail-events'),
   eventSessionState: document.querySelector('#event-session-state'),
@@ -406,8 +586,12 @@ const elements = {
   planWaiting: document.querySelector('#plan-waiting'),
   planDraftSection: document.querySelector('#plan-draft-section'),
   planDraft: document.querySelector('#plan-draft'),
+  planDraftArtifactRow: document.querySelector('#plan-draft-artifact-row'),
+  planDraftArtifactPath: document.querySelector('#plan-draft-artifact-path'),
   planReviewSection: document.querySelector('#plan-review-section'),
   planReview: document.querySelector('#plan-review'),
+  planReviewArtifactRow: document.querySelector('#plan-review-artifact-row'),
+  planReviewArtifactPath: document.querySelector('#plan-review-artifact-path'),
   planFinalSection: document.querySelector('#plan-final-section'),
   planArtifactRow: document.querySelector('#plan-artifact-row'),
   planArtifactPath: document.querySelector('#plan-artifact-path'),
@@ -456,6 +640,18 @@ const elements = {
   plannerMessage: document.querySelector('#planner-message'),
   headerRunningTasks: document.querySelector('#header-running-tasks'),
   projectList: document.querySelector('#project-list'),
+  projectColorModal: document.querySelector('#project-color-modal'),
+  projectColorSubtitle: document.querySelector('#project-color-subtitle'),
+  projectColorClose: document.querySelector('#project-color-close'),
+  projectColorPreview: document.querySelector('#project-color-preview'),
+  projectColorPreviewInitial: document.querySelector('#project-color-preview-initial'),
+  projectColorPreviewName: document.querySelector('#project-color-preview-name'),
+  projectColorPresetList: document.querySelector('#project-color-preset-list'),
+  projectColorCustomInput: document.querySelector('#project-color-custom-input'),
+  projectColorCustomValue: document.querySelector('#project-color-custom-value'),
+  projectColorMessage: document.querySelector('#project-color-message'),
+  projectColorCancel: document.querySelector('#project-color-cancel'),
+  projectColorSave: document.querySelector('#project-color-save'),
   addProjectButton: document.querySelector('#add-project-button'),
   addLaunchProjectButton: document.querySelector('#add-launch-project-button'),
   workspace: document.querySelector('.workspace'),
@@ -463,14 +659,6 @@ const elements = {
   queueDetailResizer: document.querySelector('#queue-detail-resizer'),
   terminalHeightResizer: document.querySelector('#terminal-height-resizer'),
 };
-
-const storedTerminalLayout = (() => {
-  try {
-    return JSON.parse(localStorage.getItem('relay.terminalLayout') || 'null');
-  } catch {
-    return null;
-  }
-})();
 
 function terminalLayout() {
   return {
@@ -482,29 +670,123 @@ function terminalLayout() {
   };
 }
 
+function applyProjectTerminalSettings(project = activeProject(), fallback = state.terminalSettings) {
+  const settings = normalizeProjectTerminalSettings(project, fallback);
+  state.terminalSettings = settings;
+  state.keepTerminalOpen = settings.keepTerminalOpen;
+  state.preferIdleTerminal = settings.preferIdleTerminal;
+  elements.keepTerminalOpen.checked = settings.keepTerminalOpen;
+  elements.preferIdleTerminal.checked = settings.preferIdleTerminal;
+  elements.terminalLayoutEnabled.checked = settings.layout.enabled;
+  elements.terminalLayoutColumns.value = String(settings.layout.columns);
+  elements.terminalLayoutRows.value = String(settings.layout.rows);
+  elements.terminalLaunchBackground.checked = settings.layout.background;
+  const displayCount = elements.terminalLayoutDisplay.options.length;
+  const display = Math.min(settings.layout.display, Math.max(0, displayCount - 1));
+  elements.terminalLayoutDisplay.value = String(display);
+  return settings;
+}
+
+function projectTerminalSettingsRecord(settings = state.terminalSettings) {
+  return {
+    keep_terminal_open: settings.keepTerminalOpen,
+    prefer_idle_terminal: settings.preferIdleTerminal,
+    terminal_layout: settings.layout,
+  };
+}
+
+function setProjectTerminalSettingsDisabled(disabled) {
+  for (const control of [
+    elements.terminalLayoutEnabled,
+    elements.terminalLayoutColumns,
+    elements.terminalLayoutRows,
+    elements.terminalLayoutDisplay,
+    elements.terminalLaunchBackground,
+  ]) {
+    control.disabled = disabled;
+  }
+}
+
+function projectTerminalSettingIsFocused() {
+  return [
+    elements.keepTerminalOpen,
+    elements.preferIdleTerminal,
+    elements.terminalLayoutEnabled,
+    elements.terminalLayoutColumns,
+    elements.terminalLayoutRows,
+    elements.terminalLayoutDisplay,
+    elements.terminalLaunchBackground,
+  ].includes(document.activeElement);
+}
+
+async function saveProjectTerminalSettings() {
+  const project = activeProject();
+  if (!project || state.projectSettingsSaving) return;
+  const settings = {
+    keepTerminalOpen: state.keepTerminalOpen,
+    preferIdleTerminal: state.preferIdleTerminal,
+    layout: terminalLayout(),
+  };
+  state.terminalSettings = settings;
+  state.projects = state.projects.map((item) => (
+    item.id === project.id ? { ...item, ...projectTerminalSettingsRecord(settings) } : item
+  ));
+  saveProjectComposerState(project.path);
+
+  if (state.status?.capabilities?.projectTerminalSettings !== true) {
+    // Older backends cannot persist the project snapshot, but the renderer setting is already
+    // active for new task submissions and remains isolated in this project's composer session.
+    renderThreads();
+    return;
+  }
+
+  state.projectSettingsSaving = true;
+  setProjectTerminalSettingsDisabled(true);
+  elements.keepTerminalOpen.disabled = true;
+  elements.preferIdleTerminal.disabled = true;
+  try {
+    const body = await api(`/api/projects/${project.id}/settings`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        keepTerminalOpen: settings.keepTerminalOpen,
+        preferIdleTerminal: settings.preferIdleTerminal,
+        terminalLayout: settings.layout,
+      }),
+    });
+    state.projects = state.projects.map((item) => (
+      item.id === body.project.id ? body.project : item
+    ));
+  } catch (error) {
+    elements.formMessage.textContent = `Could not save ${project.name} terminal settings: ${error.message}`;
+  } finally {
+    state.projectSettingsSaving = false;
+    if (sameProjectPath(state.activeProjectPath, project.path)) {
+      applyProjectTerminalSettings(activeProject(), settings);
+    }
+    renderThreads();
+  }
+}
+
 function saveTerminalLayout() {
-  localStorage.setItem('relay.terminalLayout', JSON.stringify(terminalLayout()));
+  state.terminalSettings = {
+    ...state.terminalSettings,
+    layout: terminalLayout(),
+  };
+  void saveProjectTerminalSettings();
 }
 
 async function loadTerminalDisplays() {
-  if (storedTerminalLayout) {
-    elements.terminalLayoutEnabled.checked = storedTerminalLayout.enabled !== false;
-    elements.terminalLayoutColumns.value = storedTerminalLayout.columns || 3;
-    elements.terminalLayoutRows.value = storedTerminalLayout.rows || 3;
-    elements.terminalLaunchBackground.checked = storedTerminalLayout.background === true;
-  }
   const body = await api('/api/terminal-displays');
   const displays = body.displays || [];
   elements.terminalLayoutDisplay.innerHTML = displays.map((display, index) => (
     `<option value="${index}">${escapeHtml(display.name || `Monitor ${index + 1}`)} · ${display.width}×${display.height}${display.primary ? ' · Primary' : ''}</option>`
   )).join('') || '<option value="0">Primary monitor</option>';
-  const selectedDisplay = Number(storedTerminalLayout?.display || 0);
-  elements.terminalLayoutDisplay.value = String(Math.min(selectedDisplay, Math.max(0, displays.length - 1)));
+  applyProjectTerminalSettings(activeProject(), state.terminalSettings);
 }
 
 /*
  * Every request is bounded. Without an abort a hung fetch leaves the composer stuck on
- * its in-flight state forever, which reads as "Relay refuses to add the task".
+ * its in-flight state forever, which reads as "CC Relay refuses to add the task".
  */
 async function api(path, options = {}) {
   const { timeoutMs = API_TIMEOUT_MS, timeoutMessage = null, ...fetchOptions } = options;
@@ -531,16 +813,22 @@ async function api(path, options = {}) {
        */
       throw new Error(
         timeoutMessage?.(seconds)
-        || `Relay did not answer within ${seconds} seconds. It may still be processing the request.`,
+        || `CC Relay did not answer within ${seconds} seconds. It may still be processing the request.`,
       );
     }
-    throw new Error(`Relay is unreachable. ${error.message}`);
+    throw new Error(`CC Relay is unreachable. ${error.message}`);
   } finally {
     window.clearTimeout(timer);
   }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(body.error || `Request failed with status ${response.status}.`);
+    const failure = new Error(body.error || `Request failed with status ${response.status}.`);
+    /*
+     * A rejected request whose work may already have reached a provider terminal is not an
+     * ordinary failure, and no caller should have to read error copy to tell them apart.
+     */
+    if (body.deliveryUncertain === true) failure.deliveryUncertain = true;
+    throw failure;
   }
   return body;
 }
@@ -553,10 +841,6 @@ function normalizedPath(path) {
   return String(path || '').replace(/[\\/]+$/, '').replaceAll('\\', '/');
 }
 
-function compactProjectPath(path) {
-  return normalizedPath(path).split('/').filter(Boolean).slice(-2).join(' / ');
-}
-
 function sameProjectPath(left, right) {
   return normalizedPath(left) === normalizedPath(right);
 }
@@ -567,6 +851,13 @@ function activeProject() {
 
 function usesDisposableTerminalPools() {
   return state.status?.capabilities?.disposableTerminalPools === true;
+}
+
+function terminalRetentionRequest(enabled = state.keepTerminalOpen) {
+  return state.status?.capabilities?.retainedTerminalSessions === true
+    && enabled
+    ? { keepTerminalOpen: true }
+    : {};
 }
 
 function providerIsMissing(provider) {
@@ -585,7 +876,6 @@ function reconcileProviderSelection() {
   if (provider === state.selectedProvider) return false;
   state.selectedProvider = provider;
   state.selectedThreadId = null;
-  state.taskScope = 'workspace';
   void loadModels(provider);
   return true;
 }
@@ -603,26 +893,41 @@ function projectIdentityColorClass(path) {
   return projectColorClasses(state.projects.map((project) => project.path))[projectIndex];
 }
 
+function projectIdentityCustomColor(path) {
+  const project = state.projects.find((item) => sameProjectPath(item.path, path));
+  return normalizeProjectColor(project?.color);
+}
+
+function projectIdentityStyleAttribute(path) {
+  const tokens = projectColorTokens(projectIdentityCustomColor(path));
+  if (!tokens) return '';
+  return ` style="--project-accent-custom-light:${tokens.light};--project-accent-custom-dark:${tokens.dark}"`;
+}
+
+function applyProjectIdentityStyle(element, path) {
+  for (let index = 1; index <= PROJECT_COLOR_COUNT; index += 1) {
+    element.classList.remove(`project-color-${index}`);
+  }
+  element.style.removeProperty('--project-accent-custom-light');
+  element.style.removeProperty('--project-accent-custom-dark');
+  if (!path) return;
+  element.classList.add(projectIdentityColorClass(path));
+  const tokens = projectColorTokens(projectIdentityCustomColor(path));
+  if (tokens) {
+    element.style.setProperty('--project-accent-custom-light', tokens.light);
+    element.style.setProperty('--project-accent-custom-dark', tokens.dark);
+  }
+}
+
+function renderComposerProjectIdentity() {
+  const project = activeProject();
+  applyProjectIdentityStyle(elements.form, project?.path);
+}
+
 function projectTasks() {
   return tasksForScope(state.tasks, {
     projectPath: state.activeProjectPath,
-    taskScope: state.taskScope,
-    threadId: state.selectedThreadId,
   });
-}
-
-function renderTaskScope() {
-  if (state.taskScope === 'relay' && !state.selectedThreadId) {
-    state.taskScope = 'workspace';
-  }
-  elements.taskScopeButton.hidden = !state.selectedThreadId && !state.activeProjectPath;
-  const labels = {
-    relay: 'This Relay',
-    workspace: 'All Relays',
-  };
-  elements.taskScopeButton.textContent = labels[state.taskScope];
-  elements.taskScopeButton.setAttribute('aria-label', `Task scope: ${labels[state.taskScope]}. Click to change.`);
-  elements.taskScopeButton.title = 'Switch between this Relay and every Relay in this project';
 }
 
 function projectThreads(provider = state.selectedProvider) {
@@ -636,9 +941,14 @@ function saveProjectComposerState(path = state.activeProjectPath) {
   state.projectComposerStore.save(path, {
     prompt: elements.prompt.value,
     attachments: state.attachments,
+    selectedTaskId: state.selectedTaskId,
     selectedThreadId: state.selectedThreadId,
     selectedProvider: state.selectedProvider,
     taskMode: state.taskMode,
+    terminalSettings: {
+      ...state.terminalSettings,
+      layout: terminalLayout(),
+    },
     executionSettings: state.executionSettings,
     threadExecutionSettings: state.threadExecutionSettings,
     planSettings: state.planSettings,
@@ -652,25 +962,54 @@ function restoreProjectComposerState(path) {
   elements.formMessage.textContent = '';
   setComposerAlert('');
   state.attachments = session.attachments;
+  const selectedTask = state.tasks.find((task) => (
+    task.id === session.selectedTaskId
+    && sameProjectPath(task.repo_path, path)
+  ));
+  state.selectedTaskId = selectedTask?.id || null;
   state.selectedThreadId = session.selectedThreadId;
   state.selectedProvider = session.selectedProvider;
   state.taskMode = session.taskMode;
-  state.taskScope = 'workspace';
+  state.terminalSettings = session.terminalSettings || initialComposerState.terminalSettings;
   state.executionSettings = session.executionSettings;
   state.threadExecutionSettings = session.threadExecutionSettings || {};
   state.planSettings = session.planSettings;
   state.turboSettings = session.turboSettings;
+  applyProjectTerminalSettings(
+    state.projects.find((project) => sameProjectPath(project.path, path)),
+    state.terminalSettings,
+  );
 }
 
-function selectProject(path) {
+function persistActiveProject(path) {
+  if (
+    !path
+    || state.status?.capabilities?.sharedProjectConfig !== true
+  ) return;
+  const sequence = ++state.activeProjectSaveSequence;
+  api('/api/projects/active', {
+    method: 'POST',
+    body: JSON.stringify({ path }),
+  }).catch((error) => {
+    if (sequence !== state.activeProjectSaveSequence) return;
+    elements.formMessage.textContent = `Could not save the active project: ${error.message}`;
+  });
+}
+
+function selectProject(path, { persist = true } = {}) {
   if (!path) return;
   const project = state.projects.find((item) => sameProjectPath(item.path, path));
-  if (!project || sameProjectPath(project.path, state.activeProjectPath)) return;
+  if (!project) return;
+  if (sameProjectPath(project.path, state.activeProjectPath)) {
+    applyProjectTerminalSettings(project, state.terminalSettings);
+    if (persist) persistActiveProject(project.path);
+    return;
+  }
   if (state.activeProjectPath) saveProjectComposerState();
   state.activeProjectPath = project.path;
   localStorage.setItem('relay.activeProjectPath', state.activeProjectPath);
+  if (persist) persistActiveProject(state.activeProjectPath);
   restoreProjectComposerState(state.activeProjectPath);
-  state.selectedTaskId = null;
   state.parallelTaskIds.clear();
   elements.taskDetail.hidden = true;
   elements.emptyDetail.hidden = false;
@@ -678,15 +1017,111 @@ function selectProject(path) {
   renderProjects();
   renderTasks();
   renderStatus();
-  renderTaskScope();
+  if (state.selectedTaskId) {
+    selectTask(state.selectedTaskId).catch((error) => {
+      elements.queueSummary.textContent = error.message;
+    });
+  }
+}
+
+function projectColorTarget() {
+  return state.projects.find((project) => project.id === state.projectColorTargetId) || null;
+}
+
+function renderProjectColorPicker() {
+  const project = projectColorTarget();
+  if (!project) return;
+  const selectedColor = normalizeProjectColor(state.projectColorDraft);
+  elements.projectColorSubtitle.textContent = `Choose a bright identity for ${project.name}.`;
+  elements.projectColorPreviewInitial.textContent = project.name.slice(0, 1).toUpperCase();
+  elements.projectColorPreviewName.textContent = project.name;
+  for (let index = 1; index <= PROJECT_COLOR_COUNT; index += 1) {
+    elements.projectColorPreview.classList.remove(`project-color-${index}`);
+  }
+  elements.projectColorPreview.classList.add(projectIdentityColorClass(project.path));
+  elements.projectColorPreview.style.removeProperty('--project-accent-custom-light');
+  elements.projectColorPreview.style.removeProperty('--project-accent-custom-dark');
+  const tokens = projectColorTokens(selectedColor);
+  if (tokens) {
+    elements.projectColorPreview.style.setProperty('--project-accent-custom-light', tokens.light);
+    elements.projectColorPreview.style.setProperty('--project-accent-custom-dark', tokens.dark);
+  }
+  elements.projectColorPresetList.innerHTML = `
+    <button class="project-color-preset project-color-preset-auto" type="button" data-project-color="" aria-pressed="${selectedColor === null}">
+      <span class="project-color-preset-swatch" aria-hidden="true"></span>
+      <span class="project-color-preset-label">Automatic</span>
+      <span class="project-color-preset-check" aria-hidden="true">✓</span>
+    </button>
+    ${PROJECT_COLOR_PRESETS.map((preset) => `
+      <button class="project-color-preset" type="button" data-project-color="${preset.value}" aria-pressed="${selectedColor === preset.value}" style="--swatch:${preset.value}">
+        <span class="project-color-preset-swatch" aria-hidden="true"></span>
+        <span class="project-color-preset-label">${escapeHtml(preset.name)}</span>
+        <span class="project-color-preset-check" aria-hidden="true">✓</span>
+      </button>
+    `).join('')}
+  `;
+  const automaticIndex = Number(projectIdentityColorClass(project.path).split('-').pop()) - 1;
+  const customValue = selectedColor || PROJECT_COLOR_PRESETS[automaticIndex]?.value || '#3b82f6';
+  elements.projectColorCustomInput.value = customValue;
+  elements.projectColorCustomValue.value = customValue.toUpperCase();
+  elements.projectColorMessage.textContent = '';
+}
+
+function openProjectColorPicker(project) {
+  if (!project || state.status?.capabilities?.projectColors !== true) return;
+  state.projectColorTargetId = project.id;
+  state.projectColorDraft = normalizeProjectColor(project.color);
+  renderProjectColorPicker();
+  if (!elements.projectColorModal.open) elements.projectColorModal.showModal();
+}
+
+function closeProjectColorPicker() {
+  if (state.projectColorSaving) return;
+  state.projectColorTargetId = null;
+  state.projectColorDraft = null;
+  if (elements.projectColorModal.open) elements.projectColorModal.close();
+}
+
+async function saveProjectColor() {
+  const project = projectColorTarget();
+  if (!project || state.projectColorSaving) return;
+  state.projectColorSaving = true;
+  elements.projectColorSave.disabled = true;
+  elements.projectColorCancel.disabled = true;
+  elements.projectColorClose.disabled = true;
+  elements.projectColorMessage.textContent = '';
+  try {
+    const body = await api(`/api/projects/${project.id}/color`, {
+      method: 'PATCH',
+      body: JSON.stringify({ color: normalizeProjectColor(state.projectColorDraft) }),
+    });
+    state.projects = state.projects.map((item) => (
+      item.id === body.project.id ? body.project : item
+    ));
+    state.projectColorTargetId = null;
+    state.projectColorDraft = null;
+    elements.projectColorModal.close();
+    renderProjects();
+    renderTasks();
+    renderStatus();
+    elements.formMessage.textContent = `${project.name} color updated.`;
+  } catch (error) {
+    elements.projectColorMessage.textContent = error.message;
+  } finally {
+    state.projectColorSaving = false;
+    elements.projectColorSave.disabled = false;
+    elements.projectColorCancel.disabled = false;
+    elements.projectColorClose.disabled = false;
+  }
 }
 
 function renderProjects() {
+  renderComposerProjectIdentity();
   const supported = state.status?.capabilities?.projectLauncher === true;
   elements.addProjectButton.disabled = !supported;
   elements.addLaunchProjectButton.disabled = !supported;
   if (!supported) {
-    elements.projectList.innerHTML = '<span class="project-empty">Restart Relay to enable project launching</span>';
+    elements.projectList.innerHTML = '<span class="project-empty">Restart CC Relay to enable project launching</span>';
     return;
   }
   if (!state.projects.length) {
@@ -696,14 +1131,22 @@ function renderProjects() {
   const colorClasses = projectColorClasses(state.projects.map((project) => project.path));
   elements.projectList.innerHTML = state.projects.map((project, index) => {
     const activity = projectActivity(project.path);
+    const notificationCount = state.projectCompletionNotifications.count(project.path);
+    const completionNotice = notificationCount
+      ? ` ${notificationCount} finished task${notificationCount === 1 ? '' : 's'} not checked.`
+      : '';
+    const accessibleLabel = `${project.name}, ${activity.status}. ${activity.label}.${completionNotice}`;
     return `
-    <article class="project-chip ${colorClasses[index]} ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}" data-activity="${activity.state}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
+    <article class="project-chip ${colorClasses[index]} ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}"${projectIdentityStyleAttribute(project.path)} data-activity="${activity.state}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-label="${escapeHtml(accessibleLabel)}" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
       <div class="project-chip-head">
-        <span class="project-pin" aria-hidden="true">${escapeHtml(project.name.slice(0, 1).toUpperCase())}</span>
-        <span class="project-copy"><strong>${escapeHtml(project.name)}</strong><small>${escapeHtml(compactProjectPath(project.path))}</small></span>
+        <button class="project-pin" type="button" data-project-action="color" aria-label="Change ${escapeHtml(project.name)} color" title="Change project color" ${state.status?.capabilities?.projectColors === true ? '' : 'disabled'}>
+          ${escapeHtml(project.name.slice(0, 1).toUpperCase())}
+          ${notificationCount ? `<span class="project-notification">${notificationCount > 9 ? '9+' : notificationCount}</span>` : ''}
+        </button>
+        <span class="project-copy"><strong>${escapeHtml(project.name)}</strong></span>
       </div>
       <div class="project-chip-foot">
-        <span class="project-activity"><i aria-hidden="true"></i><strong>${escapeHtml(activity.status)}</strong><span>${escapeHtml(activity.label)}</span></span>
+        <span class="project-activity"><i aria-hidden="true"></i><strong>${escapeHtml(activity.status)}</strong></span>
       </div>
       <button class="project-unpin" type="button" data-project-action="delete" aria-label="Unpin ${escapeHtml(project.name)}" ${state.projects.length === 1 ? 'disabled title="Add another project before unpinning the selected project"' : ''}>×</button>
     </article>
@@ -720,7 +1163,7 @@ function projectActivity(path) {
     return {
       state: 'running',
       status: 'Running',
-      label: `#${task.id} ${compactText(task.prompt, 42)}${queued.length ? ` · ${queued.length} waiting` : ''}`,
+      label: `Task #${task.id}${queued.length ? `, ${queued.length} waiting` : ''}`,
     };
   }
   if (queued.length > 0) {
@@ -747,9 +1190,9 @@ function projectActivity(path) {
       state: 'queued',
       status: staleClaudeScheduler || staleScheduler ? 'Restart needed' : 'Waiting',
       label: staleClaudeScheduler
-        ? `${queued.length} queued · Restart Relay for parallel Claude projects`
+        ? `${queued.length} queued. Restart CC Relay for parallel Claude projects`
         : staleScheduler
-        ? `${queued.length} queued · Restart Relay for separate project queues`
+        ? `${queued.length} queued. Restart CC Relay for separate project queues`
         : `${queued.length} task${queued.length === 1 ? '' : 's'} queued`,
     };
   }
@@ -757,10 +1200,19 @@ function projectActivity(path) {
   if (latest && ['failed', 'interrupted'].includes(latest.status)) {
     return { state: 'error', status: 'Attention', label: `Task #${latest.id} ${latest.status}` };
   }
+  const uncheckedCompletions = state.projectCompletionNotifications.count(path);
+  if (uncheckedCompletions > 0) {
+    const latestFinishedTaskId = state.projectCompletionNotifications.latestTaskId(path);
+    return {
+      state: 'complete',
+      status: 'Finished',
+      label: `${uncheckedCompletions} task${uncheckedCompletions === 1 ? '' : 's'} not checked, latest task #${latestFinishedTaskId}`,
+    };
+  }
   return {
     state: 'idle',
     status: 'Idle',
-    label: latest?.status === 'complete' ? `Last completed #${latest.id}` : 'Ready for work',
+    label: latest?.status === 'complete' ? `Last completed task #${latest.id}` : 'Ready for work',
   };
 }
 
@@ -799,15 +1251,31 @@ async function loadProjects() {
   }
   const body = await api('/api/projects');
   state.projects = body.projects || [];
+  const sharedActiveProject = state.projects.find(
+    (project) => sameProjectPath(project.path, body.activeProjectPath),
+  );
+  if (!state.projectConfigLoaded) {
+    state.projectConfigLoaded = true;
+    if (sharedActiveProject) {
+      selectProject(sharedActiveProject.path, { persist: false });
+    } else if (state.projects.some(
+      (project) => sameProjectPath(project.path, state.activeProjectPath),
+    )) {
+      persistActiveProject(state.activeProjectPath);
+    }
+  }
   if (state.projects.length && !state.projects.some((project) => sameProjectPath(project.path, state.activeProjectPath))) {
     const selectedThread = state.threads.find((thread) => thread.id === state.selectedThreadId);
-    const initialProject = state.projects.find((project) => sameProjectPath(project.path, selectedThread?.cwd))
+    const initialProject = sharedActiveProject
+      || state.projects.find((project) => sameProjectPath(project.path, selectedThread?.cwd))
       || state.projects.find((project) => state.threads.some((thread) => sameProjectPath(project.path, thread.cwd)))
       || state.projects[0];
     selectProject(initialProject.path);
   }
+  if (!state.projectSettingsSaving && !projectTerminalSettingIsFocused()) {
+    applyProjectTerminalSettings(activeProject(), state.terminalSettings);
+  }
   renderProjects();
-  renderTaskScope();
 }
 
 async function chooseProject(launch, provider = projectProvider()) {
@@ -835,9 +1303,9 @@ async function chooseProject(launch, provider = projectProvider()) {
 
 function terminalLaunchTimeoutMessage(provider) {
   if (provider === 'codex') {
-    return 'Could not open a Codex Relay. If Codex says an update is required in the terminal, update Codex, then try again.';
+    return 'Could not open a Codex CC Relay. If Codex says an update is required in the terminal, update Codex, then try again.';
   }
-  return 'Could not open a Claude Relay. Check the terminal for details, then try again.';
+  return 'Could not open a Claude CC Relay. Check the terminal for details, then try again.';
 }
 
 async function finishTerminalLaunch(project, provider, launched, previousIds) {
@@ -852,7 +1320,7 @@ async function finishTerminalLaunch(project, provider, launched, previousIds) {
 async function syncLaunchedTerminalControl(launched, thread) {
   if (!launched?.launchId || !thread) return;
   if (launched.threadId !== thread.id) {
-    elements.formMessage.textContent = `${providerLabel(threadProvider(thread))} connected, but Relay could not verify its exact native window. Close is unavailable for this session.`;
+    elements.formMessage.textContent = `${providerLabel(threadProvider(thread))} connected, but CC Relay could not verify its exact native window. Close is unavailable for this session.`;
     return;
   }
   await loadThreads({ silent: true });
@@ -885,7 +1353,7 @@ async function waitForProjectThread(path, provider, previousIds = new Set()) {
         state.planSettings.authorThreadId = thread.id;
         renderPlanControls();
         renderThreads();
-        elements.formMessage.textContent = `Claude author terminal is ready in ${workspaceName(path)}.`;
+        elements.formMessage.textContent = `Claude council terminal is ready in ${workspaceName(path)}.`;
         return thread;
       }
       if (!providerEligibleForComposer(state, provider)) {
@@ -913,76 +1381,6 @@ async function launchProject(project, provider) {
   await finishTerminalLaunch(project, provider, body.launched, previousIds);
 }
 
-function renderInlineMarkdown(value) {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-}
-
-function renderMarkdown(value) {
-  const lines = String(value || '').replace(/\r\n/g, '\n').split('\n');
-  const output = [];
-  let list = null;
-  let inCode = false;
-  let codeLines = [];
-
-  const closeList = () => {
-    if (list) {
-      output.push(`</${list}>`);
-      list = null;
-    }
-  };
-
-  for (const line of lines) {
-    if (/^```/.test(line)) {
-      closeList();
-      if (inCode) {
-        output.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
-        codeLines = [];
-        inCode = false;
-      } else {
-        inCode = true;
-      }
-      continue;
-    }
-    if (inCode) {
-      codeLines.push(line);
-      continue;
-    }
-
-    const heading = line.match(/^(#{1,4})\s+(.+)$/);
-    const unordered = line.match(/^\s*[-*]\s+(.+)$/);
-    const ordered = line.match(/^\s*\d+[.)]\s+(.+)$/);
-    if (heading) {
-      closeList();
-      const level = Math.min(heading[1].length + 2, 6);
-      output.push(`<h${level}>${renderInlineMarkdown(heading[2])}</h${level}>`);
-    } else if (unordered || ordered) {
-      const nextList = unordered ? 'ul' : 'ol';
-      if (list !== nextList) {
-        closeList();
-        list = nextList;
-        output.push(`<${list}>`);
-      }
-      output.push(`<li>${renderInlineMarkdown((unordered || ordered)[1])}</li>`);
-    } else if (/^>\s?/.test(line)) {
-      closeList();
-      output.push(`<blockquote>${renderInlineMarkdown(line.replace(/^>\s?/, ''))}</blockquote>`);
-    } else if (line.trim()) {
-      closeList();
-      output.push(`<p>${renderInlineMarkdown(line.trim())}</p>`);
-    } else {
-      closeList();
-    }
-  }
-
-  closeList();
-  if (inCode) {
-    output.push(`<pre><code>${escapeHtml(codeLines.join('\n'))}</code></pre>`);
-  }
-  return output.join('');
-}
-
 function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1000,7 +1398,7 @@ function renderAttachmentComposer() {
   elements.attachmentRoute.textContent = !state.status
     ? 'Checking local image support.'
     : !available
-      ? 'Restart Relay once to enable image attachments.'
+      ? 'Restart CC Relay once to enable image attachments.'
       : isExecuteCouncilEnabled()
         ? 'Sent to Claude and Codex throughout the review loop.'
         : 'Sent to the selected AI with the prompt.';
@@ -1081,7 +1479,7 @@ async function mergeImageFiles(fileList, existingAttachments) {
 
 async function addImageFiles(fileList) {
   if (state.status?.capabilities?.imageAttachments !== true) {
-    setComposerAlert('Restart Relay once to enable image attachments.');
+    setComposerAlert('Restart CC Relay once to enable image attachments.');
     return;
   }
   const result = await mergeImageFiles(fileList, state.attachments);
@@ -1105,7 +1503,7 @@ async function addContinuationImageFiles(fileList) {
   if (!task) return;
   if (!followUpAttachmentsAvailable()) {
     elements.continuationMessage.dataset.kind = 'error';
-    elements.continuationMessage.textContent = 'Restart Relay to add images to follow-up messages.';
+    elements.continuationMessage.textContent = 'Restart CC Relay to add images to follow-up messages.';
     renderTaskContinuation(task);
     return;
   }
@@ -1136,6 +1534,17 @@ function formatCardTime(value) {
   }).formatToParts(new Date(value));
   const part = (type) => parts.find((item) => item.type === type)?.value || '';
   return `${part('day')} ${part('month')} ${part('hour')}:${part('minute')}`;
+}
+
+function taskLifecycleDatesMarkup(task, formatter = formatCardTime) {
+  return taskLifecycleDates(task).map((date) => `
+    <span class="task-lifecycle-date" data-date="${date.key}" data-pending="${date.value ? 'false' : 'true'}">
+      <small>${date.label}</small>
+      ${date.value
+        ? `<time datetime="${escapeHtml(date.value)}">${escapeHtml(formatter(date.value))}</time>`
+        : `<span>${date.pendingLabel}</span>`}
+    </span>
+  `).join('');
 }
 
 function workspaceName(path) {
@@ -1483,14 +1892,16 @@ function eventPresentation(entry, task) {
     };
   }
 
-  if (item?.type === 'agentMessage') {
-    const message = String(item.text || lastEvent?.message || '').trim();
+  if (item?.type === 'agentMessage' || payloadType === 'claude/message') {
+    const message = String(item?.text || lastEvent?.payload?.text || lastEvent?.message || '').trim();
     return {
       ...common,
       kind: 'message',
       glyph: provider === 'claude' ? '✳' : '>_',
       title: `${providerLabel(provider)} message`,
-      status: item.phase === 'final' || lastEvent?.kind === 'result' ? 'final' : 'update',
+      status: item?.phase === 'final' || lastEvent?.kind === 'result' || lastEvent?.payload?.liveFinal
+        ? 'final'
+        : 'update',
       message,
       headerless: provider === 'codex',
     };
@@ -1558,7 +1969,7 @@ function eventPresentation(entry, task) {
       kind: 'note',
       quiet: true,
       glyph: '●',
-      title: lastEvent.kind === 'queue' ? 'Relay queue' : 'Relay system',
+      title: lastEvent.kind === 'queue' ? 'CC Relay queue' : 'CC Relay system',
       body: eventTextMarkup(lastEvent.message),
     };
   }
@@ -1695,7 +2106,7 @@ function renderEventEntryInner(p, time) {
         <span class="term-signal-state">${escapeHtml(p.status)}</span>
         <time class="term-time">${escapeHtml(time)}</time>
       </div>`;
-    return `${head}<div class="term-response ${p.headerless ? 'is-headerless' : ''}"><div class="event-message-body term-response-body">${escapeHtml(p.message)}</div></div>`;
+    return `${head}<div class="term-response ${p.headerless ? 'is-headerless' : ''}"><div class="event-message-body term-response-body markdown-document terminal-markdown">${renderMarkdown(p.message)}</div></div>`;
   }
 
   if (p.kind === 'agent') {
@@ -1818,7 +2229,7 @@ function renderTerminalStatusBar(task) {
     return;
   }
   const relay = taskRelayLabel(task);
-  if (relay && relay !== 'Unassigned Relay') {
+  if (relay && relay !== 'Unassigned CC Relay') {
     elements.termRelay.hidden = false;
     elements.termRelay.textContent = relay;
   } else {
@@ -1849,6 +2260,47 @@ function taskContinuationSession(task) {
   )) || null;
 }
 
+/*
+ * A session task snapshots the project's keep-open choice at submission time, so the row
+ * itself decides whether its terminal survives the task. Only disposable tasks can carry
+ * the flag: a legacy per-session task never owned its terminal in the first place.
+ */
+function isSessionTask(task) {
+  return task?.keep_terminal_open === true && task?.terminal_lifecycle === 'disposable';
+}
+
+/*
+ * Plan council and Turbo keep-open tasks hold several terminals and their own staged
+ * artifacts, so a single session strip would describe none of them honestly. The session
+ * surface is limited to work that owns exactly one provider conversation.
+ */
+function isDirectSessionTask(task) {
+  return isSessionTask(task)
+    && ['execute', 'breakdown'].includes(task?.mode || 'execute')
+    && ['codex', 'claude'].includes(task?.provider);
+}
+
+/*
+ * thread_id only exists once CC Relay has launched and bound the terminal, so a queued
+ * session task reports pending rather than claiming a terminal it never had.
+ */
+function sessionTaskState(task) {
+  const thread = taskContinuationSession(task);
+  if (thread) return thread.status === 'idle' ? 'open-idle' : 'open-busy';
+  return task?.thread_id ? 'closed' : 'pending';
+}
+
+const SESSION_BADGE_WORDS = {
+  'open-idle': 'open',
+  'open-busy': 'busy',
+  pending: 'pending',
+  closed: 'closed',
+};
+
+function sessionBadgeWord(stateKey) {
+  return SESSION_BADGE_WORDS[stateKey] || 'unknown';
+}
+
 function isFailedSessionFollowUp(task) {
   return String(task?.error || '').startsWith('Same-session follow-up');
 }
@@ -1864,7 +2316,10 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   if (!direct) return;
   elements.continuationForm.dataset.provider = task.provider;
   if (taskChanged || elements.continuationMessage.dataset.taskId !== String(task.id)) {
-    elements.continuationInput.value = state.continuationDrafts.get(task.id) || '';
+    // A draft held after an unconfirmed delivery deliberately rehydrates as nothing. The
+    // words remain recoverable from the map; putting them back here would resurrect a
+    // message the provider may already be running.
+    elements.continuationInput.value = draftInputValue(state.continuationDrafts.get(task.id));
     elements.continuationMessage.dataset.taskId = String(task.id);
     elements.continuationMessage.dataset.kind = 'hint';
   }
@@ -1872,6 +2327,7 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   const session = taskContinuationSession(task);
   const supportsDirectFollowUp = state.status?.capabilities?.taskDirectFollowUp === true;
   const supportsTaskSteering = state.status?.capabilities?.taskSteering === true;
+  const supportsClaudeTaskSteering = state.status?.capabilities?.claudeTaskSteering === true;
   const resumableSession = task.terminal_lifecycle === 'disposable'
     && state.status?.capabilities?.resumableDisposableSessions === true
     && Boolean(task.thread_id)
@@ -1887,6 +2343,7 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   const presentation = continuationPresentation({
     supportsDirectFollowUp,
     supportsTaskSteering,
+    supportsClaudeTaskSteering,
     sessionConnected: Boolean(session),
     resumableSession,
     busy,
@@ -1905,7 +2362,7 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   elements.continuationAttach.dataset.state = attachmentsAvailable ? 'ready' : 'unavailable';
   elements.continuationAttach.title = attachmentsAvailable
     ? 'Add PNG, JPEG, or WebP images'
-    : 'Restart Relay to add images to follow-up messages';
+    : 'Restart CC Relay to add images to follow-up messages';
   elements.continuationAttachmentInput.disabled = presentation.inputDisabled
     || !attachmentsAvailable
     || attachments.length >= MAX_IMAGE_ATTACHMENTS;
@@ -1916,8 +2373,11 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   elements.continuationClearImages.hidden = attachments.length === 0;
   elements.continuationClearImages.disabled = presentation.inputDisabled;
   elements.continuationSend.querySelector('span').textContent = presentation.buttonLabel;
-  if (!['error', 'success'].includes(elements.continuationMessage.dataset.kind)) {
+  // A dispatch outcome outlives the two-second refresh. Without warning in this list the
+  // next render would replace an unconfirmed-delivery notice with a generic hint.
+  if (!['error', 'success', 'warning'].includes(elements.continuationMessage.dataset.kind)) {
     elements.continuationMessage.textContent = presentation.hint;
+    elements.continuationMessage.title = presentation.hint;
   }
   resizeContinuationInput();
   elements.continuationSend.disabled = presentation.sendDisabled;
@@ -2046,7 +2506,7 @@ function providerLabel(provider) {
     return 'Plan council';
   }
   if (provider === 'relay') {
-    return 'Relay';
+    return 'CC Relay';
   }
   return 'Codex';
 }
@@ -2066,7 +2526,7 @@ function providerIconClass(provider) {
 function threadDisplayName(thread) {
   if (!thread) return 'terminal';
   if (thread.automatic) return thread.title || `Automatic ${providerLabel(thread.provider)}`;
-  return threadProvider(thread) === 'claude' ? thread.title : `Relay ${relayNumber(thread)}`;
+  return threadProvider(thread) === 'claude' ? thread.title : `CC Relay ${relayNumber(thread)}`;
 }
 
 function executionLabel(task) {
@@ -2098,20 +2558,20 @@ function taskCardExecutionLabel(task) {
 
 function taskRelayLabel(task) {
   const thread = state.threads.find((item) => item.id === task.thread_id);
-  if (thread && threadProvider(thread) === 'codex') return `Relay ${relayNumber(thread)}`;
+  if (thread && threadProvider(thread) === 'codex') return `CC Relay ${relayNumber(thread)}`;
   if (thread) return `Claude · ${thread.title || 'session'}`;
-  if (task.thread_name) return task.provider === 'codex' ? `Relay · ${task.thread_name}` : `Claude · ${task.thread_name}`;
+  if (task.thread_name) return task.provider === 'codex' ? `CC Relay · ${task.thread_name}` : `Claude · ${task.thread_name}`;
   if (task.terminal_lifecycle === 'disposable') {
     if (task.mode === 'plan') return 'Automatic Claude + Codex';
     if (task.mode === 'turbo') return 'Automatic Codex fleet';
     return `Automatic ${providerLabel(task.provider)} instance`;
   }
-  return task.mode === 'turbo' ? 'Multiple Relays' : 'Unassigned Relay';
+  return task.mode === 'turbo' ? 'Multiple Relays' : 'Unassigned CC Relay';
 }
 
 function assignmentTargetLabel(thread) {
   return threadProvider(thread) === 'codex'
-    ? `Relay ${relayNumber(thread)}`
+    ? `CC Relay ${relayNumber(thread)}`
     : `Claude · ${thread.title || 'session'}`;
 }
 
@@ -2119,7 +2579,7 @@ function turboIdentity(threadId, storedTitle, fallback = 'Unassigned') {
   const thread = threadId ? state.threads.find((item) => item.id === threadId) : null;
   if (thread && threadProvider(thread) === 'codex') {
     return {
-      label: `Relay ${relayNumber(thread)}`,
+      label: `CC Relay ${relayNumber(thread)}`,
       className: relayColorClass(thread.id),
       connected: true,
     };
@@ -2142,7 +2602,7 @@ function turboFleetMarkup(task) {
   const planner = turboIdentity(manifest.planner.threadId, manifest.planner.title, 'Planner');
   const workers = manifest.workers.map((worker) => turboIdentity(worker.threadId, worker.title, `Worker ${worker.slot}`));
   return `
-    <div class="turbo-fleet" aria-label="Turbo Relay fleet">
+    <div class="turbo-fleet" aria-label="Turbo CC Relay fleet">
       <span class="turbo-fleet-role">Planner</span>
       <span class="turbo-fleet-chip ${planner.className || 'turbo-fleet-chip-neutral'}">${escapeHtml(planner.label)}</span>
       <span class="turbo-fleet-divider" aria-hidden="true">→</span>
@@ -2236,12 +2696,283 @@ function renderHistoryLedger(scopedTasks, visibleTasks) {
   `).join('');
 }
 
+function resetStandupCopyFeedback() {
+  if (state.standupCopyTimer !== null) {
+    window.clearTimeout(state.standupCopyTimer);
+    state.standupCopyTimer = null;
+  }
+  elements.standupCopy.textContent = 'Copy standup';
+  elements.standupCopyStatus.textContent = '';
+}
+
+function resetStandupOutput() {
+  state.standupTasks = [];
+  state.standupBlockers = [];
+  state.standupClipboardText = '';
+  state.standupTaskCount = 0;
+  state.standupIncludedTaskCount = 0;
+  state.standupProvider = null;
+  state.standupError = '';
+}
+
+function standupGenerationSupported() {
+  return state.status?.capabilities?.aiStandupGeneration === true
+    && state.status?.capabilities?.aiStandupConfiguration === true;
+}
+
+function standupScopeLabel() {
+  return 'All Relays';
+}
+
+function standupDateLabel(anchor) {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: 'long',
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  }).format(anchor);
+}
+
+function standupLengthLabel(length = state.standupLength) {
+  return {
+    short: 'Short',
+    standard: 'Standard',
+    detailed: 'Detailed',
+  }[length] || 'Standard';
+}
+
+function standupListMarkup(items, kind) {
+  return items.map((item) => `
+    <li data-status="${kind}">
+      <span class="standup-item-marker" aria-hidden="true"></span>
+      <div class="standup-item-copy">
+        <p>${escapeHtml(item)}</p>
+      </div>
+    </li>
+  `).join('');
+}
+
+function renderStandup() {
+  const anchor = dateFromLocalInput(elements.standupDate.value);
+  const supported = standupGenerationSupported();
+  const sourceTasks = anchor ? tasksForStandupDay(projectTasks(), anchor) : [];
+  const projectName = workspaceName(state.activeProjectPath);
+  const itemCount = state.standupTasks.length + state.standupBlockers.length;
+  const activeGenerator = providerLabel(state.standupProvider || state.selectedProvider);
+
+  elements.standupSubtitle.textContent = `Select a workday to generate an AI standup from saved prompts and responses in ${projectName}.`;
+  elements.standupScopeLabel.textContent = `${projectName} · ${standupScopeLabel()}`;
+  elements.standupDateLabel.textContent = anchor ? standupDateLabel(anchor) : 'Select a workday';
+  elements.standupLength.value = state.standupLength;
+  elements.standupGeneratorProvider.textContent = state.standupProvider
+    ? `${activeGenerator} used`
+    : `${activeGenerator} preferred`;
+  elements.standupGeneratorNote.textContent = state.standupProvider
+    ? `A fresh isolated ${activeGenerator} CLI process generated this result. No task terminal was used.`
+    : `Generation uses a fresh isolated CLI process, with the other signed-in provider as fallback. It never uses a task terminal.`;
+  elements.standupSheet.setAttribute('aria-busy', String(state.standupGenerating));
+  elements.standupDate.disabled = state.standupGenerating;
+  elements.standupLength.disabled = state.standupGenerating;
+  elements.standupGenerate.disabled = (
+    state.standupGenerating
+    || !supported
+    || !anchor
+    || sourceTasks.length === 0
+  );
+  elements.standupCopy.disabled = state.standupGenerating || !state.standupClipboardText;
+  elements.standupResults.hidden = true;
+  elements.standupLoadingList.hidden = true;
+  elements.standupEmpty.hidden = true;
+
+  if (!anchor) {
+    elements.standupEmpty.hidden = false;
+    elements.standupEmpty.dataset.state = 'empty';
+    elements.standupEmptyTitle.textContent = 'Select a workday';
+    elements.standupEmptyMessage.textContent = `Choose the length, then select a date. Generation starts after the date is selected.`;
+    elements.standupCount.textContent = 'Waiting for a date';
+    elements.standupSourceNote.textContent = `${standupLengthLabel()} AI synthesis from recorded prompts and responses`;
+    elements.standupGenerate.textContent = 'Select a date';
+    return;
+  }
+
+  if (state.standupGenerating) {
+    elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
+    elements.standupSourceNote.textContent = `${standupLengthLabel()} AI synthesis is reading the saved conversation history`;
+    elements.standupLoadingList.innerHTML = Array.from({ length: 3 }, () => `
+      <li class="standup-loading-item" aria-hidden="true">
+        <span class="standup-item-marker"></span>
+        <span class="standup-loading-line"></span>
+      </li>
+    `).join('');
+    elements.standupLoadingList.hidden = false;
+    elements.standupGenerate.textContent = 'Generating...';
+    return;
+  }
+
+  if (itemCount > 0) {
+    const includedTaskCount = state.standupIncludedTaskCount || state.standupTaskCount;
+    const taskCoverage = includedTaskCount < state.standupTaskCount
+      ? `the latest ${includedTaskCount} of ${state.standupTaskCount} tasks`
+      : `${state.standupTaskCount} task${state.standupTaskCount === 1 ? '' : 's'}`;
+    elements.standupCount.textContent = `${state.standupTasks.length} task${state.standupTasks.length === 1 ? '' : 's'} · ${state.standupBlockers.length} blocker${state.standupBlockers.length === 1 ? '' : 's'}`;
+    elements.standupSourceNote.textContent = `${standupLengthLabel()} result from saved prompts and responses across ${taskCoverage}`;
+    elements.standupTaskCount.textContent = String(state.standupTasks.length);
+    elements.standupTaskList.innerHTML = standupListMarkup(state.standupTasks, 'task');
+    elements.standupTaskList.hidden = state.standupTasks.length === 0;
+    elements.standupTaskEmpty.hidden = state.standupTasks.length > 0;
+    elements.standupBlockerCount.textContent = String(state.standupBlockers.length);
+    elements.standupBlockerList.innerHTML = standupListMarkup(state.standupBlockers, 'blocker');
+    elements.standupBlockerList.hidden = state.standupBlockers.length === 0;
+    elements.standupBlockerEmpty.hidden = state.standupBlockers.length > 0;
+    elements.standupResults.hidden = false;
+    elements.standupGenerate.textContent = 'Regenerate';
+    return;
+  }
+
+  elements.standupEmpty.hidden = false;
+  if (state.standupError) {
+    elements.standupEmpty.dataset.state = 'error';
+    elements.standupEmptyTitle.textContent = 'Standup generation failed';
+    elements.standupEmptyMessage.textContent = state.standupError;
+    elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
+    elements.standupSourceNote.textContent = 'Your recorded tasks were not changed';
+    elements.standupGenerate.textContent = supported ? 'Retry' : 'Restart required';
+  } else if (sourceTasks.length === 0) {
+    elements.standupEmpty.dataset.state = 'empty';
+    elements.standupEmptyTitle.textContent = 'No finished work recorded';
+    elements.standupEmptyMessage.textContent = 'Choose another day or finish a task to generate a standup.';
+    elements.standupCount.textContent = '0 source tasks';
+    elements.standupSourceNote.textContent = 'Completed and failed outcomes are eligible';
+    elements.standupGenerate.textContent = 'Generate standup';
+  } else {
+    elements.standupEmpty.dataset.state = 'empty';
+    elements.standupEmptyTitle.textContent = 'Ready to generate';
+    elements.standupEmptyMessage.textContent = `Generate a ${state.standupLength} standup for the selected workday.`;
+    elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
+    elements.standupSourceNote.textContent = 'Changing the length does not start another AI run';
+    elements.standupGenerate.textContent = 'Generate standup';
+  }
+}
+
+function openStandup() {
+  if (!state.activeProjectPath) return;
+  if (!state.standupGenerating) {
+    state.standupDate = '';
+    resetStandupOutput();
+  }
+  elements.standupDate.value = state.standupDate;
+  elements.standupLength.value = state.standupLength;
+  elements.standupDate.max = localDateInputValue(new Date());
+  resetStandupCopyFeedback();
+  if (!elements.standupModal.open) elements.standupModal.showModal();
+  renderStandup();
+  elements.standupDate.focus();
+}
+
+function closeStandup() {
+  if (elements.standupModal.open) elements.standupModal.close();
+}
+
+async function generateStandup() {
+  if (state.standupGenerating) return;
+  const anchor = dateFromLocalInput(elements.standupDate.value);
+  state.standupDate = elements.standupDate.value;
+  resetStandupCopyFeedback();
+  resetStandupOutput();
+  if (!anchor) {
+    renderStandup();
+    return;
+  }
+  const sourceTasks = tasksForStandupDay(projectTasks(), anchor);
+  state.standupTaskCount = sourceTasks.length;
+  if (sourceTasks.length === 0) {
+    renderStandup();
+    return;
+  }
+  if (!standupGenerationSupported()) {
+    state.standupError = 'Restart CC Relay to activate date and length configured standup generation.';
+    renderStandup();
+    return;
+  }
+
+  const { start, end } = periodRange('day', anchor);
+  const sequence = ++state.standupRequestSequence;
+  state.standupGenerating = true;
+  renderStandup();
+  try {
+    const body = await api('/api/standup/generate', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectPath: state.activeProjectPath,
+        threadId: null,
+        provider: state.selectedProvider,
+        length: state.standupLength,
+        date: state.standupDate,
+        start: start.toISOString(),
+        end: end.toISOString(),
+      }),
+      timeoutMs: 150_000,
+      timeoutMessage: (seconds) => `AI standup generation did not answer within ${seconds} seconds. You can retry safely.`,
+    });
+    if (sequence !== state.standupRequestSequence) return;
+    const sections = standupSections({
+      tasks: Array.isArray(body.tasks) ? body.tasks : undefined,
+      blockers: Array.isArray(body.blockers) ? body.blockers : undefined,
+      standup: body.standup || '',
+    });
+    state.standupTasks = sections.tasks;
+    state.standupBlockers = sections.blockers;
+    state.standupTaskCount = Number(body.taskCount || sourceTasks.length);
+    state.standupIncludedTaskCount = Number(body.includedTaskCount || state.standupTaskCount);
+    state.standupProvider = body.provider || null;
+    if (['short', 'standard', 'detailed'].includes(body.length)) state.standupLength = body.length;
+    if (state.standupTasks.length + state.standupBlockers.length === 0) {
+      state.standupError = 'The AI returned no usable standup items. Try generating it again.';
+      state.standupTasks = [];
+      state.standupBlockers = [];
+    } else {
+      state.standupClipboardText = standupCopyText(sections);
+    }
+  } catch (error) {
+    if (sequence !== state.standupRequestSequence) return;
+    state.standupError = error.message;
+  } finally {
+    if (sequence === state.standupRequestSequence) {
+      state.standupGenerating = false;
+      renderStandup();
+    }
+  }
+}
+
+async function copyStandup() {
+  if (!state.standupClipboardText) return;
+  if (state.standupCopyTimer !== null) {
+    window.clearTimeout(state.standupCopyTimer);
+    state.standupCopyTimer = null;
+  }
+  const itemCount = state.standupTasks.length + state.standupBlockers.length;
+  try {
+    await navigator.clipboard.writeText(state.standupClipboardText);
+    elements.standupCopy.textContent = 'Copied';
+    elements.standupCopyStatus.textContent = `${itemCount} AI-generated standup item${itemCount === 1 ? '' : 's'} copied as plain text without bullet prefixes.`;
+  } catch {
+    elements.standupCopy.textContent = 'Copy failed';
+    elements.standupCopyStatus.textContent = 'Clipboard access failed. Keep this window focused and try again.';
+  }
+  state.standupCopyTimer = window.setTimeout(() => {
+    state.standupCopyTimer = null;
+    elements.standupCopy.textContent = 'Copy standup';
+  }, 1400);
+}
+
 function agentBadgeMarkup(task, sizeClass) {
   if (task.mode === 'plan') {
+    const providers = task.author_provider === 'codex'
+      ? ['codex', 'claude']
+      : ['claude', 'codex'];
     return `
       <span class="agent-pair" aria-hidden="true">
-        <span class="agent-icon agent-icon-claude ${sizeClass}">✳</span>
-        <span class="agent-icon agent-icon-codex ${sizeClass}">&gt;_</span>
+        ${providers.map((provider) => `<span class="agent-icon ${providerIconClass(provider)} ${sizeClass}">${providerIcon(provider)}</span>`).join('')}
       </span>
     `;
   }
@@ -2270,8 +3001,22 @@ function isExecuteCouncilEnabled() {
 function incompatibleComposerProviderMessage(provider, path = null) {
   const prefix = path ? `${providerLabel(provider)} is connected in ${workspaceName(path)}. ` : '';
   return isExecuteCouncilEnabled()
-    ? `${prefix}Choose the Claude session in the Plan council author terminal field, then choose a Codex Relay for review.`
-    : `${prefix}Forward-planning Turbo keeps its Codex planner Relay selected.`;
+    ? `${prefix}Choose the Claude session in the Plan council terminal field, then choose a Codex council CC Relay.`
+    : `${prefix}Forward-planning Turbo keeps its Codex planner CC Relay selected.`;
+}
+
+function renderEffortSelection(efforts, effort) {
+  const effortValues = efforts.map((item) => item.reasoningEffort);
+  const effortIndex = Math.max(0, effortValues.indexOf(effort));
+  elements.effortSelect.setAttribute('aria-valuetext', effort ? `${effort} effort` : 'Unavailable');
+  elements.effortSliderValue.textContent = effort ? `${effort} effort` : 'Unavailable';
+  for (const [index, marker] of [...elements.effortSliderSteps.children].entries()) {
+    marker.classList.toggle('active', index === effortIndex);
+  }
+  elements.effortSelect.style.setProperty('--effort-progress', `${effortValues.length > 1 ? (effortIndex / (effortValues.length - 1)) * 100 : 0}%`);
+  const selectedEffort = efforts.find((item) => item.reasoningEffort === effort);
+  elements.effortHint.textContent = selectedEffort?.description
+    || 'This model does not expose effort control.';
 }
 
 function renderExecutionControls() {
@@ -2282,7 +3027,7 @@ function renderExecutionControls() {
   if (!model) {
     model = models.find((item) => item.isDefault) || models[0];
     settings.model = model?.model || '';
-    settings.effort = model?.defaultReasoningEffort || '';
+    settings.effort = defaultEffortForModel(model);
   }
 
   elements.modelSelect.innerHTML = models.map((item) => `
@@ -2293,14 +3038,11 @@ function renderExecutionControls() {
   elements.modelHint.textContent = model?.description || `No ${providerLabel(state.selectedProvider)} models available.`;
 
   const efforts = model?.supportedReasoningEfforts || [];
-  const defaultEffort = model?.defaultReasoningEffort || null;
   if (settings.effort && !efforts.some((item) => item.reasoningEffort === settings.effort)) {
     settings.effort = '';
   }
   if (!settings.effort && efforts.length > 0) {
-    settings.effort = efforts.some((item) => item.reasoningEffort === defaultEffort)
-      ? defaultEffort
-      : efforts[0].reasoningEffort;
+    settings.effort = defaultEffortForModel(model);
   }
   const effortValues = efforts.map((item) => item.reasoningEffort);
   const effortIndex = Math.max(0, effortValues.indexOf(settings.effort));
@@ -2310,15 +3052,10 @@ function renderExecutionControls() {
   elements.effortSelect.value = String(effortIndex);
   elements.effortSelect.disabled = efforts.length === 0;
   elements.effortSelect.dataset.values = JSON.stringify(effortValues);
-  elements.effortSelect.setAttribute('aria-valuetext', settings.effort ? `${settings.effort} effort` : 'Unavailable');
-  elements.effortSliderValue.textContent = settings.effort ? `${settings.effort} effort` : 'Unavailable';
   elements.effortSliderSteps.innerHTML = effortValues.map((effort, index) => `
     <i class="${index === effortIndex ? 'active' : ''}" title="${escapeHtml(effort)}"></i>
   `).join('');
-  elements.effortSelect.style.setProperty('--effort-progress', `${effortValues.length > 1 ? (effortIndex / (effortValues.length - 1)) * 100 : 0}%`);
-  const selectedEffort = efforts.find((item) => item.reasoningEffort === settings.effort);
-  elements.effortHint.textContent = selectedEffort?.description
-    || 'This model does not expose effort control.';
+  renderEffortSelection(efforts, settings.effort);
   elements.executionControls.hidden = state.taskMode !== 'execute' || isExecuteCouncilEnabled();
 }
 
@@ -2342,7 +3079,7 @@ function selectedPlanClaudeAuthorThread() {
 
 function claudePlanIssue() {
   if (state.status?.capabilities?.planCouncil !== true) {
-    return 'Restart Relay to enable Plan council';
+    return 'Restart CC Relay to enable Plan council';
   }
   // The probe runs in the background after listen. Until it answers, Claude is unknown
   // rather than unavailable, and saying otherwise reads as a broken CLI right after boot.
@@ -2354,7 +3091,7 @@ function claudePlanIssue() {
     return 'Claude Code CLI is not installed';
   }
   if (state.status?.claude?.authenticated !== true) {
-    return 'Claude CLI is signed out. Run claude auth login; Relay will detect it automatically';
+    return 'Claude CLI is signed out. Run claude auth login; CC Relay will detect it automatically';
   }
   return '';
 }
@@ -2372,8 +3109,8 @@ function isDirectClaudeEnabled() {
 function claudeDiscoveryNote() {
   if (!state.connection?.claudeDiscoveryError) return '';
   return state.threads.some((thread) => threadProvider(thread) === 'claude')
-    ? ' The Claude session list may be out of date; the last check did not finish. Relay retries automatically.'
-    : ' The last Claude session check did not finish. Relay retries automatically.';
+    ? ' The Claude session list may be out of date; the last check did not finish. CC Relay retries automatically.'
+    : ' The last Claude session check did not finish. CC Relay retries automatically.';
 }
 
 function hasSelectedCodexThread() {
@@ -2389,9 +3126,64 @@ function setReadiness(element, ready, readyText, missingText) {
   element.innerHTML = `<i aria-hidden="true"></i> ${escapeHtml(ready ? readyText : missingText)}`;
 }
 
+function planCouncilCatalogs() {
+  return {
+    codex: state.modelCatalogs.codex,
+    claude: planCouncilOrderEnabled()
+      ? state.modelCatalogs.claude
+      : state.modelCatalogs.claude.filter((model) => ['fable', 'opus'].includes(model.model)),
+  };
+}
+
+function planCouncilOrderEnabled() {
+  return state.status?.capabilities?.planCouncilProviderOrder === true;
+}
+
+function syncPlanCouncilSettings() {
+  const input = planCouncilOrderEnabled()
+    ? state.planSettings
+    : {
+      ...state.planSettings,
+      councilOrder: ['claude', 'codex'],
+      authorProvider: 'claude',
+      reviewerProvider: 'codex',
+      claudeEffort: 'max',
+    };
+  const normalized = normalizePlanCouncilSettings(input, planCouncilCatalogs());
+  Object.assign(state.planSettings, normalized);
+  return normalized;
+}
+
+function planCouncilEffortOptions(select, model, requested) {
+  const efforts = model?.supportedReasoningEfforts || [];
+  const values = efforts
+    .map((item) => typeof item === 'string' ? item : item.reasoningEffort)
+    .filter(Boolean);
+  const value = requested === ''
+    ? ''
+    : values.includes(requested)
+      ? requested
+    : values.includes('high')
+      ? 'high'
+      : values.includes(model?.defaultReasoningEffort)
+        ? model.defaultReasoningEffort
+        : values[0] || '';
+  select.innerHTML = [
+    `<option value="">Model default${model?.defaultReasoningEffort ? ` · ${escapeHtml(model.defaultReasoningEffort)}` : ''}</option>`,
+    ...values.map((effort) => `<option value="${escapeHtml(effort)}">${escapeHtml(effort)}</option>`),
+  ].join('');
+  select.value = value;
+  select.disabled = values.length === 0;
+  return value;
+}
+
 function renderPlanControls() {
-  const settings = state.planSettings;
-  const models = state.modelCatalogs.codex;
+  const settings = syncPlanCouncilSettings();
+  const catalogs = planCouncilCatalogs();
+  const codexModels = catalogs.codex;
+  const claudeModels = catalogs.claude;
+  const codexModel = codexModels.find((item) => item.model === settings.codexModel) || null;
+  const claudeModel = claudeModels.find((item) => item.model === settings.claudeModel) || null;
   const automatic = usesDisposableTerminalPools();
   const terminalExecution = isPlanCouncilTerminalExecutionEnabled() && !automatic;
   const authorThreads = terminalExecution ? planClaudeAuthorThreads() : [];
@@ -2401,11 +3193,6 @@ function renderPlanControls() {
       || null;
   }
   const selectedAuthor = terminalExecution ? selectedPlanClaudeAuthorThread() : null;
-  let model = models.find((item) => item.model === settings.reviewerModel);
-  if (!model) {
-    model = models.find((item) => item.isDefault) || models[0] || null;
-    settings.reviewerModel = model?.model || '';
-  }
 
   elements.planAuthorTerminalField.hidden = !terminalExecution;
   if (terminalExecution) {
@@ -2413,7 +3200,7 @@ function renderPlanControls() {
       ? `<option value="${escapeHtml(settings.authorThreadId)}">Selected terminal unavailable</option>`
       : '';
     const empty = authorThreads.length === 0 && !unavailableSelection
-      ? '<option value="">Launch a Claude Relay first</option>'
+      ? '<option value="">Launch a Claude CC Relay first</option>'
       : '';
     elements.planAuthorTerminal.innerHTML = [
       unavailableSelection,
@@ -2425,36 +3212,72 @@ function renderPlanControls() {
     elements.planAuthorTerminal.value = settings.authorThreadId || '';
     elements.planAuthorTerminal.disabled = authorThreads.length === 0;
   }
-  elements.planAuthorModel.value = settings.authorModel;
-  elements.planReviewerModel.innerHTML = models.map((item) => `
+  elements.planAuthorModel.innerHTML = claudeModels.map((item) => `
     <option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>
   `).join('');
-  elements.planReviewerModel.value = settings.reviewerModel;
-  elements.planReviewerModel.disabled = models.length === 0;
-
-  const efforts = model?.supportedReasoningEfforts || [];
-  const defaultEffort = model?.defaultReasoningEffort || null;
-  if (settings.reviewerEffort && !efforts.some((item) => item.reasoningEffort === settings.reviewerEffort)) {
-    settings.reviewerEffort = efforts.some((item) => item.reasoningEffort === 'high') ? 'high' : '';
+  elements.planAuthorModel.value = settings.claudeModel;
+  elements.planAuthorModel.disabled = claudeModels.length === 0;
+  settings.claudeEffort = planCouncilEffortOptions(
+    elements.planAuthorEffort,
+    claudeModel,
+    settings.claudeEffort,
+  );
+  if (!planCouncilOrderEnabled()) {
+    settings.claudeEffort = 'max';
+    elements.planAuthorEffort.innerHTML = '<option value="max">max</option>';
+    elements.planAuthorEffort.value = 'max';
+    elements.planAuthorEffort.disabled = true;
   }
-  elements.planReviewerEffort.innerHTML = [
-    `<option value="">${defaultEffort ? `Model default · ${escapeHtml(defaultEffort)}` : 'Model default'}</option>`,
-    ...efforts.map((item) => `<option value="${escapeHtml(item.reasoningEffort)}">${escapeHtml(item.reasoningEffort)}</option>`),
-  ].join('');
-  elements.planReviewerEffort.value = settings.reviewerEffort;
-  elements.planReviewerEffort.disabled = efforts.length === 0;
+
+  elements.planReviewerModel.innerHTML = codexModels.map((item) => `
+    <option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>
+  `).join('');
+  elements.planReviewerModel.value = settings.codexModel;
+  elements.planReviewerModel.disabled = codexModels.length === 0;
+  settings.codexEffort = planCouncilEffortOptions(
+    elements.planReviewerEffort,
+    codexModel,
+    settings.codexEffort,
+  );
+  Object.assign(settings, normalizePlanCouncilSettings(settings, catalogs));
+
   elements.planCouncilEnabled.checked = settings.enabled;
+  elements.planCouncilOrder.hidden = !settings.enabled || !planCouncilOrderEnabled();
   elements.planCouncilRoute.hidden = !settings.enabled;
   elements.planCouncilReadiness.hidden = !settings.enabled;
+  elements.planCouncilRoute.dataset.first = settings.councilFirstProvider;
+  elements.planCouncilRoute.setAttribute(
+    'aria-label',
+    `${providerLabel(settings.authorProvider)} drafts, ${providerLabel(settings.reviewerProvider)} reviews, then ${providerLabel(settings.authorProvider)} revises`,
+  );
+  for (const button of elements.planCouncilOrderButtons) {
+    button.setAttribute(
+      'aria-pressed',
+      String(button.dataset.planCouncilFirst === settings.councilFirstProvider),
+    );
+  }
+  elements.planCouncilClaudeRole.textContent = settings.councilFirstProvider === 'claude'
+    ? '01 Author'
+    : '02 Reviewer';
+  elements.planCouncilCodexRole.textContent = settings.councilFirstProvider === 'codex'
+    ? '01 Author'
+    : '02 Reviewer';
+  elements.planCouncilClaudeCopy.textContent = settings.councilFirstProvider === 'claude'
+    ? 'Inspects the project and writes the first implementation plan.'
+    : 'Challenges the first plan for assumptions, gaps, risk, and verification.';
+  elements.planCouncilCodexCopy.textContent = settings.councilFirstProvider === 'codex'
+    ? 'Inspects the project and writes the first implementation plan.'
+    : 'Challenges the first plan for assumptions, gaps, risk, and verification.';
+  elements.planCouncilRevisionCopy.textContent = `${providerLabel(settings.authorProvider)} folds the review into the final plan`;
 
   setReadiness(
     elements.planClaudeReady,
     isClaudePlanReady() && (!terminalExecution || Boolean(selectedAuthor)),
     terminalExecution
-      ? `Claude author terminal selected · ${selectedAuthor?.title || 'ready'}`
-      : `Claude author ready via CLI${state.status?.claude?.version ? ` · ${state.status.claude.version}` : ''}`,
+      ? `Claude council terminal selected · ${selectedAuthor?.title || 'ready'}`
+      : `Claude council stage ready via CLI${state.status?.claude?.version ? ` · ${state.status.claude.version}` : ''}`,
     claudePlanIssue() || (terminalExecution
-      ? 'Launch and choose a Relay-owned Claude author terminal'
+      ? 'Launch and choose a CC Relay-owned Claude council terminal'
       : ''),
   );
   setReadiness(
@@ -2463,13 +3286,13 @@ function renderPlanControls() {
       ? Boolean(state.status?.codex?.available && state.status?.codex?.authenticated)
       : hasSelectedCodexThread(),
     automatic
-      ? `Codex reviewer pool ready · max ${projectInstanceLimits().codex}`
-      : 'Codex review terminal selected',
+      ? `Codex council pool ready · max ${projectInstanceLimits().codex}`
+      : 'Codex council terminal selected',
     automatic
       ? providerIsMissing('codex')
         ? 'Codex CLI is not installed'
         : 'Codex CLI is signed out or its status check failed'
-      : 'Choose a connected Codex review terminal',
+      : 'Choose a connected Codex council terminal',
   );
 }
 
@@ -2551,15 +3374,22 @@ function renderTurboControls() {
   const claudeModel = claudeModels.find((item) => item.model === council.councilClaudeModel) || claudeModels[0] || null;
   const reviewerOptions = claudeModels.map((item) => `<option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>`).join('');
   elements.turboCouncilEnabled.checked = council.councilEnabled;
-  elements.turboCouncilRoute.hidden = !council.councilEnabled;
+  elements.turboPlanningCount.textContent = council.councilEnabled ? '2 providers' : '1 planner';
   elements.turboCouncilRoute.dataset.enabled = String(council.councilEnabled);
-  elements.turboCouncilRoute.dataset.first = council.councilFirstProvider;
-  elements.turboCouncilRoute.setAttribute('aria-label', `${providerLabel(council.councilAuthorProvider)} authors the graph, then ${providerLabel(council.councilReviewerProvider)} reviews it`);
+  elements.turboCouncilRoute.dataset.first = council.councilEnabled ? council.councilFirstProvider : 'codex';
+  elements.turboCouncilRoute.setAttribute(
+    'aria-label',
+    council.councilEnabled
+      ? `${providerLabel(council.councilAuthorProvider)} authors the graph, then ${providerLabel(council.councilReviewerProvider)} reviews it`
+      : 'Codex plans the execution graph using the selected planning model',
+  );
   elements.turboCouncilOrder.hidden = !council.councilEnabled;
   for (const button of elements.turboCouncilOrderButtons) {
     button.setAttribute('aria-pressed', String(button.dataset.councilFirst === council.councilFirstProvider));
   }
-  elements.turboCouncilCodexRole.textContent = `${council.councilFirstProvider === 'codex' ? '01 Author' : '02 Reviewer'}`;
+  elements.turboCouncilCodexRole.textContent = council.councilEnabled
+    ? `${council.councilFirstProvider === 'codex' ? '01 Author' : '02 Reviewer'}`
+    : 'Planner';
   elements.turboCouncilClaudeRole.textContent = `${council.councilFirstProvider === 'claude' ? '01 Author' : '02 Reviewer'}`;
   elements.turboCouncilCodexCopy.textContent = council.councilFirstProvider === 'codex'
     ? 'Inspects the project and builds the execution graph.'
@@ -2600,15 +3430,15 @@ function renderTurboControls() {
       : `Need ${requiredCodexInstances} terminals · ${hasSelectedCodexThread() ? available + 1 : 0} connected here`);
   elements.turboNote.textContent = !council.councilEnabled
     ? automatic
-      ? 'Relay launches one disposable Codex planner and the requested worker fleet, then closes every terminal when Turbo ends.'
-      : 'The selected Codex Relay plans in read-only mode. Relay reads its JSON graph and dispatches ready tasks across the worker fleet.'
+      ? 'CC Relay launches one disposable Codex planner and the requested worker fleet, then closes every terminal when Turbo ends.'
+      : 'The selected Codex CC Relay plans in read-only mode. CC Relay reads its JSON graph and dispatches ready tasks across the worker fleet.'
     : council.councilFirstProvider === 'claude'
       ? automatic
-        ? 'Claude authors the graph first. A disposable Codex planner reviews it before Relay launches the worker turns.'
-        : 'Claude authors the graph first. The selected Codex Relay reviews and corrects it before Relay dispatches workers.'
+        ? 'Claude authors the graph first. A disposable Codex planner reviews it before CC Relay launches the worker turns.'
+        : 'Claude authors the graph first. The selected Codex CC Relay reviews and corrects it before CC Relay dispatches workers.'
       : automatic
-        ? 'A disposable Codex planner authors the graph. Claude reviews it before Relay dispatches the worker turns.'
-        : 'The selected Codex Relay authors the graph first. Claude reviews and corrects it before Relay dispatches workers.';
+        ? 'A disposable Codex planner authors the graph. Claude reviews it before CC Relay dispatches the worker turns.'
+        : 'The selected Codex CC Relay authors the graph first. Claude reviews and corrects it before CC Relay dispatches workers.';
 }
 
 function attachmentLimitIssue() {
@@ -2635,13 +3465,13 @@ function providerInstallationIssue() {
   const missing = required.filter((provider) => providerIsMissing(provider));
   if (missing.length === 0) return '';
   const labels = missing.map((provider) => `${providerLabel(provider)} CLI`);
-  return `${labels.join(' and ')} ${labels.length === 1 ? 'is' : 'are'} not installed. Install ${labels.length === 1 ? 'it' : 'them'} and Relay will enable ${labels.length === 1 ? 'this provider' : 'these providers'} automatically.`;
+  return `${labels.join(' and ')} ${labels.length === 1 ? 'is' : 'are'} not installed. Install ${labels.length === 1 ? 'it' : 'them'} and CC Relay will enable ${labels.length === 1 ? 'this provider' : 'these providers'} automatically.`;
 }
 
 /*
  * Submit is gated on input validity and confirmed CLI installation only. Readiness that
  * depends on a live process list
- * (a Relay missing from the last /api/threads answer, authentication, or a worker count)
+ * (a CC Relay missing from the last /api/threads answer, authentication, or a worker count)
  * is deliberately NOT a gate: that list is replaced wholesale every four seconds, so
  * gating on it made the button flicker to disabled and produced a false
  * "Choose a connected terminal" for a session that was in fact connected. Those
@@ -2652,7 +3482,7 @@ function composerValidationIssue() {
   if (usesDisposableTerminalPools()) {
     if (!activeProject()) return 'Choose a project before adding the task.';
   } else if (!state.selectedThreadId) {
-    return 'Choose a connected Relay before adding the task.';
+    return 'Choose a connected CC Relay before adding the task.';
   }
   return providerInstallationIssue() || attachmentLimitIssue();
 }
@@ -2683,6 +3513,12 @@ function setComposerPending(pending) {
   state.submitting = pending;
   elements.form.dataset.pending = pending ? 'true' : 'false';
   elements.form.setAttribute('aria-busy', String(pending));
+  if (!elements.keepTerminalOpenOption.hidden) {
+    elements.keepTerminalOpen.disabled = pending
+      || !activeProject()
+      || state.projectSettingsSaving
+      || state.status?.capabilities?.retainedTerminalSessions !== true;
+  }
   updateSubmitState();
 }
 
@@ -2693,7 +3529,7 @@ function renderPromptCopy() {
   elements.prompt.placeholder = isExecuteCouncilEnabled()
     ? 'Describe what should be built, the constraints, and the decisions the reviewed plan must settle.'
     : state.taskMode === 'turbo'
-      ? 'Describe the complete outcome. The planner will produce a JSON dependency graph and Relay will dispatch it across worker terminals.'
+      ? 'Describe the complete outcome. The planner will produce a JSON dependency graph and CC Relay will dispatch it across worker terminals.'
       : 'Describe the outcome, constraints, and how the agent should verify the work.';
 }
 
@@ -2715,7 +3551,7 @@ function selectMode(mode, { focus = false } = {}) {
   elements.turboConfig.hidden = mode !== 'turbo';
   renderPromptCopy();
   elements.terminalLegend.textContent = usesDisposableTerminalPools()
-    ? 'Automatic terminal pool'
+    ? 'Automatic terminals'
     : mode === 'turbo' ? 'Planner terminal' : 'Run in terminal';
 
   if (!providerEligibleForComposer(state, state.selectedProvider)) {
@@ -2786,8 +3622,10 @@ function renderProviderTabs() {
   const codex = providerInfo('codex');
   const claude = providerInfo('claude');
   const automatic = usesDisposableTerminalPools();
-  const pool = sameProjectPath(state.status?.terminalPool?.repoPath, state.activeProjectPath)
-    ? state.status.terminalPool
+  const terminalPool = state.status?.terminalPool;
+  const pool = terminalPool
+    && sameProjectPath(terminalPool.repoPath, state.activeProjectPath)
+    ? terminalPool
     : null;
   const limits = projectInstanceLimits();
   const codexInstallation = providerInstallationState(state.status, 'codex');
@@ -2816,7 +3654,7 @@ function renderProviderTabs() {
     : claude.connectedCount > 0
       ? `${claude.connectedCount} live`
       : claude.available
-        ? isDirectClaudeEnabled() ? 'CLI ready' : 'Restart Relay'
+        ? isDirectClaudeEnabled() ? 'CLI ready' : 'Restart CC Relay'
         : 'Not connected';
 
   for (const tab of elements.providerTabs) {
@@ -2884,6 +3722,7 @@ function renderHeaderRunningTasks() {
     task.latestAgentUpdate?.provider,
     task.latestAgentUpdate?.text,
     taskRelayLabel(task),
+    projectIdentityCustomColor(task.repo_path),
   ]));
   if (elements.headerRunningTasks.dataset.signature === signature) return;
   const previousScrollLeft = elements.headerRunningTasks.scrollLeft;
@@ -2898,6 +3737,7 @@ function renderHeaderRunningTasks() {
     return `
       <button
         class="header-running-task ${projectIdentityColorClass(task.repo_path)}"
+        ${projectIdentityStyleAttribute(task.repo_path)}
         type="button"
         data-running-task-id="${task.id}"
         data-provider="${escapeHtml(taskProvider(task))}"
@@ -2905,7 +3745,7 @@ function renderHeaderRunningTasks() {
         <span class="header-running-meta">
           <i aria-hidden="true"></i>
           <b>#${String(task.id).padStart(3, '0')}</b>
-          <span class="header-running-loc" title="${escapeHtml(task.repo_path)}">${escapeHtml(project)} · ${escapeHtml(relay)}</span>
+          <span class="header-running-loc" title="${escapeHtml(task.repo_path)}"><span class="header-running-project">${escapeHtml(project)}</span> · ${escapeHtml(relay)}</span>
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
         <strong class="header-running-prompt" title="${escapeHtml(task.prompt)}">${escapeHtml(compactText(task.prompt, 96))}</strong>
@@ -2948,7 +3788,7 @@ function renderStatus() {
   const relayReady = codexReady || claudeReady;
   /*
    * Both providers are probed in the background after listen, so for the first moment after
-   * every Relay start neither reports available yet. That is "not known", not "not there",
+   * every CC Relay start neither reports available yet. That is "not known", not "not there",
    * and rendering it as unavailable opens every launch with a false broken-backend banner.
    * A provider still pending keeps the neutral checking state until it answers.
    */
@@ -2975,8 +3815,8 @@ function renderStatus() {
 
   elements.codexStatus.dataset.state = relayReady ? 'online' : providersChecking ? 'checking' : 'offline';
   elements.codexStatusLabel.textContent = relayReady
-    ? 'Relay online'
-    : providersChecking ? 'Checking Relay' : 'Relay unavailable';
+    ? 'CC Relay online'
+    : providersChecking ? 'Checking CC Relay' : 'CC Relay unavailable';
   elements.pauseButton.textContent = paused ? 'Resume queue' : 'Pause queue';
   elements.pauseButton.classList.toggle('primary', paused);
   elements.pauseButton.disabled = !state.activeProjectPath;
@@ -2989,9 +3829,9 @@ function renderStatus() {
     elements.queueSummary.textContent = `${historyCount} task${historyCount === 1 ? '' : 's'} in selected ${state.historyPeriod}`;
   } else {
     elements.queueSummary.textContent = staleClaudeScheduler
-      ? `Restart Relay to run Claude simultaneously across projects · ${queuedCount} waiting`
+      ? `Restart CC Relay to run Claude simultaneously across projects · ${queuedCount} waiting`
       : staleProjectScheduler
-      ? `Restart Relay to activate this project's independent queue · ${queuedCount} waiting`
+      ? `Restart CC Relay to activate this project's independent queue · ${queuedCount} waiting`
       : paused
       ? `${queuedCount} task${queuedCount === 1 ? '' : 's'} waiting while paused`
       : runningInProject.length > 1
@@ -3003,6 +3843,29 @@ function renderStatus() {
 }
 
 function renderTasks() {
+  const standupSupported = standupGenerationSupported();
+  elements.standupButton.disabled = !state.activeProjectPath || !standupSupported;
+  elements.standupButton.title = !state.activeProjectPath
+    ? 'Select a Launchpad project to create a standup'
+    : standupSupported
+      ? 'Generate a date-selected AI standup from saved prompts and responses'
+      : 'Restart CC Relay to activate configured AI standup generation';
+  const taskImport = state.status?.taskHistoryImport;
+  elements.importTasksButton.hidden = taskImport?.desktop !== true;
+  elements.importTasksButton.disabled = state.importingTasks || taskImport?.available !== true;
+  elements.importTasksButton.textContent = state.importingTasks ? 'Importing' : 'Import localhost';
+  elements.importTasksButton.title = taskImport?.available === true
+    ? 'Copy finished localhost tasks and their activity into the desktop app'
+    : 'Start localhost CC Relay once to make its finished tasks available';
+  const unreadCount = state.projectCompletionNotifications.count(state.activeProjectPath);
+  elements.clearTaskNotificationsButton.hidden = unreadCount === 0;
+  elements.clearTaskNotificationsButton.textContent = `Clear new · ${unreadCount}`;
+  elements.clearTaskNotificationsButton.setAttribute(
+    'aria-label',
+    `Mark all ${unreadCount} new task${unreadCount === 1 ? '' : 's'} in this project as viewed`,
+  );
+  elements.clearTaskNotificationsButton.title = 'Mark every new completed task in this project as viewed';
+  if (elements.standupModal.open) renderStandup();
   if (state.queueDrag) {
     return;
   }
@@ -3047,11 +3910,19 @@ function renderTasks() {
   state.parallelTaskIds = new Set([...state.parallelTaskIds].filter((id) => batchableIds.includes(id)));
   renderParallelBatchBar();
   let previousHistoryDate = '';
+  let previousQueuePeriod = '';
   elements.taskList.innerHTML = visibleTasks.map((task) => {
     const historyDate = historyActive ? new Date(task.created_at).toDateString() : '';
+    const queuePeriod = historyActive
+      ? ''
+      : new Date(task.created_at).toDateString() === new Date().toDateString() ? 'today' : 'past';
     const dateHeading = historyActive && historyDate !== previousHistoryDate
-      ? `<div class="history-date-heading"><span>${escapeHtml(historyDateHeading(task.created_at))}</span><i></i></div>` : '';
+      ? `<div class="history-date-heading"><span>${escapeHtml(historyDateHeading(task.created_at))}</span><i></i></div>`
+      : !historyActive && queuePeriod !== previousQueuePeriod
+        ? `<div class="queue-date-heading" data-period="${queuePeriod}"><span>${queuePeriod === 'today' ? 'Today' : 'Past'}</span><i></i></div>`
+        : '';
     previousHistoryDate = historyDate;
+    previousQueuePeriod = queuePeriod;
     const queueIndex = queuedIds.indexOf(task.id);
     const queued = queueIndex !== -1;
     /*
@@ -3081,6 +3952,12 @@ function renderTasks() {
       && thread.id !== task.thread_id
     )) : [];
     const reorderable = queued && !historyActive && Boolean(state.activeProjectPath);
+    // A session task outlives its own run, so the card carries the live terminal state as
+    // a word. Colour reinforces it; it never carries the meaning alone.
+    const sessionCard = isDirectSessionTask(task);
+    const sessionState = sessionCard ? sessionTaskState(task) : '';
+    const sessionWord = sessionCard ? sessionBadgeWord(sessionState) : '';
+    const unread = state.projectCompletionNotifications.includes(task.repo_path, task.id);
     const reorderControls = reorderable ? `
       <span class="queue-reorder" aria-label="Reorder queued task">
         <button type="button" data-move="up" aria-label="Move task ${task.id} up" ${queueIndex === 0 ? 'disabled' : ''}>↑</button>
@@ -3089,12 +3966,15 @@ function renderTasks() {
     ` : '';
     return `${dateHeading}
       <article
-        class="task-card ${task.id === state.selectedTaskId ? 'selected' : ''} ${reorderable ? 'task-card-reorderable' : ''}"
+        class="task-card ${projectIdentityColorClass(task.repo_path)} ${task.id === state.selectedTaskId ? 'selected' : ''} ${unread ? 'task-card-unread' : ''} ${reorderable ? 'task-card-reorderable' : ''}"
+        ${projectIdentityStyleAttribute(task.repo_path)}
         data-task-id="${task.id}"
         data-status="${escapeHtml(task.status)}"
         data-mode="${escapeHtml(task.mode || 'execute')}"
+        data-unread="${unread}"
+        ${sessionCard ? `data-session="true" data-session-state="${escapeHtml(sessionState)}"` : ''}
         tabindex="0"
-        aria-label="Task ${task.id}, ${escapeHtml(task.status)}${queued ? ', draggable queue item' : ''}"
+        aria-label="Task ${task.id}, ${escapeHtml(task.status)}${sessionCard ? `, retained session, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', not viewed' : ''}${queued ? ', draggable queue item' : ''}"
       >
         <div class="task-topline">
           <span class="task-identity">
@@ -3102,6 +3982,8 @@ function renderTasks() {
             ${reorderable ? '<span class="drag-grip" draggable="true" role="button" tabindex="0" aria-label="Drag task to reorder">⠿</span>' : ''}
             ${agentBadgeMarkup(task, 'task-agent-icon')}
             <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
+            ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>Session · ${escapeHtml(sessionWord)}</span>` : ''}
+            ${unread ? '<span class="task-unread-marker">New</span>' : ''}
             ${task.continued_from_task_id ? `<span class="task-parent-link">↳ #${String(task.continued_from_task_id).padStart(3, '0')}</span>` : ''}
           </span>
           <span class="task-top-actions">
@@ -3114,13 +3996,14 @@ function renderTasks() {
         <p class="task-prompt">${escapeHtml(task.prompt)}</p>
         ${turboFleetMarkup(task)}
         ${state.assigningTaskId === task.id ? `
-          <div class="task-assignment-options" aria-label="Assign task ${task.id} to another Relay">
+          <div class="task-assignment-options" aria-label="Assign task ${task.id} to another CC Relay">
             ${assignmentTargets.map((thread) => `<button type="button" data-assign-thread="${escapeHtml(thread.id)}">${escapeHtml(assignmentTargetLabel(thread))} <span>${escapeHtml(thread.status)}</span></button>`).join('')}
           </div>
         ` : ''}
         <div class="task-footer">
           <span class="task-footer-execution"><span class="task-relay-name ${turboPlanner ? turboPlanner.className : relayColorClass(task.thread_id)}">${escapeHtml(turboPlanner ? `Planner ${turboPlanner.label}` : taskRelayLabel(task))}</span><span aria-hidden="true"> · </span>${escapeHtml(taskCardExecutionLabel(task))}</span>
-          <span class="task-footer-timing"><span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</span><time>· ${escapeHtml(formatCardTime(task.created_at))}</time></span>
+          <span class="task-footer-timing"><span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</span></span>
+          <span class="task-footer-dates">${taskLifecycleDatesMarkup(task)}</span>
         </div>
       </article>
     `;
@@ -3291,14 +4174,14 @@ function submissionThreadId({ runNow = false } = {}) {
  * REMOVABLE BLOCK: client-side pre-POST idle settle.
  *
  * This is the only thing that can delay task creation, and it exists purely for the
- * launch-to-enqueue race: a Relay launched a moment ago has not connected yet, and
- * without the wait the task is pinned to the busy Relay the user is looking at.
- * The three second ceiling is deliberate. Once the backend resolves an idle Relay at
+ * launch-to-enqueue race: a CC Relay launched a moment ago has not connected yet, and
+ * without the wait the task is pinned to the busy CC Relay the user is looking at.
+ * The three second ceiling is deliberate. Once the backend resolves an idle CC Relay at
  * dispatch time, delete IDLE_SETTLE_* and this function, and call submissionThreadId
  * directly at the one call site in the submit handler. Nothing else depends on it.
  *
  * It refreshes with render: false so the wait can never rewrite the selection it is
- * resolving, which is what made a submission land on a different Relay than the one
+ * resolving, which is what made a submission land on a different CC Relay than the one
  * the user picked.
  */
 const IDLE_SETTLE_ATTEMPTS = 6;
@@ -3368,7 +4251,7 @@ function renderParallelBatchBar() {
   ));
   elements.parallelRunButton.disabled = selectedCount < 2 || !selectedThread || !supported || workspaceMismatch;
   elements.parallelRunButton.textContent = !supported
-    ? 'Restart Relay to enable'
+    ? 'Restart CC Relay to enable'
     : workspaceMismatch ? 'Same workspace only' : 'Run in parallel';
 }
 
@@ -3462,11 +4345,13 @@ function actionButton(label, action, className = '') {
   return button;
 }
 
-function planStatusLabel(status) {
+function planStatusLabel(status, plan = null, task = null) {
+  const author = providerLabel(plan?.author?.provider || task?.author_provider || 'claude');
+  const reviewer = providerLabel(plan?.reviewer?.provider || task?.reviewer_provider || 'codex');
   const labels = {
-    drafting: 'Claude drafting',
-    reviewing: 'Codex reviewing',
-    revising: 'Claude revising',
+    drafting: `${author} drafting`,
+    reviewing: `${reviewer} reviewing`,
+    revising: `${author} revising`,
     complete: 'Complete',
     failed: 'Failed',
     cancelled: 'Cancelled',
@@ -3499,17 +4384,29 @@ async function copyDetailContent(button) {
   }, 1200);
 }
 
+// Council stage files live next to the canonical plan.md in the project task folder. A
+// record written before stage files existed carries no path, and a stale browser tab can
+// hold markup without these rows, so both cases stay silent instead of breaking the panel.
+function renderPlanStageArtifact(row, path, filePath) {
+  if (!row || !path) return;
+  const value = typeof filePath === 'string' ? filePath.trim() : '';
+  row.hidden = !value;
+  path.textContent = value;
+}
+
 function renderPlanPreview(plan, task) {
   elements.planPreview.hidden = false;
   elements.resultSection.hidden = true;
   const status = plan?.status || task.status;
-  elements.planStatus.textContent = planStatusLabel(status);
+  elements.planStatus.textContent = planStatusLabel(status, plan, task);
   elements.planStatus.dataset.state = status;
 
+  const authorProvider = plan?.author?.provider || task.author_provider || 'claude';
+  const reviewerProvider = plan?.reviewer?.provider || task.reviewer_provider || 'codex';
   const stages = plan?.stages || [
-    { id: 'draft', label: 'Claude draft', provider: 'claude', status: 'pending' },
-    { id: 'review', label: 'Codex review', provider: 'codex', status: 'pending' },
-    { id: 'revision', label: 'Claude revision', provider: 'claude', status: 'pending' },
+    { id: 'draft', label: `${providerLabel(authorProvider)} draft`, provider: authorProvider, status: 'pending' },
+    { id: 'review', label: `${providerLabel(reviewerProvider)} review`, provider: reviewerProvider, status: 'pending' },
+    { id: 'revision', label: `${providerLabel(authorProvider)} revision`, provider: authorProvider, status: 'pending' },
   ];
   elements.planStageRail.innerHTML = stages.map((stage, index) => `
     <div class="plan-stage" data-state="${escapeHtml(stage.status)}">
@@ -3530,9 +4427,9 @@ function renderPlanPreview(plan, task) {
     effort: task.reviewer_effort,
   };
   elements.planAgentSummary.innerHTML = `
-    <span><b>Author</b> Claude · ${escapeHtml(author.model || 'Fable')} · ${escapeHtml(author.effort || 'max')}</span>
+    <span><b>Author</b> ${escapeHtml(providerLabel(author.provider || authorProvider))} · ${escapeHtml(author.model || 'account model')} · ${escapeHtml(author.effort || 'default')}</span>
     <i aria-hidden="true">→</i>
-    <span><b>Reviewer</b> Codex · ${escapeHtml(reviewer.model || 'account model')} · ${escapeHtml(reviewer.effort || 'default')}</span>
+    <span><b>Reviewer</b> ${escapeHtml(providerLabel(reviewer.provider || reviewerProvider))} · ${escapeHtml(reviewer.model || 'account model')} · ${escapeHtml(reviewer.effort || 'default')}</span>
     ${(task.attachments || []).length ? `<span><b>Images</b> ${(task.attachments || []).length} shared references</span>` : ''}
   `;
 
@@ -3543,11 +4440,27 @@ function renderPlanPreview(plan, task) {
   elements.planDraftSection.hidden = !hasDraft;
   elements.planReviewSection.hidden = !hasReview;
   elements.planFinalSection.hidden = !hasFinal;
+  const draftLabel = `${providerLabel(author.provider || authorProvider)} draft`;
+  const reviewLabel = `${providerLabel(reviewer.provider || reviewerProvider)} review`;
+  elements.planDraftSection.querySelector('summary span').textContent = draftLabel;
+  elements.planDraftSection.querySelector('.content-copy-button').setAttribute('aria-label', `Copy ${draftLabel}`);
+  elements.planReviewSection.querySelector('summary span').textContent = reviewLabel;
+  elements.planReviewSection.querySelector('.content-copy-button').setAttribute('aria-label', `Copy ${reviewLabel}`);
   elements.planArtifactRow.hidden = !hasFinal;
   elements.planExecutionPanel.hidden = !hasFinal;
   elements.planDraft.innerHTML = hasDraft ? renderMarkdown(plan.draft) : '';
   elements.planReview.innerHTML = hasReview ? renderMarkdown(plan.review) : '';
   elements.planFinal.innerHTML = hasFinal ? renderMarkdown(plan.finalPlan) : '';
+  renderPlanStageArtifact(
+    elements.planDraftArtifactRow,
+    elements.planDraftArtifactPath,
+    hasDraft ? plan?.stageArtifacts?.draft : null,
+  );
+  renderPlanStageArtifact(
+    elements.planReviewArtifactRow,
+    elements.planReviewArtifactPath,
+    hasReview ? plan?.stageArtifacts?.review : null,
+  );
   if (hasFinal) {
     elements.planArtifactPath.textContent = plan.artifactPath || `.data/tasks/${task.id}/plan.md`;
     elements.planArtifactLink.textContent = planArtifactsSupported ? 'Open plan.md' : 'Restart to open';
@@ -3557,7 +4470,7 @@ function renderPlanPreview(plan, task) {
       elements.planArtifactLink.removeAttribute('title');
     } else {
       elements.planArtifactLink.removeAttribute('href');
-      elements.planArtifactLink.title = 'Restart Relay to enable the canonical plan file route.';
+      elements.planArtifactLink.title = 'Restart CC Relay to enable the canonical plan file route.';
     }
   } else {
     elements.planArtifactPath.textContent = '';
@@ -3567,13 +4480,15 @@ function renderPlanPreview(plan, task) {
   elements.planWaiting.hidden = hasFinal;
   if (!hasFinal) {
     const planError = plan?.error || task.error;
+    const authorName = providerLabel(author.provider || authorProvider);
+    const reviewerName = providerLabel(reviewer.provider || reviewerProvider);
     elements.planWaiting.textContent = planError || (
       status === 'queued'
-        ? 'The council is queued. Claude will draft first, then Codex will review.'
+        ? `The council is queued. ${authorName} will draft first, then ${reviewerName} will review.`
         : status === 'reviewing'
-          ? 'Claude finished the first draft. Codex is reviewing it now.'
+          ? `${authorName} finished the first draft. ${reviewerName} is reviewing it now.`
           : status === 'revising'
-            ? 'Codex finished the review. Claude is producing the final revised plan.'
+            ? `${reviewerName} finished the review. ${authorName} is producing the final revised plan.`
             : 'The council is preparing the first draft.'
     );
     elements.planWaiting.dataset.state = planError ? 'error' : status;
@@ -3634,8 +4549,8 @@ function renderTurboPreview(plan, task) {
       ? state.threads.find((thread) => thread.id === resolvedWorker.threadId)
       : null;
     const owner = ownerThread && threadProvider(ownerThread) === 'codex'
-      ? { label: `Relay ${relayNumber(ownerThread)}`, className: relayColorClass(ownerThread.id) }
-      : { label: resolvedWorker?.title || 'Unassigned Relay', className: '' };
+      ? { label: `CC Relay ${relayNumber(ownerThread)}`, className: relayColorClass(ownerThread.id) }
+      : { label: resolvedWorker?.title || 'Unassigned CC Relay', className: '' };
     const displayState = itemState === 'pending' ? pendingState : itemState;
     const stateIcon = displayState === 'complete' ? '✓' : displayState === 'failed' ? '!' : displayState === 'running' ? '' : '•';
     const stateLabel = displayState === 'complete'
@@ -3664,6 +4579,274 @@ function renderTurboPreview(plan, task) {
   }).join('');
 }
 
+/*
+ * The strip is a handful of text and disabled writes over a container with no scroll of
+ * its own, so it repaints on every refresh. Only the conversation below it is expensive
+ * enough to need a rebuild guard.
+ */
+function renderSessionStrip(task, active) {
+  elements.sessionStrip.hidden = !active;
+  if (!active) {
+    elements.sessionKillButton.dataset.taskId = '';
+    elements.sessionKillButton.dataset.threadId = '';
+    return;
+  }
+  const stateKey = sessionTaskState(task);
+  const { label, hint } = sessionStateLabel(stateKey);
+  elements.sessionStrip.dataset.state = stateKey;
+  elements.sessionStripContext.textContent = `${taskRelayLabel(task)} · ${providerLabel(task.provider)} · ${task.model || 'session model'}`;
+  elements.sessionStripState.dataset.state = stateKey;
+  elements.sessionStripState.textContent = label;
+
+  const supported = state.status?.capabilities?.terminalControl === true;
+  const thread = taskContinuationSession(task);
+  const control = thread?.terminalControl || null;
+  const closing = state.killingSessionTaskId === task.id;
+  const button = elements.sessionKillButton;
+  // The handler resolves its target from the button rather than a captured task object:
+  // the listener is wired once at startup and outlives every render.
+  button.dataset.taskId = String(task.id);
+  button.dataset.threadId = thread?.id || '';
+  button.hidden = !thread;
+  button.textContent = closing ? 'Closing' : 'Close terminal';
+  button.setAttribute('aria-label', `Close the retained terminal for task ${task.id}`);
+
+  let reason = '';
+  if (closing) {
+    button.disabled = true;
+    reason = 'Closing this terminal.';
+  } else if (!supported) {
+    button.disabled = true;
+    reason = 'Restart CC Relay to close terminals from here.';
+  } else if (!thread) {
+    button.disabled = true;
+    reason = hint;
+  } else if (control?.canClose !== true) {
+    button.disabled = true;
+    reason = control?.reason || 'CC Relay does not own this terminal window, so it cannot close it.';
+  } else {
+    button.disabled = false;
+    reason = 'Closes the native terminal window and ends this session.';
+  }
+  button.title = reason;
+
+  const message = elements.sessionStripMessage;
+  if (message.dataset.taskId !== String(task.id)) {
+    message.dataset.taskId = String(task.id);
+    message.dataset.kind = 'hint';
+  }
+  /*
+   * Continue session runs inside the same task row, so a terminal this panel reported
+   * closed can come back under a new id. The notice is retired against that new id
+   * rather than against the mere presence of a thread: the server can still list the
+   * closed one for a poll or two, and the outcome has to survive that.
+   */
+  if (message.dataset.kind === 'success' && thread && thread.id !== message.dataset.closedThreadId) {
+    message.dataset.kind = 'hint';
+  }
+  // A close outcome has to outlive the two-second refresh. Without this the success or
+  // failure text would be replaced by the generic hint before it could be read. The
+  // equality check matters just as much: this is a live region, and rewriting the same
+  // sentence every two seconds would have a screen reader read it every two seconds.
+  if (!['error', 'success'].includes(message.dataset.kind) && message.textContent !== reason) {
+    message.textContent = reason;
+  }
+}
+
+async function killSessionTerminal() {
+  const button = elements.sessionKillButton;
+  const taskId = Number(button.dataset.taskId);
+  const threadId = button.dataset.threadId;
+  const message = elements.sessionStripMessage;
+  if (!Number.isFinite(taskId) || !taskId || !threadId || state.killingSessionTaskId) return;
+  const thread = state.threads.find((item) => item.id === threadId) || null;
+  message.dataset.taskId = String(taskId);
+  if (!thread) {
+    message.dataset.kind = 'error';
+    message.textContent = 'This terminal is no longer connected. Continue session relaunches the saved conversation.';
+    return;
+  }
+  if (thread.terminalControl?.canClose !== true) {
+    message.dataset.kind = 'error';
+    message.textContent = thread.terminalControl?.reason || 'CC Relay does not own this terminal window, so it cannot close it.';
+    return;
+  }
+  const number = String(taskId).padStart(3, '0');
+  if (!window.confirm(`Close the retained terminal for task #${number}? The connected session will end; Continue session can relaunch the saved conversation later.`)) return;
+  state.killingSessionTaskId = taskId;
+  const pendingTask = state.tasks.find((item) => item.id === taskId) || null;
+  if (pendingTask) renderSessionStrip(pendingTask, true);
+  try {
+    await api(`/api/terminals/${encodeURIComponent(threadId)}`, { method: 'DELETE' });
+    state.threads = state.threads.filter((item) => item.id !== threadId);
+    if (state.selectedThreadId === threadId) state.selectedThreadId = null;
+    message.dataset.kind = 'success';
+    message.dataset.closedThreadId = threadId;
+    message.textContent = `The retained terminal for task #${number} was closed.`;
+    renderThreads();
+  } catch (error) {
+    message.dataset.kind = 'error';
+    message.textContent = error.message;
+  } finally {
+    state.killingSessionTaskId = null;
+    const current = state.tasks.find((item) => item.id === taskId) || null;
+    if (current && state.selectedTaskId === taskId) renderSessionStrip(current, isDirectSessionTask(current));
+    await loadThreads();
+    await load({ fresh: true }).catch(() => {});
+  }
+}
+
+function sessionDisclosureKey(taskId, turnId, part) {
+  return `${taskId}:${turnId}:${part}`;
+}
+
+function rememberSessionDisclosures() {
+  // Keyed against the task the DOM currently holds, not the one about to replace it.
+  const renderedTaskId = elements.sessionHistoryTurns.dataset.taskId;
+  if (!renderedTaskId) return;
+  for (const details of elements.sessionHistoryTurns.querySelectorAll('details[data-session-part]')) {
+    const turn = details.closest('[data-turn-id]');
+    if (!turn) continue;
+    state.expandedSessionTurns.set(
+      sessionDisclosureKey(renderedTaskId, turn.dataset.turnId, details.dataset.sessionPart),
+      details.open,
+    );
+  }
+}
+
+function restoreSessionDisclosures(taskId) {
+  for (const details of elements.sessionHistoryTurns.querySelectorAll('details[data-session-part]')) {
+    const turn = details.closest('[data-turn-id]');
+    if (!turn) continue;
+    const key = sessionDisclosureKey(taskId, turn.dataset.turnId, details.dataset.sessionPart);
+    // A recorded choice always wins, so the newest turn opening by default can never
+    // reopen something the user deliberately collapsed.
+    if (state.expandedSessionTurns.has(key)) details.open = state.expandedSessionTurns.get(key);
+  }
+}
+
+/*
+ * djb2 over every prompt field a turn is drawn from, folded to 32 bits. Editing a queued
+ * session task rewrites the first turn in place, so text length alone cannot see it: a
+ * same-length rewrite has to move the signature or the panel keeps showing the old
+ * conversation. Folding also keeps the prompt text itself out of the signature string,
+ * which the container carries as an attribute on every render.
+ */
+function sessionTurnContentHash(turns) {
+  let hash = 5381;
+  for (const turn of turns) {
+    const fields = `${turn.id} ${turn.prompt.created_at || ''} ${turn.prompt.text}`;
+    for (let index = 0; index < fields.length; index += 1) {
+      // Shift form, not hash * 33: the multiply loses precision past 2^53 before the
+      // xor coerces, while << and ^ both keep the fold inside int32.
+      hash = ((hash << 5) + hash) ^ fields.charCodeAt(index);
+    }
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/*
+ * The panel re-renders every two seconds. A signature over everything the markup depends
+ * on keeps the rebuild out of the common case, where nothing about the conversation
+ * changed and a fresh innerHTML would only reset scroll and collapse open turns.
+ *
+ * Terminal state is deliberately absent. No part of a turn is drawn from it, and the
+ * four-second thread poll flips a running session between busy and idle repeatedly:
+ * signing on it would rebuild the transcript under the reader for no visible gain.
+ */
+function sessionHistorySignature(task, turns) {
+  const newest = turns.at(-1) || null;
+  return [
+    task.id,
+    task.status,
+    turns.length,
+    turns.reduce((total, turn) => total + turn.responses.length, 0),
+    (newest?.finalResponse || '').length,
+    newest?.pending ? 'pending' : 'settled',
+    // PATCH /api/tasks/:id edits a queued session task: task.prompt is rebuilt into the
+    // first turn and the provider that names every response can switch, while the id,
+    // the status and both counts above stay exactly as they were.
+    taskProvider(task),
+    sessionTurnContentHash(turns),
+  ].join('|');
+}
+
+function sessionTurnMarkup(turn, responseLabel, newest) {
+  const number = String(turn.index + 1).padStart(2, '0');
+  const promptText = turn.prompt.text;
+  const promptPreview = compactText(promptText, 200);
+  // Equal preview means the collapsed form loses nothing, so short prompts skip the
+  // disclosure entirely instead of hiding two lines behind a click.
+  const promptExpandable = promptPreview !== promptText;
+  const time = formatTime(turn.prompt.created_at);
+  const earlier = turn.responses.slice(0, -1);
+  const responseBlock = turn.pending
+    ? `<p class="session-turn-pending" data-pending="true"><i aria-hidden="true"></i>Working on a response</p>`
+    : turn.finalResponse
+      ? `
+        <details class="session-turn-response" data-session-part="response"${newest ? ' open' : ''}>
+          <summary>
+            <span class="session-turn-response-label">${escapeHtml(responseLabel)}</span>
+            <span class="session-turn-response-preview">${escapeHtml(compactText(markdownPreviewText(turn.finalResponse), 96))}</span>
+            <i>View</i>
+          </summary>
+          ${earlier.length ? `
+            <details class="session-turn-earlier" data-session-part="earlier">
+              <summary>${earlier.length} earlier message${earlier.length === 1 ? '' : 's'} during this turn</summary>
+              ${earlier.map((response) => `<pre>${escapeHtml(response.text)}</pre>`).join('')}
+            </details>
+          ` : ''}
+          <div class="markdown-document compact session-turn-markdown">${renderMarkdown(turn.finalResponse)}</div>
+        </details>
+      `
+      : '<p class="session-turn-empty">No response recorded.</p>';
+  return `
+    <article class="session-turn" data-turn-id="${escapeHtml(turn.id)}">
+      <div class="session-turn-header">
+        <span class="session-turn-number">${number}</span>
+        <strong>You</strong>
+        ${time ? `<time datetime="${escapeHtml(turn.prompt.created_at)}">${escapeHtml(time)}</time>` : ''}
+      </div>
+      ${promptExpandable
+        ? `
+          <details class="session-turn-prompt" data-session-part="prompt">
+            <summary><span>${escapeHtml(promptPreview)}</span><i>Full prompt</i></summary>
+            <pre>${escapeHtml(promptText)}</pre>
+          </details>
+        `
+        : `<pre class="session-turn-prompt-text">${escapeHtml(promptText)}</pre>`}
+      ${responseBlock}
+    </article>
+  `;
+}
+
+function renderSessionHistory(task, turns, active) {
+  elements.sessionHistory.hidden = !active;
+  const container = elements.sessionHistoryTurns;
+  if (!active) {
+    if (container.dataset.taskId) {
+      container.dataset.taskId = '';
+      container.dataset.signature = '';
+      container.replaceChildren();
+      state.expandedSessionTurns.clear();
+    }
+    return;
+  }
+  elements.sessionHistoryCount.textContent = sessionHistoryCountLabel(turns);
+  const signature = sessionHistorySignature(task, turns);
+  const sameTask = container.dataset.taskId === String(task.id);
+  if (sameTask && container.dataset.signature === signature) return;
+  if (sameTask) rememberSessionDisclosures();
+  else state.expandedSessionTurns.clear();
+  const responseLabel = providerLabel(taskProvider(task));
+  container.dataset.taskId = String(task.id);
+  container.dataset.signature = signature;
+  container.innerHTML = turns.length
+    ? turns.map((turn, index) => sessionTurnMarkup(turn, responseLabel, index === turns.length - 1)).join('')
+    : '<p class="session-history-empty">No conversation recorded for this session yet.</p>';
+  restoreSessionDisclosures(task.id);
+}
+
 async function selectTask(taskId) {
   const requestSequence = ++state.taskLoadSequence;
   const eventTaskChanged = state.eventTaskId !== taskId;
@@ -3674,8 +4857,22 @@ async function selectTask(taskId) {
     elements.continuationForm.hidden = true;
     elements.continuationInput.disabled = true;
   }
-  const { task, events, plan = null, turboPlan = null } = await api(`/api/tasks/${taskId}`);
+  const {
+    task,
+    events,
+    prompts = [],
+    // An older backend answers without responses at all. buildSessionTurns falls back to
+    // the task row rather than showing a conversation with no answers in it.
+    responses,
+    plan = null,
+    turboPlan = null,
+  } = await api(`/api/tasks/${taskId}`);
   if (requestSequence !== state.taskLoadSequence || state.selectedTaskId !== taskId) return;
+  const sessionSurface = isDirectSessionTask(task);
+  if (state.projectCompletionNotifications.acknowledge(task)) {
+    renderProjects();
+    renderTasks();
+  }
   elements.emptyDetail.hidden = true;
   elements.taskDetail.hidden = false;
   applyTerminalHeight();
@@ -3688,11 +4885,21 @@ async function selectTask(taskId) {
     </span>
     <span>${escapeHtml(executionLabel(task))}</span>
     <span>${escapeHtml(workspaceName(task.repo_path))}</span>
-    <span>${escapeHtml(formatTime(task.created_at))}</span>
+    <span class="detail-created-date"><small>Created</small><time datetime="${escapeHtml(task.created_at)}">${escapeHtml(formatTime(task.created_at))}</time></span>
+    <span class="detail-lifecycle-dates">${taskLifecycleDatesMarkup(task, formatTime)}</span>
     ${task.continued_from_task_id ? `<span class="detail-continuation-link">Continues Task #${task.continued_from_task_id}</span>` : ''}
   `;
-  elements.detailPrompt.textContent = task.prompt;
-  elements.detailPromptPreview.textContent = compactText(task.prompt, 96);
+  const promptHistory = normalizeTaskPrompts(task, prompts);
+  const promptHistoryContent = taskPromptHistoryText(promptHistory);
+  elements.detailPrompt.textContent = promptHistoryContent;
+  elements.detailPromptPreview.textContent = taskPromptHistoryPreview(promptHistory);
+  // The conversation replaces the flat Prompts and Result disclosures for a session task.
+  // Assigned, never conditionally hidden: nothing else in the panel unhides Prompts, so a
+  // one-way hide would follow the user to the next ordinary task they open.
+  elements.promptSection.hidden = sessionSurface;
+  const sessionTurns = sessionSurface
+    ? buildSessionTurns({ task, prompts: promptHistory, responses })
+    : [];
   const attachments = task.attachments || [];
   elements.detailAttachmentsSection.hidden = attachments.length === 0;
   elements.detailAttachmentsCount.textContent = `${attachments.length} image${attachments.length === 1 ? '' : 's'}`;
@@ -3702,20 +4909,29 @@ async function selectTask(taskId) {
       <span><b>${String(index + 1).padStart(2, '0')}</b><strong>${escapeHtml(attachment.name)}</strong><small>${escapeHtml(formatBytes(attachment.size))}</small></span>
     </a>
   `).join('');
-  elements.detailResult.textContent = task.result || task.error || `Waiting for ${providerLabel(taskProvider(task))} to finish this task.`;
+  const resultContent = task.result || task.error || `Waiting for ${providerLabel(taskProvider(task))} to finish this task.`;
+  elements.detailResult.innerHTML = renderMarkdown(resultContent);
   elements.detailResultPreview.textContent = task.result
-    ? compactText(task.result, 96)
+    ? compactText(markdownPreviewText(task.result), 96)
     : task.error ? compactText(task.error, 96) : `${task.status} · response pending`;
   elements.detailResult.dataset.empty = task.result || task.error ? 'false' : 'true';
   setDetailCopyContent({
-    prompt: task.prompt,
+    prompt: promptHistoryContent,
     result: task.result || task.error || '',
+    // Registered before the history render decides whether to rebuild the DOM: a skipped
+    // rebuild must never leave the Copy conversation button disabled.
+    conversation: sessionSurface
+      ? sessionConversationText(sessionTurns, { responseLabel: providerLabel(taskProvider(task)) })
+      : '',
     planDraft: plan?.draft || '',
     planReview: plan?.review || '',
     planFinal: plan?.finalPlan || '',
   });
+  if (promptHistory.length > 1) {
+    elements.promptSection.open = true;
+  }
   if (eventTaskChanged) {
-    elements.promptSection.open = false;
+    elements.promptSection.open = promptHistory.length > 1;
     elements.resultSection.open = Boolean(task.result || task.error);
   }
   if (task.mode === 'plan') {
@@ -3727,8 +4943,10 @@ async function selectTask(taskId) {
   } else {
     elements.planPreview.hidden = true;
     elements.turboPreview.hidden = true;
-    elements.resultSection.hidden = false;
+    elements.resultSection.hidden = sessionSurface;
   }
+  renderSessionStrip(task, sessionSurface);
+  renderSessionHistory(task, sessionTurns, sessionSurface);
   elements.detailActions.replaceChildren();
 
   if (task.status === 'queued' && task.mode !== 'breakdown') {
@@ -3737,7 +4955,7 @@ async function selectTask(taskId) {
     const preparing = state.status?.planningTaskIds?.includes(task.id);
     editButton.disabled = !editingSupported || preparing;
     editButton.title = !editingSupported
-      ? 'Restart Relay to edit queued tasks.'
+      ? 'Restart CC Relay to edit queued tasks.'
       : preparing ? 'This task is already being prepared. Cancel it before editing.' : '';
     elements.detailActions.append(editButton);
   }
@@ -3748,7 +4966,7 @@ async function selectTask(taskId) {
     const retryTarget = task.mode === 'plan' && task.terminal_lifecycle !== 'disposable'
       ? selectedPlanReviewThread(task)
       : null;
-    const retryLabel = retryTarget ? `Resume on Relay ${relayNumber(retryTarget)}` : task.mode === 'plan' ? 'Resume council' : 'Retry';
+    const retryLabel = retryTarget ? `Resume on CC Relay ${relayNumber(retryTarget)}` : task.mode === 'plan' ? 'Resume council' : 'Retry';
     const retryButton = actionButton(
       retryLabel,
       () => {
@@ -3799,6 +5017,10 @@ async function loadSnapshot() {
   state.status = statusBody;
   reconcileProviderSelection();
   state.tasks = tasksBody.tasks;
+  state.projectCompletionNotifications.observe(state.tasks, {
+    activeProjectPath: state.activeProjectPath,
+    selectedTaskId: state.selectedTaskId,
+  });
   state.runningTasks = statusBody.runningTasks
     || state.tasks.filter((task) => task.status === 'running');
   await loadProjects();
@@ -3871,7 +5093,6 @@ function applyThreadSelection(threadId) {
   const providerChanged = provider !== state.selectedProvider;
   if (providerChanged) {
     state.selectedProvider = provider;
-    state.taskScope = 'workspace';
     renderProviderTabs();
     renderPromptCopy();
     renderAttachmentComposer();
@@ -3892,7 +5113,6 @@ function applyThreadSelection(threadId) {
   }
   renderStatus();
   renderTasks();
-  renderTaskScope();
   renderTerminalCloseControl();
   renderPlanControls();
   renderTurboControls();
@@ -3926,7 +5146,7 @@ async function closeSelectedTerminal() {
   if (!thread || state.closingThreadId) return;
   const control = thread.terminalControl;
   if (control?.canClose !== true) {
-    elements.formMessage.textContent = control?.reason || 'This terminal cannot be closed from Relay.';
+    elements.formMessage.textContent = control?.reason || 'This terminal cannot be closed from CC Relay.';
     return;
   }
   const label = threadDisplayName(thread);
@@ -3951,7 +5171,7 @@ async function closeSelectedTerminal() {
 
 function selectProvider(provider, { focus = false } = {}) {
   if (usesDisposableTerminalPools() && providerIsMissing(provider)) {
-    elements.formMessage.textContent = `Install the ${providerLabel(provider)} CLI and Relay will enable it automatically.`;
+    elements.formMessage.textContent = `Install the ${providerLabel(provider)} CLI and CC Relay will enable it automatically.`;
     return;
   }
   const councilClosed = isExecuteCouncilEnabled() && provider !== 'codex';
@@ -3963,7 +5183,6 @@ function selectProvider(provider, { focus = false } = {}) {
   }
   state.selectedProvider = provider;
   state.selectedThreadId = null;
-  state.taskScope = 'workspace';
   renderProviderTabs();
   renderExecutionControls();
   renderPlanControls();
@@ -3982,13 +5201,24 @@ function selectProvider(provider, { focus = false } = {}) {
 function renderAutomaticTerminalPool() {
   const project = activeProject();
   const limits = projectInstanceLimits(project);
-  const active = sameProjectPath(state.status?.terminalPool?.repoPath, project?.path)
-    ? state.status.terminalPool.active || {}
+  const terminalPool = state.status?.terminalPool;
+  const active = terminalPool
+    && project
+    && sameProjectPath(terminalPool.repoPath, project.path)
+    ? terminalPool.active || {}
     : {};
   elements.terminalPoolControls.hidden = false;
+  elements.keepTerminalOpenOption.hidden = false;
   elements.legacyTerminalControls.hidden = true;
   elements.legacyTerminalLaunchButtons.hidden = true;
-  elements.terminalLegend.textContent = 'Automatic terminal pool';
+  elements.terminalLegend.textContent = 'Automatic terminals';
+  elements.connectionCommandRow.hidden = false;
+  elements.connectionHelpTitle.textContent = project
+    ? `${project.name} terminal settings`
+    : 'Project terminal settings';
+  elements.connectionHelpCopy.textContent = project
+    ? `Window layout and launch behavior are saved only for ${project.name}.`
+    : 'Choose a pinned project before changing terminal settings.';
   if (!state.submitting) state.selectedThreadId = null;
   elements.threadInput.value = '';
 
@@ -4000,6 +5230,19 @@ function renderAutomaticTerminalPool() {
   }
   elements.maxCodexInstances.disabled = !project || state.poolLimitSaving;
   elements.maxClaudeInstances.disabled = !project || state.poolLimitSaving;
+  const retentionSupported = state.status?.capabilities?.retainedTerminalSessions === true;
+  elements.keepTerminalOpen.checked = state.keepTerminalOpen;
+  elements.keepTerminalOpen.disabled = !project
+    || !retentionSupported
+    || state.submitting
+    || state.projectSettingsSaving;
+  elements.keepTerminalOpenHelp.textContent = retentionSupported
+    ? `Keeps ${project?.name || 'this project'} sessions connected after tasks and after CC Relay exits. This choice is not shared with other projects. Session tasks show terminal state, conversation history, and a Close terminal action in Task activity.`
+    : 'Restart CC Relay to enable retained terminal sessions.';
+  elements.terminalPoolControls.textContent = state.keepTerminalOpen
+    ? 'CC Relay opens a fresh terminal per task and keeps the final session open. Close its native window when done.'
+    : 'CC Relay opens a fresh terminal per task and closes it when the task ends. Continue session relaunches the saved conversation.';
+  setProjectTerminalSettingsDisabled(!project || state.projectSettingsSaving);
   if (providerIsMissing('codex')) elements.maxCodexInstances.disabled = true;
   if (providerIsMissing('claude')) elements.maxClaudeInstances.disabled = true;
   elements.codexPoolUsage.textContent = `${Number(active.codex || 0)} active · max ${limits.codex}`;
@@ -4010,7 +5253,7 @@ function renderAutomaticTerminalPool() {
   } else if (state.taskMode === 'turbo') {
     elements.sessionMessage.textContent = `Turbo will launch one planner plus ${state.turboSettings.workerCount} disposable Codex workers in ${project.name}.`;
   } else if (isExecuteCouncilEnabled()) {
-    elements.sessionMessage.textContent = `Plan council will launch one Claude author and one Codex reviewer in ${project.name}.`;
+    elements.sessionMessage.textContent = `Plan council will launch one Claude and one Codex terminal in ${project.name}.`;
   } else {
     elements.sessionMessage.textContent = `New ${providerLabel(state.selectedProvider)} tasks launch disposable terminals in ${project.name}.`;
   }
@@ -4064,11 +5307,12 @@ function renderThreads() {
     return;
   }
   elements.terminalPoolControls.hidden = true;
+  elements.keepTerminalOpenOption.hidden = true;
   elements.legacyTerminalControls.hidden = false;
   elements.legacyTerminalLaunchButtons.hidden = false;
   /*
    * A submission in flight owns the composer routing. Background thread polling runs
-   * every four seconds and used to be able to reassign the Relay, and even flip the
+   * every four seconds and used to be able to reassign the CC Relay, and even flip the
    * provider, between the user pressing Enter and the POST leaving the browser. While a
    * submission is pending this render only paints; it never rewrites the selection.
    */
@@ -4091,6 +5335,8 @@ function renderThreads() {
   const isClaude = state.selectedProvider === 'claude';
   elements.idleTerminalRoute.hidden = isClaude || state.taskMode !== 'execute' || isExecuteCouncilEnabled();
   elements.preferIdleTerminal.checked = state.preferIdleTerminal;
+  elements.preferIdleTerminal.disabled = !activeProject() || state.projectSettingsSaving;
+  setProjectTerminalSettingsDisabled(!activeProject() || state.projectSettingsSaving);
   const directClaudeEnabled = isDirectClaudeEnabled();
   const launcherEnabled = state.status?.capabilities?.projectLauncher === true;
   elements.launchCodexButton.disabled = !launcherEnabled || providerIsMissing('codex');
@@ -4102,24 +5348,24 @@ function renderThreads() {
     ? providerIsMissing('claude')
       ? 'Install the Claude CLI to launch Claude.'
       : terminalCouncil
-        ? 'Launch a Claude terminal, then use it for the Plan council author and revision stages.'
+        ? 'Launch a Claude terminal, then use it for the Claude Plan council stages.'
         : 'Launches a separate interactive Claude session. Plan council uses the signed-in Claude CLI automatically.'
     : providerIsMissing('claude') ? 'Install the Claude CLI to launch Claude.' : '';
   elements.terminalLegend.textContent = isExecuteCouncilEnabled()
-    ? 'Codex review Relay'
+    ? 'Codex council CC Relay'
     : state.taskMode === 'turbo'
       ? state.turboSettings.councilEnabled && state.turboSettings.councilOrder?.[0] === 'claude'
-        ? 'Codex council review Relay'
-        : 'Planner Relay'
-    : 'Choose a Relay';
+        ? 'Codex council review CC Relay'
+        : 'Planner CC Relay'
+    : 'Choose a CC Relay';
   elements.terminalList.setAttribute(
     'aria-label',
     directExecute
       ? 'Connected Codex and Claude sessions'
       : isExecuteCouncilEnabled()
         ? terminalCouncil
-          ? 'Codex review Relays'
-          : 'Codex review Relays and Execute-only Claude sessions'
+          ? 'Codex council Relays'
+          : 'Codex council Relays and Execute-only Claude sessions'
         : 'Connected Codex terminals',
   );
   elements.launchCommand.textContent = isClaude
@@ -4127,7 +5373,7 @@ function renderThreads() {
     : state.connection?.launchCommand || 'codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769';
   elements.connectionHelpCopy.textContent = isClaude
     ? 'Starts Claude with all permission checks disabled. Use only in a project you fully trust.'
-    : 'Starts Codex through Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
+    : 'Starts Codex through CC Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
   const availableIds = new Set(selectableThreads.map((thread) => thread.id));
   const previouslySelectedThreadId = state.selectedThreadId;
   if (!selectionLocked && !availableIds.has(state.selectedThreadId)) {
@@ -4154,24 +5400,24 @@ function renderThreads() {
         <span class="agent-icon ${isClaude ? 'agent-icon-claude' : 'agent-icon-codex'}" aria-hidden="true">${isClaude ? '✳' : '&gt;_'}</span>
         <div>
           <strong>${isClaude ? directClaudeEnabled ? 'No live Claude Code session' : 'Claude connection update is ready' : 'No Codex terminal connected'}${state.activeProjectPath ? ` in ${escapeHtml(workspaceName(state.activeProjectPath))}` : ''}</strong>
-          <p>${isClaude ? directClaudeEnabled ? 'Open Claude in a project, then Relay will discover it automatically.' : 'Restart Relay after the running queue finishes to activate the new backend adapter.' : 'Open the connection instructions below. Relay will discover the terminal automatically.'}</p>
+          <p>${isClaude ? directClaudeEnabled ? 'Open Claude in a project, then CC Relay will discover it automatically.' : 'Restart CC Relay after the running queue finishes to activate the new backend adapter.' : 'Open the connection instructions below. CC Relay will discover the terminal automatically.'}</p>
         </div>
       </div>
     `;
     elements.threadInput.value = '';
     elements.sessionMessage.textContent = (isClaude
       ? directClaudeEnabled
-        ? '0 live Claude sessions. Relay checks the official Claude agent list.'
-        : 'Claude discovery will activate on the next normal Relay restart.'
-      : 'Relay is online and waiting for a Codex terminal.') + claudeDiscoveryNote();
+        ? '0 live Claude sessions. CC Relay checks the official Claude agent list.'
+        : 'Claude discovery will activate on the next normal CC Relay restart.'
+      : 'CC Relay is online and waiting for a Codex terminal.') + claudeDiscoveryNote();
     updateSubmitState();
     elements.connectionHelp.open = true;
     elements.connectionHelpTitle.textContent = isClaude ? 'Open a Claude Code session' : 'Connect another Codex terminal';
     elements.connectionHelpCopy.textContent = isClaude
       ? directClaudeEnabled
-        ? 'Runs Claude with all permission checks disabled. Use only in a project you fully trust. Relay then discovers the live session.'
-        : 'The source update is complete. Keep the current queue running and restart Relay normally when it becomes idle.'
-      : 'Runs Codex through Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
+        ? 'Runs Claude with all permission checks disabled. Use only in a project you fully trust. CC Relay then discovers the live session.'
+        : 'The source update is complete. Keep the current queue running and restart CC Relay normally when it becomes idle.'
+      : 'Runs Codex through CC Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
     elements.connectionCommandRow.hidden = false;
     renderProviderTabs();
     renderStatus();
@@ -4206,7 +5452,7 @@ function renderThreads() {
         <span class="terminal-choice" aria-hidden="true"><span></span></span>
           <span class="terminal-copy">
             <span class="terminal-primary">
-              <strong title="${escapeHtml(provider === 'claude' ? thread.title : `Relay ${relayNumber(thread)}`)}">${escapeHtml(provider === 'claude' ? thread.title : `Relay ${relayNumber(thread)}`)}</strong>
+              <strong title="${escapeHtml(provider === 'claude' ? thread.title : `CC Relay ${relayNumber(thread)}`)}">${escapeHtml(provider === 'claude' ? thread.title : `CC Relay ${relayNumber(thread)}`)}</strong>
             </span>
             <span class="terminal-preview">${escapeHtml(preview)}</span>
             <span class="terminal-bottomline">
@@ -4251,23 +5497,22 @@ function renderThreads() {
   elements.threadInput.value = state.selectedThreadId;
   elements.sessionMessage.textContent = (isExecuteCouncilEnabled()
     ? terminalCouncil
-      ? `${selectableThreads.length} live Codex Relay${selectableThreads.length === 1 ? '' : 's'} available for review. Choose the Claude author terminal in the Plan council card.`
-      : `${selectableThreads.length} live Codex Relay${selectableThreads.length === 1 ? '' : 's'} available for review. ${councilClaudeThreads.length} interactive Claude session${councilClaudeThreads.length === 1 ? '' : 's'} shown as Execute only; Plan council authors and revises through the signed-in Claude CLI automatically.`
+      ? `${selectableThreads.length} live Codex CC Relay${selectableThreads.length === 1 ? '' : 's'} available for council work. Choose the Claude council terminal in the Plan council card.`
+      : `${selectableThreads.length} live Codex CC Relay${selectableThreads.length === 1 ? '' : 's'} available for council work. ${councilClaudeThreads.length} interactive Claude session${councilClaudeThreads.length === 1 ? '' : 's'} shown as Execute only; Plan council uses the signed-in Claude CLI automatically.`
     : state.taskMode === 'turbo'
-      ? `${visibleThreads.length} live Codex terminals. Choose the ${state.turboSettings.councilEnabled && state.turboSettings.councilOrder?.[0] === 'claude' ? 'Codex reviewer' : 'planner'}; Relay uses other terminals in this workspace as workers.`
-    : `${visibleThreads.length} live Relay session${visibleThreads.length === 1 ? '' : 's'}. Select one to choose its provider, model, and effort.`) + claudeDiscoveryNote();
+      ? `${visibleThreads.length} live Codex terminals. Choose the ${state.turboSettings.councilEnabled && state.turboSettings.councilOrder?.[0] === 'claude' ? 'Codex reviewer' : 'planner'}; CC Relay uses other terminals in this workspace as workers.`
+    : `${visibleThreads.length} live CC Relay session${visibleThreads.length === 1 ? '' : 's'}. Select one to choose its provider, model, and effort.`) + claudeDiscoveryNote();
   updateSubmitState();
   elements.connectionHelpTitle.textContent = isClaude
     ? 'Open another Claude Code session'
     : 'Connect another Codex terminal';
   elements.connectionHelpCopy.textContent = isClaude
     ? 'Runs Claude with all permission checks disabled. Use only in a project you fully trust.'
-    : 'Runs Codex through Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
+    : 'Runs Codex through CC Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
   elements.connectionCommandRow.hidden = false;
   renderProviderTabs();
   renderStatus();
   renderTasks();
-  renderTaskScope();
   renderPlanControls();
   renderTurboControls();
   if (state.selectedTaskForEvents) {
@@ -4289,7 +5534,7 @@ async function loadThreads({ silent = true, render = true } = {}) {
     state.connection = connection;
     state.providers = providers;
     // render: false refreshes routing data without touching the composer. Used by the
-    // submission path, which must not re-render the Relay picker under an in-flight POST.
+    // submission path, which must not re-render the CC Relay picker under an in-flight POST.
     if (!render) return;
     renderThreads();
     renderParallelBatchBar();
@@ -4321,7 +5566,7 @@ function eligiblePlanExecutionThreads(task) {
         provider,
         cwd: task.repo_path,
         title: `Automatic ${providerLabel(provider)} instance`,
-        source: 'Relay managed terminal pool',
+        source: 'CC Relay managed terminal pool',
         automatic: true,
       }));
   }
@@ -4351,7 +5596,7 @@ function renderPlanExecutionOptions(task) {
     option.value = '';
     option.textContent = usesDisposableTerminalPools()
       ? 'No installed providers'
-      : 'No opened Relay in this workspace';
+      : 'No opened CC Relay in this workspace';
     elements.planExecutionRelay.append(option);
   } else {
     for (const thread of threads) {
@@ -4369,10 +5614,10 @@ function renderPlanExecutionOptions(task) {
 
 function planExecutionIssue(task, target = selectedPlanExecutionTarget(task)) {
   if (state.status?.capabilities?.planExecution !== true) {
-    return 'Restart Relay to enable reviewed-plan execution.';
+    return 'Restart CC Relay to enable reviewed-plan execution.';
   }
   if (!target) {
-    return 'Open a Codex or Claude Relay in this workspace first.';
+    return 'Open a Codex or Claude CC Relay in this workspace first.';
   }
   if (threadProvider(target) === 'claude' && !isClaudePlanReady()) {
     return claudePlanIssue();
@@ -4412,13 +5657,13 @@ function refreshPlanTaskActions(task = null) {
     const authorTarget = !automatic && isPlanCouncilTerminalExecutionEnabled()
       ? selectedPlanClaudeAuthorThread()
       : null;
-    retryButton.textContent = retryTarget ? `Resume on Relay ${relayNumber(retryTarget)}` : 'Resume council';
+    retryButton.textContent = retryTarget ? `Resume on CC Relay ${relayNumber(retryTarget)}` : 'Resume council';
     const retryIssue = state.status?.capabilities?.planCouncilResume !== true
-      ? 'Restart Relay to enable safe checkpoint resume.'
+      ? 'Restart CC Relay to enable safe checkpoint resume.'
       : !isClaudePlanReady()
         ? claudePlanIssue()
         : !automatic && isPlanCouncilTerminalExecutionEnabled() && !authorTarget
-          ? 'Choose a Relay-owned Claude author terminal before resuming.'
+          ? 'Choose a CC Relay-owned Claude council terminal before resuming.'
           : '';
     retryButton.disabled = Boolean(retryIssue);
     retryButton.title = retryIssue;
@@ -4445,7 +5690,7 @@ async function executeReviewedPlan(sourceTask) {
   const issue = planExecutionIssue(sourceTask);
   const thread = selectedPlanExecutionTarget(sourceTask);
   if (issue || !thread) {
-    window.alert(issue || 'Choose a connected Relay in this workspace.');
+    window.alert(issue || 'Choose a connected CC Relay in this workspace.');
     return;
   }
   const provider = threadProvider(thread);
@@ -4460,6 +5705,7 @@ async function executeReviewedPlan(sourceTask) {
           ? {
             projectPath: sourceTask.repo_path,
             terminalLifecycle: 'disposable',
+            ...terminalRetentionRequest(),
             terminalLayout: terminalLayout(),
           }
           : { threadId: thread.id }),
@@ -4473,7 +5719,6 @@ async function executeReviewedPlan(sourceTask) {
       effort: body.task.effort || execution.effort,
     }, { source: 'task', taskId: body.task.id });
     state.taskView = 'queue';
-    state.taskScope = 'workspace';
     state.selectedTaskId = body.task.id;
     state.parallelTaskIds.clear();
     localStorage.setItem('relay.taskView', state.taskView);
@@ -4506,11 +5751,17 @@ async function submitTaskContinuation(event) {
     && state.status?.capabilities?.resumableDisposableSessions === true
     && Boolean(sourceTask.thread_id)
     && sourceTask.status !== 'running';
+  const runningSteeringAvailable = sourceTask?.status === 'running' && (
+    sourceTask.provider === 'codex'
+      ? state.status?.capabilities?.taskSteering === true
+      : sourceTask.provider === 'claude'
+        && state.status?.capabilities?.claudeTaskSteering === true
+  );
   if (
     !sourceTask
     || !prompt
     || state.continuationSubmitting
-    || (!taskContinuationSession(sourceTask) && !resumableSession)
+    || (!taskContinuationSession(sourceTask) && !resumableSession && !runningSteeringAvailable)
   ) return;
   let request;
   try {
@@ -4519,6 +5770,7 @@ async function submitTaskContinuation(event) {
       supportsDirectFollowUp: state.status?.capabilities?.taskDirectFollowUp === true,
       supportsFollowUpAttachments: state.status?.capabilities?.taskFollowUpAttachments === true,
       supportsTaskSteering: state.status?.capabilities?.taskSteering === true,
+      supportsClaudeTaskSteering: state.status?.capabilities?.claudeTaskSteering === true,
       attachments: attachments.map((attachment) => ({
         name: attachment.name,
         mimeType: attachment.mimeType,
@@ -4535,41 +5787,66 @@ async function submitTaskContinuation(event) {
   state.continuationSubmitting = true;
   elements.continuationMessage.dataset.kind = 'hint';
   renderTaskContinuation(sourceTask);
+  let outcome;
   try {
     const body = await api(request.path, {
       method: 'POST',
       body: JSON.stringify(request.body),
+      ...(sourceTask.provider === 'claude' && sourceTask.status === 'running'
+        ? {
+            timeoutMs: 35_000,
+            timeoutMessage: (seconds) => `CC Relay did not confirm the Claude live update within ${seconds} seconds. It may already be queued in Claude, so check Task Activity before sending it again.`,
+          }
+        : {}),
     });
-    if (!body.steered && !body.followUpStarted && !body.continuationQueued) {
-      throw new Error('Relay did not confirm a direct same-session follow-up. Your message was not queued.');
+    // prompt is passed last so no response field can shadow what the user actually sent.
+    outcome = continuationDispatchOutcome({ ok: true, ...body, prompt });
+  } catch (error) {
+    outcome = continuationDispatchOutcome({
+      ok: false,
+      deliveryUncertain: error.deliveryUncertain === true,
+      message: error.message,
+      prompt,
+    });
+  }
+  state.continuationSubmitting = false;
+  if (outcome.clearComposer) {
+    /*
+     * Draft state is task scoped, so it clears for the source task whatever the panel is
+     * inspecting now. Only the visible composer is guarded, because a task switch during
+     * the request must never wipe the newly selected task's unsent text.
+     */
+    if (outcome.retainText) {
+      /*
+       * One uncertain branch fires when injection itself throws, so the words may exist
+       * nowhere else. They are kept under a marker the textarea rehydration ignores: the
+       * message survives for the notice without ever returning as unsent text.
+       */
+      state.continuationDrafts.set(sourceTask.id, unconfirmedDraft(outcome.text));
+    } else {
+      state.continuationDrafts.delete(sourceTask.id);
     }
-    state.continuationDrafts.delete(sourceTask.id);
     state.continuationAttachments.delete(sourceTask.id);
-    state.continuationSubmitting = false;
     if (state.selectedTaskForEvents?.id === sourceTask.id) {
       elements.continuationInput.value = '';
       elements.continuationAttachmentInput.value = '';
     }
-    await load();
-    if (body.continuationQueued && body.task?.id) {
-      state.selectedTaskId = body.task.id;
-      await loadTask(body.task.id);
-    } else if (state.selectedTaskForEvents?.id === sourceTask.id) {
-      elements.continuationMessage.dataset.kind = 'success';
-      elements.continuationMessage.textContent = body.steered
-        ? 'Update delivered to the active turn.'
-        : 'Follow-up started in this same terminal session. No queue task was created.';
-    }
-  } catch (error) {
-    state.continuationSubmitting = false;
-    elements.continuationMessage.dataset.kind = 'error';
-    elements.continuationMessage.textContent = error.message;
+  }
+  if (state.selectedTaskForEvents?.id === sourceTask.id) {
+    // Rendering before the refresh clears the sending state immediately. The message kind is
+    // sticky, so the refresh keeps this outcome instead of replacing it with the next hint.
+    elements.continuationMessage.dataset.kind = outcome.kind;
+    elements.continuationMessage.textContent = outcome.message;
+    // One truncated status row cannot hold a provider's full account of an unconfirmed
+    // delivery, so the exact wording stays reachable on the element itself.
+    elements.continuationMessage.title = outcome.detail || outcome.message;
     renderTaskContinuation(sourceTask);
   }
+  if (outcome.refresh) await load({ fresh: true });
 }
 
 async function deleteTask(taskId) {
-  if (!window.confirm('Delete this task from Relay?')) {
+  if (!window.confirm('Delete this task from CC Relay?')) {
     return;
   }
   try {
@@ -4585,7 +5862,7 @@ async function deleteTask(taskId) {
 
 function openTaskEditor(task) {
   if (state.status?.capabilities?.queuedTaskEditing !== true) {
-    window.alert('Restart Relay to edit queued tasks.');
+    window.alert('Restart CC Relay to edit queued tasks.');
     return;
   }
   const executionEditable = state.status?.capabilities?.queuedTaskProviderSwitch === true
@@ -4724,7 +6001,7 @@ function plannerProjectSessions() {
         provider,
         cwd: state.activeProjectPath,
         title: `Automatic ${providerLabel(provider)} instance`,
-        source: 'Relay managed terminal pool',
+        source: 'CC Relay managed terminal pool',
         status: 'idle',
         automatic: true,
       }));
@@ -4752,7 +6029,7 @@ function plannerSessionOptions(selectedId) {
 /**
  * Model and effort for a plan run come from the composer's own per-terminal
  * memory, so a run uses exactly the settings the user last chose for that
- * Relay. The planner deliberately does not add a second model picker.
+ * CC Relay. The planner deliberately does not add a second model picker.
  */
 function plannerRunSettings(threadId) {
   const thread = plannerProjectSessions().find((item) => item.id === threadId);
@@ -4773,6 +6050,7 @@ function plannerTerminalRequest(threadId) {
       provider: settings.provider,
       projectPath: state.activeProjectPath,
       terminalLifecycle: 'disposable',
+      ...terminalRetentionRequest(),
       terminalLayout: terminalLayout(),
     };
   }
@@ -4813,7 +6091,7 @@ function closePlanner() {
 
 function renderPlannerUnsupported() {
   elements.plannerPlanList.innerHTML = '';
-  elements.plannerDetail.innerHTML = '<div class="planner-empty planner-restart"><h3>Restart Relay to use the Planner</h3><p>This Relay build is newer than the running backend. Restart Relay to enable saved plans and AI task breakdown.</p></div>';
+  elements.plannerDetail.innerHTML = '<div class="planner-empty planner-restart"><h3>Restart CC Relay to use the Planner</h3><p>This CC Relay build is newer than the running backend. Restart CC Relay to enable saved plans and AI task breakdown.</p></div>';
 }
 
 async function loadPlans() {
@@ -5120,7 +6398,7 @@ function renderPlannerBoardHead(proposals, capable, breakdown, readOnly) {
   return `<div class="planner-proposals-head">
     <label class="planner-select-all"><input id="planner-select-all" type="checkbox"${allSelected ? ' checked' : ''}> Select all</label>
     <span>${escapeHtml(String(state.planner.selection.size))} of ${escapeHtml(String(proposals.length))} selected</span>
-    <button id="planner-add-step" class="button compact" type="button"${canAdd ? '' : ' disabled'}${capable ? '' : ' title="Restart Relay to author steps by hand."'}>+ Add step</button>
+    <button id="planner-add-step" class="button compact" type="button"${canAdd ? '' : ' disabled'}${capable ? '' : ' title="Restart CC Relay to author steps by hand."'}>+ Add step</button>
   </div>`;
 }
 
@@ -5237,13 +6515,13 @@ function renderPlannerRunBar(capable, hasProposals = true) {
         </label>
         <button id="planner-queue-selected" class="button primary compact" type="button">Queue selected tasks</button>
       </div>
-      <p class="planner-run-note planner-restart-note">Restart Relay to run this plan wave by wave, add steps by hand, and refine the breakdown. The running backend predates plan runs.</p>
+      <p class="planner-run-note planner-restart-note">Restart CC Relay to run this plan wave by wave, add steps by hand, and refine the breakdown. The running backend predates plan runs.</p>
     </div>`;
   }
   const settings = plannerRunSettings(state.planner.runSessionId);
   const settingsLine = settings && (settings.model || settings.effort)
-    ? `Uses ${escapeHtml(settings.model || 'the default model')}${settings.effort ? ` · ${escapeHtml(settings.effort)}` : ''} from the composer for this ${usesDisposableTerminalPools() ? 'provider' : 'Relay'}.`
-    : `Uses the composer settings for the chosen ${usesDisposableTerminalPools() ? 'provider' : 'Relay'}.`;
+    ? `Uses ${escapeHtml(settings.model || 'the default model')}${settings.effort ? ` · ${escapeHtml(settings.effort)}` : ''} from the composer for this ${usesDisposableTerminalPools() ? 'provider' : 'CC Relay'}.`
+    : `Uses the composer settings for the chosen ${usesDisposableTerminalPools() ? 'provider' : 'CC Relay'}.`;
   return `<div class="planner-run" data-state="${escapeHtml(status.state)}">
     <div class="planner-run-head">
       <span id="planner-run-pill" class="planner-run-pill" data-tone="${escapeHtml(status.tone)}">${escapeHtml(status.label)}</span>
@@ -5255,7 +6533,7 @@ function renderPlannerRunBar(capable, hasProposals = true) {
         <span>${usesDisposableTerminalPools() ? 'Provider' : 'Run on'}</span>
         <select id="planner-run-session">${plannerSessionOptions(state.planner.runSessionId)}</select>
       </label>
-      ${usesDisposableTerminalPools() ? '' : `<label class="planner-run-option"><input id="planner-run-prefer-idle" type="checkbox"${state.planner.runPreferIdle ? ' checked' : ''}> Use an idle Relay when available</label>`}
+      ${usesDisposableTerminalPools() ? '' : `<label class="planner-run-option"><input id="planner-run-prefer-idle" type="checkbox"${state.planner.runPreferIdle ? ' checked' : ''}> Use an idle CC Relay when available</label>`}
       <button id="planner-run-start" class="button primary compact" type="button">Run plan</button>` : ''}
       ${active ? '<button id="planner-run-stop" class="button danger compact" type="button">Stop run</button>' : ''}
     </div>
@@ -5294,7 +6572,7 @@ function renderPlannerRefine(capable) {
    * is the one the server actually enforces, an attempt already in progress.
    */
   const reason = !capable
-    ? 'Restart Relay to refine a breakdown.'
+    ? 'Restart CC Relay to refine a breakdown.'
     : active
       ? 'A breakdown attempt is already running.'
       : '';
@@ -6028,7 +7306,7 @@ elements.plannerDetail.addEventListener('change', (event) => {
     const note = elements.plannerDetail.querySelector('.planner-run-note');
     const settings = plannerRunSettings(event.target.value);
     if (note && settings) {
-      note.textContent = `Uses ${settings.model || 'the default model'}${settings.effort ? ` · ${settings.effort}` : ''} from the composer for this Relay. Nothing runs until you start the run.`;
+      note.textContent = `Uses ${settings.model || 'the default model'}${settings.effort ? ` · ${settings.effort}` : ''} from the composer for this CC Relay. Nothing runs until you start the run.`;
     }
     return;
   }
@@ -6076,6 +7354,7 @@ elements.form.addEventListener('submit', async (event) => {
     return;
   }
   const councilRequested = submissionMode === 'execute' && state.planSettings.enabled;
+  const councilSettings = councilRequested ? syncPlanCouncilSettings() : null;
   let submissionProvider = state.selectedProvider;
   if (submissionMode === 'execute') {
     try {
@@ -6089,7 +7368,7 @@ elements.form.addEventListener('submit', async (event) => {
       return;
     }
     if (councilRequested && submissionProvider !== 'codex') {
-      setComposerAlert('Plan council needs a connected Codex review terminal.');
+      setComposerAlert('Plan council needs a connected Codex council terminal.');
       return;
     }
   }
@@ -6099,8 +7378,8 @@ elements.form.addEventListener('submit', async (event) => {
    * a gate they made the composer unusable for a moment at a time; as a submit-time check
    * they produce an exact message and never block a valid prompt.
    */
-  if (councilRequested && !state.planSettings.reviewerModel) {
-    setComposerAlert('Choose a Codex reviewer model before building the reviewed plan.');
+  if (councilRequested && (!councilSettings?.authorModel || !councilSettings?.reviewerModel)) {
+    setComposerAlert('Choose a model for both Plan council providers before building the reviewed plan.');
     return;
   }
   if (submissionMode === 'turbo') {
@@ -6113,7 +7392,7 @@ elements.form.addEventListener('submit', async (event) => {
     } else {
       const availableWorkers = turboWorkerThreads().length;
       if (availableWorkers < state.turboSettings.workerCount) {
-        setComposerAlert(`Turbo needs ${state.turboSettings.workerCount} worker Relay${state.turboSettings.workerCount === 1 ? '' : 's'} connected in this workspace. ${availableWorkers} ${availableWorkers === 1 ? 'is' : 'are'} available.`);
+        setComposerAlert(`Turbo needs ${state.turboSettings.workerCount} worker CC Relay${state.turboSettings.workerCount === 1 ? '' : 's'} connected in this workspace. ${availableWorkers} ${availableWorkers === 1 ? 'is' : 'are'} available.`);
         return;
       }
     }
@@ -6129,13 +7408,16 @@ elements.form.addEventListener('submit', async (event) => {
   const runNow = state.prioritySubmit;
   state.prioritySubmit = false;
   /*
-   * Idle routing has two implementations. The backend resolves a free Relay at dispatch
+   * Idle routing has two implementations. The backend resolves a free CC Relay at dispatch
    * time when it advertises dispatchIdleRouting, so the browser posts immediately and only
    * declares the stored preference; the server itself forces it off for anything other
    * than a non-priority Execute task. An older backend still needs the client settle loop,
    * which is the one thing that can delay task creation.
    */
   const automaticTerminals = usesDisposableTerminalPools();
+  const retainTerminals = automaticTerminals
+    && state.status?.capabilities?.retainedTerminalSessions === true
+    && state.keepTerminalOpen;
   const dispatchIdleRouting = state.status?.capabilities?.dispatchIdleRouting === true
     && !automaticTerminals;
   const attachments = state.attachments.map((attachment) => ({
@@ -6160,6 +7442,7 @@ elements.form.addEventListener('submit', async (event) => {
     execution,
     planSettings: state.planSettings,
     turboSettings: state.turboSettings,
+    keepTerminalOpen: retainTerminals,
     attachments: state.attachments,
   });
   const submissionId = resolveSubmissionId(
@@ -6192,9 +7475,9 @@ elements.form.addEventListener('submit', async (event) => {
       councilRequested
       && isPlanCouncilTerminalExecutionEnabled()
       && !automaticTerminals
-      && !state.planSettings.authorThreadId
+      && !councilSettings.authorThreadId
     ) {
-      setComposerAlert('Launch and choose a Claude author terminal before building the reviewed plan.');
+      setComposerAlert('Launch and choose a Claude council terminal before building the reviewed plan.');
       return;
     }
 
@@ -6222,19 +7505,15 @@ elements.form.addEventListener('submit', async (event) => {
           ? {
             projectPath: state.activeProjectPath,
             terminalLifecycle: 'disposable',
+            ...terminalRetentionRequest(retainTerminals),
             terminalLayout: terminalLayout(),
           }
           : { threadId: routedThreadId }),
         ...(isPlanCouncilTerminalExecutionEnabled() && !automaticTerminals
-          ? { authorThreadId: state.planSettings.authorThreadId }
+          ? { authorThreadId: councilSettings.authorThreadId }
           : {}),
         prompt: formData.get('prompt'),
-        authorProvider: 'claude',
-        authorModel: state.planSettings.authorModel,
-        authorEffort: state.planSettings.authorEffort,
-        reviewerProvider: 'codex',
-        reviewerModel: state.planSettings.reviewerModel,
-        reviewerEffort: state.planSettings.reviewerEffort || null,
+        ...planCouncilRequest(councilSettings, planCouncilCatalogs()),
         attachments,
         runNow,
       }
@@ -6245,6 +7524,7 @@ elements.form.addEventListener('submit', async (event) => {
             ? {
               projectPath: state.activeProjectPath,
               terminalLifecycle: 'disposable',
+              ...terminalRetentionRequest(retainTerminals),
               terminalLayout: terminalLayout(),
             }
             : { threadId: routedThreadId }),
@@ -6265,6 +7545,7 @@ elements.form.addEventListener('submit', async (event) => {
           ? {
             projectPath: state.activeProjectPath,
             terminalLifecycle: 'disposable',
+            ...terminalRetentionRequest(retainTerminals),
             terminalLayout: terminalLayout(),
           }
           : { threadId: routedThreadId }),
@@ -6284,7 +7565,7 @@ elements.form.addEventListener('submit', async (event) => {
       timeoutMs: TASK_SUBMIT_TIMEOUT_MS,
       // The abort stops the browser waiting, not the server, so the task may well exist.
       // Resending is nonetheless safe because the retained submissionId resolves to it.
-      timeoutMessage: (seconds) => `Relay did not answer within ${seconds} seconds. The task may still have been created. Sending it again is safe and will not create a duplicate.`,
+      timeoutMessage: (seconds) => `CC Relay did not answer within ${seconds} seconds. The task may still have been created. Sending it again is safe and will not create a duplicate.`,
     });
     createdTask = body.task;
     duplicateSubmission = body.duplicateSubmission === true;
@@ -6315,7 +7596,6 @@ elements.form.addEventListener('submit', async (event) => {
   if (duplicateSubmission && isFinishedTaskStatus(createdTask.status)) {
     state.pendingSubmission = null;
     state.taskView = 'queue';
-    state.taskScope = 'workspace';
     state.selectedTaskId = createdTask.id;
     localStorage.setItem('relay.taskView', state.taskView);
     setComposerAlert(
@@ -6345,7 +7625,6 @@ elements.form.addEventListener('submit', async (event) => {
     }
   }
   state.taskView = 'queue';
-  state.taskScope = 'workspace';
   state.selectedTaskId = createdTask.id;
   state.pendingSubmission = null;
   state.parallelTaskIds.clear();
@@ -6390,6 +7669,67 @@ elements.pauseButton.addEventListener('click', async () => {
   }
 });
 
+elements.standupButton.addEventListener('click', openStandup);
+elements.clearTaskNotificationsButton.addEventListener('click', () => {
+  const cleared = state.projectCompletionNotifications.acknowledgeProject(state.activeProjectPath);
+  if (!cleared) return;
+  renderProjects();
+  renderTasks();
+  elements.queueSummary.textContent = `${cleared} task${cleared === 1 ? '' : 's'} marked as viewed`;
+});
+elements.importTasksButton.addEventListener('click', async () => {
+  if (state.importingTasks) return;
+  state.importingTasks = true;
+  elements.taskImportStatus.hidden = false;
+  elements.taskImportStatus.dataset.state = 'working';
+  elements.taskImportStatus.textContent = 'Importing finished localhost tasks.';
+  renderTasks();
+  try {
+    const result = await api('/api/tasks/import-localhost', {
+      method: 'POST',
+      body: '{}',
+      timeoutMs: 60_000,
+    });
+    await load({ fresh: true });
+    elements.taskImportStatus.dataset.state = 'success';
+    elements.taskImportStatus.textContent = result.imported > 0
+      ? `Imported ${result.imported} task${result.imported === 1 ? '' : 's'}. ${result.updated} existing import${result.updated === 1 ? '' : 's'} refreshed.`
+      : `Localhost tasks are up to date. ${result.updated} import${result.updated === 1 ? '' : 's'} refreshed.`;
+    if (result.skippedActive > 0) {
+      elements.taskImportStatus.textContent += ` ${result.skippedActive} active task${result.skippedActive === 1 ? '' : 's'} stayed in localhost.`;
+    }
+  } catch (error) {
+    elements.taskImportStatus.dataset.state = 'error';
+    elements.taskImportStatus.textContent = error.message;
+  } finally {
+    state.importingTasks = false;
+    renderTasks();
+  }
+});
+elements.standupClose.addEventListener('click', closeStandup);
+elements.standupCancel.addEventListener('click', closeStandup);
+elements.standupGenerate.addEventListener('click', () => {
+  void generateStandup();
+});
+elements.standupCopy.addEventListener('click', copyStandup);
+elements.standupDate.addEventListener('change', () => {
+  state.standupDate = elements.standupDate.value;
+  void generateStandup();
+});
+elements.standupLength.addEventListener('change', () => {
+  state.standupLength = ['short', 'standard', 'detailed'].includes(elements.standupLength.value)
+    ? elements.standupLength.value
+    : 'standard';
+  localStorage.setItem('relay.standupLength', state.standupLength);
+  resetStandupCopyFeedback();
+  resetStandupOutput();
+  renderStandup();
+});
+elements.standupModal.addEventListener('click', (event) => {
+  if (event.target === elements.standupModal) closeStandup();
+});
+elements.standupModal.addEventListener('close', resetStandupCopyFeedback);
+
 for (const button of elements.taskViewButtons) {
   button.addEventListener('click', () => {
     state.taskView = button.dataset.taskView;
@@ -6423,20 +7763,6 @@ elements.historyNext.addEventListener('click', () => {
   renderStatus();
   renderTasks();
 });
-elements.taskScopeButton.addEventListener('click', () => {
-  const scopes = state.selectedThreadId
-    ? ['relay', 'workspace']
-    : ['workspace'];
-  state.taskScope = scopes[(scopes.indexOf(state.taskScope) + 1) % scopes.length];
-  state.selectedTaskId = null;
-  state.parallelTaskIds.clear();
-  elements.taskDetail.hidden = true;
-  elements.emptyDetail.hidden = false;
-  renderTaskScope();
-  renderStatus();
-  renderTasks();
-});
-
 function constrainPanelWidths(composer, detail) {
   const available = Math.max(elements.workspace.clientWidth - 64, 0);
   const minimumQueue = 320;
@@ -6560,7 +7886,19 @@ elements.parallelClearButton.addEventListener('click', () => {
 elements.parallelRunButton.addEventListener('click', runParallelBatch);
 elements.preferIdleTerminal.addEventListener('change', () => {
   state.preferIdleTerminal = elements.preferIdleTerminal.checked;
-  localStorage.setItem('relay.preferIdleTerminal', String(state.preferIdleTerminal));
+  state.terminalSettings = {
+    ...state.terminalSettings,
+    preferIdleTerminal: state.preferIdleTerminal,
+  };
+  void saveProjectTerminalSettings();
+});
+elements.keepTerminalOpen.addEventListener('change', () => {
+  state.keepTerminalOpen = elements.keepTerminalOpen.checked;
+  state.terminalSettings = {
+    ...state.terminalSettings,
+    keepTerminalOpen: state.keepTerminalOpen,
+  };
+  void saveProjectTerminalSettings();
 });
 /*
  * The instance steppers live inside the provider tabs, which sit inside the task form. Enter
@@ -6590,6 +7928,10 @@ elements.projectList.addEventListener('click', async (event) => {
     if (project) selectProject(project.path);
     return;
   }
+  if (button.dataset.projectAction === 'color') {
+    openProjectColorPicker(project);
+    return;
+  }
   button.disabled = true;
   try {
     if (button.dataset.projectAction === 'delete') {
@@ -6611,6 +7953,30 @@ elements.projectList.addEventListener('keydown', (event) => {
   const project = state.projects.find((item) => item.id === Number(chip.dataset.projectId));
   if (project) selectProject(project.path);
 });
+elements.projectColorPresetList.addEventListener('click', (event) => {
+  const preset = event.target.closest('[data-project-color]');
+  if (!preset || state.projectColorSaving) return;
+  state.projectColorDraft = normalizeProjectColor(preset.dataset.projectColor);
+  renderProjectColorPicker();
+});
+elements.projectColorCustomInput.addEventListener('input', () => {
+  if (state.projectColorSaving) return;
+  state.projectColorDraft = normalizeProjectColor(elements.projectColorCustomInput.value);
+  renderProjectColorPicker();
+});
+elements.projectColorClose.addEventListener('click', closeProjectColorPicker);
+elements.projectColorCancel.addEventListener('click', closeProjectColorPicker);
+elements.projectColorSave.addEventListener('click', saveProjectColor);
+elements.projectColorModal.addEventListener('cancel', (event) => {
+  if (state.projectColorSaving) event.preventDefault();
+  else {
+    state.projectColorTargetId = null;
+    state.projectColorDraft = null;
+  }
+});
+elements.projectColorModal.addEventListener('click', (event) => {
+  if (event.target === elements.projectColorModal) closeProjectColorPicker();
+});
 for (const tab of elements.providerTabs) {
   tab.addEventListener('click', () => selectProvider(tab.dataset.provider, { focus: true }));
   tab.addEventListener('keydown', (event) => {
@@ -6625,8 +7991,9 @@ elements.modelSelect.addEventListener('input', () => {
 });
 elements.effortSelect.addEventListener('input', () => {
   const values = JSON.parse(elements.effortSelect.dataset.values || '[]');
-  updateSelectedExecution({ effort: values[Number(elements.effortSelect.value)] || '' });
-  renderExecutionControls();
+  const effort = values[Number(elements.effortSelect.value)] || '';
+  updateSelectedExecution({ effort });
+  renderEffortSelection(selectedModel()?.supportedReasoningEfforts || [], effort);
 });
 elements.attachmentInput.addEventListener('change', async () => {
   await addImageFiles(elements.attachmentInput.files || []);
@@ -6657,17 +8024,31 @@ elements.planAuthorTerminal.addEventListener('change', () => {
   updateSubmitState();
 });
 elements.planAuthorModel.addEventListener('input', () => {
-  state.planSettings.authorModel = elements.planAuthorModel.value;
+  state.planSettings.claudeModel = elements.planAuthorModel.value;
+  state.planSettings.claudeEffort = 'high';
+  renderPlanControls();
+  updateSubmitState();
+});
+elements.planAuthorEffort.addEventListener('change', () => {
+  state.planSettings.claudeEffort = elements.planAuthorEffort.value;
   renderPlanControls();
 });
+for (const button of elements.planCouncilOrderButtons) {
+  button.addEventListener('click', () => {
+    state.planSettings.councilOrder = button.dataset.planCouncilFirst === 'codex'
+      ? ['codex', 'claude']
+      : ['claude', 'codex'];
+    renderThreads();
+  });
+}
 elements.planReviewerModel.addEventListener('input', () => {
-  state.planSettings.reviewerModel = elements.planReviewerModel.value;
-  state.planSettings.reviewerEffort = 'high';
+  state.planSettings.codexModel = elements.planReviewerModel.value;
+  state.planSettings.codexEffort = 'high';
   renderPlanControls();
   updateSubmitState();
 });
 elements.planReviewerEffort.addEventListener('change', () => {
-  state.planSettings.reviewerEffort = elements.planReviewerEffort.value;
+  state.planSettings.codexEffort = elements.planReviewerEffort.value;
   renderPlanControls();
 });
 elements.turboPlannerModel.addEventListener('input', () => {
@@ -6837,6 +8218,12 @@ elements.taskEditSave.addEventListener('click', saveTaskEdit);
 elements.taskEditProvider.addEventListener('change', () => {
   if (!['codex', 'claude'].includes(elements.taskEditProvider.value)) return;
   state.taskEditProvider = elements.taskEditProvider.value;
+  const settings = state.taskEditSettings?.[state.taskEditProvider];
+  const models = state.modelCatalogs[state.taskEditProvider] || [];
+  const model = models.find((item) => item.model === settings?.model)
+    || models.find((item) => item.isDefault)
+    || models[0];
+  if (settings) settings.effort = defaultEffortForModel(model);
   state.taskEditExecutionDirty = true;
   renderTaskEditExecution();
 });
@@ -6844,6 +8231,11 @@ elements.taskEditModel.addEventListener('change', () => {
   const settings = state.taskEditSettings?.[state.taskEditProvider];
   if (!settings) return;
   settings.model = elements.taskEditModel.value;
+  const models = state.modelCatalogs[state.taskEditProvider] || [];
+  const model = models.find((item) => item.model === settings.model)
+    || models.find((item) => item.isDefault)
+    || models[0];
+  settings.effort = defaultEffortForModel(model);
   state.taskEditExecutionDirty = true;
   renderTaskEditExecution();
 });
@@ -6923,6 +8315,18 @@ async function launchTerminalProvider(provider, button) {
 elements.launchCodexButton.addEventListener('click', () => launchTerminalProvider('codex', elements.launchCodexButton));
 elements.launchClaudeButton.addEventListener('click', () => launchTerminalProvider('claude', elements.launchClaudeButton));
 elements.closeTerminalButton.addEventListener('click', closeSelectedTerminal);
+elements.sessionKillButton.addEventListener('click', killSessionTerminal);
+elements.themeToggle.addEventListener('click', () => {
+  setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
+});
+elements.headerPositionToggle.addEventListener('click', () => {
+  setHeaderPosition(currentHeaderPosition() === 'bottom' ? 'top' : 'bottom');
+});
+
+if ('ResizeObserver' in window) {
+  new ResizeObserver(syncHeaderHeight).observe(elements.appHeader);
+}
+syncHeaderHeight();
 
 elements.headerRunningTasks.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-running-task-id]');
@@ -6937,9 +8341,7 @@ elements.headerRunningTasks.addEventListener('click', async (event) => {
     selectProject(project.path);
   }
   state.taskView = 'queue';
-  state.taskScope = 'workspace';
   localStorage.setItem('relay.taskView', state.taskView);
-  renderTaskScope();
   renderStatus();
   renderTasks();
   try {
@@ -7016,7 +8418,13 @@ elements.copyEventsButton.addEventListener('click', async () => {
 });
 
 for (const button of elements.contentCopyButtons) {
-  button.addEventListener('click', () => copyDetailContent(button));
+  button.addEventListener('click', (event) => {
+    if (button.closest('summary')) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+    copyDetailContent(button);
+  });
 }
 
 elements.followEventsButton.addEventListener('click', () => {

@@ -25,7 +25,7 @@ A plan can accumulate several breakdown attempts; the newest row is the plan's c
 
 ## Breakdown contract v2
 
-`buildBreakdownPrompt` asks for `{"tasks":[{"id","title","prompt","dependsOn":[]}]}` and tells the model that independence is load-bearing, because Relay really does run independent steps at the same time in different sessions.
+`buildBreakdownPrompt` asks for `{"tasks":[{"id","title","prompt","dependsOn":[]}]}` and tells the model that independence is load-bearing, because CC Relay really does run independent steps at the same time in different sessions.
 
 `parseBreakdownResult` stays tolerant and never invents work:
 
@@ -94,7 +94,7 @@ Deleting a plan calls `release()` first, which stops **every** run of that plan 
 
 ### Restart safety
 
-`server.listen` calls `queue.start()` and then `planRuns.reconcileAll()`, in that order. `recoverInterruptedTasks()` marks tasks that died with the server as `interrupted` without emitting any queue change, so nothing else would tell a run its steps are gone. Reconciling after recovery turns each interrupted step into failed-no-retry, blocks its dependents, and lets the user retry. A wave that completed while Relay was down is enqueued on that same boot pass.
+`server.listen` calls `queue.start()` and then `planRuns.reconcileAll()`, in that order. `recoverInterruptedTasks()` marks tasks that died with the server as `interrupted` without emitting any queue change, so nothing else would tell a run its steps are gone. Reconciling after recovery turns each interrupted step into failed-no-retry, blocks its dependents, and lets the user retry. A wave that completed while CC Relay was down is enqueued on that same boot pass.
 
 `GET /api/plans/:id` also reconciles an active run. That is a repair path, idempotent and guarded by the deterministic submission id, and it is the same role the visible-page refresh plays for the task list.
 
@@ -107,7 +107,7 @@ A breakdown runs as an ordinary `mode: 'breakdown'` queue task on the chosen pro
 
 Reserving the running breakdown's own session in `reservedThreadIds()` is the load-bearing half of that change: without it, dropping exclusivity would let a second task start on the session a breakdown is already using.
 
-The exclusive barriers themselves are untouched. Plan council and Turbo are still non-single-session, still hold `sharedExclusiveAvailable`, and still block their own project while active. `test/breakdown-scheduling.test.mjs` pins both directions: a breakdown starts beside a council in another project, and two councils still cannot run at once.
+Plan council and Turbo remain non-single-session and still hold `sharedExclusiveAvailable`, so only one such workflow starts globally. Current disposable Plan councils have one additional capacity-managed exception: they may share their own project with disposable single-session work when all provider requirements fit. Legacy persistent councils and Turbo retain the project-draining barrier. `test/breakdown-scheduling.test.mjs` pins the legacy behavior, while `test/plan-council-capacity-scheduling.test.mjs` pins current pool behavior.
 
 ## Parse tolerantly, never invent tasks
 
@@ -116,7 +116,7 @@ When the breakdown task settles, `syncPlanBreakdown` in `src/server.mjs` (hooked
 > [!important]
 > A breakdown task uses the ordinary automatic-retry path, so its status can legitimately move `failed -> running -> complete`. `breakdownUpdateForTask` is therefore a reconciler, not a one-shot finalizer: it computes the desired state on every call and writes proposals **only on the transition into `complete`**. This self-heals a transient failure and never overwrites proposals the user has already edited, removed, or reordered. Regression coverage lives in `test/plan-breakdown.test.mjs`.
 
-If nothing parseable comes back, the breakdown completes with zero proposals and `parsed = 0`; the raw response is surfaced in the Planner instead of creating any task. Relay never creates tasks from unparseable output.
+If nothing parseable comes back, the breakdown completes with zero proposals and `parsed = 0`; the raw response is surfaced in the Planner instead of creating any task. CC Relay never creates tasks from unparseable output.
 
 ### Deleting a breakdown task is allowed and fails the attempt
 
@@ -202,7 +202,7 @@ A failed step shows its error excerpt and an **Open task #n** action that closes
 
 ### Run controls
 
-The run bar offers a provider picker in automatic mode. It adds no second model picker: model and effort come from the composer's per-provider memory and are stated in plain text. The legacy path keeps its session picker and **Use an idle Relay when available** toggle. Consent stays absolute, nothing executes until **Run plan** is pressed. **Stop run** is offered only while the run is running and its copy states that tasks already running continue and stay cancellable from the queue.
+The run bar offers a provider picker in automatic mode. It adds no second model picker: model and effort come from the composer's per-provider memory and are stated in plain text. The legacy path keeps its session picker and **Use an idle CC Relay when available** toggle. Consent stays absolute, nothing executes until **Run plan** is pressed. **Stop run** is offered only while the run is running and its copy states that tasks already running continue and stay cancellable from the queue.
 
 > [!important]
 > Run plan stays enabled for a `complete`, `failed`, or `stopped` run, but is disabled while the previous run still has a step in `queued`, `running`, or `retrying`. That is the client half of the stop-then-rerun double-execution guard: per-step submission ids are keyed on the run id, so a second run mints new tasks for the same prompts and the queue's idempotency guard cannot collapse them. The button reads **Previous run draining** with a live readable count (`runStartBlockReason`), which counts down on its own because the run counts keep updating during the drain. The server `409` remains the backstop and its message is rendered in the planner status line, never swallowed.
@@ -222,7 +222,7 @@ Refinement is a feedback textarea plus **Refine breakdown** with a history note 
 > Refining is deliberately allowed **while a run is in flight**. The run holds its own step snapshot, so a new attempt cannot corrupt it. An earlier draft disabled Refine during a run, which created a one-way door: recovering from a failed step mid-run would have required Stop, which is latched and cannot be resumed. The only bar is the one the server actually enforces, an attempt already in progress.
 
 > [!important]
-> Graceful degradation: the user's running backend can predate this API. When `capabilities.planner` is absent the modal shows **Restart Relay to use the Planner**; when `capabilities.plannerV2` is absent the v1 flow stays fully usable, **Queue selected tasks** remains the primary action, dependency pickers are hidden, and Add step and Refine are disabled behind the standing "Restart Relay to ..." convention.
+> Graceful degradation: the user's running backend can predate this API. When `capabilities.planner` is absent the modal shows **Restart CC Relay to use the Planner**; when `capabilities.plannerV2` is absent the v1 flow stays fully usable, **Queue selected tasks** remains the primary action, dependency pickers are hidden, and Add step and Refine are disabled behind the standing "Restart CC Relay to ..." convention.
 
 ## Review decisions
 

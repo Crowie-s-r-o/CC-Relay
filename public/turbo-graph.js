@@ -125,7 +125,7 @@ function workerEntries(plan) {
   }));
 }
 
-/** Resolve a graph package to its stored worker identity without guessing a Relay number. */
+/** Resolve a graph package to its stored worker identity without guessing a CC Relay number. */
 export function resolvePackageWorker(packageItem, plan = null) {
   const item = packageItem && typeof packageItem === 'object' ? packageItem : {};
   const workers = workerEntries(plan);

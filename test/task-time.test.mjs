@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { formatElapsedDuration, taskDurationLabel } from '../public/task-time.js';
+import { formatElapsedDuration, taskDurationLabel, taskLifecycleDates } from '../public/task-time.js';
+
+const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 
 test('task duration formats live and completed execution time', () => {
   const start = '2026-07-16T10:00:00.000Z';
@@ -18,4 +21,37 @@ test('task duration labels distinguish running, finished, and waiting tasks', ()
     finished_at: '2026-07-16T10:01:30.000Z',
   }, now), 'Took 1m 30s');
   assert.equal(taskDurationLabel({ status: 'queued', started_at: null }, now), 'Waiting to start');
+});
+
+test('task lifecycle dates always expose started and completed fields', () => {
+  assert.deepEqual(taskLifecycleDates({
+    started_at: '2026-07-30T08:00:00.000Z',
+    finished_at: '2026-07-30T08:05:00.000Z',
+  }), [
+    {
+      key: 'started',
+      label: 'Started',
+      value: '2026-07-30T08:00:00.000Z',
+      pendingLabel: 'Not started',
+    },
+    {
+      key: 'completed',
+      label: 'Completed',
+      value: '2026-07-30T08:05:00.000Z',
+      pendingLabel: 'Not completed',
+    },
+  ]);
+
+  assert.deepEqual(
+    taskLifecycleDates({ started_at: null, finished_at: null }).map(({ value, pendingLabel }) => ({ value, pendingLabel })),
+    [
+      { value: null, pendingLabel: 'Not started' },
+      { value: null, pendingLabel: 'Not completed' },
+    ],
+  );
+});
+
+test('task cards and Task Activity both render lifecycle dates', () => {
+  assert.ok(app.includes('<span class="task-footer-dates">${taskLifecycleDatesMarkup(task)}</span>'));
+  assert.ok(app.includes('<span class="detail-lifecycle-dates">${taskLifecycleDatesMarkup(task, formatTime)}</span>'));
 });

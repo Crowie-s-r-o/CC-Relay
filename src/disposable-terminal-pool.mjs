@@ -1,4 +1,77 @@
+import { readdirSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { resolveClaudeTranscriptPath } from './claude-transcript-tail.mjs';
+import { claudeFirstLaunchSettings } from './claude-launch-settings.mjs';
+
 const PROVIDERS = ['codex', 'claude'];
+
+export function inspectClaudeConversation(repoPath, sessionId, {
+  resolveTranscriptPath = resolveClaudeTranscriptPath,
+  stat = statSync,
+} = {}) {
+  const transcriptPath = resolveTranscriptPath(repoPath, sessionId);
+  try {
+    return stat(transcriptPath).size > 0 ? 'present' : 'missing';
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'missing' : 'unknown';
+  }
+}
+
+function codexRolloutPaths(threadId, {
+  codexHome = join(homedir(), '.codex'),
+  readDirectory = readdirSync,
+} = {}) {
+  const paths = [];
+  const endings = [
+    `-${threadId}.jsonl`,
+    `-${threadId}.jsonl.zst`,
+    `-${threadId}.json`,
+  ];
+  for (const root of [
+    join(codexHome, 'sessions'),
+    join(codexHome, 'archived_sessions'),
+  ]) {
+    let entries;
+    try {
+      entries = readDirectory(root, { recursive: true, withFileTypes: true });
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !endings.some((ending) => entry.name.endsWith(ending))) continue;
+      paths.push(join(entry.parentPath || entry.path || root, entry.name));
+    }
+  }
+  return paths;
+}
+
+export function inspectCodexConversation(threadId, {
+  codexHome,
+  readDirectory,
+  findRollouts = null,
+  stat = statSync,
+} = {}) {
+  let rolloutPaths;
+  try {
+    rolloutPaths = findRollouts
+      ? findRollouts(threadId)
+      : codexRolloutPaths(threadId, { codexHome, readDirectory });
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'missing' : 'unknown';
+  }
+  let emptyRollout = false;
+  for (const rolloutPath of rolloutPaths) {
+    try {
+      if (stat(rolloutPath).size > 0) return 'present';
+      emptyRollout = true;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return 'unknown';
+    }
+  }
+  return emptyRollout || rolloutPaths.length === 0 ? 'missing' : 'unknown';
+}
 
 export function isDisposableTerminalTask(task) {
   return task?.terminal_lifecycle === 'disposable';
@@ -25,7 +98,7 @@ export function disposableTerminalRequirements(task) {
 
 function cancelledError() {
   return Object.assign(
-    new Error('Task cancelled while Relay was preparing its terminal.'),
+    new Error('Task cancelled while CC Relay was preparing its terminal.'),
     { cancelled: true, retryable: false },
   );
 }
@@ -37,12 +110,16 @@ export class DisposableTerminalPool {
     coordinator,
     launcher,
     diagnostic = () => {},
+    claudeConversationState = inspectClaudeConversation,
+    codexConversationState = inspectCodexConversation,
   }) {
     this.database = database;
     this.artifacts = artifacts;
     this.coordinator = coordinator;
     this.launcher = launcher;
     this.diagnostic = diagnostic;
+    this.claudeConversationState = claudeConversationState;
+    this.codexConversationState = codexConversationState;
     this.allocations = new Map();
   }
 
@@ -162,13 +239,68 @@ export class DisposableTerminalPool {
     return allocation;
   }
 
-  async launch(task, provider, resumeThreadId, isCancelled) {
+  async launch(task, provider, resumeThreadId, isCancelled, { claudeLaunchSettings = null } = {}) {
     if (isCancelled()) throw cancelledError();
+    let launchOptions = { resumeThreadId: resumeThreadId || null };
+    if (provider === 'claude' && resumeThreadId && task.sessionFollowUp !== true) {
+      let conversationState = 'unknown';
+      try {
+        conversationState = this.claudeConversationState(task.repo_path, resumeThreadId);
+      } catch (error) {
+        this.diagnostic('terminal.pool.claude_session_inspection_failed', {
+          taskId: task.id,
+          threadId: resumeThreadId,
+          repoPath: task.repo_path,
+          error: error.message,
+        });
+      }
+      if (conversationState === 'missing') {
+        launchOptions = { initializeThreadId: resumeThreadId };
+        this.diagnostic('terminal.pool.claude_session_initializing', {
+          taskId: task.id,
+          threadId: resumeThreadId,
+          repoPath: task.repo_path,
+        });
+        this.database.addEvent(
+          task.id,
+          'queue',
+          'The saved Claude session has no conversation transcript, so CC Relay is reopening its UUID for the first turn.',
+        );
+      }
+    }
+    if (provider === 'codex' && resumeThreadId && task.sessionFollowUp !== true) {
+      let conversationState = 'unknown';
+      try {
+        conversationState = this.codexConversationState(resumeThreadId);
+      } catch (error) {
+        this.diagnostic('terminal.pool.codex_thread_inspection_failed', {
+          taskId: task.id,
+          threadId: resumeThreadId,
+          repoPath: task.repo_path,
+          error: error.message,
+        });
+      }
+      if (conversationState === 'missing') {
+        launchOptions = { resumeThreadId: null };
+        this.diagnostic('terminal.pool.codex_thread_starting_fresh', {
+          taskId: task.id,
+          previousThreadId: resumeThreadId,
+          repoPath: task.repo_path,
+        });
+        this.database.addEvent(
+          task.id,
+          'queue',
+          'The saved Codex thread has no rollout, so CC Relay is opening a fresh conversation for this retry.',
+        );
+      }
+    }
     const launched = await this.coordinator.launch(
       task.repo_path,
       provider,
       task.terminal_layout,
-      { resumeThreadId: resumeThreadId || null },
+      // Spread last so the fresh-versus-resume decision above stays authoritative while the
+      // task's model and effort ride along on whichever session argument it chose.
+      { ...launchOptions, ...(claudeLaunchSettings ? { claudeLaunchSettings } : {}) },
     );
     if (!launched.threadId) {
       this.rememberAllocation(task.id, {
@@ -186,7 +318,7 @@ export class DisposableTerminalPool {
         error: launched.bindingError || null,
       });
       const message = launched.bindingError
-        || `The ${provider === 'codex' ? 'Codex' : 'Claude'} terminal did not connect to Relay in time.`;
+        || `The ${provider === 'codex' ? 'Codex' : 'Claude'} terminal did not connect to CC Relay in time.`;
       throw Object.assign(new Error(message), {
         // A rejected identity binding is not transient. A resumed conversation timeout also
         // requires inspection because the CLI may already have loaded that conversation.
@@ -204,7 +336,7 @@ export class DisposableTerminalPool {
         provider,
         cwd: task.repo_path,
         title: `${provider === 'codex' ? 'Codex' : 'Claude'} task terminal`,
-        source: 'Relay managed terminal',
+        source: 'CC Relay managed terminal',
       },
     };
     this.rememberAllocation(task.id, allocation);
@@ -223,19 +355,21 @@ export class DisposableTerminalPool {
     this.database.addEvent(task.id, 'queue', 'Launching disposable terminal instances for this task.');
     try {
       if (task.mode === 'plan') {
-        const author = await this.launch(task, 'claude', task.author_thread_id, isCancelled);
-        const reviewer = await this.launch(task, 'codex', task.thread_id, isCancelled);
+        // These legacy columns now identify provider terminals, not fixed roles:
+        // author_thread_id stores Claude and thread_id stores Codex for both council orders.
+        const claude = await this.launch(task, 'claude', task.author_thread_id, isCancelled);
+        const codex = await this.launch(task, 'codex', task.thread_id, isCancelled);
         const updated = this.database.updateTask(task.id, {
-          thread_id: reviewer.threadId,
-          thread_name: reviewer.thread.title,
-          thread_source: reviewer.thread.source,
-          author_thread_id: author.threadId,
-          author_thread_name: author.thread.title,
-          author_thread_source: author.thread.source,
+          thread_id: codex.threadId,
+          thread_name: codex.thread.title,
+          thread_source: codex.thread.source,
+          author_thread_id: claude.threadId,
+          author_thread_name: claude.thread.title,
+          author_thread_source: claude.thread.source,
         });
         this.artifacts.updateTaskAssignment(updated);
         this.artifacts.updateCouncilAuthorAssignment(updated);
-        this.database.addEvent(task.id, 'queue', 'Claude author and Codex reviewer terminals are ready.');
+        this.database.addEvent(task.id, 'queue', 'Claude and Codex council terminals are ready.');
         return updated;
       }
 
@@ -287,7 +421,16 @@ export class DisposableTerminalPool {
       }
 
       const provider = task.provider;
-      const terminal = await this.launch(task, provider, task.thread_id, isCancelled);
+      // Direct Execute is the one path where the pool and the executor read the SAME stored task
+      // row through the SAME function, so the launch command can carry the turn's model and
+      // effort and the executor can prove it does not need to restart the process. Plan council
+      // and Turbo synthesize their stage settings at run time and keep the relaunch path.
+      const claudeLaunchSettings = provider === 'claude'
+        ? claudeFirstLaunchSettings(task)
+        : null;
+      const terminal = await this.launch(task, provider, task.thread_id, isCancelled, {
+        claudeLaunchSettings,
+      });
       const updated = this.database.updateTask(task.id, {
         thread_id: terminal.threadId,
         thread_name: terminal.thread.title,
@@ -312,6 +455,18 @@ export class DisposableTerminalPool {
     let closed = 0;
     const retained = [];
     for (const allocation of [...allocations].reverse()) {
+      if (!allocation.launchId && !allocation.threadId) {
+        // Nothing exact to close. Reporting this as closed would overstate cleanup, and
+        // closing by a null conversation ID used to match whichever owned launch was still
+        // binding, which could destroy another task's terminal. Drop the accounting entry
+        // only, because it never held a native handle.
+        this.diagnostic('terminal.pool.cleanup_skipped', {
+          taskId,
+          provider: allocation.provider,
+          reason: 'no-exact-native-target',
+        });
+        continue;
+      }
       try {
         if (allocation.launchId && typeof this.launcher.closeOwnedLaunch === 'function') {
           await this.launcher.closeOwnedLaunch(allocation.launchId);
@@ -333,7 +488,7 @@ export class DisposableTerminalPool {
           this.database.addEvent(
             taskId,
             'system',
-            `Relay could not close one disposable ${allocation.provider === 'codex' ? 'Codex' : 'Claude'} terminal: ${error.message}`,
+            `CC Relay could not close one disposable ${allocation.provider === 'codex' ? 'Codex' : 'Claude'} terminal: ${error.message}`,
           );
         }
       }
@@ -348,5 +503,48 @@ export class DisposableTerminalPool {
       );
     }
     return { closed, failed: retained.length };
+  }
+
+  async retain(taskId) {
+    const allocations = this.allocations.get(taskId) || [];
+    if (allocations.length === 0) return { retained: 0, failed: 0 };
+    let retainedCount = 0;
+    const failed = [];
+    for (const allocation of allocations) {
+      try {
+        if (!allocation.launchId || typeof this.launcher.retainOwnedLaunch !== 'function') {
+          throw new Error('CC Relay cannot promote this terminal launch to a retained session.');
+        }
+        await this.launcher.retainOwnedLaunch(allocation.launchId);
+        retainedCount += 1;
+      } catch (error) {
+        failed.push(allocation);
+        this.diagnostic('terminal.pool.retain_failed', {
+          taskId,
+          provider: allocation.provider,
+          launchId: allocation.launchId,
+          threadId: allocation.threadId,
+          error: error.message,
+        });
+        const task = this.database.getTask(taskId);
+        if (task) {
+          this.database.addEvent(
+            taskId,
+            'system',
+            `CC Relay could not keep one ${allocation.provider === 'codex' ? 'Codex' : 'Claude'} terminal open: ${error.message}`,
+          );
+        }
+      }
+    }
+    if (failed.length > 0) this.allocations.set(taskId, failed);
+    else this.allocations.delete(taskId);
+    if (retainedCount > 0 && this.database.getTask(taskId)) {
+      this.database.addEvent(
+        taskId,
+        'queue',
+        `${retainedCount} terminal instance${retainedCount === 1 ? '' : 's'} kept open for more work.`,
+      );
+    }
+    return { retained: retainedCount, failed: failed.length };
   }
 }

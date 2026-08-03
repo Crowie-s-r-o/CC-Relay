@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { RelayRunner } from '../src/relay-runner.mjs';
 
-test('Relay runner routes execution to the selected AI provider', async () => {
+test('CC Relay runner routes execution to the selected AI provider', async () => {
   const calls = [];
   const runner = new RelayRunner({
     codex: {
@@ -38,7 +38,7 @@ test('Relay runner routes execution to the selected AI provider', async () => {
   assert.deepEqual(calls, ['claude', 'codex', 'plan', 'turbo']);
 });
 
-test('Relay runner exposes Turbo preparation separately and scopes cancellation', async () => {
+test('CC Relay runner exposes Turbo preparation separately and scopes cancellation', async () => {
   const calls = [];
   let release;
   const turbo = {

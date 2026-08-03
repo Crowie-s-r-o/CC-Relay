@@ -7,6 +7,7 @@ import {
   consumeClaudeStreamMessage,
   parseAgentTaskNotification,
 } from '../src/claude-execution-runner.mjs';
+import { RELAY_NON_INTERACTIVE_INSTRUCTION } from '../src/relay-prompt.mjs';
 
 // Record shapes below are copied from a real team session transcript
 // (~/.claude/projects/-Users-patrikkelemen-WebstormProjects-documi-ai/3511cec2-....jsonl),
@@ -125,6 +126,38 @@ test('a sub-agent that answers inline is not marked backgrounded', () => {
   assert.equal(completed.event.item.backgrounded, false);
   assert.equal(completed.event.item.agentId, undefined);
   assert.match(completed.message, /finished/i);
+});
+
+test('a synchronous sub-agent that quotes the launch phrase is still not backgrounded', () => {
+  // The record states the outcome, so the report text cannot override it. A sub-agent that
+  // spawned background work of its own plausibly repeats Claude's stock launch sentence.
+  const context = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, context);
+  const [completed] = consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: {
+      isAsync: false,
+      status: 'completed',
+      agentId: 'a21d93d8cd05ec4fb',
+      description: 'dev-2: standby core developer',
+    },
+    message: {
+      content: [{
+        tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+        type: 'tool_result',
+        content: [{
+          type: 'text',
+          text: 'I started the build and the agent is working in the background, so I waited for it.\n'
+            + 'Its log repeated "Async agent launched successfully." twice before finishing.',
+        }],
+      }],
+    },
+  }, context);
+
+  assert.equal(completed.event.item.backgrounded, false);
+  assert.equal(completed.event.item.agentId, 'a21d93d8cd05ec4fb');
+  assert.match(completed.message, /finished/i);
+  assert.doesNotMatch(completed.message, /background/i);
 });
 
 test('other Claude tools keep their existing item shape', () => {
@@ -373,7 +406,7 @@ test('Claude execution rejects overlapping work on the same terminal session', a
     prompt: 'Second',
     provider: 'claude',
     attachments: [],
-  }, callbacks), /session already has an active Relay task/i);
+  }, callbacks), /session already has an active CC Relay task/i);
 
   await new Promise((resolve) => setImmediate(resolve));
   child.complete();
@@ -443,6 +476,7 @@ test('Claude execution resumes a live session through the subscription CLI', asy
   );
   assert.match(input, /Fix checkout/);
   assert.match(input, /bug\.png/);
+  assert.equal(input.endsWith(RELAY_NON_INTERACTIVE_INSTRUCTION), true);
   assert.equal(result.finalResponse, 'Implemented the task.');
   assert.equal(events.some((event) => event.event.type === 'claude/started'), true);
   assert.equal(events.some((event) => event.event.type === 'claude/completed'), true);
@@ -516,8 +550,8 @@ test('Claude execution initializes an uninitialized live terminal with the exact
     ['--session-id', sessionId],
   );
   assert.equal(invocations[1].args.includes('--resume'), false);
-  assert.equal(invocations[0].input, 'hi');
-  assert.equal(invocations[1].input, 'hi');
+  assert.equal(invocations[0].input, `hi\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`);
+  assert.equal(invocations[1].input, `hi\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`);
   assert.doesNotMatch(stderr.join('\n'), /No conversation found/);
   assert.equal(events.some((event) => event.event.type === 'claude/session-initializing'), true);
   assert.deepEqual(
@@ -906,4 +940,88 @@ test('an immediate follow-up rejects a newly busy Claude session without waiting
     sessionFollowUp: true,
   }, { onEvent: () => {}, onStderr: () => {} }), /became busy.*not queued/i);
   assert.equal(spawned, false);
+});
+
+test('a live Claude update delegates only to the exact active interactive turn', async () => {
+  const diagnostics = [];
+  let finishTurn;
+  let received = null;
+  const task = {
+    id: 81,
+    thread_id: 'active-claude-session',
+    thread_name: 'relay-live',
+    repo_path: '/tmp/repo',
+    prompt: 'Start the original work.',
+    provider: 'claude',
+    attachments: [],
+  };
+  const runner = new ClaudeExecutionRunner({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: task.thread_id,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: task.repo_path,
+        rawStatus: 'idle',
+      }),
+    },
+    platform: 'darwin',
+    resolveTerminal: async () => ({ terminalWindowId: 42 }),
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    terminalExecutor: {
+      runTurn: async (runningTask, active) => {
+        active.steer = async (prompt, attachments) => {
+          received = { taskId: runningTask.id, prompt, attachments };
+          return {
+            taskId: runningTask.id,
+            threadId: runningTask.thread_id,
+            turnId: null,
+          };
+        };
+        return new Promise((resolve) => {
+          finishTurn = () => resolve({
+            finalResponse: 'Finished.',
+            sessionId: runningTask.thread_id,
+            reportedSessionId: runningTask.thread_id,
+            exitCode: 0,
+          });
+        });
+      },
+    },
+  });
+
+  const runPromise = runner.run(task, { onEvent: () => {}, onStderr: () => {} });
+  await new Promise((resolve) => setImmediate(resolve));
+  const attachments = [{ path: '/tmp/repo/live.png' }];
+  const outcome = await runner.steer(task.id, 'Use the new direction.', attachments);
+
+  assert.deepEqual(received, {
+    taskId: task.id,
+    prompt: 'Use the new direction.',
+    attachments,
+  });
+  assert.equal(outcome.threadId, task.thread_id);
+  assert.equal(diagnostics.some(({ event }) => event === 'task.claude.steer.completed'), true);
+
+  finishTurn();
+  await runPromise;
+  await assert.rejects(
+    runner.steer(task.id, 'Too late.'),
+    /no longer has an active Claude turn.*not queued/i,
+  );
+});
+
+test('a live Claude update never starts a second execution for an active headless turn', async () => {
+  const runner = new ClaudeExecutionRunner();
+  runner.activeByTask.set(82, {
+    taskId: 82,
+    sessionId: 'headless-claude-session',
+    executionMode: 'headless',
+    steer: null,
+  });
+
+  await assert.rejects(
+    runner.steer(82, 'Do not start another process.'),
+    /not running in an interactive terminal.*not queued/i,
+  );
 });

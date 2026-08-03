@@ -101,7 +101,7 @@ function startRun(context, { dependsOn = {}, titles = ['A', 'B', 'C'], preferIdl
   const run = planRuns.start({
     plan,
     proposals,
-    thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: directory },
+    thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: directory },
     provider: 'codex',
     preferIdleTerminal,
     model: 'sol',
@@ -152,12 +152,13 @@ test('an automatic plan run gives each released step a disposable provider slot'
       thread: {
         id: null,
         title: 'Automatic Codex instance',
-        source: 'Relay managed terminal pool',
+        source: 'CC Relay managed terminal pool',
         cwd: context.directory,
       },
       sessionId: 'automatic:codex',
       provider: 'codex',
       terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
       terminalLayout: { enabled: false, background: true },
       model: 'sol',
       effort: 'high',
@@ -167,10 +168,12 @@ test('an automatic plan run gives each released step a disposable provider slot'
     const [task] = context.database.listTasks();
     assert.equal(run.session_id, 'automatic:codex');
     assert.equal(run.terminal_lifecycle, 'disposable');
+    assert.equal(run.keep_terminal_open, true);
     assert.deepEqual(run.terminal_layout, { enabled: false, background: true });
     assert.equal(task.thread_id, null);
     assert.equal(task.repo_path, context.directory);
     assert.equal(task.terminal_lifecycle, 'disposable');
+    assert.equal(task.keep_terminal_open, true);
     assert.deepEqual(task.terminal_layout, { enabled: false, background: true });
   } finally {
     context.database.close();
@@ -350,8 +353,8 @@ test('two independent steps really land on two different idle sessions', async (
   const held = new Map();
   const context = harness({
     idleSessions: [
-      { id: 'relay-a', title: 'Relay 1', source: 'cli', status: 'idle' },
-      { id: 'relay-b', title: 'Relay 2', source: 'cli', status: 'idle' },
+      { id: 'relay-a', title: 'CC Relay 1', source: 'cli', status: 'idle' },
+      { id: 'relay-b', title: 'CC Relay 2', source: 'cli', status: 'idle' },
     ],
   });
   // Hold both dependent steps open so their concurrency is observable.
@@ -392,7 +395,7 @@ test('two overlapping run submissions mint exactly one set of tasks (C4)', () =>
     const request = () => ({
       plan,
       proposals,
-      thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: context.directory },
+      thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: context.directory },
       provider: 'codex',
     });
 
@@ -424,7 +427,7 @@ test('a refused start leaves the previous run untouched', () => {
       () => context.planRuns.start({
         plan,
         proposals: [{ id: 'step-a', title: 'A', prompt: 'Do A', dependsOn: [] }],
-        thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: context.directory },
+        thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: context.directory },
         provider: 'codex',
       }),
       (error) => error.statusCode === 409 && /still has 1 step in flight/.test(error.message),
@@ -498,7 +501,7 @@ test('deleting a plan releases every run, not only the latest', () => {
     context.planRuns.start({
       plan,
       proposals: [{ id: 'step-z', title: 'Z', prompt: 'Do Z', dependsOn: [] }],
-      thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: context.directory },
+      thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: context.directory },
       provider: 'codex',
     });
     const secondTask = context.database.listTasks().find((task) => task.title === 'Z');
@@ -564,7 +567,7 @@ test('starting a new run latches the previous one so only one is ever active', (
     const second = context.planRuns.start({
       plan,
       proposals: [{ id: 'step-a', title: 'A', prompt: 'Do A', dependsOn: [] }],
-      thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: context.directory },
+      thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: context.directory },
       provider: 'codex',
     });
     assert.notEqual(second.id, run.id);
@@ -580,7 +583,7 @@ test('after a restart an interrupted step fails and blocks its dependents', () =
   const first = harness({ paused: true });
   const { plan, run } = startRun(first, { dependsOn: { B: ['A'], C: ['B'] } });
   const [rootTask] = first.database.listTasks();
-  // Relay was running this step when it stopped.
+  // CC Relay was running this step when it stopped.
   first.database.updateTask(rootTask.id, { status: 'running' });
   first.database.close();
 
@@ -612,7 +615,7 @@ test('after a restart a completed step releases the next wave', () => {
   const first = harness({ paused: true });
   const { plan } = startRun(first, { dependsOn: { B: ['A'], C: ['A'] } });
   const [rootTask] = first.database.listTasks();
-  // The step finished, but Relay stopped before the run could react to it.
+  // The step finished, but CC Relay stopped before the run could react to it.
   first.database.updateTask(rootTask.id, { status: 'complete', result: 'ok' });
   first.database.close();
 
@@ -711,7 +714,7 @@ test('a dependency on an unselected proposal is pruned when the run starts', () 
     const run = context.planRuns.start({
       plan,
       proposals: [{ id: 'b', title: 'B', prompt: 'Do B', dependsOn: ['a'] }],
-      thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: context.directory },
+      thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: context.directory },
       provider: 'codex',
     });
     const [step] = context.database.planRunSteps(run.id);

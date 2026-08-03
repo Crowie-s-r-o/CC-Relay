@@ -41,14 +41,14 @@ export function turboWaitingCopy(task) {
   if (!marker) return '';
   const councilOrder = task?.turbo?.council?.order || ['codex', 'claude'];
   const providerName = (provider) => provider === 'claude' ? 'Claude' : 'Codex';
-  if (marker.phase === 'ready') return 'Plan ready. Relay will skip planning and start workers when this task reaches the front of the queue.';
+  if (marker.phase === 'ready') return 'Plan ready. CC Relay will skip planning and start workers when this task reaches the front of the queue.';
   if (marker.phase === 'planning') {
     if (task?.turbo?.council?.enabled) {
       return `${providerName(councilOrder[0])} is building the first dependency graph before ${providerName(councilOrder[1])} reviews it.`;
     }
     return String(task?.status || '').toLowerCase() === 'running'
       ? 'The planner is building the dependency graph before workers start.'
-      : 'Relay is planning this task ahead of its execution position.';
+      : 'CC Relay is planning this task ahead of its execution position.';
   }
   if (marker.phase === 'reviewing') return `${providerName(councilOrder[1])} is reviewing the ${providerName(councilOrder[0])} graph before workers can start.`;
   if (marker.phase === 'executing') return 'Workers are executing the prepared dependency graph.';

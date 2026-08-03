@@ -10,7 +10,7 @@ type: review
 
 **Ticket confidence: High**
 
-The selected Relay can close its exact native terminal after confirmation. The implementation is fail-closed: a native target must be captured during launch or recovered through an exact live runtime identity chain before it can be closed. Queued, running, retry-scheduled, Plan council, and Turbo ownership prevents closure. A closing reservation also prevents new enqueue, retry, reassignment, planning, or dispatch from racing the operating-system call.
+The selected CC Relay can close its exact native terminal after confirmation. The implementation is fail-closed: a native target must be captured during launch or recovered through an exact live runtime identity chain before it can be closed. Queued, running, retry-scheduled, Plan council, and Turbo ownership prevents closure. A closing reservation also prevents new enqueue, retry, reassignment, planning, or dispatch from racing the operating-system call.
 
 The review found and fixed three correctness defects before completion:
 
@@ -18,7 +18,7 @@ The review found and fixed three correctness defects before completion:
 2. A shared first-client Codex reservation could be claimed by a manually connecting client. App-launched Codex now receives a dedicated loopback proxy endpoint carrying its launch UUID.
 3. Failed or timed-out discovery could leave reservation state available to a later launch. Reservation cleanup is now explicit on failure and timeout.
 
-No database migration, environment variable, remote permission, or authentication change is in this ticket. Relay remains bound to localhost.
+No database migration, environment variable, remote permission, or authentication change is in this ticket. CC Relay remains bound to localhost.
 
 ### Quality Panel (RAG)
 
@@ -66,13 +66,13 @@ Partial failures are surfaced through the API and diagnostics. Native launch fai
 
 1. **Native platform behavior is mocked in automated tests.** `ProjectLauncher.closeOwnedTerminalNow()` has exact command assertions, but CI does not open and close a real Terminal.app window or Windows process tree. A platform permission or command-semantic change would cause a loud close error and preserve ownership, but the action would fail for users.
 2. **Exact binding is time-bounded.** `TerminalLaunchCoordinator.launchNow()` gives a new session 15 seconds and requires two observations. A slow CLI startup produces an open but unbound terminal with Close disabled. This sacrifices availability to avoid destructive guessed ownership.
-3. **Ownership does not survive restart.** `ProjectLauncher.ownedTerminals` intentionally remains in memory. Persisting native IDs could target an unrelated later process, so terminals from an earlier Relay process or manual launches remain visible but unclosable.
+3. **Ownership does not survive restart.** `ProjectLauncher.ownedTerminals` intentionally remains in memory. Persisting native IDs could target an unrelated later process, so terminals from an earlier CC Relay process or manual launches remain visible but unclosable.
 
 ### Top Improvements
 
 1. Add release smoke tests on real macOS and Windows runners that launch a disposable terminal, bind a disposable session, close it, and prove a neighboring user terminal remains open.
-2. Add a browser-level HTTP integration fixture with an injectable server port and fake native launcher, covering the real DELETE route and SSE refresh without touching the developer's live Relay instance.
-3. Completed in the visibility follow-up below: the disabled reason now renders inline beneath the Relay cards and the Close action is never hidden.
+2. Add a browser-level HTTP integration fixture with an injectable server port and fake native launcher, covering the real DELETE route and SSE refresh without touching the developer's live CC Relay instance.
+3. Completed in the visibility follow-up below: the disabled reason now renders inline beneath the CC Relay cards and the Close action is never hidden.
 
 ## Visibility Follow-up Review
 
@@ -80,7 +80,7 @@ Partial failures are surfaced through the API and diagnostics. Native launch fai
 
 **Ticket confidence: High**
 
-The missing Close report was confirmed against the live Relay process. Its `/api/status` response did not advertise `terminalControl`, and `renderTerminalCloseControl()` responded by setting the button to `hidden`. This made the restart limitation indistinguishable from an absent feature. The fix moves a persistent Close row beneath the Relay cards and presents the exact disabled reason without weakening any native ownership or task-safety check. The follow-up review also found that selecting another Relay during an in-flight close could make the row appear enabled even though the client rejected a second click. The client now retains the exact closing label and disables the entire row until the request settles.
+The missing Close report was confirmed against the live CC Relay process. Its `/api/status` response did not advertise `terminalControl`, and `renderTerminalCloseControl()` responded by setting the button to `hidden`. This made the restart limitation indistinguishable from an absent feature. The fix moves a persistent Close row beneath the CC Relay cards and presents the exact disabled reason without weakening any native ownership or task-safety check. The follow-up review also found that selecting another CC Relay during an in-flight close could make the row appear enabled even though the client rejected a second click. The client now retains the exact closing label and disables the entire row until the request settles.
 
 ### Quality Panel (RAG)
 
@@ -96,12 +96,12 @@ The missing Close report was confirmed against the live Relay process. Its `/api
 ### Top 3 Risks
 
 1. The user must refresh the current page to receive the new HTML and module code.
-2. A normal Relay restart is still required before the backend advertises terminal control.
-3. Existing macOS one-tab Terminal sessions can be recovered after restart; ambiguous or unsupported sessions still require manual closure or a new Relay launch.
+2. A normal CC Relay restart is still required before the backend advertises terminal control.
+3. Existing macOS one-tab Terminal sessions can be recovered after restart; ambiguous or unsupported sessions still require manual closure or a new CC Relay launch.
 
 ### Top Improvements
 
-1. Add an application-level restart workflow that waits for active tasks and then relaunches Relay without manual coordination.
+1. Add an application-level restart workflow that waits for active tasks and then relaunches CC Relay without manual coordination.
 2. Add a rendered browser fixture for the unsupported, blocked, and ready rows when an injectable test server becomes available.
 3. Keep the inline reason concise if future blocker types add more remediation detail.
 
@@ -142,9 +142,9 @@ See [[project-workspaces]], [[interface-layout]], and [[diagnostics]].
 
 **Ticket confidence: High**
 
-The relaunch-only limitation was the confirmed reason the user still could not close an idle Relay. The running backend did not advertise `terminalControl`, and the previous design could control only native handles captured during the same process lifetime. The correction keeps the old backend fail-closed, labels its button **Restart required**, and adds exact macOS runtime recovery for existing one-tab Terminal sessions after restart.
+The relaunch-only limitation was the confirmed reason the user still could not close an idle CC Relay. The running backend did not advertise `terminalControl`, and the previous design could control only native handles captured during the same process lifetime. The correction keeps the old backend fail-closed, labels its button **Restart required**, and adds exact macOS runtime recovery for existing one-tab Terminal sessions after restart.
 
-Claude recovery starts from the interactive session PID. Codex recovery starts from the one live proxy client associated with the exact thread, then maps its client socket to one Codex PID. Both providers must resolve through one PID, one TTY, one Terminal.app window, and one tab. The API re-runs the identity chain before close, and the launcher rechecks both process TTY and window TTY immediately before executing the native close. Runtime-recovered windows are excluded from automatic Relay shutdown cleanup.
+Claude recovery starts from the interactive session PID. Codex recovery starts from the one live proxy client associated with the exact thread, then maps its client socket to one Codex PID. Both providers must resolve through one PID, one TTY, one Terminal.app window, and one tab. The API re-runs the identity chain before close, and the launcher rechecks both process TTY and window TTY immediately before executing the native close. Runtime-recovered windows are excluded from automatic CC Relay shutdown cleanup.
 
 ### Quality Panel (RAG)
 
@@ -165,9 +165,9 @@ Claude recovery starts from the interactive session PID. Codex recovery starts f
 
 ### Top Improvements
 
-1. Add exact runtime recovery for Relay-launched `cmd.exe` trees on Windows.
+1. Add exact runtime recovery for CC Relay-launched `cmd.exe` trees on Windows.
 2. Add a release smoke test that closes a disposable real Terminal.app window while proving a neighboring window remains open.
-3. Add a graceful **Restart Relay** application action after the queue becomes idle.
+3. Add a graceful **Restart CC Relay** application action after the queue becomes idle.
 
 ### Recommendation
 
@@ -185,11 +185,11 @@ Claude recovery starts from the interactive session PID. Codex recovery starts f
 
 - A Codex conversation joined by more than one proxy client is intentionally unclosable because there is no single native process target.
 - A session inside a multi-tab Terminal window is intentionally unclosable because closing the window could terminate unrelated tabs.
-- A surviving Codex remote client may disconnect during backend restart. If it does, its Relay card disappears and no stale close target is offered.
+- A surviving Codex remote client may disconnect during backend restart. If it does, its CC Relay card disappears and no stale close target is offered.
 
 ### Regression Risks
 
-- Existing manually opened single-tab Terminal sessions become explicitly closable on macOS. They are not treated as launch-owned and are not closed when Relay exits normally.
+- Existing manually opened single-tab Terminal sessions become explicitly closable on macOS. They are not treated as launch-owned and are not closed when CC Relay exits normally.
 - Native inspection runs during thread discovery only for sessions without control, with a 15-second retry throttle. Successful mappings do not repeat inspection during ordinary polling, except for the required pre-close verification.
 - Process-launched Windows and macOS closure retain their existing direct native-handle path.
 
@@ -217,7 +217,7 @@ The implementation did not execute a real destructive close against the user's T
 
 On July 21, 2026, native macOS Close was found to stop at Terminal.app's own running-process confirmation. `close window ... saving no` suppresses document-saving prompts, but it does not approve termination of live shells, MCP servers, or their children.
 
-Relay now inspects the exact captured Terminal window immediately before closure, requires exactly one tab, reads that tab's TTY, and sends `SIGKILL` to every process attached to that exact TTY. It then closes the exact window ID. The same sequence is used for explicit selected-terminal closure and for launch-owned terminal cleanup during Relay shutdown.
+CC Relay now inspects the exact captured Terminal window immediately before closure, requires exactly one tab, reads that tab's TTY, and sends `SIGKILL` to every process attached to that exact TTY. It then closes the exact window ID. The same sequence is used for explicit selected-terminal closure and for launch-owned terminal cleanup during CC Relay shutdown.
 
 > [!important]
 > Never return to closing a live Terminal.app window before its exact TTY processes are gone. Terminal.app can show a modal confirmation and leave the close request incomplete.
@@ -236,7 +236,7 @@ The first version of that gate polled `pgrep -t <exact-tty> '.*'`. The section b
 > [!important]
 > A delivered signal means the signals were sent, not that every target has disappeared from the process table. Keep the bounded exact-TTY drain gate between termination and native window closure.
 
-Focused coverage in `test/project-launcher.test.mjs` proves exact TTY targeting, no neighboring-window reference, kill-failure preservation, already-empty TTY handling, delayed process drain, drain timeout, and shutdown cleanup. The complete suite passes 665 tests.
+Focused coverage in `test/project-launcher.test.mjs` proves exact TTY targeting, no neighboring-window reference, kill-failure preservation, already-empty TTY handling, delayed process drain, drain timeout, and shutdown cleanup. The full repository suite passes.
 
 See [[project-workspaces]], [[diagnostics]], and [[interface-layout]].
 
@@ -244,7 +244,7 @@ See [[project-workspaces]], [[diagnostics]], and [[interface-layout]].
 
 ## Darwin 25 pgrep and pkill TTY filter regression
 
-On July 27, 2026, the whole macOS close path was found to terminate nothing while reporting success. The cause is the operating system, not Relay's ownership logic: on Darwin 25.5.0 the `-t` terminal filter of `pgrep` and `pkill` matches no processes at all.
+On July 27, 2026, the whole macOS close path was found to terminate nothing while reporting success. The cause is the operating system, not CC Relay's ownership logic: on Darwin 25.5.0 the `-t` terminal filter of `pgrep` and `pkill` matches no processes at all.
 
 ### Evidence
 
@@ -254,9 +254,9 @@ On July 27, 2026, the whole macOS close path was found to terminate nothing whil
 
 ### Why the close path reported a vacuous success
 
-1. `pkill -KILL -t <tty> '.*'` matched nothing and exited 1. Relay tolerated exit code 1 as "the TTY is already empty".
+1. `pkill -KILL -t <tty> '.*'` matched nothing and exited 1. CC Relay tolerated exit code 1 as "the TTY is already empty".
 2. `waitForMacTerminalProcessesToExit()` polled `pgrep -t <tty> '.*'`, received exit 1 twice, counted two empty observations, and returned success without a single live process having been signalled.
-3. The AppleScript `close window` step then met Terminal.app's running-process confirmation for the still-live shell and provider, so the window stayed open while Relay recorded a completed close.
+3. The AppleScript `close window` step then met Terminal.app's running-process confirmation for the still-live shell and provider, so the window stayed open while CC Relay recorded a completed close.
 
 Task 320 is the recorded incident. In `.data/relay-diagnostics.jsonl` around 2026-07-27T18:03, `terminal.close.requested`, `terminal.close.processes_terminated`, and `terminal.close.completed` were all emitted at 18:03:40 for window 64612 on `/dev/ttys003`. Three seconds later `terminal.recovery.completed` re-bound the same live session, `runtimeProcessId` 30848, on the same TTY. Nothing had been killed.
 
@@ -282,14 +282,27 @@ Diagnostics are unchanged. `terminal.close.requested`, `terminal.close.processes
 
 ### Test coverage
 
-`test/project-launcher.test.mjs` now proves the exact command sequence `osascript` inspect, `ps -t`, `kill -9`, `ps -t`, `ps -t`, `osascript` close. The suite asserts that the kill step receives the exact enumerated identifiers, so a mechanism that matches nothing fails loudly instead of passing vacuously, and that no call in any close path uses `pgrep` or `pkill`. Further cases cover a process that survives one poll, a TTY that never drains (rejection, `terminal.close.failed`, no `close window`, ownership retained), `ps` exiting 1 with empty output as an empty observation, unreadable output failing closed, an unexpected `ps` exit code propagating, and identifier parsing of padded, blank, and non-numeric lines. The complete suite passes 665 tests.
+`test/project-launcher.test.mjs` now proves the exact command sequence `osascript` inspect, `ps -t`, `kill -9`, `ps -t`, `ps -t`, `osascript` close. The suite asserts that the kill step receives the exact enumerated identifiers, so a mechanism that matches nothing fails loudly instead of passing vacuously, and that no call in any close path uses `pgrep` or `pkill`. Further cases cover a process that survives one poll, a TTY that never drains (rejection, `terminal.close.failed`, no `close window`, ownership retained), `ps` exiting 1 with empty output as an empty observation, unreadable output failing closed, an unexpected `ps` exit code propagating, and identifier parsing of padded, blank, and non-numeric lines. The full repository suite passes.
 
 ### Test gap
 
 No destructive close was executed against a live Terminal.app window. The user's working sessions were on the machine throughout, so verification stayed read-only: the `ps` and `pgrep` behavior above was confirmed live, and all kill behavior is covered by mocked tests only.
 
-One live-only risk remains. The `login` process on a Terminal.app TTY is root-owned, so Relay's `kill -9` is refused for that one identifier and it is expected to exit on its own once its child shell dies. The drain gate waits for that within its two-second deadline. This has never completed successfully in production, because the `pgrep` no-op made every previous drain vacuous. If `login` does not exit in time, `closeTrackedTerminalNow()` throws before `forgetTrackedTerminal()`, which keeps the window open and leaks the pool allocation. Watch the first real closes for `terminal.close.failed` carrying `did not exit after SIGKILL`.
+One live-only risk remains. The `login` process on a Terminal.app TTY is root-owned, so CC Relay's `kill -9` is refused for that one identifier and it is expected to exit on its own once its child shell dies. The drain gate waits for that within its two-second deadline. This has never completed successfully in production, because the `pgrep` no-op made every previous drain vacuous. If `login` does not exit in time, `closeTrackedTerminalNow()` throws before `forgetTrackedTerminal()`, which keeps the window open and leaks the pool allocation. Watch the first real closes for `terminal.close.failed` carrying `did not exit after SIGKILL`.
 
 The same root cause changes shutdown timing. A vacuous drain cost about one poll interval per window, so `closeOwnedTerminals()` felt instant. A real drain costs at least one poll interval per window and up to the full two-second deadline for any window that does not drain, walked sequentially, so quitting with eight pooled terminals can stall for roughly sixteen seconds in the worst case. The shutdown test uses two windows with cooperative snapshots and cannot surface this. Measure a real quit before changing the deadline or the poll interval.
 
 #relay #terminal #macos #process-cleanup #darwin25
+
+## July 30 2026 close-accuracy re-verification
+
+The `ps` replacement above still stands. A report that CC Relay announced `2 disposable terminal instances closed` while both Terminal windows stayed open was investigated on July 30, 2026 and did not reproduce a false close. `src/` contains no `pgrep` or `pkill` call, neither live diagnostics file contains a `terminal.close.failed` event, and the four windows closed that afternoon, 92746, 92752, 93689, and 93710, no longer exist. A later launch also selected the exact grid cell one of them had occupied, which `firstAvailableGridSlot()` can only do when no live Terminal window overlaps that cell. Full evidence is in [[resume-dispatch-audit]].
+
+One real close defect was found and fixed in the same pass. `DisposableTerminalPool.release()` fell back to `closeOwnedTerminal(allocation.threadId)` for an allocation with no launch handle, and `closeOwnedTerminalNow()` resolved its target with `find((item) => item.threadId === threadId)`. Owned launches carry `threadId = null` until they bind, so a missing conversation ID matched the first launch that was still binding, closed that unrelated terminal, and reported it as this task's closed instance.
+
+`ProjectLauncher.ownedTerminalForThread()` now rejects a missing or empty conversation ID for close, `terminalForThread()`, `verifyTerminalForThread()`, `refreshTerminalRuntimeIdentity()`, and terminal attention. The pool skips an allocation with neither a launch handle nor a conversation, records `terminal.pool.cleanup_skipped`, and never counts it as closed.
+
+> [!important]
+> A close target must be an exact launch handle or a non-empty conversation ID. Never let a null identifier fall through to a first-match lookup: unbound launches are indistinguishable from each other, and the match will be somebody else's terminal.
+
+#relay #terminal #macos #process-cleanup #safety

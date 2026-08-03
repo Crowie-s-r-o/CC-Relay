@@ -1,6 +1,7 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { ProjectConfigStore } from './project-config-store.mjs';
 
 const TASK_FIELDS = new Set([
   'title',
@@ -25,6 +26,7 @@ const TASK_FIELDS = new Set([
   'continued_from_task_id',
   'submission_id',
   'terminal_lifecycle',
+  'keep_terminal_open',
   'terminal_layout_json',
   'turbo_json',
   'attachments_json',
@@ -36,6 +38,50 @@ const TASK_FIELDS = new Set([
   'result',
   'error',
   'exit_code',
+]);
+
+const IMPORTABLE_TASK_COLUMNS = [
+  'title',
+  'prompt',
+  'repo_path',
+  'thread_id',
+  'thread_name',
+  'thread_source',
+  'provider',
+  'model',
+  'effort',
+  'mode',
+  'author_provider',
+  'author_thread_id',
+  'author_thread_name',
+  'author_thread_source',
+  'author_model',
+  'author_effort',
+  'reviewer_provider',
+  'reviewer_model',
+  'reviewer_effort',
+  'terminal_lifecycle',
+  'keep_terminal_open',
+  'terminal_layout_json',
+  'turbo_json',
+  'attachments_json',
+  'prefer_idle_terminal',
+  'status',
+  'position',
+  'created_at',
+  'started_at',
+  'finished_at',
+  'session_id',
+  'result',
+  'error',
+  'exit_code',
+];
+
+const IMPORTABLE_TASK_STATUSES = new Set([
+  'complete',
+  'failed',
+  'interrupted',
+  'cancelled',
 ]);
 
 function now() {
@@ -64,6 +110,7 @@ function normalizeTask(row) {
   try { terminalLayout = encodedTerminalLayout ? JSON.parse(encodedTerminalLayout) : null; } catch {}
   return {
     ...task,
+    keep_terminal_open: task.keep_terminal_open === 1 || task.keep_terminal_open === true,
     attachments: Array.isArray(attachments) ? attachments : [],
     turbo,
     terminal_layout: terminalLayout,
@@ -77,6 +124,40 @@ function parseJsonList(value) {
   } catch {
     return [];
   }
+}
+
+function relayPromptMarker(item) {
+  for (const value of [item?.clientId, item?.id]) {
+    const marker = typeof value === 'string' ? value.trim() : '';
+    if (marker.startsWith('relay-follow-up-') || marker.startsWith('relay-steer-')) {
+      return marker;
+    }
+  }
+  return null;
+}
+
+function userMessageText(item) {
+  if (item?.type !== 'userMessage' || !Array.isArray(item.content)) return '';
+  return item.content
+    .filter((part) => part?.type === 'text' && typeof part.text === 'string')
+    .map((part) => part.text.trim())
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function assistantResponseText(payload) {
+  if (
+    payload?.type === 'item/completed'
+    && ['agentMessage', 'agent_message'].includes(payload.item?.type)
+    && typeof payload.item.text === 'string'
+  ) {
+    return payload.item.text.trim();
+  }
+  if (payload?.type === 'claude/message' && typeof payload.text === 'string') {
+    return payload.text.trim();
+  }
+  return '';
 }
 
 function normalizeBreakdown(row) {
@@ -98,6 +179,7 @@ function normalizePlanRun(row) {
   return {
     ...row,
     prefer_idle_terminal: row.prefer_idle_terminal === 1 || row.prefer_idle_terminal === true,
+    keep_terminal_open: row.keep_terminal_open === 1 || row.keep_terminal_open === true,
     terminal_layout: terminalLayout,
   };
 }
@@ -108,8 +190,9 @@ function normalizePlanRunStep(row) {
 }
 
 export class RelayDatabase {
-  constructor(filePath) {
+  constructor(filePath, { projectConfigPath = null } = {}) {
     mkdirSync(dirname(filePath), { recursive: true });
+    this.databasePath = resolve(filePath);
     this.database = new DatabaseSync(filePath);
     this.database.exec(`
       PRAGMA journal_mode = WAL;
@@ -140,6 +223,7 @@ export class RelayDatabase {
         continued_from_task_id INTEGER,
         submission_id TEXT,
         terminal_lifecycle TEXT NOT NULL DEFAULT 'persistent',
+        keep_terminal_open INTEGER NOT NULL DEFAULT 0,
         terminal_layout_json TEXT,
         turbo_json TEXT,
         attachments_json TEXT NOT NULL DEFAULT '[]',
@@ -177,7 +261,11 @@ export class RelayDatabase {
         created_at TEXT NOT NULL,
         last_launched_at TEXT,
         max_codex_instances INTEGER NOT NULL DEFAULT 1,
-        max_claude_instances INTEGER NOT NULL DEFAULT 1
+        max_claude_instances INTEGER NOT NULL DEFAULT 1,
+        keep_terminal_open INTEGER NOT NULL DEFAULT 0,
+        prefer_idle_terminal INTEGER NOT NULL DEFAULT 0,
+        color TEXT,
+        terminal_layout_json TEXT
       );
 
       CREATE TABLE IF NOT EXISTS plans (
@@ -218,6 +306,7 @@ export class RelayDatabase {
         session_source TEXT,
         prefer_idle_terminal INTEGER NOT NULL DEFAULT 0,
         terminal_lifecycle TEXT NOT NULL DEFAULT 'persistent',
+        keep_terminal_open INTEGER NOT NULL DEFAULT 0,
         terminal_layout_json TEXT,
         model TEXT,
         effort TEXT,
@@ -289,13 +378,21 @@ export class RelayDatabase {
     this.ensureColumn('continued_from_task_id', 'INTEGER');
     this.ensureColumn('submission_id', 'TEXT');
     this.ensureColumn('terminal_lifecycle', "TEXT NOT NULL DEFAULT 'persistent'");
+    this.ensureColumn('keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('terminal_layout_json', 'TEXT');
     this.ensureColumn('turbo_json', 'TEXT');
     this.ensureColumn('attachments_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn('prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn('import_source', 'TEXT');
+    this.ensureColumn('import_task_id', 'INTEGER');
     this.ensureTableColumn('projects', 'max_codex_instances', 'INTEGER NOT NULL DEFAULT 1');
     this.ensureTableColumn('projects', 'max_claude_instances', 'INTEGER NOT NULL DEFAULT 1');
+    this.ensureTableColumn('projects', 'keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureTableColumn('projects', 'prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureTableColumn('projects', 'color', 'TEXT');
+    this.ensureTableColumn('projects', 'terminal_layout_json', 'TEXT');
     this.ensureTableColumn('plan_runs', 'terminal_lifecycle', "TEXT NOT NULL DEFAULT 'persistent'");
+    this.ensureTableColumn('plan_runs', 'keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureTableColumn('plan_runs', 'terminal_layout_json', 'TEXT');
     // events(task_id, id) is already covered by idx_events_task_id in the schema above.
     this.database.exec(`
@@ -306,11 +403,19 @@ export class RelayDatabase {
       CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_submission_id
         ON tasks(submission_id)
         WHERE submission_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_import_origin
+        ON tasks(import_source, import_task_id)
+        WHERE import_source IS NOT NULL AND import_task_id IS NOT NULL;
     `);
 
     this.database.prepare(`
       INSERT OR IGNORE INTO settings (key, value) VALUES ('paused', '0')
     `).run();
+
+    this.projectConfig = projectConfigPath
+      ? new ProjectConfigStore(projectConfigPath, { legacyDatabase: this.database })
+      : new ProjectConfigStore(filePath, { database: this.database });
+    this.projectConfigPath = this.projectConfig.filePath;
   }
 
   ensureColumn(name, definition) {
@@ -345,8 +450,8 @@ export class RelayDatabase {
       `).get(task.id);
       const followUpInterrupted = latestStart?.message?.startsWith('Follow-up');
       const error = followUpInterrupted
-        ? 'Same-session follow-up interrupted: Relay stopped while the follow-up was running.'
-        : 'Relay stopped while this task was running.';
+        ? 'Same-session follow-up interrupted: CC Relay stopped while the follow-up was running.'
+        : 'CC Relay stopped while this task was running.';
       this.database.prepare(`
         UPDATE tasks
         SET status = 'interrupted',
@@ -358,8 +463,8 @@ export class RelayDatabase {
         task.id,
         'system',
         followUpInterrupted
-          ? 'Same-session follow-up marked interrupted after Relay restarted. It was not queued.'
-          : 'Task marked interrupted after Relay restarted.',
+          ? 'Same-session follow-up marked interrupted after CC Relay restarted. It was not queued.'
+          : 'Task marked interrupted after CC Relay restarted.',
       );
     }
 
@@ -380,6 +485,7 @@ export class RelayDatabase {
     continuedFromTaskId = null,
     submissionId = null,
     terminalLifecycle = 'persistent',
+    keepTerminalOpen = false,
     terminalLayout = null,
     priority = false,
     preferIdleTerminal = false,
@@ -401,10 +507,11 @@ export class RelayDatabase {
         provider, model, effort, mode,
         author_provider, author_thread_id, author_thread_name, author_thread_source,
         author_model, author_effort, reviewer_provider, reviewer_model, reviewer_effort,
-        continued_from_task_id, submission_id, terminal_lifecycle, terminal_layout_json, turbo_json,
+        continued_from_task_id, submission_id, terminal_lifecycle, keep_terminal_open,
+        terminal_layout_json, turbo_json,
         prefer_idle_terminal,
         status, position, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
     `).run(
       title,
       prompt,
@@ -428,6 +535,7 @@ export class RelayDatabase {
       continuedFromTaskId,
       submissionId,
       terminalLifecycle,
+      keepTerminalOpen && terminalLifecycle === 'disposable' ? 1 : 0,
       terminalLayout ? JSON.stringify(terminalLayout) : null,
       turbo ? JSON.stringify(turbo) : null,
       preferIdleTerminal ? 1 : 0,
@@ -437,6 +545,13 @@ export class RelayDatabase {
 
     const task = this.getTask(Number(result.lastInsertRowid));
     this.addEvent(task.id, 'queue', 'Task added to the queue.');
+    if (task.keep_terminal_open) {
+      this.addEvent(
+        task.id,
+        'queue',
+        'Terminal retention enabled. CC Relay will leave this task session open after its final outcome.',
+      );
+    }
     return task;
   }
 
@@ -445,7 +560,7 @@ export class RelayDatabase {
   }
 
   // Last resort for binding a task to a workspace when live discovery cannot confirm the
-  // session right now. A session Relay has run before is a known session, and its workspace
+  // session right now. A session CC Relay has run before is a known session, and its workspace
   // does not change, so this keeps task-add working through a discovery outage.
   latestTaskForThread(threadId) {
     if (!threadId) return null;
@@ -486,6 +601,130 @@ export class RelayDatabase {
         CASE WHEN status IN ('running', 'queued') THEN id END ASC,
         CASE WHEN status NOT IN ('running', 'queued') THEN id END DESC
     `).all().map(normalizeTask);
+  }
+
+  importTaskHistory(sourceFilePath) {
+    const sourcePath = resolve(sourceFilePath || '');
+    if (!sourceFilePath || !existsSync(sourcePath)) {
+      throw new Error('The localhost task database is not available. Start localhost CC Relay once, then try again.');
+    }
+    if (sourcePath === this.databasePath) {
+      throw new Error('The localhost and desktop task databases are already the same file.');
+    }
+
+    const source = new DatabaseSync(sourcePath, { readOnly: true });
+    try {
+      const sourceTables = source.prepare(`
+        SELECT name FROM sqlite_master WHERE type = 'table'
+      `).all().map((row) => row.name);
+      if (!sourceTables.includes('tasks')) {
+        throw new Error('The selected localhost database does not contain CC Relay tasks.');
+      }
+
+      const sourceColumns = new Set(
+        source.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name),
+      );
+      const taskColumns = IMPORTABLE_TASK_COLUMNS.filter((column) => sourceColumns.has(column));
+      const sourceRows = source.prepare(`
+        SELECT id, continued_from_task_id, ${taskColumns.join(', ')}
+        FROM tasks
+        WHERE status IN ('complete', 'failed', 'interrupted', 'cancelled')
+        ORDER BY id ASC
+      `).all();
+      const sourceEventColumns = sourceTables.includes('events')
+        ? new Set(source.prepare('PRAGMA table_info(events)').all().map((column) => column.name))
+        : new Set();
+      const canImportEvents = ['task_id', 'kind', 'message', 'payload', 'created_at']
+        .every((column) => sourceEventColumns.has(column));
+      const originToLocal = new Map();
+      let imported = 0;
+      let updated = 0;
+
+      this.database.exec('BEGIN IMMEDIATE');
+      try {
+        for (const sourceTask of sourceRows) {
+          if (!IMPORTABLE_TASK_STATUSES.has(sourceTask.status)) continue;
+          const existing = this.database.prepare(`
+            SELECT id FROM tasks WHERE import_source = ? AND import_task_id = ?
+          `).get(sourcePath, sourceTask.id);
+          let localTaskId;
+          if (existing) {
+            const assignments = taskColumns.map((column) => `${column} = ?`).join(', ');
+            this.database.prepare(`
+              UPDATE tasks SET ${assignments}, submission_id = NULL
+              WHERE id = ?
+            `).run(...taskColumns.map((column) => sourceTask[column]), existing.id);
+            localTaskId = Number(existing.id);
+            updated += 1;
+          } else {
+            const placeholders = taskColumns.map(() => '?').join(', ');
+            const result = this.database.prepare(`
+              INSERT INTO tasks (
+                ${taskColumns.join(', ')}, submission_id, import_source, import_task_id
+              ) VALUES (${placeholders}, NULL, ?, ?)
+            `).run(
+              ...taskColumns.map((column) => sourceTask[column]),
+              sourcePath,
+              sourceTask.id,
+            );
+            localTaskId = Number(result.lastInsertRowid);
+            imported += 1;
+          }
+          originToLocal.set(Number(sourceTask.id), localTaskId);
+
+          if (canImportEvents) {
+            this.database.prepare('DELETE FROM events WHERE task_id = ?').run(localTaskId);
+            const events = source.prepare(`
+              SELECT kind, message, payload, created_at
+              FROM events
+              WHERE task_id = ?
+              ORDER BY id ASC
+            `).all(sourceTask.id);
+            const insertEvent = this.database.prepare(`
+              INSERT INTO events (task_id, kind, message, payload, created_at)
+              VALUES (?, ?, ?, ?, ?)
+            `);
+            for (const event of events) {
+              insertEvent.run(
+                localTaskId,
+                event.kind,
+                event.message,
+                event.payload,
+                event.created_at,
+              );
+            }
+          }
+        }
+
+        for (const sourceTask of sourceRows) {
+          const localTaskId = originToLocal.get(Number(sourceTask.id));
+          if (!localTaskId) continue;
+          const localParentId = originToLocal.get(Number(sourceTask.continued_from_task_id)) || null;
+          this.database.prepare(`
+            UPDATE tasks SET continued_from_task_id = ? WHERE id = ?
+          `).run(localParentId, localTaskId);
+        }
+        this.database.exec('COMMIT');
+      } catch (error) {
+        this.database.exec('ROLLBACK');
+        throw error;
+      }
+
+      return {
+        imported,
+        updated,
+        skippedActive: Number(source.prepare(`
+          SELECT COUNT(*) AS value FROM tasks WHERE status IN ('queued', 'running')
+        `).get().value),
+        tasks: [...originToLocal].map(([sourceTaskId, taskId]) => ({
+          sourceTaskId,
+          taskId,
+        })),
+        sourcePath,
+      };
+    } finally {
+      source.close();
+    }
   }
 
   nextQueuedTask() {
@@ -666,58 +905,128 @@ export class RelayDatabase {
     }));
   }
 
+  listTaskPrompts(taskId) {
+    const task = this.getTask(taskId);
+    if (!task) return [];
+    const prompts = [{
+      id: `task-${task.id}-original`,
+      kind: 'original',
+      text: task.prompt,
+      created_at: task.created_at,
+    }];
+    const seen = new Set();
+    const events = this.database.prepare(`
+      SELECT id, payload, created_at
+      FROM events
+      WHERE task_id = ? AND payload IS NOT NULL
+      ORDER BY id ASC
+    `).all(taskId);
+    for (const event of events) {
+      let payload;
+      try {
+        payload = JSON.parse(event.payload);
+      } catch {
+        continue;
+      }
+      const item = payload?.item;
+      const marker = relayPromptMarker(item);
+      const text = userMessageText(item);
+      if (!marker || !text || seen.has(marker)) continue;
+      seen.add(marker);
+      prompts.push({
+        id: marker,
+        kind: 'follow-up',
+        text,
+        created_at: event.created_at,
+      });
+    }
+    return prompts;
+  }
+
+  listTaskResponses(taskId) {
+    const task = this.getTask(taskId);
+    if (!task) return [];
+    const responses = [];
+    const seen = new Set();
+    const events = this.database.prepare(`
+      SELECT id, payload, created_at
+      FROM events
+      WHERE task_id = ? AND payload IS NOT NULL
+      ORDER BY id ASC
+    `).all(taskId);
+    for (const event of events) {
+      let payload;
+      try {
+        payload = JSON.parse(event.payload);
+      } catch {
+        continue;
+      }
+      const response = assistantResponseText(payload);
+      if (!response || seen.has(response)) continue;
+      seen.add(response);
+      responses.push({
+        id: `event-${event.id}`,
+        text: response,
+        created_at: event.created_at,
+      });
+    }
+    const latestResult = typeof task.result === 'string' ? task.result.trim() : '';
+    if (latestResult && !seen.has(latestResult)) {
+      responses.push({
+        id: `task-${task.id}-result`,
+        text: latestResult,
+        created_at: task.finished_at || task.created_at,
+      });
+    }
+    return responses;
+  }
+
   deleteTask(id) {
     return this.database.prepare(`DELETE FROM tasks WHERE id = ?`).run(id).changes > 0;
   }
 
   listProjects() {
-    return this.database.prepare(`
-      SELECT * FROM projects ORDER BY position ASC, id ASC
-    `).all();
+    return this.projectConfig.listProjects();
   }
 
   getProject(id) {
-    return this.database.prepare(`SELECT * FROM projects WHERE id = ?`).get(id) || null;
+    return this.projectConfig.getProject(id);
   }
 
   getProjectByPath(path) {
-    return this.database.prepare(`SELECT * FROM projects WHERE path = ?`).get(path) || null;
+    return this.projectConfig.getProjectByPath(path);
   }
 
   addProject({ path, name }) {
-    const existing = this.database.prepare(`SELECT * FROM projects WHERE path = ?`).get(path);
-    if (existing) {
-      return existing;
-    }
-    const position = Number(this.database.prepare(
-      `SELECT COALESCE(MAX(position), 0) AS value FROM projects`,
-    ).get().value) + 1;
-    const result = this.database.prepare(`
-      INSERT INTO projects (path, name, position, created_at) VALUES (?, ?, ?, ?)
-    `).run(path, name, position, now());
-    return this.database.prepare(`SELECT * FROM projects WHERE id = ?`).get(
-      Number(result.lastInsertRowid),
-    );
+    return this.projectConfig.addProject({ path, name });
   }
 
   deleteProject(id) {
-    return this.database.prepare(`DELETE FROM projects WHERE id = ?`).run(id).changes > 0;
+    return this.projectConfig.deleteProject(id);
   }
 
   markProjectLaunched(id) {
-    this.database.prepare(`UPDATE projects SET last_launched_at = ? WHERE id = ?`).run(now(), id);
-    return this.database.prepare(`SELECT * FROM projects WHERE id = ?`).get(id);
+    return this.projectConfig.markProjectLaunched(id);
   }
 
   updateProjectInstanceLimits(id, { codex, claude }) {
-    const project = this.getProject(id);
-    if (!project) throw new Error('Pinned project not found.');
-    this.database.prepare(`
-      UPDATE projects
-      SET max_codex_instances = ?, max_claude_instances = ?
-      WHERE id = ?
-    `).run(codex, claude, id);
-    return this.getProject(id);
+    return this.projectConfig.updateProjectInstanceLimits(id, { codex, claude });
+  }
+
+  updateProjectTerminalSettings(id, settings) {
+    return this.projectConfig.updateProjectTerminalSettings(id, settings);
+  }
+
+  updateProjectColor(id, color) {
+    return this.projectConfig.updateProjectColor(id, color);
+  }
+
+  activeProjectPath() {
+    return this.projectConfig.activeProjectPath();
+  }
+
+  setActiveProjectPath(path) {
+    return this.projectConfig.setActiveProjectPath(path);
   }
 
   createPlan({ repoPath, name, content = '' }) {
@@ -836,6 +1145,7 @@ export class RelayDatabase {
     sessionSource = null,
     preferIdleTerminal = false,
     terminalLifecycle = 'persistent',
+    keepTerminalOpen = false,
     terminalLayout = null,
     model = null,
     effort = null,
@@ -845,9 +1155,9 @@ export class RelayDatabase {
     const result = this.database.prepare(`
       INSERT INTO plan_runs (
         plan_id, breakdown_id, provider, session_id, session_label, session_source,
-        prefer_idle_terminal, terminal_lifecycle, terminal_layout_json,
+        prefer_idle_terminal, terminal_lifecycle, keep_terminal_open, terminal_layout_json,
         model, effort, status, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       planId,
       breakdownId,
@@ -857,6 +1167,7 @@ export class RelayDatabase {
       sessionSource,
       preferIdleTerminal ? 1 : 0,
       terminalLifecycle,
+      keepTerminalOpen && terminalLifecycle === 'disposable' ? 1 : 0,
       terminalLayout ? JSON.stringify(terminalLayout) : null,
       model,
       effort,
@@ -891,7 +1202,7 @@ export class RelayDatabase {
   }
 
   // Every run holding a step that is not settled, whatever the run's own status says.
-  // A stopped or failed run can still own steps that were queued or running when Relay
+  // A stopped or failed run can still own steps that were queued or running when CC Relay
   // died, so restart reconciliation has to look wider than `status = 'running'`.
   unsettledPlanRuns() {
     return this.database.prepare(`
@@ -1001,6 +1312,7 @@ export class RelayDatabase {
   }
 
   close() {
+    this.projectConfig.close();
     this.database.close();
   }
 }

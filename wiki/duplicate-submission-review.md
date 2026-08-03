@@ -10,7 +10,7 @@ type: review
 
 **Ticket confidence: High**
 
-The lag duplicate represented by tasks 210 and 211 came from setting `state.submitting` only after asynchronous idle routing. Two submit events could enter the handler before the first request acquired its lock. Relay now locks before that await, assigns one stable UUID to the unchanged composer intent, requires that UUID at the task API, and enforces uniqueness in SQLite. Repeated delivery returns the original task and does not repeat artifacts, events, queue positions, or scheduling.
+The lag duplicate represented by tasks 210 and 211 came from setting `state.submitting` only after asynchronous idle routing. Two submit events could enter the handler before the first request acquired its lock. CC Relay now locks before that await, assigns one stable UUID to the unchanged composer intent, requires that UUID at the task API, and enforces uniqueness in SQLite. Repeated delivery returns the original task and does not repeat artifacts, events, queue positions, or scheduling.
 
 ### Quality Panel (RAG)
 
@@ -36,9 +36,9 @@ The blast radius is fresh task creation from Execute, Plan council, and Turbo. F
 ### Functional Execution Trace
 
 1. The submit event returns immediately when another submission is active.
-2. Synchronous validation and execution-setting capture complete before Relay constructs an intent signature.
+2. Synchronous validation and execution-setting capture complete before CC Relay constructs an intent signature.
 3. An unchanged failed intent reuses its previous UUID. A changed intent receives a new UUID.
-4. Relay locks the button before idle routing can wait up to three seconds.
+4. CC Relay locks the button before idle routing can wait up to three seconds.
 5. `POST /api/tasks` requires and validates the UUID.
 6. A persisted matching UUID returns its original task before session or model revalidation. This makes response-loss retries safe even when routing state changed.
 7. New work passes normal provider validation and reaches `TaskQueue.enqueue()`.
@@ -53,12 +53,12 @@ Null or empty prompts still fail through existing validation. Missing, malformed
 - Deliberately repeating identical prompt text remains supported because idempotency follows the submit intent UUID, not content alone.
 - Idle routing can choose a different terminal on retry without defeating idempotency. Prompt, workflow, and provider must still match the original persisted task.
 - Attachment signature work is bounded by attachment count and small metadata. Full image data is copied only into the existing request body.
-- Old renderers cannot call the upgraded task endpoint without a submission UUID. Relay serves its renderer and backend together, and the error explicitly requests a refresh.
+- Old renderers cannot call the upgraded task endpoint without a submission UUID. CC Relay serves its renderer and backend together, and the error explicitly requests a refresh.
 
 ### Top 3 Risks
 
 1. The running backend must restart before `tasks.submission_id` and its unique index exist.
-2. Independently opened browser clients create independent intent UUIDs. Relay does not guess that two deliberate actions from different clients are one intent.
+2. Independently opened browser clients create independent intent UUIDs. CC Relay does not guess that two deliberate actions from different clients are one intent.
 3. A caller that reuses an existing UUID with changed model settings but the same prompt, workflow, and provider receives the original task. The official client changes its intent signature and UUID when settings change, so this is limited to custom API misuse.
 
 ### Top Improvements
@@ -129,7 +129,7 @@ The composer now branches on the returned task's state, using the shared
 `isFinishedTaskStatus` from `public/task-history.js` rather than a second hand-written
 list:
 
-- **Finished** (`complete`, `failed`, `interrupted`, `cancelled`): not a success. Relay
+- **Finished** (`complete`, `failed`, `interrupted`, `cancelled`): not a success. CC Relay
   drops the pending intent so the very next submission mints a fresh UUID and genuinely
   runs, keeps the prompt and its attachments, selects the existing task, and shows an
   informational notice naming it: *This exact prompt was already accepted as task N, which

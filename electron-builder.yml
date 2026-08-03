@@ -1,5 +1,5 @@
 appId: com.relay.queue
-productName: Relay
+productName: CC Relay
 asar: true
 generateUpdatesFilesForAllChannels: true
 files:
@@ -8,17 +8,36 @@ files:
   - package.json
 mac:
   category: public.app-category.developer-tools
+  icon: icon.png
   target:
     - dmg
     - zip
 win:
+  icon: icon.png
   target:
     - nsis
     - portable
+dmg:
+  backgroundColor: "#e8eaef"
+  icon: null
+  iconSize: 96
+  iconTextSize: 13
+  title: CC Relay
+  window:
+    width: 640
+    height: 380
+  contents:
+    - x: 160
+      y: 190
+      type: file
+    - x: 480
+      y: 190
+      type: link
+      path: /Applications
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
-artifactName: Relay-${version}-${os}-${arch}.${ext}
+artifactName: CC-Relay-${version}-${os}-${arch}.${ext}
 publish:
   provider: github
   owner: patrikkelemen

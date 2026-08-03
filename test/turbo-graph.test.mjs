@@ -83,7 +83,7 @@ test('keeps disconnected worker titles neutral and falls back to Worker n', () =
   assert.equal(resolvePackageWorker({ id: 'unassigned' }), null);
 });
 
-test('returns planner and ordered worker descriptors without live Relay styling', () => {
+test('returns planner and ordered worker descriptors without live CC Relay styling', () => {
   assert.deepEqual(turboParentManifest({
     thread_id: 'planner-thread',
     thread_name: 'Planner history',

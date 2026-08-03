@@ -9,7 +9,7 @@ async function request(path, options = {}) {
   });
   const body = await response.json();
   if (!response.ok) {
-    throw new Error(body.error || `Relay request failed with status ${response.status}.`);
+    throw new Error(body.error || `CC Relay request failed with status ${response.status}.`);
   }
   return body;
 }
@@ -50,7 +50,7 @@ async function main() {
   if (command === 'list') {
     const { tasks } = await request('/api/tasks');
     if (tasks.length === 0) {
-      console.log('Relay queue is empty.');
+      console.log('CC Relay queue is empty.');
       return;
     }
     tasks.forEach(printTask);
@@ -60,7 +60,7 @@ async function main() {
   if (command === 'threads') {
     const { threads } = await request('/api/threads');
     if (threads.length === 0) {
-      console.log('No Relay-connected Codex terminals found. Run the connect command for launch instructions.');
+      console.log('No CC Relay-connected Codex terminals found. Run the connect command for launch instructions.');
       return;
     }
     for (const thread of threads) {
@@ -86,7 +86,7 @@ async function main() {
 
   if (command === 'pause' || command === 'resume') {
     const status = await request(`/api/queue/${command}`, { method: 'POST' });
-    console.log(`Relay queue is ${status.paused ? 'paused' : 'running'}.`);
+    console.log(`CC Relay queue is ${status.paused ? 'paused' : 'running'}.`);
     return;
   }
 
@@ -104,6 +104,6 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`Relay: ${error.message}`);
+  console.error(`CC Relay: ${error.message}`);
   process.exitCode = 1;
 });

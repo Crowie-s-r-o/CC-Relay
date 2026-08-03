@@ -38,6 +38,10 @@ export class TerminalLaunchCoordinator {
   async launchNow(path, provider, layout, options = {}) {
     const launched = await this.launcher.launch(path, provider, layout, options);
     if (!launched.launchId) return launched;
+    if (launched.connectionStatus || launched.bindingError) {
+      this.launcher.releaseLaunchReservation?.(launched.launchId);
+      return launched;
+    }
 
     try {
       const deadline = this.now() + this.timeoutMs;

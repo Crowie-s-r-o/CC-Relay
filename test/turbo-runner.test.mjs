@@ -19,7 +19,7 @@ function turboTask(id = 7) {
     turbo: {
       plannerThreadId: 'planner', plannerModel: 'sol', plannerEffort: 'high',
       workerModel: 'luna', workerEffort: 'high',
-      workers: [{ threadId: 'worker-a', title: 'Relay A' }, { threadId: 'worker-b', title: 'Relay B' }],
+      workers: [{ threadId: 'worker-a', title: 'CC Relay A' }, { threadId: 'worker-b', title: 'CC Relay B' }],
     },
   };
 }
@@ -213,7 +213,7 @@ test('turbo cancellation is scoped to one parent task', async () => {
   assert.deepEqual(calls.sort(), ['1:planner', '1:worker:1:a', '2:planner']);
 });
 
-test('turbo graph packages retain exact Relay attribution while workers run and finish', async () => {
+test('turbo graph packages retain exact CC Relay attribution while workers run and finish', async () => {
   const artifacts = memoryArtifacts();
   const workerGate = new Promise((resolve) => { globalThis.releaseTurboWorker = resolve; });
   const events = [];
@@ -231,14 +231,14 @@ test('turbo graph packages retain exact Relay attribution while workers run and 
     await waitFor(() => artifacts.readTurboPlan(7)?.tasks.some((item) => item.status === 'running'));
     const running = artifacts.readTurboPlan(7).tasks.find((item) => item.status === 'running');
     assert.equal(running.workerThreadId, 'worker-a');
-    assert.equal(running.workerTitle, 'Relay A');
+    assert.equal(running.workerTitle, 'CC Relay A');
     assert.ok(events.some(({ event }) => event.type === 'turbo/dispatch' && event.workerThreadId === 'worker-a'));
     globalThis.releaseTurboWorker();
     await execution;
     const completed = artifacts.readTurboPlan(7).tasks.find((item) => item.id === 'api');
     assert.equal(completed.status, 'complete');
     assert.equal(completed.workerThreadId, 'worker-a');
-    assert.equal(completed.workerTitle, 'Relay A');
+    assert.equal(completed.workerTitle, 'CC Relay A');
     assert.ok(events.some(({ event }) => event.type === 'turbo/taskCompleted' && event.workerThreadId === 'worker-a'));
   } finally {
     globalThis.releaseTurboWorker?.();
@@ -247,7 +247,7 @@ test('turbo graph packages retain exact Relay attribution while workers run and 
   }
 });
 
-test('ready-plan reuse clears stale Relay assignment before dispatch', async () => {
+test('ready-plan reuse clears stale CC Relay assignment before dispatch', async () => {
   const artifacts = memoryArtifacts();
   const persisted = JSON.parse(planText);
   persisted.status = 'ready';
@@ -258,7 +258,7 @@ test('ready-plan reuse clears stale Relay assignment before dispatch', async () 
     status: 'pending',
     worker: 9,
     workerThreadId: 'stale-thread',
-    workerTitle: 'Stale Relay',
+    workerTitle: 'Stale CC Relay',
     result: 'stale result',
   }));
   artifacts.writeTurboPlan(7, persisted);

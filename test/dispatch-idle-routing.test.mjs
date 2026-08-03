@@ -119,13 +119,13 @@ test('a task without the preference stays queued for its selected busy Claude se
     selectedStatus = 'idle';
     await waitFor(() => context.database.getTask(task.id).status === 'complete');
     assert.equal(context.dispatched[0].threadId, 'busy-one');
-    assert.ok(called >= 2, 'Relay must recheck the selected session before starting');
+    assert.ok(called >= 2, 'CC Relay must recheck the selected session before starting');
   } finally {
     await context.cleanup();
   }
 });
 
-test('Plan council stays queued until its selected Claude author terminal is idle', async () => {
+test('Plan council stays queued until its selected Claude council terminal is idle', async () => {
   let authorStatus = 'active';
   const context = harness({
     listIdleSessions: async (task) => {
@@ -146,7 +146,7 @@ test('Plan council stays queued until its selected Claude author terminal is idl
     assert.equal(context.dispatched.length, 0);
     assert.equal(
       context.database.listEvents(task.id)
-        .some((event) => /Plan council author Claude session/.test(event.message)),
+        .some((event) => /Plan council Claude session/.test(event.message)),
       true,
     );
 

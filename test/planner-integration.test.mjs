@@ -68,7 +68,7 @@ async function runBreakdown(finalResponse) {
     const task = queue.enqueue({
       title: `Plan breakdown · ${plan.name}`,
       prompt: 'Break the plan into tasks and return JSON.',
-      thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: directory },
+      thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: directory },
       provider: 'codex',
       mode: 'breakdown',
       submissionId: '11111111-1111-4111-8111-111111111111',
@@ -142,7 +142,7 @@ test('a failed breakdown scheduled for retry is still in progress (Finding 23)',
     const task = queue.enqueue({
       title: 'Plan breakdown · Retry',
       prompt: 'Break the plan into tasks.',
-      thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: directory },
+      thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: directory },
       provider: 'codex',
       mode: 'breakdown',
       submissionId: '22222222-2222-4222-8222-222222222222',
@@ -183,7 +183,7 @@ test('deleting a queued breakdown task fails the breakdown instead of locking th
     const task = queue.enqueue({
       title: 'Plan breakdown',
       prompt: 'Break the plan into tasks.',
-      thread: { id: 'relay-a', title: 'Relay 1', source: 'cli', cwd: directory },
+      thread: { id: 'relay-a', title: 'CC Relay 1', source: 'cli', cwd: directory },
       provider: 'codex',
       mode: 'breakdown',
       submissionId: '33333333-3333-4333-8333-333333333333',

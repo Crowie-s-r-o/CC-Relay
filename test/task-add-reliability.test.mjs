@@ -143,7 +143,7 @@ test('the registry reports staleness so callers can decline to act on cached sta
   assert.equal(registry.stale, false, 'staleness clears once discovery recovers');
 });
 
-// Last resort binding for the add path: a session Relay has run before has a known workspace,
+// Last resort binding for the add path: a session CC Relay has run before has a known workspace,
 // so a discovery outage cannot cost the user their prompt.
 test('a previously used session can still be resolved from task history', () => {
   withDatabase((database) => {

@@ -14,7 +14,7 @@ tags:
 
 ## Incident
 
-Task 328 continued completed disposable Codex task 327 and resumed conversation `019fa4cf-986a-7e42-ae7b-3e7caaa25b83`. The Codex CLI loaded the saved chat successfully, but Relay rejected or timed out its native-terminal binding and opened more resume terminals through automatic retry.
+Task 328 continued completed disposable Codex task 327 and resumed conversation `019fa4cf-986a-7e42-ae7b-3e7caaa25b83`. The Codex CLI loaded the saved chat successfully, but CC Relay rejected or timed out its native-terminal binding and opened more resume terminals through automatic retry.
 
 The structured diagnostics prove four separate failures in one chain:
 
@@ -26,7 +26,7 @@ The structured diagnostics prove four separate failures in one chain:
 Later retries also exposed a duplicate-client discovery problem. `listConnectedThreadIds()` intentionally deduplicates by conversation ID, while `launchIdForThread()` can report an older client for that conversation. The new resume client was healthy, but the launch coordinator could not prove that the deduplicated thread belonged to its exact launch.
 
 > [!important]
-> Loading the saved chat is not task completion. Relay must prove the new native launch, bind it, and then send the queued continuation turn. A resume binding failure occurs before the prompt is sent and must never fan out automatically.
+> Loading the saved chat is not task completion. CC Relay must prove the new native launch, bind it, and then send the accepted continuation turn. A resume binding failure occurs before the prompt is sent and must never fan out automatically. Task 328 was a linked queue task under the historical contract; current continuation keeps that launch safety while running under the source task ID.
 
 ## Corrected contract
 
@@ -76,7 +76,7 @@ The corrected path matches the incident evidence and closes every observed leak.
 
 1. A real Codex CLI or Terminal.app behavior change could differ from the deterministic fakes in `test/project-launcher.test.mjs` and `test/websocket-proxy.test.mjs`.
 2. `ProjectLauncher.recoveryRetryMs` is still a bounded drain guard. A provider connection that remains stale beyond that interval can become a recovery candidate, although exact pending-launch and launch-reservation checks protect active resumes.
-3. The currently running Relay backend predates this fix. Restart recovery must occur before manually retrying task 328, or the old process will repeat the original behavior.
+3. The currently running CC Relay backend predates this fix. Restart recovery must occur before manually retrying task 328, or the old process will repeat the original behavior.
 
 ### Top Improvements
 
@@ -88,13 +88,13 @@ The corrected path matches the incident evidence and closes every observed leak.
 
 **Ship with Mitigations**
 
-Task 328 was cancelled while still queued so the older running backend cannot launch it again. Restart Relay before manually retrying that continuation.
+Task 328 was cancelled while still queued so the older running backend cannot launch it again. Restart CC Relay before manually retrying that continuation.
 
 ---
 
 ### Confirmed Issues
 
-1. `ProjectLauncher.recoverConnectedTerminals()` could rebind a terminal immediately after Relay closed it because the Codex proxy connection outlived the native process for several seconds.
+1. `ProjectLauncher.recoverConnectedTerminals()` could rebind a terminal immediately after CC Relay closed it because the Codex proxy connection outlived the native process for several seconds.
 2. `TerminalLaunchCoordinator.launchNow()` could throw from `bindOwnedTerminal()` before the disposable pool recorded the native launch, so the task cleanup path had no allocation to release.
 3. Deduplicated Codex thread discovery could expose an older launch ID when two clients temporarily joined the same saved conversation.
 4. All three failures defaulted to retryable queue errors, causing repeated resume terminals even though the saved chat had already loaded.
@@ -128,5 +128,16 @@ Task 328 was cancelled while still queued so the older running backend cannot la
 - Failed bindings cannot leak their native terminal handle past pool cleanup.
 - Automatic retry cannot multiply an ambiguous resumed conversation.
 - The fix preserves fresh-task retries, project capacity accounting, and the existing disposable continuation API.
+
+## July 30 2026 resume audit addendum
+
+Nothing above is superseded. Every task 328 invariant was re-verified against the current source on July 30, 2026 and all of them still hold inside one backend process: exact launch-reservation identity, pending-launch recovery exclusion, post-close resurrection suppression, one exact close for a rejected binding, and non-retryable resumed failures. The evidence is recorded per invariant in [[resume-dispatch-audit]].
+
+Two limits were added to the record rather than changed:
+
+- The guards are per-process. On July 30 a packaged desktop backend and a standalone `node src/server.mjs` ran together. The desktop bound its council Claude terminal at 13:22:23.808 and the standalone instance runtime-recovered that same window at 13:22:24.566. The recovery happened after binding, so the pending-launch exclusion was not exercised; the gap is that a second backend cannot see the first backend's in-memory ownership at all. Run one backend.
+- `CodexAppServer.waitForIdleThread()` has no deadline. A resumed thread that never leaves `active` would hold a running task with its terminal open and no turn sent. It has never fired in the recorded diagnostics and was left unchanged.
+
+The reported repeat failure on task 39 was not a Codex resume defect. Codex resumed, bound, and completed its review stage in both attempts.
 
 #relay #codex #continuation #terminal #retry #review

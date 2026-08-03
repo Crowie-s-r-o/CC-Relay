@@ -26,4 +26,4 @@ const marketplaceName = execFileSync('python3', [
 ], { encoding: 'utf8' }).trim();
 
 execFileSync('codex', ['plugin', 'add', `relay-queue@${marketplaceName}`], { stdio: 'inherit' });
-console.log('Relay Queue installed. Start a new Codex thread before using it.');
+console.log('CC Relay Queue installed. Start a new Codex thread before using it.');

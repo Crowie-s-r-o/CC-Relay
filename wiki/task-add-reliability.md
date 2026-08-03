@@ -22,7 +22,7 @@ request path.
 > `POST /api/tasks` performs local validation only. It never rejects because a session is busy,
 > because another task is running, because discovery is mid-refresh, or because the queue is
 > paused. The only rejections left are genuinely invalid input: an empty prompt, an unsupported
-> mode or provider, a bad or reused submission UUID, image limits, and a session Relay has never
+> mode or provider, a bad or reused submission UUID, image limits, and a session CC Relay has never
 > seen at all.
 
 If the referenced session cannot be confirmed live at add time, the task is still accepted and
@@ -45,7 +45,7 @@ SSE delivery at the same time. `GET /api/status` (polled every two seconds) and 
 Now: `ClaudeRuntimeStatus.current()` is a pure cache read that never spawns anything. A background
 interval refreshes it using bounded asynchronous probes. The same treatment was applied to the
 Codex probe, which additionally used to run exactly once at module load, so a single failed probe
-at boot disabled Codex until Relay was restarted.
+at boot disabled Codex until CC Relay was restarted.
 
 ### 2. Session discovery blanked its own cache on any error
 

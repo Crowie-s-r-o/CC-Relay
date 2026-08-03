@@ -3,16 +3,27 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Relay AI Queue</title>
+    <title>CC Relay</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+    <script>
+      (() => {
+        const savedTheme = localStorage.getItem('relay.theme');
+        const theme = savedTheme === 'light' || savedTheme === 'dark'
+          ? savedTheme
+          : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.headerPosition =
+          localStorage.getItem('relay.headerPosition') === 'bottom' ? 'bottom' : 'top';
+      })();
+    </script>
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
     <header class="app-header">
       <div class="brand-lockup">
-        <div class="brand-mark" aria-hidden="true">R<span>//</span></div>
+        <img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true">
         <div>
-          <h1>Relay</h1>
+          <h1>CC Relay</h1>
           <p>AI work, one task at a time</p>
         </div>
       </div>
@@ -20,9 +31,20 @@
         <div class="header-running-empty"><i aria-hidden="true"></i><span>No tasks running</span></div>
       </div>
       <div class="header-actions">
+        <button id="header-position-toggle" class="header-position-toggle" type="button" aria-label="Move monitor bar to bottom" title="Move monitor bar to bottom" aria-pressed="false">
+          <span id="header-position-icon" class="header-position-icon" aria-hidden="true">↓</span>
+          <span id="header-position-label">Bottom</span>
+        </button>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Use dark mode" title="Use dark mode">
+          <span class="theme-toggle-track" aria-hidden="true">
+            <span class="theme-toggle-stars">·</span>
+            <span class="theme-toggle-thumb"></span>
+          </span>
+          <span id="theme-toggle-label">Dark</span>
+        </button>
         <span id="codex-status" class="connection-pill" data-state="checking">
           <span class="live-dot" aria-hidden="true"></span>
-          <span id="codex-status-label">Checking Relay</span>
+          <span id="codex-status-label">Checking CC Relay</span>
         </span>
         <button id="pause-button" class="button secondary" type="button">Pause queue</button>
       </div>
@@ -58,7 +80,7 @@
           <section class="mode-selector" aria-labelledby="mode-selector-label">
             <div class="mode-selector-heading">
               <span id="mode-selector-label">Workflow</span>
-              <small>Choose direct work or multi-terminal forward planning.</small>
+              <small>Direct execution or forward planning.</small>
             </div>
             <div class="mode-tabs" role="tablist" aria-label="Task workflow">
               <button id="mode-execute" class="mode-tab selected" type="button" role="tab" aria-selected="true" aria-controls="execute-config" data-mode="execute">
@@ -67,7 +89,7 @@
               </button>
               <button id="mode-turbo" class="mode-tab" type="button" role="tab" aria-selected="false" aria-controls="turbo-config" tabindex="-1" data-mode="turbo">
                 <span class="mode-tab-index">02</span>
-                <span><strong>Forward-planning turbo</strong><small>Plan once, execute a dependency graph in parallel</small></span>
+                <span><strong>Forward-planning turbo</strong><small>Plan once, run dependencies in parallel</small></span>
               </button>
             </div>
           </section>
@@ -143,55 +165,61 @@
 
             <div class="plan-council-option">
               <label class="plan-council-toggle">
-                <input id="plan-council-enabled" type="checkbox" aria-controls="plan-council-route plan-council-readiness">
-                <span><strong>Use Plan council for this prompt</strong><small>Creates a reviewed, read-only plan instead of running the prompt directly.</small></span>
+                <input id="plan-council-enabled" type="checkbox" aria-controls="plan-council-order plan-council-route plan-council-readiness">
+                <span><strong>Use Plan council for this prompt</strong><small>Builds a reviewed, read-only plan instead of executing.</small></span>
               </label>
             </div>
 
-            <div id="plan-council-route" class="council-route" aria-label="Claude drafts, Codex reviews, then Claude revises" hidden>
-              <article class="council-node council-node-claude">
+            <div id="plan-council-order" class="turbo-council-order plan-council-order" role="group" aria-label="Choose which provider plans first" hidden>
+              <span>Starts with</span>
+              <button type="button" data-plan-council-first="claude" aria-pressed="true">Claude first</button>
+              <button type="button" data-plan-council-first="codex" aria-pressed="false">Codex first</button>
+            </div>
+
+            <div id="plan-council-route" class="council-route execute-council-route" aria-label="Claude drafts, Codex reviews, then Claude revises" data-first="claude" hidden>
+              <article class="council-node council-node-claude execute-council-provider execute-council-provider-claude">
                 <div class="council-node-heading">
-                  <span class="council-role">01 Author</span>
+                  <span id="plan-council-claude-role" class="council-role">01 Author</span>
                   <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
                 </div>
                 <strong>Claude</strong>
-                <small>Inspects the project and writes the first plan in the selected terminal.</small>
+                <small id="plan-council-claude-copy">Inspects the project and writes the first plan in the selected terminal.</small>
                 <label id="plan-author-terminal-field" for="plan-author-terminal" hidden>
                   <span>Terminal</span>
                   <select id="plan-author-terminal" name="authorThreadId"></select>
                 </label>
                 <label for="plan-author-model">
                   <span>Model</span>
-                  <select id="plan-author-model" name="authorModel">
-                    <option value="fable">Fable</option>
-                    <option value="opus">Opus</option>
-                  </select>
+                  <select id="plan-author-model" name="claudeModel"></select>
                 </label>
-                <div class="council-fixed-setting"><span>Effort</span><strong>Max</strong></div>
+                <label for="plan-author-effort">
+                  <span>Effort</span>
+                  <select id="plan-author-effort" name="claudeEffort"></select>
+                </label>
               </article>
 
-              <div class="council-connector" aria-hidden="true"><span>review</span><b>→</b></div>
+              <div id="plan-council-connector" class="council-connector" aria-hidden="true"><span>review</span><b>→</b></div>
 
-              <article class="council-node council-node-codex">
+              <article class="council-node council-node-codex execute-council-provider execute-council-provider-codex">
                 <div class="council-node-heading">
-                  <span class="council-role">02 Reviewer</span>
+                  <span id="plan-council-codex-role" class="council-role">02 Reviewer</span>
                   <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
                 </div>
                 <strong>Codex</strong>
-                <small>Challenges assumptions, gaps, risk, and verification.</small>
+                <small id="plan-council-codex-copy">Challenges assumptions, gaps, risk, and verification.</small>
                 <label for="plan-reviewer-model">
                   <span>Model</span>
-                  <select id="plan-reviewer-model" name="reviewerModel"></select>
+                  <select id="plan-reviewer-model" name="codexModel"></select>
                 </label>
                 <label for="plan-reviewer-effort">
                   <span>Effort</span>
-                  <select id="plan-reviewer-effort" name="reviewerEffort"></select>
+                  <select id="plan-reviewer-effort" name="codexEffort"></select>
                 </label>
               </article>
 
               <div class="council-return">
                 <span class="council-role">03 Revision</span>
-                <strong>Claude folds the review into the final plan</strong>
+                <strong id="plan-council-revision-copy">Claude folds the review into the final plan</strong>
               </div>
             </div>
 
@@ -210,10 +238,10 @@
             <section class="council-config turbo-council-config" aria-labelledby="turbo-council-title">
               <div class="council-heading">
                 <div>
-                  <span class="eyebrow">Optional review</span>
-                  <h3 id="turbo-council-title">Plan council</h3>
+                  <span class="eyebrow">Forward planner</span>
+                  <h3 id="turbo-council-title">Planning route</h3>
                 </div>
-                <span class="council-minimum">2 providers</span>
+                <span id="turbo-planning-count" class="council-minimum">1 planner</span>
               </div>
             <div class="plan-council-option turbo-council-toggle-row">
               <label class="plan-council-toggle">
@@ -230,10 +258,10 @@
               <button type="button" data-council-first="codex" aria-pressed="true">Codex first</button>
               <button type="button" data-council-first="claude" aria-pressed="false">Claude first</button>
             </div>
-            <div id="turbo-council-route" class="council-route turbo-council-route" aria-label="Turbo Plan council route" data-first="codex">
+            <div id="turbo-council-route" class="council-route turbo-council-route" aria-label="Codex plans the execution graph" data-enabled="false" data-first="codex">
               <article id="turbo-council-codex-step" class="council-node council-node-codex turbo-council-provider turbo-council-provider-codex">
                 <div class="council-node-heading">
-                  <span id="turbo-council-codex-role" class="council-role">01 Author</span>
+                  <span id="turbo-council-codex-role" class="council-role">Planner</span>
                   <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
                 </div>
                 <strong>Codex</strong>
@@ -259,12 +287,12 @@
               <label><span>Worker effort</span><select id="turbo-worker-effort"></select></label>
               <label><span>Worker terminals</span><input id="turbo-worker-count" type="number" min="1" max="8" step="1" value="3"></label>
             </div>
-            <p id="turbo-note" class="turbo-note">The selected Codex terminal plans in read-only mode. Relay reads its JSON dependency graph and dispatches ready tasks across the other terminals in this workspace.</p>
+            <p id="turbo-note" class="turbo-note">The selected Codex terminal plans in read-only mode. CC Relay reads its JSON dependency graph and dispatches ready tasks across the other terminals in this workspace.</p>
           </section>
 
           <fieldset id="terminal-panel" class="terminal-fieldset" role="tabpanel" aria-labelledby="provider-codex">
             <div class="terminal-heading-row">
-              <div id="terminal-legend" class="terminal-legend">Automatic terminal pool</div>
+              <div id="terminal-legend" class="terminal-legend">Automatic terminals</div>
               <div id="connection-help" class="connection-help">
                 <span id="legacy-terminal-launch-buttons">
                   <button id="launch-codex-button" class="button primary compact" type="button">Launch Codex</button>
@@ -274,17 +302,24 @@
               </div>
             </div>
             <p id="session-message" class="field-help" role="status">Finding connected Codex terminals.</p>
-            <p id="terminal-pool-controls" class="terminal-pool-note" hidden>Relay opens a fresh terminal when a queued task gets a slot and closes it when the task ends. Continue session relaunches the provider and resumes the saved conversation.</p>
+            <p id="terminal-pool-controls" class="terminal-pool-note" hidden>CC Relay opens a fresh terminal per task and keeps the final session open. Close its native window when done.</p>
+            <label id="keep-terminal-open-option" class="terminal-keep-open-option" hidden>
+              <input id="keep-terminal-open" type="checkbox" role="switch">
+              <span>
+                <strong>Keep task terminals open</strong>
+                <small id="keep-terminal-open-help">Keeps this project's sessions connected after tasks and after CC Relay exits. This choice is not shared with other projects. Session tasks show terminal state, conversation history, and a Close terminal action in Task activity.</small>
+              </span>
+            </label>
             <div id="legacy-terminal-controls">
               <div class="terminal-task-options">
-                <label id="idle-terminal-route" class="terminal-task-option"><input id="prefer-idle-terminal" type="checkbox"> Use an idle Relay when available</label>
+                <label id="idle-terminal-route" class="terminal-task-option"><input id="prefer-idle-terminal" type="checkbox"> Use an idle CC Relay when available</label>
               </div>
               <input id="thread-id" name="threadId" type="hidden">
               <div id="terminal-list" class="terminal-list" role="radiogroup" aria-label="Connected Codex terminals"></div>
               <div id="terminal-close-row" class="terminal-close-row" data-state="unavailable">
                 <span class="terminal-close-copy">
                   <strong id="terminal-close-label">Close selected terminal</strong>
-                  <small id="terminal-close-reason" role="status">Select a terminal to see whether Relay owns its native window.</small>
+                  <small id="terminal-close-reason" role="status">Select a terminal to see whether CC Relay owns its native window.</small>
                 </span>
                 <button id="close-terminal-button" class="button danger compact terminal-close-button" type="button" disabled>Close selected</button>
               </div>
@@ -339,7 +374,7 @@
                   <span>Window layout</span>
                   <label class="terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked> Arrange in a grid</label>
                 </div>
-                <label class="terminal-background-toggle"><input id="terminal-launch-background" type="checkbox"> Launch behind other windows</label>
+                <label class="terminal-background-toggle"><input id="terminal-launch-background" type="checkbox" checked> Launch behind other windows</label>
                 <label><span>Columns</span><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"></label>
                 <label><span>Rows</span><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"></label>
                 <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
@@ -403,9 +438,12 @@
               <button type="button" data-task-view="queue" aria-pressed="true">Queue</button>
               <button type="button" data-task-view="history" aria-pressed="false">History</button>
             </div>
-            <button id="task-scope-button" class="queue-heading-button" type="button" aria-label="Task scope: All Relays. Click to change.">All Relays</button>
+            <button id="import-tasks-button" class="queue-heading-button import-tasks-button" type="button" hidden>Import localhost</button>
+            <button id="standup-button" class="queue-heading-button standup-button" type="button" aria-haspopup="dialog" aria-controls="standup-modal" disabled>Standup</button>
+            <button id="clear-task-notifications-button" class="queue-heading-button clear-task-notifications-button" type="button" hidden>Clear new</button>
           </div>
         </div>
+        <p id="task-import-status" class="task-import-status" role="status" aria-live="polite" hidden></p>
         <section id="history-ledger" class="history-ledger" aria-label="Task history statistics" hidden>
           <div class="history-toolbar">
             <div class="history-period-tabs" role="group" aria-label="History period">
@@ -455,6 +493,19 @@
             <div id="detail-actions" class="detail-actions"></div>
           </div>
 
+          <section id="session-strip" class="session-strip" hidden data-state="closed">
+            <span class="session-strip-identity">
+              <span class="session-strip-glyph" aria-hidden="true">⧉</span>
+              <span class="session-strip-copy">
+                <strong>Retained terminal session</strong>
+                <small id="session-strip-context"></small>
+              </span>
+            </span>
+            <span id="session-strip-state" class="session-strip-state" data-state="closed"></span>
+            <button id="session-kill-button" class="button danger compact session-kill-button" type="button">Close terminal</button>
+            <p id="session-strip-message" class="session-strip-message" role="status"></p>
+          </section>
+
           <section id="plan-preview" class="plan-preview" hidden>
             <div class="plan-preview-header">
               <div>
@@ -476,7 +527,7 @@
                 </div>
                 <div class="plan-execution-controls">
                   <label for="plan-execution-relay">
-                    <span>Execution Relay</span>
+                    <span>Execution CC Relay</span>
                     <select id="plan-execution-relay"></select>
                   </label>
                   <button id="plan-execution-button" class="button primary compact" type="button">Execute plan</button>
@@ -489,11 +540,19 @@
             <details id="plan-draft-section" class="plan-source" hidden>
               <summary><span>Claude draft</span><small>First pass</small></summary>
               <button class="content-copy-button" type="button" data-copy-content="planDraft" aria-label="Copy Claude draft">Copy</button>
+              <div id="plan-draft-artifact-row" class="plan-artifact-row plan-stage-artifact-row" hidden>
+                <span>Stage file</span>
+                <code id="plan-draft-artifact-path"></code>
+              </div>
               <div id="plan-draft" class="markdown-document compact"></div>
             </details>
             <details id="plan-review-section" class="plan-source" hidden>
               <summary><span>Codex review</span><small>Independent critique</small></summary>
               <button class="content-copy-button" type="button" data-copy-content="planReview" aria-label="Copy Codex review">Copy</button>
+              <div id="plan-review-artifact-row" class="plan-artifact-row plan-stage-artifact-row" hidden>
+                <span>Stage file</span>
+                <code id="plan-review-artifact-path"></code>
+              </div>
               <div id="plan-review" class="markdown-document compact"></div>
             </details>
             <article id="plan-final-section" class="plan-final" hidden>
@@ -525,10 +584,12 @@
 
           <details id="prompt-section" class="detail-section detail-copy-disclosure">
             <summary>
-              <span><b>Prompt</b><small id="detail-prompt-preview">Original request</small></span>
-              <i>View</i>
+              <span class="detail-disclosure-label"><b>Prompts</b><small id="detail-prompt-preview">Original request</small></span>
+              <span class="detail-disclosure-actions">
+                <button class="content-copy-button" type="button" data-copy-content="prompt" aria-label="Copy prompts">Copy</button>
+                <i>View</i>
+              </span>
             </summary>
-            <button class="content-copy-button" type="button" data-copy-content="prompt" aria-label="Copy prompt">Copy</button>
             <pre id="detail-prompt"></pre>
           </details>
 
@@ -540,13 +601,24 @@
             <div id="detail-attachments" class="detail-attachments"></div>
           </section>
 
+          <section id="session-history" class="detail-section session-history" hidden>
+            <div class="detail-section-heading session-history-heading">
+              <h3>Conversation</h3>
+              <span id="session-history-count"></span>
+              <button class="content-copy-button" type="button" data-copy-content="conversation" aria-label="Copy conversation">Copy</button>
+            </div>
+            <div id="session-history-turns" class="session-history-turns"></div>
+          </section>
+
           <details id="result-section" class="detail-section detail-copy-disclosure" open>
             <summary>
-              <span><b>Result</b><small id="detail-result-preview">AI response</small></span>
-              <i>View</i>
+              <span class="detail-disclosure-label"><b>Result</b><small id="detail-result-preview">AI response</small></span>
+              <span class="detail-disclosure-actions">
+                <button class="content-copy-button" type="button" data-copy-content="result" aria-label="Copy result">Copy</button>
+                <i>View</i>
+              </span>
             </summary>
-            <button class="content-copy-button" type="button" data-copy-content="result" aria-label="Copy result">Copy</button>
-            <pre id="detail-result"></pre>
+            <div id="detail-result" class="markdown-document result-markdown"></div>
           </details>
           </div>
 
@@ -571,7 +643,7 @@
                 <span class="task-continuation-glyph" aria-hidden="true">↳</span>
                 <span>
                   <small>Continue session</small>
-                  <strong id="task-continuation-context">Same Relay · same conversation</strong>
+                  <strong id="task-continuation-context">Same CC Relay · same conversation</strong>
                 </span>
                 <span id="task-continuation-state" class="task-continuation-state" data-state="ready">Ready</span>
               </div>
@@ -609,6 +681,122 @@
         </div>
       </section>
     </main>
+
+    <dialog id="standup-modal" class="terminal-settings-modal standup-modal" aria-labelledby="standup-title">
+      <div class="terminal-settings-card standup-card">
+        <div class="terminal-settings-header">
+          <div>
+            <h2 id="standup-title">Daily standup</h2>
+            <p id="standup-subtitle">Select a workday to generate an AI standup from saved prompts and responses.</p>
+          </div>
+          <button id="standup-close" class="terminal-settings-close" type="button" aria-label="Close daily standup">×</button>
+        </div>
+        <div class="standup-body">
+          <div class="standup-controls">
+            <label class="standup-date-field" for="standup-date">
+              <span>Workday</span>
+              <input id="standup-date" type="date">
+            </label>
+            <label class="standup-length-field" for="standup-length">
+              <span>Length</span>
+              <select id="standup-length">
+                <option value="short">Short</option>
+                <option value="standard" selected>Standard</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </label>
+            <div class="standup-scope">
+              <span id="standup-scope-label">Selected Launchpad</span>
+              <strong id="standup-count">Select a workday</strong>
+            </div>
+          </div>
+          <div class="standup-generator-route">
+            <span class="standup-generator-mark" aria-hidden="true">AI</span>
+            <span>
+              <small>Generator</small>
+              <strong id="standup-generator-provider">Selected provider</strong>
+            </span>
+            <p id="standup-generator-note">A fresh isolated CLI process is used. Task terminals are never used for standup generation.</p>
+          </div>
+          <section id="standup-sheet" class="standup-sheet" aria-labelledby="standup-date-label">
+            <div class="standup-sheet-heading">
+              <span>
+                <small>AI standup</small>
+                <strong id="standup-date-label">Select a workday</strong>
+              </span>
+              <small id="standup-source-note">AI synthesis from recorded prompts and responses</small>
+            </div>
+            <div id="standup-results" class="standup-results" hidden>
+              <section class="standup-result-group" data-kind="task" aria-labelledby="standup-tasks-title">
+                <div class="standup-result-heading">
+                  <span id="standup-tasks-title">Tasks</span>
+                  <small id="standup-task-count">0</small>
+                </div>
+                <ul id="standup-task-list" class="standup-list"></ul>
+                <p id="standup-task-empty" class="standup-group-empty" hidden>No completed work identified.</p>
+              </section>
+              <section class="standup-result-group" data-kind="blocker" aria-labelledby="standup-blockers-title">
+                <div class="standup-result-heading">
+                  <span id="standup-blockers-title">Blockers</span>
+                  <small id="standup-blocker-count">0</small>
+                </div>
+                <ul id="standup-blocker-list" class="standup-list"></ul>
+                <p id="standup-blocker-empty" class="standup-group-empty" hidden>No blockers identified.</p>
+              </section>
+            </div>
+            <ul id="standup-loading-list" class="standup-list" hidden></ul>
+            <div id="standup-empty" class="standup-empty" hidden>
+              <span aria-hidden="true">○</span>
+              <strong id="standup-empty-title">Select a workday</strong>
+              <p id="standup-empty-message">Generation starts only after you choose a date.</p>
+            </div>
+          </section>
+          <p id="standup-copy-status" class="standup-copy-status" role="status" aria-live="polite"></p>
+        </div>
+        <div class="standup-actions">
+          <button id="standup-cancel" class="button compact" type="button">Close</button>
+          <button id="standup-generate" class="button compact" type="button">Generate standup</button>
+          <button id="standup-copy" class="button primary compact" type="button" disabled>Copy standup</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="project-color-modal" class="terminal-settings-modal project-color-modal" aria-labelledby="project-color-title">
+      <div class="terminal-settings-card project-color-card">
+        <div class="terminal-settings-header">
+          <div>
+            <h2 id="project-color-title">Project color</h2>
+            <p id="project-color-subtitle">Choose a bright identity for this project.</p>
+          </div>
+          <button id="project-color-close" class="terminal-settings-close" type="button" aria-label="Close project color picker">×</button>
+        </div>
+        <div class="project-color-body">
+          <div id="project-color-preview" class="project-color-preview" aria-hidden="true">
+            <span id="project-color-preview-initial">R</span>
+            <strong id="project-color-preview-name">Relay</strong>
+          </div>
+          <fieldset class="project-color-presets">
+            <legend>Predefined colors</legend>
+            <div id="project-color-preset-list" class="project-color-preset-list"></div>
+          </fieldset>
+          <label class="project-color-custom" for="project-color-custom-input">
+            <span>
+              <strong>Custom color</strong>
+              <small>Pick any color. Relay adjusts it for readable light and dark themes.</small>
+            </span>
+            <span class="project-color-custom-control">
+              <input id="project-color-custom-input" type="color" value="#3b82f6">
+              <output id="project-color-custom-value" for="project-color-custom-input">#3B82F6</output>
+            </span>
+          </label>
+          <p id="project-color-message" class="project-color-message" role="status"></p>
+        </div>
+        <div class="project-color-actions">
+          <button id="project-color-cancel" class="button compact" type="button">Cancel</button>
+          <button id="project-color-save" class="button primary compact" type="button">Apply color</button>
+        </div>
+      </div>
+    </dialog>
 
     <dialog id="planner-modal" class="terminal-settings-modal planner-modal" aria-labelledby="planner-title">
       <div class="terminal-settings-card planner-card">

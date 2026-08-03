@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   TerminalRuntimeResolver,
@@ -117,4 +118,81 @@ test('runtime recovery refuses two sessions that resolve to the same native wind
     { id: 'claude-one', provider: 'claude', cwd: '/work', source: 'Claude interactive', pid: 501 },
     { id: 'claude-two', provider: 'claude', cwd: '/work', source: 'Claude interactive', pid: 502 },
   ]), []);
+});
+
+// The shipped JXA source is executed here against a fake Terminal application. Terminal.app
+// answers null for the tabs of a window it cannot describe, and the former one-expression
+// inventory called .map() on that null. One such window aborted the whole script, so every
+// exact-terminal identity failed at once. Task 39's Plan council revision died that way on
+// 2026-07-30 three milliseconds after terminal.recovery.native_inspection_failed.
+// The evaluated body is this repository's own committed source, never test input or any
+// value derived from one, so running it here carries no injection surface.
+function evaluateTerminalInventory(windows, { running = true } = {}) {
+  const source = readFileSync(new URL('../src/terminal-runtime-resolver.mjs', import.meta.url), 'utf8');
+  const script = source.match(/const DARWIN_TERMINAL_INVENTORY = `([\s\S]*?)`;/)?.[1];
+  assert.ok(script, 'the macOS Terminal inventory script must stay readable from source');
+  assert.equal(/window\.tabs\(\)\.map/.test(script), false);
+  const evaluate = new Function('Application', `${script}\nreturn terminalInventory();`);
+  return evaluate(() => ({
+    running: () => running,
+    windows: () => windows,
+  }));
+}
+
+test('the macOS Terminal inventory survives a window whose tabs cannot be read', () => {
+  const unreadableWindow = { id: () => 900, tabs: () => null };
+  const throwingWindow = {
+    id: () => 901,
+    tabs: () => { throw new Error('Terminal cannot describe this window.'); },
+  };
+  const namedWindow = { id: () => 902, tabs: () => [{ tty: () => '/dev/ttys019' }] };
+  assert.deepEqual(
+    evaluateTerminalInventory([unreadableWindow, throwingWindow, namedWindow]),
+    [
+      { id: 900, tabs: [] },
+      { id: 901, tabs: [] },
+      { id: 902, tabs: [{ tty: '/dev/ttys019' }] },
+    ],
+  );
+  assert.deepEqual(evaluateTerminalInventory([namedWindow], { running: false }), []);
+});
+
+test('an unreadable tab still occupies its position so a multi-tab window stays unclosable', () => {
+  const inventory = evaluateTerminalInventory([{
+    id: () => 903,
+    tabs: () => [
+      { tty: () => { throw new Error('Terminal cannot read this tab.'); } },
+      { tty: () => '/dev/ttys021' },
+    ],
+  }]);
+  assert.deepEqual(inventory, [{ id: 903, tabs: [{ tty: null }, { tty: '/dev/ttys021' }] }]);
+  // Dropping the unreadable tab would make this look like a single-tab window and authorize
+  // closing a window that still holds unrelated work.
+  assert.equal(singleTabTerminalForTty(inventory, 'ttys021'), null);
+});
+
+test('one unreadable Terminal window does not hide every other exact session', async () => {
+  const resolver = new TerminalRuntimeResolver({
+    platform: 'darwin',
+    run: async (command) => {
+      if (command === 'ps') return { stdout: '901 ttys040\n' };
+      if (command === 'osascript') {
+        return { stdout: JSON.stringify([
+          { id: 401, tabs: null },
+          { id: 402, tabs: [{ tty: '/dev/ttys040' }] },
+        ]) };
+      }
+      return { stdout: '' };
+    },
+  });
+  assert.deepEqual(await resolver.resolve([
+    { id: 'claude-one', provider: 'claude', cwd: '/work', source: 'Claude interactive', pid: 901 },
+  ]), [{
+    threadId: 'claude-one',
+    provider: 'claude',
+    path: '/work',
+    runtimeProcessId: 901,
+    terminalWindowId: 402,
+    terminalTty: '/dev/ttys040',
+  }]);
 });

@@ -3,6 +3,7 @@ const DIRECT_PROVIDERS = new Set(['codex', 'claude']);
 export function continuationPresentation({
   supportsDirectFollowUp,
   supportsTaskSteering,
+  supportsClaudeTaskSteering,
   sessionConnected,
   resumableSession = false,
   busy,
@@ -24,6 +25,21 @@ export function continuationPresentation({
       sendDisabled: true,
     };
   }
+  const steeringAvailable = taskRunning && (
+    provider === 'codex'
+      ? supportsTaskSteering
+      : provider === 'claude' && supportsClaudeTaskSteering
+  );
+  if (steeringAvailable) {
+    return {
+      state: 'steering',
+      label: 'Updates current',
+      buttonLabel: 'Update turn',
+      hint: 'This message updates the active turn now. It will not create a queued task.',
+      inputDisabled: false,
+      sendDisabled: !hasPrompt,
+    };
+  }
   if (!sessionConnected && !resumableSession) {
     return {
       state: 'offline',
@@ -35,23 +51,13 @@ export function continuationPresentation({
     };
   }
   if (taskRunning) {
-    if (provider === 'codex' && supportsTaskSteering) {
-      return {
-        state: 'steering',
-        label: 'Updates current',
-        buttonLabel: 'Update turn',
-        hint: 'This message updates the active turn now. It will not create a queued task.',
-        inputDisabled: false,
-        sendDisabled: !hasPrompt,
-      };
-    }
     return {
       state: 'unavailable',
       label: 'Live update unavailable',
       buttonLabel: 'Update turn',
       hint: provider === 'claude'
-        ? 'Claude live turn updates are not available yet. Wait for this turn to finish before continuing.'
-        : 'Restart Relay to enable live updates for this running Codex turn.',
+        ? 'Live updates are unavailable for this Claude turn. Restart CC Relay after updating the backend.'
+        : 'Restart CC Relay to enable live updates for this running Codex turn.',
       inputDisabled: false,
       sendDisabled: true,
     };
@@ -61,7 +67,7 @@ export function continuationPresentation({
       state: 'unavailable',
       label: 'Restart required',
       buttonLabel: 'Send now',
-      hint: 'Restart Relay to enable immediate same-session follow-ups. This message will never fall back to the task queue.',
+      hint: 'Restart CC Relay to enable immediate same-session follow-ups. This message will never fall back to the task queue.',
       inputDisabled: false,
       sendDisabled: true,
     };
@@ -91,7 +97,7 @@ export function continuationPresentation({
       state: 'ready',
       label: 'Resume available',
       buttonLabel: 'Resume session',
-      hint: 'Relay will queue a linked task, launch a disposable terminal when a slot is free, and resume this conversation.',
+      hint: 'CC Relay will relaunch this saved conversation in the current task. No new task will be created.',
       inputDisabled: false,
       sendDisabled: !hasPrompt,
     };
@@ -106,16 +112,151 @@ export function continuationPresentation({
   };
 }
 
+const UNCONFIRMED_DRAFT = 'delivered-unconfirmed';
+
+/**
+ * A draft CC Relay handed to a provider terminal without confirming it.
+ *
+ * It stays in the per-task draft map so the words survive, and it is marked so rehydration
+ * can tell it apart from text the user still means to send. The distinction is the whole
+ * point: an unconfirmed message must never flow back into the textarea, because that is
+ * exactly the resurrection the composer clear exists to prevent.
+ */
+export function unconfirmedDraft(text) {
+  return { kind: UNCONFIRMED_DRAFT, text: typeof text === 'string' ? text : '' };
+}
+
+export function isUnconfirmedDraft(entry) {
+  return Boolean(entry) && typeof entry === 'object' && entry.kind === UNCONFIRMED_DRAFT;
+}
+
+/** What the textarea shows for a stored draft. An unconfirmed one contributes nothing. */
+export function draftInputValue(entry) {
+  if (isUnconfirmedDraft(entry)) return '';
+  return typeof entry === 'string' ? entry : '';
+}
+
+/** The retained words, or an empty string when there is nothing held for recovery. */
+export function unconfirmedDraftText(entry) {
+  return isUnconfirmedDraft(entry) ? entry.text : '';
+}
+
+function promptExcerpt(text, limit = 72) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  if (value.length <= limit) return value;
+  return `${value.slice(0, limit - 3).trimEnd()}...`;
+}
+
+/**
+ * The composer outcome for one submitted follow-up.
+ *
+ * Delivery has three states, not two. A live update that CC Relay typed into the provider
+ * terminal but could not confirm is NOT a failure the user should retype. The executor
+ * deliberately refuses to send that message again, so leaving the text in the composer
+ * invites exactly the duplicate turn the no-queue contract exists to prevent. Uncertain
+ * delivery therefore clears the composer like a confirmed send and says plainly what
+ * happened.
+ *
+ * It still returns the text. One uncertain branch fires when injection itself throws, which
+ * can mean nothing was typed at all, so the words cannot only live in a terminal CC Relay
+ * failed to reach. They are retained out of the textarea and shown in the notice instead.
+ *
+ * Only a failure that provably delivered nothing keeps the draft for a retry.
+ */
+export function continuationDispatchOutcome({
+  ok = false,
+  steered = false,
+  followUpStarted = false,
+  resumedDisposableSession = false,
+  deliveryUncertain = false,
+  message = '',
+  prompt = '',
+} = {}) {
+  if (ok && steered) {
+    return {
+      delivered: true,
+      clearComposer: true,
+      retainText: false,
+      text: '',
+      refresh: true,
+      kind: 'success',
+      message: 'Update delivered to the active turn.',
+      detail: 'Update delivered to the active turn.',
+    };
+  }
+  if (ok && followUpStarted) {
+    const notice = resumedDisposableSession
+      ? 'Follow-up started in this task. CC Relay resumed its saved session and created no new task.'
+      : 'Follow-up started in this same terminal session. No queue task was created.';
+    return {
+      delivered: true,
+      clearComposer: true,
+      retainText: false,
+      text: '',
+      refresh: true,
+      kind: 'success',
+      message: notice,
+      detail: notice,
+    };
+  }
+  if (ok) {
+    const notice = 'CC Relay did not confirm a direct same-session follow-up. Your message was not queued.';
+    return {
+      delivered: false,
+      clearComposer: false,
+      retainText: false,
+      text: '',
+      refresh: false,
+      kind: 'error',
+      message: notice,
+      detail: notice,
+    };
+  }
+  if (deliveryUncertain) {
+    const lead = 'Typed into the terminal, delivery unconfirmed. CC Relay did not send it again.';
+    const excerpt = promptExcerpt(prompt);
+    const account = message || 'CC Relay typed this update into the terminal but could not confirm delivery. It was not sent again.';
+    return {
+      delivered: false,
+      clearComposer: true,
+      // Held out of the textarea, not thrown away.
+      retainText: true,
+      text: typeof prompt === 'string' ? prompt : '',
+      refresh: true,
+      kind: 'warning',
+      /*
+       * The status line is one truncated row, so the lead carries the whole meaning, the
+       * excerpt puts the user's own words where the notice appears, and the title keeps the
+       * provider's exact account beside the complete message.
+       */
+      message: excerpt ? `${lead} Your text: ${excerpt}` : lead,
+      detail: excerpt ? `${account}\n\nYour message:\n${prompt}` : account,
+    };
+  }
+  const notice = message || 'CC Relay could not send this follow-up.';
+  return {
+    delivered: false,
+    clearComposer: false,
+    retainText: false,
+    text: '',
+    refresh: false,
+    kind: 'error',
+    message: notice,
+    detail: notice,
+  };
+}
+
 export function continuationSubmission(task, prompt, {
   supportsDirectFollowUp,
   supportsFollowUpAttachments,
   supportsTaskSteering,
+  supportsClaudeTaskSteering,
   attachments = [],
 } = {}) {
   const value = typeof prompt === 'string' ? prompt.trim() : '';
   if (!value) throw new Error('Write a follow-up before sending it.');
   if (attachments.length > 0 && !supportsFollowUpAttachments) {
-    throw new Error('Restart Relay to add images to follow-up messages. Your message was not sent.');
+    throw new Error('Restart CC Relay to add images to follow-up messages. Your message was not sent.');
   }
   if (task?.mode !== 'execute' || !DIRECT_PROVIDERS.has(task?.provider)) {
     throw new Error('Only direct Codex or Claude tasks can continue in one terminal session.');
@@ -124,7 +265,10 @@ export function continuationSubmission(task, prompt, {
     throw new Error('The original terminal session is unavailable.');
   }
   if (task.status === 'running') {
-    if (task.provider !== 'codex' || !supportsTaskSteering) {
+    const steeringAvailable = task.provider === 'codex'
+      ? supportsTaskSteering
+      : task.provider === 'claude' && supportsClaudeTaskSteering;
+    if (!steeringAvailable) {
       throw new Error('This running turn cannot accept live updates.');
     }
     return {
@@ -133,7 +277,7 @@ export function continuationSubmission(task, prompt, {
     };
   }
   if (!supportsDirectFollowUp) {
-    throw new Error('Restart Relay to enable immediate same-session follow-ups. Your message was not queued.');
+    throw new Error('Restart CC Relay to enable immediate same-session follow-ups. Your message was not queued.');
   }
   return {
     path: `/api/tasks/${task.id}/follow-up`,

@@ -1,12 +1,12 @@
-# Relay redesign brief for Claude Code
+# CC Relay redesign brief for Claude Code
 
 ## Your assignment
 
-Redesign Relay into a polished, compact desktop operations interface for managing sequential Codex and Claude Code work.
+Redesign CC Relay into a polished, compact desktop operations interface for managing sequential Codex and Claude Code work.
 
 The current UI is functional but visually accumulated. It was built feature by feature and now has too many competing panels, borders, labels, and controls. Preserve every working capability described below, but feel free to substantially restructure `public/index.html` and replace most of `public/style.css`.
 
-Do not turn this into a generic SaaS dashboard. Relay is a local developer instrument. It should feel closer to a focused queue controller, build monitor, or studio console than an admin template.
+Do not turn this into a generic SaaS dashboard. CC Relay is a local developer instrument. It should feel closer to a focused queue controller, build monitor, or studio console than an admin template.
 
 Before editing:
 
@@ -18,13 +18,13 @@ Before editing:
 
 ## Product summary
 
-Relay is a local task queue for subscription-authenticated Codex and Claude Code tools.
+CC Relay is a local task queue for subscription-authenticated Codex and Claude Code tools.
 
 - It does not call OpenAI or Anthropic model APIs directly.
 - It launches a fresh provider terminal only when queued work receives a project slot.
-- It closes the exact Relay-owned native terminal when that work ends.
+- It closes the exact CC Relay-owned native terminal when that work ends.
 - It saves provider conversation IDs so an explicit continuation can relaunch and resume them.
-- It keeps legacy discovery and selected-session routing only for tasks created by older Relay versions.
+- It keeps legacy discovery and selected-session routing only for tasks created by older CC Relay versions.
 - It can execute through either Codex or Claude.
 - It can run a three-stage, two-provider planning council.
 - It stores tasks, events, plans, results, and local image attachments.
@@ -46,7 +46,7 @@ The redesign must preserve all of the following.
 
 The header currently shows:
 
-- Relay online or unavailable state.
+- CC Relay online or unavailable state.
 - Codex readiness.
 - Claude readiness.
 - Separate live Codex and Claude session counts.
@@ -71,7 +71,7 @@ Users can:
 
 The macOS launcher uses Terminal.app. The Windows launcher opens `cmd.exe`. Pinned projects and provider limits persist in SQLite.
 
-Current queued work does not require users to keep these manually launched terminals open. Relay allocates short-lived terminals from the selected project's provider limits, gives every native launch a unique ownership ID, and closes only that exact launch at the task's terminal outcome.
+Current queued work does not require users to keep these manually launched terminals open. CC Relay allocates short-lived terminals from the selected project's provider limits, gives every native launch a unique ownership ID, and closes only that exact launch at the task's terminal outcome.
 
 Interactive terminal launch commands intentionally use unrestricted flags:
 
@@ -80,7 +80,7 @@ codex --dangerously-bypass-approvals-and-sandbox --remote ws://127.0.0.1:4769
 claude --dangerously-skip-permissions
 ```
 
-The UI must clearly warn that these commands disable protections and should be used only in trusted projects. This unrestricted choice applies to user-launched interactive terminals, not Relay-owned queued turns.
+The UI must clearly warn that these commands disable protections and should be used only in trusted projects. This unrestricted choice applies to user-launched interactive terminals, not CC Relay-owned queued turns.
 
 ### Execute and optional Plan council
 
@@ -96,7 +96,7 @@ The composer exposes Execute and Forward-planning Turbo as its workflow choices.
 - Remember model and effort independently for Codex and Claude while switching tabs.
 - Send the prompt to the queue without requiring an open terminal or existing conversation.
 
-Every fresh Execute task starts a new conversation. **Continue session** creates a linked queue task that waits for the same project's capacity, opens a new terminal, and resumes the saved conversation with `claude --resume <session-id>` or `codex resume <session-id>`. Relay permits only one queued or running owner of a saved conversation.
+Every fresh Execute task starts a new conversation. **Continue session** creates a linked queue task that waits for the same project's capacity, opens a new terminal, and resumes the saved conversation with `claude --resume <session-id>` or `codex resume <session-id>`. CC Relay permits only one queued or running owner of a saved conversation.
 
 #### Plan council in Execute
 
@@ -124,23 +124,23 @@ The task activity view must nicely preview:
 - Prominent formatted final revised plan.
 - Failure or waiting state for an incomplete council.
 
-Relay persists its checkpoint record and result under Relay's task artifacts. The final reviewed plan is written to `<project-root>/.data/tasks/<task-id>/plan.md`, never to a Relay project folder when the plan belongs to another project.
+CC Relay persists its checkpoint record and result under CC Relay's task artifacts. The final reviewed plan is written to `<project-root>/.data/tasks/<task-id>/plan.md`, never to a CC Relay project folder when the plan belongs to another project.
 
 ### Automatic terminal pools and legacy session selection
 
-On a backend with `capabilities.disposableTerminalPools`, the left composer panel shows the selected project's maximum Codex and Claude instances instead of a live terminal picker. A new task has no `thread_id` until Relay launches and binds its provider terminal.
+On a backend with `capabilities.disposableTerminalPools`, the left composer panel shows the selected project's maximum Codex and Claude instances instead of a live terminal picker. A new task has no `thread_id` until CC Relay launches and binds its provider terminal.
 
 Capacity is project-local and provider-specific. Direct Execute and Planner work require one slot for the chosen provider. Plan council atomically requires one Claude and one Codex slot. Turbo requires one Codex planner plus its configured worker count, and also one Claude slot when its terminal council is enabled.
 
-When a task reaches a runnable queue position, Relay must:
+When a task reaches a runnable queue position, CC Relay must:
 
 1. Reserve the complete required capacity before launching.
 2. Start a fresh native terminal in the exact project directory.
 3. Bind only the provider session proven to belong to that unique native launch.
 4. Persist the conversation ID before running the task.
-5. Close that exact Relay-owned launch after completion, failure, cancellation, or interruption.
+5. Close that exact CC Relay-owned launch after completion, failure, cancellation, or interruption.
 
-Existing persistent task rows retain their selected sessions for compatibility. Only that compatibility UI lists live Codex sessions from Relay's shared app-server and Claude sessions from `claude agents --json`.
+Existing persistent task rows retain their selected sessions for compatibility. Only that compatibility UI lists live Codex sessions from CC Relay's shared app-server and Claude sessions from `claude agents --json`.
 
 ### Connection helper and terminal launch
 
@@ -151,7 +151,7 @@ The connection helper must retain:
 - Launch terminal action.
 - Native folder selection before launch.
 - Unrestricted-access warning.
-- Capability state that displays `Restart Relay to launch` when an older backend is still running.
+- Capability state that displays `Restart CC Relay to launch` when an older backend is still running.
 
 These manual launch controls are project tools and a legacy compatibility path. They are not how current queued tasks acquire terminals.
 
@@ -231,7 +231,7 @@ Long content must remain readable without forcing the whole application into an 
 
 ### Terminal output console
 
-This is not a raw event table. Relay groups low-level events into readable signals.
+This is not a raw event table. CC Relay groups low-level events into readable signals.
 
 The console must preserve:
 
@@ -242,7 +242,7 @@ The console must preserve:
 - Automatic follow until the user scrolls away.
 - Session state.
 - Counts for commands, file changes, messages, errors, and active operations.
-- Provider identity for Codex, Claude, Relay, and Plan council.
+- Provider identity for Codex, Claude, CC Relay, and Plan council.
 - Running, success, warning, and error states.
 - Numbered visible signals.
 - Command text.
@@ -453,7 +453,7 @@ Do not declare the redesign complete with failing tests, broken provider selecti
 - Never read, copy, or proxy Codex or Claude credential files.
 - Keep authentication owned by the official CLIs.
 - Preserve local-only server binding on `127.0.0.1`.
-- Do not weaken Relay-owned queue or Plan council safety policies.
+- Do not weaken CC Relay-owned queue or Plan council safety policies.
 - Do not add an API-priced model integration.
 - Do not use em dash characters in repository text.
 - Preserve user changes outside the redesign scope.
@@ -462,4 +462,4 @@ Do not declare the redesign complete with failing tests, broken provider selecti
 
 ## Definition of done
 
-The redesign is complete when Relay has a coherent visual identity, the main operating state is understandable within a few seconds, every function above remains discoverable and usable, long-running task output is comfortable to monitor, and all automated and manual verification passes in both browser and Electron layouts.
+The redesign is complete when CC Relay has a coherent visual identity, the main operating state is understandable within a few seconds, every function above remains discoverable and usable, long-running task output is comfortable to monitor, and all automated and manual verification passes in both browser and Electron layouts.

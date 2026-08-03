@@ -10,13 +10,13 @@ type: review
 
 **Ticket confidence: High**
 
-The **Continue session** dock now has one invariant: it never creates or queues a task. A running Codex task uses `turn/steer` against its exact active turn. A finished Codex or Claude task starts the next turn immediately against the exact original session while reusing the source task row and event rail. Busy, disconnected, unsupported, or older-backend states disable or reject submission visibly.
+The **Continue session** dock now has one invariant: it never creates or queues a task. A running Codex task uses `turn/steer` against its exact active turn. A running interactive Claude task uses exact terminal steering. A finished Codex or Claude task starts the next turn immediately against the exact original session while reusing the source task row and event rail. Busy, disconnected, unsupported, or older-backend states disable or reject submission visibly.
 
 ### Quality Panel (RAG)
 
 | Area | Rating | Evidence |
 |------|--------|----------|
-| Functional correctness | Green | Finished-task submission uses `/api/tasks/:id/follow-up`, `buildSessionFollowUp()`, and `TaskQueue.startFollowUp()` without `queue.enqueue()`. Running Codex still uses exact task, thread, and turn steering. |
+| Functional correctness | Green | Finished-task submission uses `/api/tasks/:id/follow-up`, `buildSessionFollowUp()`, and `TaskQueue.startFollowUp()` without `queue.enqueue()`. Running Codex uses exact task, thread, and turn steering. Running Claude uses exact task, session, terminal, process, screen, and prompt-evidence steering. |
 | Regression risk (UI / backend / contracts) | Green | The renderer no longer changes task selection or queue view after a follow-up. Tests prove task count and source prompt remain unchanged, same-thread conflicts reject, and old backends cannot use the ordinary task fallback. |
 | Gap risk (edge cases, error handling, completeness) | Amber | The singleton HTTP server still lacks an isolated route-level integration test. Live UI verification covered hot-loaded assets against the running older backend, but the backend was not restarted while active tasks were executing. |
 | Code quality (maintainability as safety) | Green | Presentation and request selection remain centralized. The direct runtime path has explicit session, workspace, status, resource, provider, retry, and restart-recovery guards. |
@@ -27,17 +27,17 @@ The **Continue session** dock now has one invariant: it never creates or queues 
 
 1. The direct HTTP route is structurally covered but not exercised through an isolated server factory. A future route-ordering change could therefore require source-contract tests to catch it.
 2. Reusing one task means its status, start and finish timestamps, and result represent the latest turn. The complete event rail remains the multi-turn history, but consumers that assume one task equals one turn must follow the new contract.
-3. Running Claude turns still lack a safe provider steering protocol. Relay intentionally disables live submission until that turn finishes.
+3. Running Claude steering depends on an owned interactive terminal. Headless turns reject live updates and require a normal continuation after completion.
 
 ### Top Improvements
 
 - Export an isolated server factory and assert through HTTP that `/follow-up` returns the source ID while task count remains constant.
 - Add an Electron interaction test against a restarted current backend for completed Codex and Claude sessions, including selection changes during submission.
-- Add running-Claude steering only when Claude exposes an exact active-turn protocol with equivalent task and turn identity checks.
+- Add an isolated route test and a restarted live-terminal smoke test for Claude steering, including ambiguous Apple Event delivery.
 
 ### Recommendation
 
-**Ship after Relay restarts safely**
+**Ship after CC Relay restarts safely**
 
 ---
 
@@ -52,7 +52,7 @@ The **Continue session** dock now has one invariant: it never creates or queues 
 
 - A renderer reload still loses an unsent in-memory draft. This predates the change and does not create queue work.
 - The route returns `202` after immediate dispatch begins, not after the provider turn completes. A later provider failure stays on the same task, retains the prior successful result, records the attempted user message and failure, and cannot auto-retry.
-- Two clients can submit against the same source around a status transition. JavaScript queue mutation is synchronous, so one finished-task request reserves the source task before another scheduler action. A later request sees the running task and can only steer its exact Codex turn or reject for Claude.
+- Two clients can submit against the same source around a status transition. JavaScript queue mutation is synchronous, so one finished-task request reserves the source task before another scheduler action. Later running-turn updates are serialized against the exact active Codex or interactive Claude turn.
 - A renderer that has not reloaded its JavaScript can retain the old behavior until refresh. Newly loaded assets are safe against the older backend because the new capability gate disables finished-task Send.
 
 ### Regression Risks
@@ -82,6 +82,35 @@ There is no isolated HTTP integration test or restarted-Electron completed-turn 
 
 ### Follow-up Image Addendum
 
-The dock now supports image-bearing same-session messages without weakening the no-queue contract. Finished Codex and Claude turns receive only the new follow-up images. Running Codex uses the installed app-server schema's `TurnSteerParams.input: UserInput[]` support for `localImage`; rejected exact-turn steering rolls staged files back. The renderer requires the new `taskFollowUpAttachments` capability so an older backend can never discard images silently.
+The dock now supports image-bearing same-session messages without weakening the no-queue contract. Finished Codex and Claude turns receive only the new follow-up images. Running Codex uses the installed app-server schema's `TurnSteerParams.input: UserInput[]` support for `localImage`. Running interactive Claude adds only the new stored image paths to its exact delivered prompt. Definite steering rejection rolls staged files back; uncertain Claude delivery retains them so a possibly accepted prompt never points at deleted files. The renderer requires the new `taskFollowUpAttachments` capability so an older backend can never discard images silently.
+
+### Disposable Resume Addendum
+
+Finished disposable tasks no longer require their old terminal to remain connected. CC Relay preserves the original no-queue contract by checking provider capacity synchronously, relaunching the saved conversation through the disposable pool, and running the turn under the source task ID. A disconnected legacy persistent session still rejects. See [[same-task-session-continuation]].
+
+### Claude Live Steering Addendum
+
+Running direct Claude tasks owned by the macOS interactive terminal executor now accept live updates. Exact task lookup, terminal identity, an empty composer, exact prompt evidence, serialized requests, guarded held-paste submission, and uncertainty-aware attachment handling preserve the no-queue contract. See [[claude-live-steering-review]].
+
+### Unconfirmed Delivery Addendum
+
+**Reported symptom.** A live update sent to a running Claude reached the terminal, but the composer kept the text as though the send had failed.
+
+**Root cause.** Not the success path, which already cleared the input, the per-task draft, and the staged attachments. Claude steering never reached it. `relay-diagnostics.jsonl` recorded three `task.claude.steer.requested` entries for task 85 at 12:38:37, 12:42:56, and 12:43:59, each answered about 27 seconds later by `task.claude.steer.failed` with `deliveryUncertain: true`, and zero `task.claude.steer.completed`. Codex steering completed 2 of 2 in the same log and cleared normally.
+
+The executor sets `{ uncertain: true }` only after it has typed the message into the terminal, and it refuses to send that message again. The server rethrows, so the route answers `422`. `sendError()` serialized `{ error }` alone, so `deliveryUncertain` never reached the renderer and every rejection looked identical. The composer treated delivery as binary, kept the draft for a retry, and the user resent the same work three times in six minutes. Retaining that text was the duplicate-turn trap the no-queue contract exists to prevent.
+
+**Fix.** Delivery now has three states.
+
+- `sendError()` accepts additive fields and carries `deliveryUncertain: true` when the error does. Status code, outcome, and retry policy are unchanged. This is response shape only.
+- `api()` copies the flag onto the thrown error so callers never parse error copy.
+- `continuationDispatchOutcome()` in [[task-continuation-state]] maps one response to `clearComposer`, `kind`, `message`, and `detail`. Confirmed delivery and unconfirmed delivery both clear the composer and the persisted draft. A failure that provably delivered nothing keeps both.
+- Unconfirmed delivery renders as a calm `warning`, sticky across the two-second refresh, with the provider's exact account on the element title because the status row is one truncated line.
+
+**Why clearing an unconfirmed delivery is correct.** CC Relay has already declined to send the message twice over, so the only thing a retained draft can produce is a duplicate turn.
+
+**Where the words go.** Review found one branch that breaks the "the text is always in the terminal" argument: `deliverActiveSteer` sets `injectionStarted` before `inject()`, so an injection that throws having typed nothing is still uncertain. The text is therefore retained rather than deleted, under a `delivered-unconfirmed` marker that `draftInputValue()` maps to an empty string. The textarea stays empty on every rehydration path, the words remain readable in the amber notice as a whitespace-collapsed excerpt with the complete message on the element title, and typing or a later confirmed send replaces the marker outright. There is no restore action: the notice row is a bare `<p>` inside a live region, so a button needs `index.html` markup that is outside this change's scope. The retained copy makes adding one later a small change.
+
+**Still open.** The real defect is upstream: `accepted()` never observes delivery evidence within its 25 second budget, which lives in `claude-terminal-executor.mjs` and `claude-transcript-tail.mjs`. This change makes the renderer correct while that holds, not cured. See [[claude-live-steering-review]] and [[claude-terminal-live-output]].
 
 #relay #review #continuation #steering #codex #claude #no-queue

@@ -47,7 +47,7 @@ test('breakdowns link to a plan, track the latest, and normalize proposals', () 
       planId: plan.id,
       provider: 'codex',
       sessionId: 'thread-1',
-      sessionLabel: 'Relay 1',
+      sessionLabel: 'CC Relay 1',
       guidance: 'small tasks',
       status: 'pending',
     });
@@ -134,10 +134,11 @@ test('plan runs and their steps persist, list in order, and cascade', () => {
       planId: plan.id,
       provider: 'codex',
       sessionId: 'relay-a',
-      sessionLabel: 'Relay 1',
+      sessionLabel: 'CC Relay 1',
       sessionSource: 'cli',
       preferIdleTerminal: true,
       terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
       terminalLayout: { enabled: true, rows: 2, columns: 2, display: 0 },
       model: 'sol',
       effort: 'high',
@@ -145,6 +146,7 @@ test('plan runs and their steps persist, list in order, and cascade', () => {
     assert.equal(run.status, 'running');
     assert.equal(run.prefer_idle_terminal, true);
     assert.equal(run.terminal_lifecycle, 'disposable');
+    assert.equal(run.keep_terminal_open, true);
     assert.deepEqual(run.terminal_layout, { enabled: true, rows: 2, columns: 2, display: 0 });
     assert.equal(database.latestPlanRun(plan.id).id, run.id);
     assert.deepEqual(database.activePlanRuns().map((item) => item.id), [run.id]);

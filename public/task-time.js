@@ -31,3 +31,20 @@ export function taskDurationLabel(task, now = Date.now()) {
   }
   return `Took ${duration}`;
 }
+
+export function taskLifecycleDates(task) {
+  return [
+    {
+      key: 'started',
+      label: 'Started',
+      value: task?.started_at || null,
+      pendingLabel: 'Not started',
+    },
+    {
+      key: 'completed',
+      label: 'Completed',
+      value: task?.finished_at || null,
+      pendingLabel: 'Not completed',
+    },
+  ];
+}

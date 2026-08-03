@@ -10,8 +10,8 @@ import { TaskQueue } from '../src/queue.mjs';
 // A Planner breakdown is planning work, but mechanically it is one turn on one session,
 // exactly like direct execution. It used to schedule as an exclusive head, which froze its
 // whole project and consumed the shared exclusive slot Plan council and Turbo depend on.
-// These tests pin the new classification and, just as importantly, prove the exclusive
-// barriers themselves did not move.
+// These tests pin the new classification and preserve the legacy persistent-session
+// barriers. Current disposable Plan councils have separate capacity-sharing coverage.
 
 const cleanup = [];
 test.after(() => {
@@ -164,7 +164,7 @@ test('the shared exclusive slot still admits only one exclusive task across proj
   }
 });
 
-test('a running Plan council still blocks every task in its own project', () => {
+test('a running legacy Plan council still blocks every task in its own project', () => {
   const context = harness();
   try {
     const council = context.queue.enqueue({
@@ -184,7 +184,7 @@ test('a running Plan council still blocks every task in its own project', () => 
   }
 });
 
-test('a queued Plan council is still an exclusive head that waits for its project to drain', () => {
+test('a queued legacy Plan council is still an exclusive head that waits for its project to drain', () => {
   const context = harness();
   try {
     const direct = add(context.queue, {

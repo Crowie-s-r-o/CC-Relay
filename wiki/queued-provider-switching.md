@@ -46,6 +46,11 @@ Changing only model or effort for the same provider preserves the saved conversa
 - `public/index.html`, `public/app.js`, `public/style.css`: add capability-gated provider, model, and effort controls to the task editor.
 - `test/database.test.mjs`, `test/queue.test.mjs`, `test/composer-workflows.test.mjs`: cover queued-only persistence, both switch directions, conversation clearing, legacy rejection, artifacts, and renderer contracts.
 
+## Verification
+
+> [!note]
+> Reverified on 2026-07-28 against the current worktree. The focused database, queue, and composer workflow suite passed 104 tests, and the complete `npm test` suite passed all 771 tests. Both Claude to Codex and Codex to Claude switching remain covered.
+
 See also [[task-history]], [[project-workspaces]], and [[interface-layout]].
 
 #relay #queue #claude #codex

@@ -34,6 +34,7 @@ export function submissionIntentSignature({
   execution = null,
   planSettings = null,
   turboSettings = null,
+  keepTerminalOpen = false,
   attachments = [],
 } = {}) {
   return JSON.stringify({
@@ -45,6 +46,7 @@ export function submissionIntentSignature({
     execution,
     planSettings,
     turboSettings,
+    keepTerminalOpen,
     attachments: attachmentIdentity(attachments),
   });
 }

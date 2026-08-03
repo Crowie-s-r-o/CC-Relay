@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   blockingTerminalTask,
+  retainedSessionTaskForThread,
   taskUsesTerminal,
   terminalControlState,
 } from '../src/terminal-control.mjs';
@@ -21,7 +22,7 @@ test('queued and running direct tasks protect their assigned terminal', () => {
   });
 });
 
-test('Turbo planner and worker assignments protect every participating Relay', () => {
+test('Turbo planner and worker assignments protect every participating CC Relay', () => {
   const task = {
     id: 21,
     status: 'running',
@@ -55,7 +56,7 @@ test('only an idle terminal with verified native identity can close', () => {
   assert.deepEqual(terminalControlState([], 'relay-one', null), {
     owned: false,
     canClose: false,
-    reason: 'Relay could not map this session to one unambiguous native terminal window.',
+    reason: 'CC Relay could not map this session to one unambiguous native terminal window.',
   });
   assert.deepEqual(terminalControlState([], 'relay-one', { launchId: 'launch-one' }), {
     owned: true,
@@ -69,4 +70,62 @@ test('only an idle terminal with verified native identity can close', () => {
     canClose: false,
     reason: 'Task #30 is scheduled to retry on this terminal. Wait for it to requeue, then cancel or reassign it before closing the terminal.',
   });
+});
+
+test('a retained session task claims its terminal close regardless of task status', () => {
+  const finished = {
+    id: 41,
+    status: 'complete',
+    thread_id: 'retained-one',
+    keep_terminal_open: true,
+    terminal_lifecycle: 'disposable',
+  };
+  const running = { ...finished, id: 42, status: 'running' };
+  const queued = { ...finished, id: 43, status: 'queued' };
+
+  assert.equal(retainedSessionTaskForThread([finished], 'retained-one'), finished);
+  assert.equal(retainedSessionTaskForThread([running], 'retained-one'), running);
+  assert.equal(retainedSessionTaskForThread([queued], 'retained-one'), queued);
+});
+
+test('the newest retained session task wins when a terminal served several turns', () => {
+  const base = {
+    thread_id: 'retained-one',
+    keep_terminal_open: true,
+    terminal_lifecycle: 'disposable',
+    status: 'complete',
+  };
+  const tasks = [
+    { ...base, id: 7 },
+    { ...base, id: 19 },
+    { ...base, id: 12 },
+  ];
+
+  assert.equal(retainedSessionTaskForThread(tasks, 'retained-one').id, 19);
+});
+
+test('only a disposable task that kept its own terminal open counts as the retained session', () => {
+  const retained = {
+    id: 51,
+    status: 'complete',
+    thread_id: 'retained-one',
+    keep_terminal_open: true,
+    terminal_lifecycle: 'disposable',
+  };
+
+  assert.equal(retainedSessionTaskForThread([retained], 'retained-two'), null);
+  assert.equal(
+    retainedSessionTaskForThread([{ ...retained, keep_terminal_open: false }], 'retained-one'),
+    null,
+  );
+  assert.equal(
+    retainedSessionTaskForThread([{ ...retained, terminal_lifecycle: 'persistent' }], 'retained-one'),
+    null,
+  );
+  assert.equal(
+    retainedSessionTaskForThread([{ ...retained, thread_id: null, author_thread_id: 'retained-one' }], 'retained-one'),
+    null,
+  );
+  assert.equal(retainedSessionTaskForThread([retained], ''), null);
+  assert.equal(retainedSessionTaskForThread(null, 'retained-one'), null);
 });

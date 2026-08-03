@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { cpSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ import {
 } from './attachments.mjs';
 import { ClaudeBinaryResolver } from './claude-binary.mjs';
 import { ClaudeExecutionRunner } from './claude-execution-runner.mjs';
+import { ClaudeHookBridge } from './claude-hook-bridge.mjs';
 import { ClaudeRuntimeStatus, isConfidentlyUnavailable } from './claude-runtime-status.mjs';
 import { ClaudeRunner } from './claude-runner.mjs';
 import { ClaudeSessionRegistry } from './claude-session-registry.mjs';
@@ -22,9 +23,12 @@ import { DiagnosticLog } from './diagnostics.mjs';
 import {
   DisposableTerminalPool,
   disposableTerminalRequirements,
+  inspectCodexConversation,
 } from './disposable-terminal-pool.mjs';
+import { LaunchOwnershipRegistry } from './launch-ownership-registry.mjs';
 import { CLAUDE_MODELS, validateExecutionSettings } from './model-catalog.mjs';
 import { PlanCouncilRunner } from './plan-council-runner.mjs';
+import { validatePlanCouncilConfig } from './plan-council-config.mjs';
 import {
   buildPlanExecutionPrompt,
   planExecutionTitle,
@@ -56,6 +60,7 @@ import {
 } from './session-resolution.mjs';
 import { buildSessionFollowUp } from './task-continuation.mjs';
 import { TerminalCloseCoordinator } from './terminal-close-coordinator.mjs';
+import { retainedSessionTaskForThread } from './terminal-control.mjs';
 import { TerminalLaunchCoordinator } from './terminal-launch-coordinator.mjs';
 import { TerminalRuntimeResolver } from './terminal-runtime-resolver.mjs';
 import { TurboPlanCouncilReviewer } from './turbo-plan-council.mjs';
@@ -63,6 +68,22 @@ import { validateTurboCouncilConfig } from './turbo-council-config.mjs';
 import { TurboRunner } from './turbo-runner.mjs';
 import { RelayRunner } from './relay-runner.mjs';
 import { AgentUpdateCache } from './running-task-feed.mjs';
+import {
+  DEFAULT_RELAY_HOST,
+  relayConfigDirectoryFromArgs,
+  relayCodexPortFromArgs,
+  relayPortFromArgs,
+  relayServerEndpoint,
+} from './server-options.mjs';
+import {
+  buildStandupPrompt,
+  MAX_STANDUP_SOURCE_TASKS,
+  selectStandupTasks,
+  StandupGenerationError,
+  StandupGenerator,
+  validateStandupLength,
+  validateStandupWindow,
+} from './standup-generator.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const PUBLIC_ROOT = join(APP_ROOT, 'public');
@@ -70,20 +91,58 @@ const dataDirectoryIndex = process.argv.indexOf('--relay-data-dir');
 const DATA_ROOT = dataDirectoryIndex >= 0 && process.argv[dataDirectoryIndex + 1]
   ? resolve(process.argv[dataDirectoryIndex + 1])
   : join(APP_ROOT, '.data');
-const HOST = '127.0.0.1';
-const PORT = 4768;
+const CONFIG_ROOT = relayConfigDirectoryFromArgs();
+const HOST = DEFAULT_RELAY_HOST;
+const PORT = relayPortFromArgs();
+const CODEX_PORT = relayCodexPortFromArgs();
+const IS_DESKTOP = process.argv.includes('--relay-desktop');
+const LOCALHOST_TASK_DATABASE_SETTING = 'localhost-task-database';
 const PLAN_COUNCIL_TERMINAL_EXECUTION = process.platform === 'darwin';
+const CLAUDE_TASK_STEERING = PLAN_COUNCIL_TERMINAL_EXECUTION;
+const MAX_CLAUDE_HOOK_BYTES = 10 * 1024 * 1024;
+let relayEndpointUrl = null;
 
 const diagnostics = new DiagnosticLog(join(DATA_ROOT, 'relay-diagnostics.jsonl'));
 const diagnostic = (event, details) => diagnostics.write(event, details);
-const database = new RelayDatabase(join(DATA_ROOT, 'relay.sqlite'));
+const claudeHookBridge = new ClaudeHookBridge({
+  endpoint: () => relayEndpointUrl,
+  diagnostic,
+});
+const database = new RelayDatabase(join(DATA_ROOT, 'relay.sqlite'), {
+  projectConfigPath: join(CONFIG_ROOT, 'relay-config.sqlite'),
+});
+if (!IS_DESKTOP) {
+  database.projectConfig.setSetting(LOCALHOST_TASK_DATABASE_SETTING, database.databasePath);
+}
+// The desktop app and a standalone `node src/server.mjs` can run at the same time and both
+// discover the same live Codex and Claude sessions. Launch ownership used to be per-process and
+// in memory only, so either backend could adopt and then close a terminal the other one owned.
+// The shared configuration database is the only thing both processes already hold open.
+const launchOwnership = new LaunchOwnershipRegistry({
+  database: database.projectConfig.database,
+  diagnostic,
+  role: IS_DESKTOP ? 'desktop' : 'localhost',
+  dataRoot: DATA_ROOT,
+});
 const artifacts = new ArtifactStore(join(DATA_ROOT, 'tasks'));
-const codexAppServer = new CodexAppServer({ diagnostic });
+function localhostTaskDatabasePath() {
+  const sourcePath = database.projectConfig.setting(LOCALHOST_TASK_DATABASE_SETTING);
+  if (!sourcePath || sourcePath === database.databasePath || !existsSync(sourcePath)) return null;
+  return sourcePath;
+}
+const codexAppServer = new CodexAppServer({
+  diagnostic,
+  publicEndpoint: `ws://${HOST}:${CODEX_PORT}`,
+});
 // Pin the exact claude binary once at startup so discovery and execution do not
 // depend on the launching process PATH order (Finder or dock versus terminal).
 const claudeBinaryResolver = new ClaudeBinaryResolver({ diagnostic });
 const claudeBinaryPath = await claudeBinaryResolver.resolve();
 const claudeRunner = new ClaudeRunner({ command: claudeBinaryPath });
+const standupGenerator = new StandupGenerator({
+  claudeCommand: claudeBinaryPath,
+  diagnostic,
+});
 const claudeSessions = new ClaudeSessionRegistry({
   resolveCommand: (options) => claudeBinaryResolver.resolve(options),
 });
@@ -109,6 +168,10 @@ const resolveClaudeTerminal = async (session) => {
     terminalWindowId: native.terminalWindowId,
     terminalTty: native.terminalTty,
     runtimeProcessId: native.runtimeProcessId,
+    // Read AFTER the identity refresh above so the pid latch is current. Non-null only when this
+    // process launched this terminal itself with explicit task settings and the same provider
+    // process is still live; the executor uses it to skip an unnecessary restart.
+    launchSettings: projectLauncher.provenClaudeLaunchSettings(session.id),
   };
 };
 const claudeExecution = new ClaudeExecutionRunner({
@@ -116,6 +179,9 @@ const claudeExecution = new ClaudeExecutionRunner({
   command: claudeBinaryPath,
   platform: process.platform,
   resolveTerminal: resolveClaudeTerminal,
+  requestAttention: ({ thread }) => projectLauncher.requestTerminalAttention(thread),
+  hookBridge: claudeHookBridge,
+  diagnostic,
 });
 const planCouncil = new PlanCouncilRunner({
   claude: PLAN_COUNCIL_TERMINAL_EXECUTION ? claudeExecution : claudeRunner,
@@ -165,10 +231,35 @@ async function idleSessionCandidates(task) {
 
 const projectLauncher = new ProjectLauncher({
   diagnostic,
+  launchRegistry: launchOwnership,
   claudeBinary: claudeBinaryPath,
   ensureCodexReady: () => codexAppServer.start(),
   reserveCodexLaunch: (path, launchId) => codexAppServer.reserveLaunchClient(path, launchId),
   codexClientForThread: (threadId) => codexAppServer.runtimeClientForThread(threadId),
+  claudeSettingsForSession: (sessionId) => claudeHookBridge.settingsForSession(sessionId),
+});
+codexAppServer.on('userInputRequested', ({ threadId, method }) => {
+  void (async () => {
+    const thread = codexAppServer.knownThread(threadId)
+      || await codexAppServer.readConnectedThread(threadId);
+    if (!thread) {
+      diagnostic('terminal.attention.skipped', {
+        threadId,
+        provider: 'codex',
+        reason: 'disconnected-thread',
+        requestMethod: method,
+      });
+      return;
+    }
+    await projectLauncher.requestTerminalAttention(thread);
+  })().catch((error) => {
+    diagnostic('terminal.attention.failed', {
+      threadId,
+      provider: 'codex',
+      requestMethod: method,
+      error: error.message,
+    });
+  });
 });
 const terminalLaunchCoordinator = new TerminalLaunchCoordinator({
   launcher: projectLauncher,
@@ -184,6 +275,9 @@ const disposableTerminalPool = new DisposableTerminalPool({
   coordinator: terminalLaunchCoordinator,
   launcher: projectLauncher,
   diagnostic,
+  codexConversationState: (threadId) => inspectCodexConversation(threadId, {
+    codexHome: codexAppServer.status().codexHome || undefined,
+  }),
 });
 const queue = new TaskQueue({
   database,
@@ -193,6 +287,76 @@ const queue = new TaskQueue({
   listIdleSessions: idleSessionCandidates,
   terminalPool: disposableTerminalPool,
 });
+
+async function steerRunningTask(task, prompt, attachments) {
+  const storedAttachments = queue.stageTaskAttachments(task.id, attachments);
+  let steered;
+  try {
+    if (task.provider === 'claude') {
+      if (!CLAUDE_TASK_STEERING) {
+        throw new Error('Claude live updates require an interactive macOS terminal. Your message was not queued.');
+      }
+      steered = await claudeExecution.steer(task.id, prompt, storedAttachments);
+    } else {
+      steered = await codexAppServer.steer(task.id, prompt, storedAttachments);
+    }
+  } catch (error) {
+    if (error.deliveryUncertain === true) {
+      // The terminal Apple Event may have landed even when its acknowledgement did not. Keep
+      // image files available to a possibly delivered Claude message instead of deleting paths
+      // that the active turn may still read.
+      try {
+        queue.commitTaskAttachments(task.id, storedAttachments, 'Unconfirmed live-update reference images');
+      } catch (recordError) {
+        diagnostic('api.task.steer.uncertain_attachment_commit_failed', {
+          taskId: task.id,
+          error: recordError.message,
+        });
+      }
+      try {
+        const event = {
+          type: 'claude/steer-uncertain',
+          provider: 'claude',
+          deliveryUncertain: true,
+        };
+        artifacts.appendRawEvent(task.id, event);
+        database.addEvent(task.id, 'claude', error.message, event);
+        queue.changed(task.id);
+      } catch (recordError) {
+        diagnostic('api.task.steer.uncertain_event_failed', {
+          taskId: task.id,
+          error: recordError.message,
+        });
+      }
+    } else {
+      try {
+        queue.discardTaskAttachments(task.id, storedAttachments);
+      } catch (discardError) {
+        diagnostic('api.task.steer.attachment_discard_failed', {
+          taskId: task.id,
+          error: discardError.message,
+        });
+      }
+    }
+    throw error;
+  }
+  try {
+    queue.commitTaskAttachments(task.id, storedAttachments);
+  } catch (error) {
+    // Provider delivery is already exact and durable. Preserve the success response so a local
+    // documentation failure cannot encourage the user to send the same message twice.
+    diagnostic('api.task.steer.attachment_commit_failed', {
+      taskId: task.id,
+      provider: task.provider,
+      error: error.message,
+    });
+  }
+  diagnostic('api.task.steered', {
+    ...steered,
+    provider: task.provider,
+  });
+  return steered;
+}
 // Planner v2 plan runs. A reconciler over the same queue, never a second scheduler.
 const planRuns = new PlanRunCoordinator({ database, queue, diagnostic });
 const terminalCloseCoordinator = new TerminalCloseCoordinator({
@@ -222,7 +386,7 @@ const CODEX_STATUS_REFRESH_MS = 30_000;
 // Both provider probes are asynchronous and bounded. They used to be execFileSync, which
 // blocked the whole event loop and therefore delayed every request including POST /api/tasks.
 // Codex status used to be captured once at module load and never re-read, so a transient
-// probe failure at boot disabled Codex until Relay was restarted. It now refreshes in the
+// probe failure at boot disabled Codex until CC Relay was restarted. It now refreshes in the
 // background while request handlers only ever read this cached value.
 let runtimeStatus = { available: false, authenticated: false, version: null, pending: true };
 let codexStatusPending = null;
@@ -265,8 +429,8 @@ function sendJson(response, statusCode, value) {
   response.end(body);
 }
 
-function sendError(response, statusCode, message) {
-  sendJson(response, statusCode, { error: message });
+function sendError(response, statusCode, message, extra = {}) {
+  sendJson(response, statusCode, { error: message, ...extra });
 }
 
 async function readJson(request, maxBytes = 1024 * 1024) {
@@ -307,12 +471,36 @@ function validateInstanceLimit(value, provider) {
   return limit;
 }
 
+function validateProjectColor(value) {
+  if (value === null || value === '') return null;
+  const color = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (!/^#[\da-f]{6}$/.test(color)) {
+    throw new Error('Project color must be a six-digit hex color.');
+  }
+  return color;
+}
+
 function validateTaskTerminalLayout(value) {
   if (!value || typeof value !== 'object') return null;
   const layout = normalizeTerminalLayout(value);
   return {
     ...(layout || { enabled: false }),
     background: value.background === true,
+  };
+}
+
+function validateProjectTerminalLayout(value) {
+  if (!value || typeof value !== 'object') {
+    throw new Error('Terminal window layout settings are required.');
+  }
+  if (typeof value.enabled !== 'boolean' || typeof value.background !== 'boolean') {
+    throw new Error('Terminal layout and background choices must be true or false.');
+  }
+  const grid = normalizeTerminalLayout({ ...value, enabled: true });
+  return {
+    ...grid,
+    enabled: value.enabled,
+    background: value.background,
   };
 }
 
@@ -457,7 +645,7 @@ async function requirePlanSession(plan, provider, threadId) {
   if (!thread) {
     throw new Error(provider === 'claude'
       ? 'That Claude Code session is no longer open. Refresh the session list.'
-      : 'That terminal is not connected to Relay\'s shared Codex server. Refresh the session list.');
+      : 'That terminal is not connected to CC Relay\'s shared Codex server. Refresh the session list.');
   }
   if (resolve(thread.cwd) !== resolve(plan.repo_path)) {
     throw new Error('The selected session must be open in the same project as the plan.');
@@ -473,19 +661,20 @@ async function resolvePlannerTaskSession(plan, provider, body) {
       throw new Error('The automatic terminal must use the same project as the plan.');
     }
     if (!database.getProjectByPath(projectPath)) {
-      throw new Error('Pin this plan project in Relay before running automatic work.');
+      throw new Error('Pin this plan project in CC Relay before running automatic work.');
     }
     if (provider === 'claude') requireClaudeReady('Claude Planner execution');
     return {
       disposable: true,
       terminalLifecycle: 'disposable',
+      keepTerminalOpen: body.keepTerminalOpen === true,
       terminalLayout: validateTaskTerminalLayout(body.terminalLayout),
       thread: {
         id: null,
         provider,
         cwd: projectPath,
         title: `Automatic ${provider === 'claude' ? 'Claude' : 'Codex'} instance`,
-        source: 'Relay managed terminal pool',
+        source: 'CC Relay managed terminal pool',
       },
       sessionId: `automatic:${provider}`,
     };
@@ -495,6 +684,7 @@ async function resolvePlannerTaskSession(plan, provider, body) {
   return {
     disposable: false,
     terminalLifecycle: 'persistent',
+    keepTerminalOpen: false,
     terminalLayout: null,
     thread,
     sessionId: thread.id,
@@ -516,9 +706,49 @@ function requireClaudeReady(action = 'Claude execution') {
   // A stale-cache read is also a good moment to kick the background refresh.
   void claudeRuntime.refresh();
   if (isConfidentlyUnavailable(claudeRuntimeStatus)) {
-    throw new Error(`${action} needs a signed-in Claude Code CLI. Run \`claude auth login\`; Relay will detect it automatically.`);
+    throw new Error(`${action} needs a signed-in Claude Code CLI. Run \`claude auth login\`; CC Relay will detect it automatically.`);
   }
   return claudeRuntimeStatus;
+}
+
+function providerIsReady(status) {
+  return status?.available === true && status?.authenticated === true;
+}
+
+async function standupProviderAvailability(preferredProvider) {
+  let codexStatus = runtimeStatus;
+  let claudeStatus = currentClaudeStatus();
+  if (preferredProvider === 'claude' && !providerIsReady(claudeStatus)) {
+    claudeStatus = await claudeRuntime.refresh({ force: true });
+  } else if (preferredProvider === 'codex' && !providerIsReady(codexStatus)) {
+    codexStatus = await refreshCodexStatus();
+  }
+  if (!providerIsReady(codexStatus) && !providerIsReady(claudeStatus)) {
+    [codexStatus, claudeStatus] = await Promise.all([
+      refreshCodexStatus(),
+      claudeRuntime.refresh({ force: true }),
+    ]);
+  }
+  return {
+    codex: providerIsReady(codexStatus),
+    claude: providerIsReady(claudeStatus),
+  };
+}
+
+function standupRecord(task) {
+  return {
+    id: task.id,
+    title: task.title,
+    status: task.status,
+    provider: task.provider,
+    mode: task.mode,
+    finishedAt: task.finished_at || task.created_at,
+    prompts: database.listTaskPrompts(task.id),
+    responses: database.listTaskResponses(task.id),
+    outcome: task.status === 'failed'
+      ? task.error || task.result || 'No failure details were recorded.'
+      : task.result || task.error || 'No final outcome was recorded.',
+  };
 }
 
 function serveStatic(pathname, response) {
@@ -676,6 +906,17 @@ export const server = createServer(async (request, response) => {
   const { pathname } = url;
 
   try {
+    const claudeHookMatch = pathname.match(/^\/api\/internal\/claude-hooks\/([a-f0-9]{48})$/);
+    if (request.method === 'POST' && claudeHookMatch) {
+      const body = await readJson(request, MAX_CLAUDE_HOOK_BYTES);
+      response.writeHead(204);
+      response.once('finish', () => {
+        claudeHookBridge.receive(claudeHookMatch[1], body);
+      });
+      response.end();
+      return;
+    }
+
     if (request.method === 'GET' && pathname === '/api/status') {
       const projectPath = url.searchParams.get('projectPath')?.trim() || null;
       const tasks = database.listTasks();
@@ -689,6 +930,7 @@ export const server = createServer(async (request, response) => {
           parallelClaudeExecution: true,
           imageAttachments: true,
           planCouncil: true,
+          planCouncilProviderOrder: true,
           planCouncilTerminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
           planCouncilResume: true,
           planArtifacts: true,
@@ -706,6 +948,7 @@ export const server = createServer(async (request, response) => {
           queuedTaskProviderSwitch: true,
           queuedClaudeAssignment: true,
           taskSteering: true,
+          claudeTaskSteering: CLAUDE_TASK_STEERING,
           turboExecution: true,
           planner: true,
           plannerV2: true,
@@ -713,10 +956,26 @@ export const server = createServer(async (request, response) => {
           instantTaskAdd: true,
           disposableTerminalPools: true,
           resumableDisposableSessions: true,
+          retainedTerminalSessions: true,
+          sharedProjectConfig: true,
+          localhostTaskImport: true,
+          projectTerminalSettings: true,
+          projectColors: true,
+          aiStandupGeneration: true,
+          aiStandupConfiguration: true,
+          crossProcessLaunchOwnership: true,
         },
         taskCount: tasks.length,
         runningTasks: agentUpdates.feed(tasks),
         diagnostics: { endpoint: '/api/diagnostics', file: diagnostics.filePath },
+        // Another CC Relay backend is heartbeating against the shared configuration database.
+        // Terminal ownership stays correct either way; this only lets the interface say so.
+        dualBackendDetected: launchOwnership.dualBackendDetected(),
+        projectConfig: { file: database.projectConfigPath },
+        taskHistoryImport: {
+          desktop: IS_DESKTOP,
+          available: IS_DESKTOP && Boolean(localhostTaskDatabasePath()),
+        },
       });
       return;
     }
@@ -767,7 +1026,18 @@ export const server = createServer(async (request, response) => {
     if (request.method === 'DELETE' && terminalMatch) {
       const threadId = decodeURIComponent(terminalMatch[1]);
       const terminal = await terminalCloseCoordinator.close(threadId);
-      broadcast({ threads: true });
+      // The close already succeeded, so a failed bookkeeping write must never surface as an error.
+      let closedTaskId = null;
+      try {
+        const retained = retainedSessionTaskForThread(database.listTasks(), threadId);
+        if (retained) {
+          database.addEvent(retained.id, 'queue', 'The retained terminal window was closed from CC Relay.');
+          closedTaskId = retained.id;
+        }
+      } catch {}
+      broadcast(closedTaskId
+        ? { threads: true, tasks: true, taskId: closedTaskId }
+        : { threads: true });
       sendJson(response, 200, { closed: true, terminal });
       return;
     }
@@ -816,13 +1086,123 @@ export const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'POST' && pathname === '/api/tasks/import-localhost') {
+      if (!IS_DESKTOP) {
+        sendError(response, 409, 'Task import is available in the desktop app.');
+        return;
+      }
+      const sourcePath = localhostTaskDatabasePath();
+      if (!sourcePath) {
+        sendError(
+          response,
+          409,
+          'No localhost task database is registered. Start localhost CC Relay once, then try again.',
+        );
+        return;
+      }
+      const result = database.importTaskHistory(sourcePath);
+      const sourceTaskRoot = join(dirname(sourcePath), 'tasks');
+      for (const task of result.tasks) {
+        const sourceDirectory = join(sourceTaskRoot, String(task.sourceTaskId));
+        if (!existsSync(sourceDirectory)) continue;
+        cpSync(sourceDirectory, artifacts.taskDirectory(task.taskId), {
+          recursive: true,
+          force: true,
+        });
+      }
+      diagnostic('api.task_history.imported', {
+        sourcePath,
+        imported: result.imported,
+        updated: result.updated,
+        skippedActive: result.skippedActive,
+      });
+      broadcast({ tasks: true });
+      sendJson(response, 200, result);
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/standup/generate') {
+      const body = await readJson(request, 64 * 1024);
+      const requestedPath = typeof body.projectPath === 'string' ? body.projectPath.trim() : '';
+      if (!requestedPath) {
+        throw new StandupGenerationError('Select a Launchpad project before generating a standup.');
+      }
+      const projectPath = resolve(requestedPath);
+      const project = database.getProjectByPath(projectPath);
+      if (!project) {
+        throw new StandupGenerationError(
+          'The selected project is no longer pinned in CC Relay.',
+          { statusCode: 404 },
+        );
+      }
+      const preferredProvider = body.provider === 'claude' ? 'claude' : 'codex';
+      if (body.provider && !['codex', 'claude'].includes(body.provider)) {
+        throw new StandupGenerationError('Choose Codex or Claude for standup generation.');
+      }
+      const length = validateStandupLength(body.length);
+      const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : null;
+      if (threadId && threadId.length > 512) {
+        throw new StandupGenerationError('The selected CC Relay identifier is invalid.');
+      }
+      const window = validateStandupWindow({ start: body.start, end: body.end });
+      const date = typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
+        ? body.date
+        : window.start.slice(0, 10);
+      const tasks = selectStandupTasks(database.listTasks(), {
+        projectPath: project.path,
+        threadId,
+        start: window.start,
+        end: window.end,
+      });
+      if (tasks.length === 0) {
+        throw new StandupGenerationError('No completed or failed work was recorded for that day and scope.');
+      }
+      const includedTasks = tasks.slice(-MAX_STANDUP_SOURCE_TASKS);
+      const omittedTaskCount = tasks.length - includedTasks.length;
+      const records = includedTasks.map(standupRecord);
+      const promptCount = records.reduce((total, record) => total + record.prompts.length, 0);
+      const responseCount = records.reduce((total, record) => total + record.responses.length, 0);
+      const availability = await standupProviderAvailability(preferredProvider);
+      const generated = await standupGenerator.generate(buildStandupPrompt(records, {
+        date,
+        projectName: project.name,
+        scopeLabel: threadId ? 'This CC Relay' : 'All Relays',
+        length,
+        omittedTaskCount,
+      }), {
+        preferredProvider,
+        availability,
+        length,
+        metadata: {
+          projectPath: project.path,
+          length,
+          taskCount: tasks.length,
+          promptCount,
+          responseCount,
+        },
+      });
+      sendJson(response, 200, {
+        ...generated,
+        date,
+        length,
+        taskCount: tasks.length,
+        includedTaskCount: includedTasks.length,
+        promptCount,
+        responseCount,
+      });
+      return;
+    }
+
     if (request.method === 'GET' && pathname === '/api/diagnostics') {
       sendJson(response, 200, { file: diagnostics.filePath, entries: diagnostics.tail(url.searchParams.get('limit')) });
       return;
     }
 
     if (request.method === 'GET' && pathname === '/api/projects') {
-      sendJson(response, 200, { projects: database.listProjects() });
+      sendJson(response, 200, {
+        projects: database.listProjects(),
+        activeProjectPath: database.activeProjectPath(),
+      });
       return;
     }
 
@@ -835,6 +1215,14 @@ export const server = createServer(async (request, response) => {
       const body = await readJson(request);
       const project = database.addProject(validateProjectPath(body.path));
       sendJson(response, 201, { project });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/projects/active') {
+      const body = await readJson(request);
+      const path = typeof body.path === 'string' ? body.path.trim() : '';
+      if (!path) throw new Error('A pinned project path is required.');
+      sendJson(response, 200, { activeProjectPath: database.setActiveProjectPath(path) });
       return;
     }
 
@@ -854,7 +1242,36 @@ export const server = createServer(async (request, response) => {
       return;
     }
 
-    const projectMatch = pathname.match(/^\/api\/projects\/(\d+)(?:\/(launch))?$/);
+    const projectMatch = pathname.match(/^\/api\/projects\/(\d+)(?:\/(launch|settings|color))?$/);
+    if (request.method === 'PATCH' && projectMatch?.[2] === 'color') {
+      const body = await readJson(request);
+      const project = database.updateProjectColor(
+        Number(projectMatch[1]),
+        validateProjectColor(body.color),
+      );
+      broadcast({ projects: true });
+      sendJson(response, 200, { project });
+      return;
+    }
+
+    if (request.method === 'PATCH' && projectMatch?.[2] === 'settings') {
+      const body = await readJson(request);
+      if (typeof body.keepTerminalOpen !== 'boolean') {
+        throw new Error('Keep task terminals open must be true or false.');
+      }
+      if (typeof body.preferIdleTerminal !== 'boolean') {
+        throw new Error('Idle CC Relay routing must be true or false.');
+      }
+      const project = database.updateProjectTerminalSettings(Number(projectMatch[1]), {
+        keepTerminalOpen: body.keepTerminalOpen,
+        preferIdleTerminal: body.preferIdleTerminal,
+        terminalLayout: validateProjectTerminalLayout(body.terminalLayout),
+      });
+      broadcast({ projects: true });
+      sendJson(response, 200, { project });
+      return;
+    }
+
     if (request.method === 'PATCH' && projectMatch && !projectMatch[2]) {
       const body = await readJson(request);
       const projectId = Number(projectMatch[1]);
@@ -900,7 +1317,7 @@ export const server = createServer(async (request, response) => {
 
     if (request.method === 'DELETE' && projectMatch && !projectMatch[2]) {
       if (database.listProjects().length <= 1) {
-        throw new Error('Relay must keep one Launchpad project selected. Add another project before unpinning this one.');
+        throw new Error('CC Relay must keep one Launchpad project selected. Add another project before unpinning this one.');
       }
       sendJson(response, 200, { deleted: database.deleteProject(Number(projectMatch[1])) });
       return;
@@ -1030,6 +1447,7 @@ export const server = createServer(async (request, response) => {
           mode: 'breakdown',
           repoPath: plan.repo_path,
           terminalLifecycle: session.terminalLifecycle,
+          keepTerminalOpen: session.keepTerminalOpen,
           terminalLayout: session.terminalLayout,
           submissionId: randomUUID(),
         });
@@ -1107,6 +1525,7 @@ export const server = createServer(async (request, response) => {
           mode: 'breakdown',
           repoPath: plan.repo_path,
           terminalLifecycle: session.terminalLifecycle,
+          keepTerminalOpen: session.keepTerminalOpen,
           terminalLayout: session.terminalLayout,
           submissionId: randomUUID(),
         });
@@ -1186,6 +1605,7 @@ export const server = createServer(async (request, response) => {
           ...execution,
           repoPath: plan.repo_path,
           terminalLifecycle: session.terminalLifecycle,
+          keepTerminalOpen: session.keepTerminalOpen,
           terminalLayout: session.terminalLayout,
           submissionId: randomUUID(),
         });
@@ -1260,6 +1680,7 @@ export const server = createServer(async (request, response) => {
         provider,
         preferIdleTerminal: body.preferIdleTerminal === true && !session.disposable,
         terminalLifecycle: session.terminalLifecycle,
+        keepTerminalOpen: session.keepTerminalOpen,
         terminalLayout: session.terminalLayout,
         model: execution.model ?? null,
         effort: execution.effort ?? null,
@@ -1316,7 +1737,7 @@ export const server = createServer(async (request, response) => {
       }
       const submissionId = typeof body.submissionId === 'string' ? body.submissionId.trim() : null;
       if (!submissionId) {
-        throw new Error('Task submission ID is required. Refresh Relay and try again.');
+        throw new Error('Task submission ID is required. Refresh CC Relay and try again.');
       }
       if (submissionId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(submissionId)) {
         throw new Error('Task submission ID is invalid.');
@@ -1327,6 +1748,7 @@ export const server = createServer(async (request, response) => {
         ? 'disposable'
         : 'persistent';
       const disposable = terminalLifecycle === 'disposable';
+      const keepTerminalOpen = disposable && body.keepTerminalOpen === true;
       const terminalLayout = disposable ? validateTaskTerminalLayout(body.terminalLayout) : null;
       // Run now pins the task to the visibly selected terminal, so it deliberately opts out
       // of idle routing. Plan council occupies both of its providers and never reroutes.
@@ -1372,14 +1794,14 @@ export const server = createServer(async (request, response) => {
         const projectPath = validateProjectPath(requestedProjectPath).path;
         const project = database.getProjectByPath(projectPath);
         if (!project) {
-          throw new Error('Pin this project in Relay before adding automatic terminal work.');
+          throw new Error('Pin this project in CC Relay before adding automatic terminal work.');
         }
         thread = {
           id: null,
           provider: sessionProvider,
           cwd: project.path,
           title: `Automatic ${sessionProvider === 'claude' ? 'Claude' : 'Codex'} instance`,
-          source: 'Relay managed terminal pool',
+          source: 'CC Relay managed terminal pool',
         };
         resolvedSession = { source: 'automatic-pool', thread };
       } else {
@@ -1404,6 +1826,7 @@ export const server = createServer(async (request, response) => {
         resolvedFrom: resolvedSession.source,
         preferIdleTerminal,
         terminalLifecycle,
+        keepTerminalOpen,
       });
 
       if (mode === 'turbo') {
@@ -1452,6 +1875,7 @@ export const server = createServer(async (request, response) => {
           model: planner.model, effort: planner.effort,
           repoPath: thread.cwd,
           terminalLifecycle,
+          keepTerminalOpen,
           terminalLayout,
           turbo: {
             plannerThreadId: thread.id || null,
@@ -1481,69 +1905,55 @@ export const server = createServer(async (request, response) => {
           throw new Error('Plan council must be explicitly enabled for this task.');
         }
         const claudeRuntimeStatus = requireClaudeReady('Plan council');
-        let authorThread = null;
+        const council = validatePlanCouncilConfig({
+          councilEnabled: body.councilEnabled,
+          councilOrder: body.councilOrder ?? body.order,
+          authorProvider: body.authorProvider,
+          authorModel: body.authorModel,
+          authorEffort: body.authorEffort,
+          reviewerProvider: body.reviewerProvider,
+          reviewerModel: body.reviewerModel,
+          reviewerEffort: body.reviewerEffort,
+        }, {
+          claudeReady: true,
+          claudeStatus: claudeRuntimeStatus,
+          codexModels: await codexAppServer.listModels(),
+          claudeModels: CLAUDE_MODELS,
+        });
+        let claudeThread = null;
         if (PLAN_COUNCIL_TERMINAL_EXECUTION && !disposable) {
           const authorThreadId = typeof body.authorThreadId === 'string'
             ? body.authorThreadId.trim()
             : '';
           if (!authorThreadId) {
-            throw new Error('Choose a connected Claude author terminal for Plan council.');
+            throw new Error('Choose a connected Claude council terminal for Plan council.');
           }
-          const resolvedAuthor = await resolveSubmissionThread(
+          const resolvedClaude = await resolveSubmissionThread(
             'claude',
             authorThreadId,
             sessionResolutionDeps('claude', authorThreadId),
           );
-          authorThread = resolvedAuthor.thread;
-          if (!authorThread) {
-            throw new Error('Relay has never seen that Claude author terminal. Refresh the session list.');
+          claudeThread = resolvedClaude.thread;
+          if (!claudeThread) {
+            throw new Error('CC Relay has never seen that Claude council terminal. Refresh the session list.');
           }
-          if (resolve(authorThread.cwd) !== resolve(thread.cwd)) {
-            throw new Error('The Claude author and Codex reviewer must be open in the same workspace.');
+          if (resolve(claudeThread.cwd) !== resolve(thread.cwd)) {
+            throw new Error('The Claude and Codex council terminals must be open in the same workspace.');
           }
-          const ownedAuthorTerminal = projectLauncher.terminalForThread(authorThread.id);
-          if (!ownedAuthorTerminal || ownedAuthorTerminal.provider !== 'claude') {
+          const ownedClaudeTerminal = projectLauncher.terminalForThread(claudeThread.id);
+          if (!ownedClaudeTerminal || ownedClaudeTerminal.provider !== 'claude') {
             throw new Error(
-              'Plan council needs a Claude Relay launched by Relay so it can type into that exact terminal. Launch Claude here, then select it as the author terminal.',
+              'Plan council needs a Claude CC Relay launched by CC Relay so it can type into that exact terminal. Launch Claude here, then select it as the council terminal.',
             );
           }
         }
-        const authorProvider = typeof body.authorProvider === 'string'
-          ? body.authorProvider.trim()
-          : 'claude';
-        const reviewerProvider = typeof body.reviewerProvider === 'string'
-          ? body.reviewerProvider.trim()
-          : 'codex';
-        if (authorProvider === reviewerProvider) {
-          throw new Error('Plan council requires at least two different AI providers.');
-        }
-        if (authorProvider !== 'claude' || reviewerProvider !== 'codex') {
-          throw new Error('The available plan route is Claude author to Codex reviewer.');
-        }
-        const authorModel = typeof body.authorModel === 'string'
-          ? body.authorModel.trim()
-          : 'fable';
-        if (!['fable', 'opus'].includes(authorModel)) {
-          throw new Error('Claude plan author must use Fable or Opus.');
-        }
-        const authorEffort = typeof body.authorEffort === 'string'
-          ? body.authorEffort.trim()
-          : 'max';
-        if (authorEffort !== 'max') {
-          throw new Error('Claude plan author must use max effort.');
-        }
-        const reviewer = validateExecutionSettings({
-          model: body.reviewerModel,
-          effort: body.reviewerEffort,
-          models: await codexAppServer.listModels(),
-        });
-        if (!reviewer.model) {
-          throw new Error('Choose a Codex reviewer model for Plan council.');
-        }
         diagnostic('api.plan.council.sessions', {
           terminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
-          authorThreadId: authorThread?.id || null,
-          reviewerThreadId: thread.id,
+          order: council.order,
+          authorProvider: council.authorProvider,
+          reviewerProvider: council.reviewerProvider,
+          claudeThreadId: claudeThread?.id || null,
+          codexThreadId: thread.id,
           repoPath: thread.cwd,
         });
         const task = queue.enqueue({
@@ -1553,19 +1963,20 @@ export const server = createServer(async (request, response) => {
           provider: 'council',
           mode,
           council: {
-            authorProvider,
-            ...(authorThread ? { authorThread } : {}),
-            authorModel,
-            authorEffort,
-            reviewerProvider,
-            reviewerModel: reviewer.model,
-            reviewerEffort: reviewer.effort,
+            authorProvider: council.authorProvider,
+            ...(claudeThread ? { authorThread: claudeThread } : {}),
+            authorModel: council.authorModel,
+            authorEffort: council.authorEffort,
+            reviewerProvider: council.reviewerProvider,
+            reviewerModel: council.reviewerModel,
+            reviewerEffort: council.reviewerEffort,
           },
           attachments,
           runNow,
           submissionId,
           repoPath: thread.cwd,
           terminalLifecycle,
+          keepTerminalOpen,
           terminalLayout,
         });
         sendJson(response, 201, { task });
@@ -1592,6 +2003,7 @@ export const server = createServer(async (request, response) => {
           preferIdleTerminal,
           repoPath: thread.cwd,
           terminalLifecycle,
+          keepTerminalOpen,
           terminalLayout,
         });
         sendJson(response, 201, { task });
@@ -1615,6 +2027,7 @@ export const server = createServer(async (request, response) => {
         preferIdleTerminal,
         repoPath: thread.cwd,
         terminalLifecycle,
+        keepTerminalOpen,
         terminalLayout,
       });
       sendJson(response, 201, { task });
@@ -1700,27 +2113,18 @@ export const server = createServer(async (request, response) => {
       const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
       if (!prompt) throw new Error('Write a follow-up before sending it.');
       const attachments = decodeImageAttachments(body.attachments);
-      if (task.mode !== 'execute' || task.provider !== 'codex') {
-        throw new Error('Only a running direct Codex task can accept a live update.');
+      if (task.mode !== 'execute' || !['codex', 'claude'].includes(task.provider)) {
+        throw new Error('Only a running direct Codex or Claude task can accept a live update.');
       }
       if (task.status !== 'running') {
         throw new Error('That task is no longer running. Your message was not queued.');
       }
-      const storedAttachments = queue.stageTaskAttachments(task.id, attachments);
-      let steered;
-      try {
-        steered = await codexAppServer.steer(task.id, prompt, storedAttachments);
-      } catch (error) {
-        queue.discardTaskAttachments(task.id, storedAttachments);
-        throw error;
-      }
-      queue.commitTaskAttachments(task.id, storedAttachments);
-      diagnostic('api.task.steered', steered);
+      const steered = await steerRunningTask(task, prompt, attachments);
       sendJson(response, 200, {
         task: database.getTask(task.id),
         steered: true,
         threadId: steered.threadId,
-        turnId: steered.turnId,
+        turnId: steered.turnId ?? null,
       });
       return;
     }
@@ -1737,94 +2141,49 @@ export const server = createServer(async (request, response) => {
         throw new Error('Only direct Codex or Claude tasks can continue in one terminal session.');
       }
       if (sourceTask.status === 'running') {
-        if (sourceTask.provider !== 'codex') {
-          throw new Error('Claude live turn updates are not available yet. Your message was not queued.');
-        }
-        const storedAttachments = queue.stageTaskAttachments(sourceTask.id, attachments);
-        let steered;
-        try {
-          steered = await codexAppServer.steer(sourceTask.id, prompt, storedAttachments);
-        } catch (error) {
-          queue.discardTaskAttachments(sourceTask.id, storedAttachments);
-          throw error;
-        }
-        queue.commitTaskAttachments(sourceTask.id, storedAttachments);
-        diagnostic('api.task.steered', steered);
+        const steered = await steerRunningTask(sourceTask, prompt, attachments);
         sendJson(response, 200, {
           task: database.getTask(sourceTask.id),
           steered: true,
           threadId: steered.threadId,
-          turnId: steered.turnId,
+          turnId: steered.turnId ?? null,
         });
         return;
       }
       if (sourceTask.provider === 'claude') {
         const claudeRuntimeStatus = requireClaudeReady('Claude continuation');
       }
-      if (sourceTask.terminal_lifecycle === 'disposable') {
-        if (!['complete', 'failed', 'cancelled', 'interrupted'].includes(sourceTask.status)) {
-          throw new Error('That task is not ready to continue yet.');
-        }
-        if (!sourceTask.thread_id) {
-          throw new Error('The original conversation was not established, so it cannot be resumed.');
-        }
-        const conflict = database.listTasks().find((task) => (
-          task.id !== sourceTask.id
-          && task.thread_id === sourceTask.thread_id
-          && ['queued', 'running'].includes(task.status)
-        ));
-        if (conflict) {
-          throw new Error('This conversation already has queued or running work.');
-        }
-        const execution = validateExecutionSettings({
-          model: sourceTask.model,
-          effort: sourceTask.effort,
-          models: sourceTask.provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
-        });
-        const task = queue.enqueue({
-          title: `Continue: ${sourceTask.title}`,
-          prompt,
-          thread: {
-            id: sourceTask.thread_id,
-            provider: sourceTask.provider,
-            cwd: sourceTask.repo_path,
-            title: sourceTask.thread_name || `Resumed ${sourceTask.provider} conversation`,
-            source: 'Relay managed terminal pool',
-          },
-          repoPath: sourceTask.repo_path,
-          provider: sourceTask.provider,
-          mode: 'execute',
-          ...execution,
-          attachments,
-          continuedFromTaskId: sourceTask.id,
-          terminalLifecycle: 'disposable',
-          terminalLayout: sourceTask.terminal_layout,
-        });
-        database.addEvent(
-          sourceTask.id,
-          'queue',
-          `Continuation queued as task ${task.id}. Relay will resume conversation ${sourceTask.thread_id}.`,
-        );
-        diagnostic('api.task.continuation_queued', {
-          sourceTaskId: sourceTask.id,
-          taskId: task.id,
-          threadId: sourceTask.thread_id,
-          provider: sourceTask.provider,
-        });
-        sendJson(response, 202, {
-          task,
-          continuationQueued: true,
-          threadId: sourceTask.thread_id,
-        });
-        return;
+      const retainedThread = sourceTask.terminal_lifecycle === 'disposable'
+        && sourceTask.keep_terminal_open
+        && sourceTask.thread_id
+        ? sourceTask.provider === 'codex'
+          ? await codexAppServer.readConnectedThread(sourceTask.thread_id)
+          : await claudeSessions.readConnectedSession(sourceTask.thread_id)
+        : null;
+      if (!['complete', 'failed', 'cancelled', 'interrupted'].includes(sourceTask.status)) {
+        throw new Error('That task is not ready to continue yet.');
       }
-      const thread = sourceTask.provider === 'codex'
-        ? await codexAppServer.readConnectedThread(sourceTask.thread_id)
-        : await claudeSessions.readConnectedSession(sourceTask.thread_id);
+      const resumeDisposable = sourceTask.terminal_lifecycle === 'disposable' && !retainedThread;
+      if (resumeDisposable && !sourceTask.thread_id) {
+        throw new Error('The original conversation was not established, so it cannot be resumed.');
+      }
+      const connectedThread = resumeDisposable
+        ? null
+        : retainedThread || (sourceTask.provider === 'codex'
+          ? await codexAppServer.readConnectedThread(sourceTask.thread_id)
+          : await claudeSessions.readConnectedSession(sourceTask.thread_id));
+      const thread = connectedThread || (resumeDisposable ? {
+        id: sourceTask.thread_id,
+        provider: sourceTask.provider,
+        cwd: sourceTask.repo_path,
+        title: sourceTask.thread_name || `Resumed ${sourceTask.provider} conversation`,
+        source: 'CC Relay managed terminal pool',
+        status: 'idle',
+      } : null);
       if (!thread) {
         throw new Error(sourceTask.provider === 'claude'
           ? 'The original Claude session is no longer open. Reopen that conversation before continuing.'
-          : 'The original Codex Relay is no longer connected. Reconnect it before continuing.');
+          : 'The original Codex CC Relay is no longer connected. Reconnect it before continuing.');
       }
       if (thread.status !== 'idle') {
         throw new Error('That terminal is currently busy. Finish its active work, then send again. Your follow-up was not queued.');
@@ -1840,18 +2199,20 @@ export const server = createServer(async (request, response) => {
         thread,
         execution,
         attachments,
-      }));
+      }), { resumeDisposable });
       diagnostic('api.task.follow_up_started', {
         sourceTaskId: sourceTask.id,
         threadId: task.thread_id,
         provider: task.provider,
         model: task.model,
         effort: task.effort,
+        resumedDisposableSession: resumeDisposable,
       });
       sendJson(response, 202, {
         task,
         followUpStarted: true,
         threadId: task.thread_id,
+        resumedDisposableSession: resumeDisposable,
       });
       return;
     }
@@ -1890,6 +2251,8 @@ export const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         task,
         events: database.listEvents(taskId),
+        prompts: database.listTaskPrompts(taskId),
+        responses: database.listTaskResponses(taskId),
         plan: task.mode === 'plan' ? readPlanRecord(task) : null,
         turboPlan: task.mode === 'turbo' ? artifacts.readTurboPlan(taskId) : null,
       });
@@ -1945,6 +2308,7 @@ export const server = createServer(async (request, response) => {
         ? 'disposable'
         : 'persistent';
       const disposable = terminalLifecycle === 'disposable';
+      const keepTerminalOpen = disposable && body.keepTerminalOpen === true;
       const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
       let thread;
       if (disposable) {
@@ -1957,7 +2321,7 @@ export const server = createServer(async (request, response) => {
           provider,
           cwd: projectPath,
           title: `Automatic ${provider === 'codex' ? 'Codex' : 'Claude'} instance`,
-          source: 'Relay managed terminal pool',
+          source: 'CC Relay managed terminal pool',
         };
       } else {
         thread = provider === 'codex'
@@ -2006,6 +2370,7 @@ export const server = createServer(async (request, response) => {
         runNow: body.runNow === true,
         repoPath: thread.cwd,
         terminalLifecycle,
+        keepTerminalOpen,
         terminalLayout: disposable ? validateTaskTerminalLayout(body.terminalLayout) : null,
       });
       database.addEvent(
@@ -2031,6 +2396,26 @@ export const server = createServer(async (request, response) => {
       if (!['failed', 'cancelled', 'interrupted'].includes(task.status)) {
         throw new Error('Only failed, cancelled, or interrupted tasks can be retried.');
       }
+      let reuseRetainedTerminal = false;
+      if (
+        task.mode === 'execute'
+        && task.terminal_lifecycle === 'disposable'
+        && task.keep_terminal_open
+        && task.thread_id
+      ) {
+        const retainedThread = task.provider === 'codex'
+          ? await codexAppServer.readConnectedThread(task.thread_id)
+          : await claudeSessions.readConnectedSession(task.thread_id);
+        if (retainedThread) {
+          if (resolve(retainedThread.cwd) !== resolve(task.repo_path)) {
+            throw new Error('The retained terminal is no longer open in this task project.');
+          }
+          if (retainedThread.status !== 'idle') {
+            throw new Error('The retained terminal is still busy. Wait for it to become idle before retrying.');
+          }
+          reuseRetainedTerminal = true;
+        }
+      }
       if (task.mode === 'plan' && task.terminal_lifecycle !== 'disposable') {
         const body = await readJson(request);
         const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
@@ -2042,10 +2427,10 @@ export const server = createServer(async (request, response) => {
           ? await codexAppServer.readConnectedThread(reviewerThreadId)
           : null;
         if (!reviewerThread) {
-          throw new Error('Choose a connected Codex Relay before resuming the Plan council.');
+          throw new Error('Choose a connected Codex council CC Relay before resuming the Plan council.');
         }
         if (resolve(reviewerThread.cwd) !== resolve(task.repo_path)) {
-          throw new Error('The Plan council reviewer must use a Relay in the same workspace.');
+          throw new Error('The Plan council Codex terminal must use a CC Relay in the same workspace.');
         }
         const plan = readPlanRecord(task);
         if (plan?.status !== 'complete') {
@@ -2056,14 +2441,14 @@ export const server = createServer(async (request, response) => {
               ? await claudeSessions.readConnectedSession(authorThreadId)
               : null;
             if (!authorThread) {
-              throw new Error('Choose a connected Claude author terminal before resuming the Plan council.');
+              throw new Error('Choose a connected Claude council terminal before resuming the Plan council.');
             }
             if (resolve(authorThread.cwd) !== resolve(task.repo_path)) {
-              throw new Error('The Plan council author must use a Claude Relay in the same workspace.');
+              throw new Error('The Plan council Claude terminal must use a CC Relay in the same workspace.');
             }
             const ownedAuthorTerminal = projectLauncher.terminalForThread(authorThread.id);
             if (!ownedAuthorTerminal || ownedAuthorTerminal.provider !== 'claude') {
-              throw new Error('The Plan council author must use a Claude terminal launched by Relay.');
+              throw new Error('The Plan council must use a Claude terminal launched by CC Relay.');
             }
             if (authorThread.id !== task.author_thread_id) {
               const reassigned = database.updateTask(taskId, {
@@ -2072,7 +2457,7 @@ export const server = createServer(async (request, response) => {
                 author_thread_source: authorThread.source,
               });
               artifacts.updateCouncilAuthorAssignment(reassigned);
-              database.addEvent(taskId, 'queue', `Plan council author moved to ${authorThread.title}.`);
+              database.addEvent(taskId, 'queue', `Plan council Claude terminal moved to ${authorThread.title}.`);
             }
           }
         }
@@ -2083,10 +2468,10 @@ export const server = createServer(async (request, response) => {
             thread_source: reviewerThread.source,
           });
           artifacts.updateTaskAssignment(reassigned);
-          database.addEvent(taskId, 'queue', `Plan council reviewer moved to ${reviewerThread.title}.`);
+          database.addEvent(taskId, 'queue', `Plan council Codex terminal moved to ${reviewerThread.title}.`);
         }
       }
-      sendJson(response, 200, { task: queue.retry(taskId) });
+      sendJson(response, 200, { task: queue.retry(taskId, { reuseRetainedTerminal }) });
       return;
     }
 
@@ -2107,8 +2492,8 @@ export const server = createServer(async (request, response) => {
       if (!thread) {
         throw new Error(
           task.provider === 'claude'
-            ? 'That Claude terminal is no longer open. Choose another live Claude Relay.'
-            : 'That Codex terminal is no longer connected. Choose another live Relay.',
+            ? 'That Claude terminal is no longer open. Choose another live Claude CC Relay.'
+            : 'That Codex terminal is no longer connected. Choose another live CC Relay.',
         );
       }
       if (resolve(task.repo_path) !== resolve(thread.cwd)) {
@@ -2181,32 +2566,82 @@ export const server = createServer(async (request, response) => {
     // A guard that has to run synchronously next to the write it protects cannot reach the
     // route's own sendError, so it carries its status code on the error instead.
     const statusCode = error instanceof SyntaxError ? 400 : error.statusCode || 422;
-    sendError(response, statusCode, error.message || 'Request failed.');
+    /*
+     * A live update the provider terminal may already have accepted stays a rejection: CC
+     * Relay did not confirm it and will not send it again. The client still has to tell it
+     * apart from a delivery that provably never happened, because retaining that text in a
+     * composer invites the duplicate turn the no-queue contract forbids. Response shape
+     * only. Nothing about the outcome, the status code, or the retry policy changes.
+     */
+    sendError(
+      response,
+      statusCode,
+      error.message || 'Request failed.',
+      error.deliveryUncertain === true ? { deliveryUncertain: true } : {},
+    );
   }
 });
 
+let resolveServerReady;
+let rejectServerReady;
+export const serverReady = new Promise((resolveReady, rejectReady) => {
+  resolveServerReady = resolveReady;
+  rejectServerReady = rejectReady;
+});
+// Standalone server launches do not consume this promise. Keep a failed bind from
+// becoming an unhandled rejection while still allowing Electron to await it.
+serverReady.catch(() => {});
+
 server.once('error', (error) => {
-  diagnostic('relay.listen.failed', { host: HOST, port: PORT, dataRoot: DATA_ROOT, error: error.message });
-  console.error(`Relay could not listen at http://${HOST}:${PORT}: ${error.message}`);
+  rejectServerReady(error);
+  diagnostic('relay.listen.failed', {
+    host: HOST,
+    port: error.port ?? PORT,
+    requestedPort: PORT,
+    dataRoot: DATA_ROOT,
+    projectConfigFile: database.projectConfigPath,
+    error: error.message,
+  });
+  console.error(`CC Relay could not listen at http://${HOST}:${PORT}: ${error.message}`);
   codexAppServer.close();
   database.close();
   process.exitCode = 1;
 });
 
+diagnostic('relay.listen.requested', {
+  host: HOST,
+  requestedPort: PORT,
+  portSelection: PORT === 0 ? 'operating-system' : 'fixed',
+  dataRoot: DATA_ROOT,
+  projectConfigFile: database.projectConfigPath,
+});
 server.listen(PORT, HOST, () => {
+  const endpoint = relayServerEndpoint(server, HOST);
+  relayEndpointUrl = endpoint.url;
+  // Registered only once this process owns its port. A start that fails on a busy port must not
+  // leave a claim behind that another backend would have to time out.
+  launchOwnership.start().catch((error) => {
+    diagnostic('launch.registry.failed', { operation: 'start', error: error.message });
+  });
   queue.start();
   // After queue recovery, not before: recoverInterruptedTasks() marks tasks that died with
   // the server as `interrupted` without emitting a queue change, so nothing else would tell
   // a plan run that its steps are gone. An interrupted step is a failure with no scheduled
   // retry, so its dependents block and the user can retry the task to re-arm it.
   planRuns.reconcileAll();
-  diagnostic('relay.started', { host: HOST, port: PORT, dataRoot: DATA_ROOT });
+  diagnostic('relay.started', {
+    host: endpoint.host,
+    port: endpoint.port,
+    requestedPort: PORT,
+    dataRoot: DATA_ROOT,
+    projectConfigFile: database.projectConfigPath,
+  });
   codexAppServer.start().catch((error) => {
     diagnostic('appserver.background_start.failed', { error: error.message });
     console.error(`Codex app-server could not start: ${error.message}`);
   });
-  // Provider readiness is probed in the background from here on. No request handler ever
-  // spawns a provider CLI, so no request can be delayed by one.
+  // Provider readiness is probed in the background from here on. Ordinary status and queue
+  // requests never spawn probes. The explicit standup action launches one isolated AI run.
   claudeRuntime.start();
   refreshCodexStatus().then((status) => {
     if (!status.available || !status.authenticated) {
@@ -2221,11 +2656,15 @@ server.listen(PORT, HOST, () => {
     void refreshCodexStatus().then((status) => activateCodexRuntime(status));
   }, CODEX_STATUS_REFRESH_MS);
   codexStatusTimer.unref?.();
-  console.log(`Relay is running at http://${HOST}:${PORT}`);
+  console.log(`CC Relay is running at ${endpoint.url}`);
+  resolveServerReady(endpoint);
 });
 
 export async function shutdown() {
   claudeRuntime.stop();
+  relayEndpointUrl = null;
+  claudeHookBridge.clear();
+  standupGenerator.cancel();
   if (codexStatusTimer) {
     clearInterval(codexStatusTimer);
     codexStatusTimer = null;
@@ -2237,6 +2676,7 @@ export async function shutdown() {
   server.close();
   await queue.shutdown();
   await projectLauncher.closeOwnedTerminals();
+  launchOwnership.stop();
   codexAppServer.close();
   database.close();
 }

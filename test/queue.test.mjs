@@ -256,6 +256,126 @@ test('a finished-task follow-up starts immediately in the same task row and sess
   }
 });
 
+test('a closed disposable conversation resumes in the same task row', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-disposable-follow-up-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const prepared = [];
+  const received = [];
+  const released = [];
+  const terminalPool = {
+    canRun(task, activeTasks) {
+      assert.equal(task.thread_id, 'saved-conversation');
+      assert.deepEqual(activeTasks, []);
+      return true;
+    },
+    async prepare(task) {
+      prepared.push(task);
+      return database.updateTask(task.id, {
+        thread_id: task.thread_id,
+        thread_name: 'Resumed conversation',
+        thread_source: 'test pool',
+      });
+    },
+    async release(taskId) {
+      released.push(taskId);
+    },
+  };
+  const runner = {
+    async run(task) {
+      received.push(task);
+      return { finalResponse: 'Resumed result', sessionId: task.thread_id, exitCode: 0 };
+    },
+    cancel() { return false; },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner, terminalPool });
+
+  try {
+    queue.pause();
+    const source = queue.enqueue({
+      ...directInput('Original work', 'saved-conversation', directory),
+      terminalLifecycle: 'disposable',
+    });
+    database.updateTask(source.id, {
+      status: 'complete',
+      started_at: '2026-07-28T10:00:00.000Z',
+      finished_at: '2026-07-28T10:01:00.000Z',
+      result: 'Original result',
+    });
+    const taskCount = database.listTasks().length;
+
+    const started = queue.startFollowUp({
+      ...database.getTask(source.id),
+      prompt: 'Continue the saved conversation.',
+      attachments: [],
+      sessionFollowUp: true,
+    }, { resumeDisposable: true });
+
+    assert.equal(started.id, source.id);
+    assert.equal(started.status, 'running');
+    assert.equal(database.listTasks().length, taskCount);
+    await waitFor(() => database.getTask(source.id).status === 'complete');
+    assert.equal(prepared.length, 1);
+    assert.equal(prepared[0].id, source.id);
+    assert.equal(prepared[0].thread_id, 'saved-conversation');
+    assert.equal(received.length, 1);
+    assert.equal(received[0].id, source.id);
+    assert.equal(received[0].prompt, 'Continue the saved conversation.');
+    assert.equal(received[0].sessionFollowUp, true);
+    assert.equal(database.getTask(source.id).prompt, 'Execute Original work');
+    assert.equal(database.getTask(source.id).result, 'Resumed result');
+    assert.deepEqual(released, [source.id]);
+    assert.equal(database.listTasks().length, taskCount);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a disposable follow-up rejects a full terminal pool without changing its task', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-disposable-follow-up-capacity-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const terminalPool = {
+    canRun: () => false,
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    terminalPool,
+    runner: { run() {}, cancel() { return false; } },
+  });
+
+  try {
+    queue.pause();
+    const source = queue.enqueue({
+      ...directInput('Original work', 'saved-conversation', directory),
+      terminalLifecycle: 'disposable',
+    });
+    database.updateTask(source.id, {
+      status: 'complete',
+      finished_at: '2026-07-28T10:01:00.000Z',
+      result: 'Original result',
+    });
+    const beforeEvents = database.listEvents(source.id).length;
+
+    assert.throws(() => queue.startFollowUp({
+      ...database.getTask(source.id),
+      prompt: 'Continue when there is capacity.',
+      attachments: [],
+      sessionFollowUp: true,
+    }, { resumeDisposable: true }), /No terminal slot is free.*not queued/);
+    assert.equal(database.getTask(source.id).status, 'complete');
+    assert.equal(database.getTask(source.id).result, 'Original result');
+    assert.equal(database.listTasks().length, 1);
+    assert.equal(database.listEvents(source.id).length, beforeEvents);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('staged follow-up images can be discarded without removing earlier task images', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-follow-up-image-rollback-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
@@ -664,11 +784,11 @@ test('a Plan council in one project does not block direct Codex work in another 
     });
     await waitFor(() => database.getTask(council.id).status === 'running');
 
-    const direct = queue.enqueue(directInput('Relay implementation', 'relay-worker', '/repo/relay'));
+    const direct = queue.enqueue(directInput('CC Relay implementation', 'relay-worker', '/repo/relay'));
     await waitFor(() => database.getTask(direct.id).status === 'complete');
 
     assert.equal(database.getTask(council.id).status, 'running');
-    assert.deepEqual(started, ['Agreau council', 'Relay implementation']);
+    assert.deepEqual(started, ['Agreau council', 'CC Relay implementation']);
     releaseCouncil();
     await waitFor(() => database.getTask(council.id).status === 'complete');
   } finally {
@@ -702,7 +822,7 @@ test('a project Plan council can start while direct Codex work runs in another p
   const queue = new TaskQueue({ database, artifacts, runner });
 
   try {
-    const direct = queue.enqueue(directInput('Relay implementation', 'relay-worker', '/repo/relay'));
+    const direct = queue.enqueue(directInput('CC Relay implementation', 'relay-worker', '/repo/relay'));
     await waitFor(() => database.getTask(direct.id).status === 'running');
     const council = queue.enqueue({
       title: 'Agreau council',
@@ -1577,7 +1697,7 @@ test('queue cancellation of a waiting council review leaves another parent revie
   }
 });
 
-test('a direct task on a newly added Relay runs while Turbo workers remain active', async () => {
+test('a direct task on a newly added CC Relay runs while Turbo workers remain active', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-direct-free-relay-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
   const artifacts = new ArtifactStore(join(directory, 'tasks'));
@@ -1603,10 +1723,10 @@ test('a direct task on a newly added Relay runs while Turbo workers remain activ
   try {
     const turbo = queue.enqueue(turboInput('Turbo', 'planner-turbo', 'worker-turbo', directory));
     await waitFor(() => database.getTask(turbo.id).status === 'running');
-    const direct = queue.enqueue(directInput('New Relay work', 'worker-new-relay', directory));
+    const direct = queue.enqueue(directInput('New CC Relay work', 'worker-new-relay', directory));
     await waitFor(() => database.getTask(direct.id).status === 'complete');
     assert.equal(database.getTask(turbo.id).status, 'running');
-    assert.deepEqual(started, ['Turbo', 'New Relay work']);
+    assert.deepEqual(started, ['Turbo', 'New CC Relay work']);
     releaseTurbo();
     await waitFor(() => database.getTask(turbo.id).status === 'complete');
   } finally {
@@ -1844,7 +1964,7 @@ test('automatic tasks without a preselected thread launch through the pool and r
   try {
     const task = queue.enqueue({
       title: 'Automatic task',
-      prompt: 'Run without a selected Relay',
+      prompt: 'Run without a selected CC Relay',
       repoPath: directory,
       provider: 'codex',
       mode: 'execute',
@@ -1857,6 +1977,196 @@ test('automatic tasks without a preselected thread launch through the pool and r
       `release:${task.id}`,
     ]);
     assert.equal(database.getTask(task.id).thread_id, 'automatic-codex-thread');
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('automatic tasks retain their prepared terminal when the task opted in', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-retained-queue-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Retained queue' });
+  const lifecycle = [];
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      lifecycle.push(`prepare:${task.id}`);
+      return database.updateTask(task.id, {
+        thread_id: 'retained-codex-thread',
+        thread_name: 'Retained Codex',
+        thread_source: 'test',
+      });
+    },
+    async retain(taskId) {
+      lifecycle.push(`retain:${taskId}`);
+    },
+    async release(taskId) {
+      lifecycle.push(`release:${taskId}`);
+    },
+  };
+  const runner = {
+    async run(task) {
+      lifecycle.push(`run:${task.thread_id}`);
+      return { sessionId: task.thread_id, finalResponse: 'done', exitCode: 0 };
+    },
+    cancel() {
+      return false;
+    },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner, terminalPool });
+  try {
+    const task = queue.enqueue({
+      title: 'Retained automatic task',
+      prompt: 'Keep this terminal',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+    });
+    await waitFor(() => database.getTask(task.id).status === 'complete');
+    assert.deepEqual(lifecycle, [
+      `prepare:${task.id}`,
+      'run:retained-codex-thread',
+      `retain:${task.id}`,
+    ]);
+    assert.equal(database.getTask(task.id).keep_terminal_open, true);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('retained tasks close retry attempts and retain only the final failed session', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-retained-retry-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Retained retries' });
+  const lifecycle = [];
+  let attempt = 0;
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      attempt += 1;
+      lifecycle.push(`prepare:${attempt}`);
+      return database.updateTask(task.id, {
+        thread_id: `retained-retry-thread-${attempt}`,
+        thread_name: `Retained retry ${attempt}`,
+        thread_source: 'test',
+      });
+    },
+    async retain() {
+      lifecycle.push(`retain:${attempt}`);
+    },
+    async release() {
+      lifecycle.push(`release:${attempt}`);
+    },
+  };
+  const runner = {
+    async run() {
+      lifecycle.push(`run:${attempt}`);
+      throw new Error(`attempt ${attempt} failed`);
+    },
+    cancel() {
+      return false;
+    },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner,
+    terminalPool,
+    retryDelayMs: 5,
+    maxAutomaticRetries: 1,
+  });
+  try {
+    const task = queue.enqueue({
+      title: 'Retained retry task',
+      prompt: 'Fail twice',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+    });
+    await waitFor(() => lifecycle.includes('retain:2'));
+    assert.equal(database.getTask(task.id).status, 'failed');
+    assert.deepEqual(lifecycle, [
+      'prepare:1',
+      'run:1',
+      'release:1',
+      'prepare:2',
+      'run:2',
+      'retain:2',
+    ]);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a manual retry can reuse an idle retained direct terminal without preparing a new one', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-retained-live-retry-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const calls = [];
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare() {
+      calls.push('prepare');
+      throw new Error('should not prepare');
+    },
+  };
+  const runner = {
+    async run(task) {
+      calls.push(`run:${task.thread_id}`);
+      return { sessionId: task.thread_id, finalResponse: 'recovered', exitCode: 0 };
+    },
+    cancel() {
+      return false;
+    },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner, terminalPool });
+  try {
+    const task = database.createTask({
+      title: 'Retry retained terminal',
+      prompt: 'Try again',
+      repoPath: directory,
+      thread: {
+        id: 'retained-live-thread',
+        title: 'Retained live terminal',
+        source: 'test',
+        cwd: directory,
+      },
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+    });
+    artifacts.initializeTask(task);
+    database.updateTask(task.id, { status: 'failed', error: 'first attempt failed' });
+
+    const retrying = queue.retry(task.id, { reuseRetainedTerminal: true });
+    assert.equal(retrying.status, 'running');
+    await waitFor(() => database.getTask(task.id).status === 'complete');
+    assert.deepEqual(calls, ['run:retained-live-thread']);
   } finally {
     await queue.shutdown();
     database.close();

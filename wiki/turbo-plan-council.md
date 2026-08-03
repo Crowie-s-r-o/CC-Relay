@@ -8,7 +8,9 @@ type: architecture
 
 The optional Forward-planning council is a selectable two-step route. It supports Codex author then Claude reviewer, or Claude author then Codex reviewer. The first provider produces the version-1 execution graph and the second independently checks and corrects it in read-only mode. Execute exposes the existing three-stage reviewed-plan route behind its own optional checkbox. Plan council is not a standalone composer category.
 
-`TurboPlanCouncilReviewer` accepts both Claude draft and Claude review requests through one explicit FIFO queue. Claude stages are globally serialized. Codex stages use the selected planner Relay and are tracked independently, so the Relay is reserved only while Codex owns the active author or reviewer stage.
+The Forward-planning **Planning route** does not disappear when this council is off. Its collapsed state is the ordinary one-model Codex planner, including selectable model and effort controls. The council checkbox expands that same route with Claude and the review order rather than enabling planning itself. This keeps council optional in both the request contract and the visible control hierarchy.
+
+`TurboPlanCouncilReviewer` accepts both Claude draft and Claude review requests through one explicit FIFO queue. Claude stages are globally serialized. Codex stages use the selected planner CC Relay and are tracked independently, so the CC Relay is reserved only while Codex owns the active author or reviewer stage.
 
 Both prompts require JSON only and repeat the graph schema, worker count, original objective, repository context, and attachment paths. Reviewer prompts also include the exact first-provider graph. Every result is parsed before the stage resolves, preserving `text` and `finalResponse` compatibility while exposing the parsed `plan`.
 

@@ -31,7 +31,7 @@ Queued and cancelled task cards previously used nearly identical cool-gray badge
 
 ### Top Improvements
 
-1. Add screenshot regression coverage if Relay adopts automated visual snapshots.
+1. Add screenshot regression coverage if CC Relay adopts automated visual snapshots.
 2. Centralize the complete task-state palette into CSS custom properties if more surfaces begin sharing it.
 3. Retain status text whenever task cards are redesigned so meaning never depends on color alone.
 

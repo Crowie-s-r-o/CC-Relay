@@ -49,7 +49,7 @@ test('task history activity buckets reflect the selected granularity', () => {
   assert.equal(activityBuckets(tasks, 'month', anchor).length, 31);
 });
 
-test('task scope is always bounded by the selected project', () => {
+test('task scope always includes every relay in the selected project', () => {
   const tasks = [
     { id: 1, repo_path: '/work/alpha', thread_id: 'relay-1' },
     { id: 2, repo_path: '/work/alpha/', thread_id: 'relay-2' },
@@ -57,20 +57,16 @@ test('task scope is always bounded by the selected project', () => {
   ];
 
   assert.deepEqual(
-    tasksForScope(tasks, { projectPath: '/work/alpha', taskScope: 'workspace' }).map((task) => task.id),
-    [1, 2],
-  );
-  assert.deepEqual(
     tasksForScope(tasks, { projectPath: '/work/alpha' }).map((task) => task.id),
     [1, 2],
   );
   assert.deepEqual(
-    tasksForScope(tasks, { projectPath: '/work/beta', taskScope: 'workspace' }).map((task) => task.id),
+    tasksForScope(tasks, { projectPath: '/work/beta' }).map((task) => task.id),
     [3],
   );
   assert.deepEqual(
     tasksForScope(tasks, { projectPath: '/work/alpha', taskScope: 'relay', threadId: 'relay-1' }).map((task) => task.id),
-    [1],
+    [1, 2],
   );
   assert.deepEqual(tasksForScope(tasks, { projectPath: null }), []);
 });

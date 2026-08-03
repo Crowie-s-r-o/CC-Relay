@@ -12,7 +12,7 @@ type: review
 
 The reported failure was reproduced against Claude Code 2.1.216. A newly launched interactive terminal was discoverable through `claude agents --json`, but `claude -p --resume <uuid>` failed because no transcript existed. A controlled live test proved that `claude -p --session-id <the same uuid>` can execute the first turn while that interactive process remains open, and that a subsequent `--resume <the same uuid>` retains the new transcript.
 
-Relay now classifies only the exact missing-conversation response as this fresh-session case. Before starting the first turn it refreshes discovery and verifies the same session ID, interactive process kind, idle status, task workspace, and cancellation state. The first-turn child remains owned by the normal execution runner, streams to Task Activity, uses the requested model, effort, prompt, and attachments, and can be cancelled. It does not create a new UUID or route the task to a fresh context.
+CC Relay now classifies only the exact missing-conversation response as this fresh-session case. Before starting the first turn it refreshes discovery and verifies the same session ID, interactive process kind, idle status, task workspace, and cancellation state. The first-turn child remains owned by the normal execution runner, streams to Task Activity, uses the requested model, effort, prompt, and attachments, and can be cancelled. It does not create a new UUID or route the task to a fresh context.
 
 ### Quality Panel (RAG)
 
@@ -44,10 +44,10 @@ The blast radius is direct Claude Execute tasks and finished-task Claude follow-
 4. Normal output follows the existing stream parser and completion path. No fallback work occurs.
 5. If stderr contains the exact missing-conversation signature for the selected session ID, that expected line is retained for classification but not rendered as a failure warning. The same signature for any other ID fails closed.
 6. The runner refreshes `claude agents --json`. A missing terminal, busy immediate follow-up, non-interactive duplicate, workspace mismatch, or cancellation stops here without starting another process.
-7. Relay records `claude/session-initializing` and starts `claude -p --session-id <the same session-id>` with the same common arguments and task prompt.
-8. If Claude reports that the same UUID is already in use, the interactive terminal created the transcript during the race window. Relay revalidates it, waits for idle, and resumes once instead of failing or creating duplicate work.
-9. Stream events, tools, final response, errors, and cancellation use the ordinary `runProcess()` path. Relay accepts successful first-turn completion only when Claude reports the selected UUID, then persists it under the original task and session.
-10. Any later Relay task uses `--resume` because the first turn created the transcript.
+7. CC Relay records `claude/session-initializing` and starts `claude -p --session-id <the same session-id>` with the same common arguments and task prompt.
+8. If Claude reports that the same UUID is already in use, the interactive terminal created the transcript during the race window. CC Relay revalidates it, waits for idle, and resumes once instead of failing or creating duplicate work.
+9. Stream events, tools, final response, errors, and cancellation use the ordinary `runProcess()` path. CC Relay accepts successful first-turn completion only when Claude reports the selected UUID, then persists it under the original task and session.
+10. Any later CC Relay task uses `--resume` because the first turn created the transcript.
 
 Null or empty task data is rejected by the existing API and continuation validators. Duplicated queue work remains serialized by the global Claude lane. Delayed session changes are caught by the forced registry refresh. Unauthorized provider execution remains blocked by the existing Claude authentication check. Unexpected provider errors remain visible and follow the existing retry policy rather than being mistaken for a fresh session.
 
@@ -62,19 +62,19 @@ Null or empty task data is rejected by the existing API and continuation validat
 
 ### Top 3 Risks
 
-1. The currently running Relay backend must restart before it can load the new runner. Retrying on the old process will reproduce the same manual-priming error.
-2. Claude's native terminal does not visually replay headless task output. Users must follow Task Activity for Relay-driven work even though the transcript uses the same UUID.
+1. The currently running CC Relay backend must restart before it can load the new runner. Retrying on the old process will reproduce the same manual-priming error.
+2. Claude's native terminal does not visually replay headless task output. Users must follow Task Activity for CC Relay-driven work even though the transcript uses the same UUID.
 3. The classifier depends on Claude's current missing-conversation phrase. A future wording change safely disables the fallback but would require a compatibility update.
 
 ### Top Improvements
 
-1. After restarting Relay, manually retry the failed task on the still-live selected Claude terminal and confirm the `Claude session` initialization event followed by normal streamed activity.
+1. After restarting CC Relay, manually retry the failed task on the still-live selected Claude terminal and confirm the `Claude session` initialization event followed by normal streamed activity.
 2. If Claude later exposes a supported resumability field in `claude agents --json`, replace the failed resume probe with that explicit signal while keeping the identity gates.
-3. Add a provider-neutral CLI fixture in CI if Relay needs end-to-end child-process coverage beyond the current deterministic spawn tests.
+3. Add a provider-neutral CLI fixture in CI if CC Relay needs end-to-end child-process coverage beyond the current deterministic spawn tests.
 
 ### Recommendation
 
-Ship after a normal Relay restart. The implementation is safe for the reported case, preserves the selected session identity, and fails closed for every tested race. No commit was created.
+Ship after a normal CC Relay restart. The implementation is safe for the reported case, preserves the selected session identity, and fails closed for every tested race. No commit was created.
 
 See [[project-workspaces]], [[diagnostics]], and [[task-history]].
 

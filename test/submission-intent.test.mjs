@@ -87,6 +87,7 @@ test('a genuinely changed intent still receives a new UUID', () => {
     { execution: { model: 'gpt-5.6-sol', effort: 'low' } },
     { planSettings: { enabled: true } },
     { turboSettings: { workerCount: 4 } },
+    { keepTerminalOpen: true },
     { attachments: [{ id: 'img-1', name: 'shot.png', mimeType: 'image/png', size: 2048 }] },
   ];
 

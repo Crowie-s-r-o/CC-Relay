@@ -25,7 +25,7 @@ test('a duplicate server start does not recover or dispatch queued work before b
   const task = database.createTask({
     title: 'Already running',
     prompt: 'Keep this task untouched.',
-    thread: { id: 'relay-existing', title: 'Relay existing', source: 'test', cwd: directory },
+    thread: { id: 'relay-existing', title: 'CC Relay existing', source: 'test', cwd: directory },
   });
   database.updateTask(task.id, { status: 'running', started_at: '2026-07-17T10:00:00.000Z' });
   database.close();
@@ -34,6 +34,8 @@ test('a duplicate server start does not recover or dispatch queued work before b
     const child = spawn(process.execPath, [
       new URL('../src/server.mjs', import.meta.url).pathname,
       '--relay-data-dir',
+      directory,
+      '--relay-config-dir',
       directory,
     ], { stdio: 'ignore' });
     const [exitCode] = await once(child, 'exit');

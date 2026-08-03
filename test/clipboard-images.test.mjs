@@ -17,6 +17,25 @@ test('clipboard image extraction supports file lists and clipboard items without
   assert.deepEqual(files, [png, jpeg]);
 });
 
+test('clipboard image extraction deduplicates different File wrappers for one pasted image', () => {
+  const fileListImage = {
+    name: 'image.png',
+    type: 'image/png',
+    size: 387_072,
+    lastModified: 1_785_253_200_000,
+  };
+  const itemImage = { ...fileListImage };
+
+  assert.deepEqual(clipboardImageFiles({
+    files: [fileListImage],
+    items: [{
+      kind: 'file',
+      type: 'image/png',
+      getAsFile: () => itemImage,
+    }],
+  }), [fileListImage]);
+});
+
 test('clipboard image extraction leaves text-only paste untouched', () => {
   assert.deepEqual(clipboardImageFiles({
     files: [],

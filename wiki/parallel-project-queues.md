@@ -6,7 +6,7 @@ type: architecture
 
 # Parallel Project Queues
 
-Relay is no longer a single sequential queue. Each project owns its own queue, and work in
+CC Relay is no longer a single sequential queue. Each project owns its own queue, and work in
 different projects and different sessions runs at the same time, so several tasks can hold
 status `running` simultaneously. See [[project-queue-isolation-review]] for the scheduler
 side and [[parallel-claude-review]] for concurrent Claude sessions.
@@ -23,7 +23,7 @@ does **not** present.
 The reasons, in order of weight:
 
 1. Cross-project visibility already exists and is better placed. The header running feed
-   shows every running task across every project, with its project, Relay, live duration,
+   shows every running task across every project, with its project, CC Relay, live duration,
    prompt, and latest agent response, and selecting one opens that task in its project. A
    grouped queue would duplicate that in a worse position. See [[interface-layout]].
 2. The Launchpad selection is load-bearing well beyond the task list. It bounds pause
@@ -47,7 +47,7 @@ status `running` and describe it as the running task. It now counts them:
 - exactly one keeps the precise `Task 276 is running · M waiting`,
 - none keeps `M waiting · queue ready`.
 
-The same count feeds `projectQueueRestartRequired`, so the **Restart Relay** hint for an
+The same count feeds `projectQueueRestartRequired`, so the **Restart CC Relay** hint for an
 older backend is still correct when a project has several runs in flight.
 
 **Activity panel selection.** The rule is unchanged in spirit and sharper in practice:
@@ -57,8 +57,8 @@ running task" is ambiguous, so the fallback is `mostRecentlyStartedRunningTask`,
 `started_at` and then by id. That is the run the user most likely just caused, and it does
 not swing between concurrent runs on every refresh.
 
-**Relay destination is read from task data.** With dispatch-time idle routing the server
-can move a task to a different free Relay in the same provider and workspace after it was
+**CC Relay destination is read from task data.** With dispatch-time idle routing the server
+can move a task to a different free CC Relay in the same provider and workspace after it was
 enqueued, updating `thread_id`, `thread_name`, and `thread_source`. `taskRelayLabel`
 resolves from the task record, so the queue card and Task Activity show the real
 destination on the next refresh with no client bookkeeping. Per-terminal model and effort
@@ -75,7 +75,7 @@ be visible.
 
 One persistent global waiting order lives in SQLite. Per-project queues are a grouped view plus
 a dispatch rule, not separate persisted queues, so `POST /api/queue/reorder` keeps its existing
-shape. The dispatch rule is: **at most one active Relay task per target session id.** Different
+shape. The dispatch rule is: **at most one active CC Relay task per target session id.** Different
 session ids run concurrently, including two sessions in the same workspace and sessions across
 any number of projects, with no project-count limit. FIFO and exclusive barriers are scoped per
 project.
@@ -105,7 +105,7 @@ selected `threadId` plus optional boolean `preferIdleTerminal`, and the server d
 equivalent at start time.
 
 - Honoured for `mode: "execute"` only, and ignored when `runNow` is true, because Ctrl+Enter
-  deliberately pins the task to the visibly selected Relay.
+  deliberately pins the task to the visibly selected CC Relay.
 - The originally selected session always wins when it is free.
 - Otherwise the task moves to a free, unassigned, idle session of the same provider in the same
   workspace. Routing never crosses a workspace, so `repo_path` is stable and project grouping,
@@ -137,13 +137,11 @@ fails the task non-retryably with a message that says explicitly that nothing wa
 blip resets the deadline and does not fail anything.
 
 > [!warning]
-> Routing's reservation check is **not** self-sufficient. `reservedThreadIds()` skips non-direct
-> tasks (`mode !== 'turbo'` continues past a running Plan council), and the `assigned` set filters
-> on `mode === 'execute'`, so neither one covers a Plan council's Codex reviewer thread. Routing
-> is safe today only because `runnableTasks()` refuses to start anything in a project that has a
-> non-direct task active, and routing never leaves the workspace. **Anyone widening Plan council
-> concurrency must add non-direct sessions to `reservedThreadIds()` first**, or an idle-routed
-> task will happily land on a reviewer terminal that reports idle between council stages.
+> Capacity sharing is safe only because `reservedThreadIds()` includes both a running Plan
+> council's Claude author and Codex reviewer conversation IDs. `runnableTasks()` also passes all
+> active tasks plus every task already selected in the same synchronous pass to
+> `DisposableTerminalPool.canRun()`. Removing either reservation path can place direct work on a
+> council conversation or overbook a provider while the council is still launching its fleet.
 
 Note that `idleSessionCandidates` calls `listSessions({ refresh: true })`. A ready task normally
 needs one probe. A busy Claude task repeats the existing bounded readiness poll while it remains
@@ -163,7 +161,7 @@ one project's Plan council stopped whichever Claude stage was newest. Owners are
 ### Single-session work
 
 `isSingleSessionTask` is the predicate the scheduler uses for "occupies exactly one session for
-one turn, so one Relay task per session id is barrier enough": direct Codex, direct Claude, and
+one turn, so one CC Relay task per session id is barrier enough": direct Codex, direct Claude, and
 Planner breakdowns. It replaced `isDirectExecutionTask` at every scheduling and reservation site
 in `runnableTasks()` and `reservedThreadIds()`. Anything else (Plan council, Turbo) is exclusive.
 
@@ -189,9 +187,10 @@ open a second turn on it.
 > `runnableTasks()`. Widening it requires changing the runner **and** the scheduler barrier
 > together, so it was left intact deliberately rather than half-changed.
 
-This does not block the case users actually hit: direct Codex and direct Claude work in different
-projects and sessions still run concurrently, and a Plan council in one project does not hold
-direct work in another. It can be widened later as its own change.
+Global council serialization is separate from project capacity. A current disposable council may
+share its own project with disposable direct or breakdown work when the combined Codex and Claude
+requirements fit. A second council or Turbo parent still waits globally. Legacy persistent
+councils keep their former same-project drain barrier.
 
 ## Related
 

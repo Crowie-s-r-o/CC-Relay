@@ -12,21 +12,81 @@ export function projectComposerKey(path) {
   return normalized;
 }
 
+export function freshProjectTerminalSettings() {
+  return {
+    keepTerminalOpen: false,
+    preferIdleTerminal: false,
+    layout: {
+      enabled: true,
+      columns: 3,
+      rows: 3,
+      display: 0,
+      background: true,
+    },
+  };
+}
+
+export function normalizeProjectTerminalSettings(project, fallback = freshProjectTerminalSettings()) {
+  const defaults = freshProjectTerminalSettings();
+  const fallbackSettings = fallback && typeof fallback === 'object' ? fallback : defaults;
+  const hasProjectLayout = project && Object.hasOwn(project, 'terminal_layout');
+  const layoutDefaults = hasProjectLayout
+    ? defaults.layout
+    : { ...defaults.layout, ...(fallbackSettings.layout || {}) };
+  const storedLayout = project?.terminal_layout && typeof project.terminal_layout === 'object'
+    ? project.terminal_layout
+    : layoutDefaults;
+  const integerOr = (value, defaultValue, minimum = 0, maximum = Number.MAX_SAFE_INTEGER) => {
+    const number = Number(value);
+    return Number.isInteger(number) && number >= minimum && number <= maximum
+      ? number
+      : defaultValue;
+  };
+  const hasKeepSetting = project && Object.hasOwn(project, 'keep_terminal_open');
+  const hasIdleSetting = project && Object.hasOwn(project, 'prefer_idle_terminal');
+  return {
+    keepTerminalOpen: hasKeepSetting
+      ? project.keep_terminal_open === true || project.keep_terminal_open === 1
+      : fallbackSettings.keepTerminalOpen === true,
+    preferIdleTerminal: hasIdleSetting
+      ? project.prefer_idle_terminal === true || project.prefer_idle_terminal === 1
+      : fallbackSettings.preferIdleTerminal === true,
+    layout: {
+      enabled: typeof storedLayout.enabled === 'boolean'
+        ? storedLayout.enabled
+        : layoutDefaults.enabled,
+      columns: integerOr(storedLayout.columns, layoutDefaults.columns, 1, 8),
+      rows: integerOr(storedLayout.rows, layoutDefaults.rows, 1, 8),
+      display: integerOr(storedLayout.display, layoutDefaults.display),
+      background: typeof storedLayout.background === 'boolean'
+        ? storedLayout.background
+        : layoutDefaults.background,
+    },
+  };
+}
+
 export function freshProjectComposerState() {
   return {
     prompt: '',
     attachments: [],
+    selectedTaskId: null,
     selectedThreadId: null,
     selectedProvider: 'codex',
     taskMode: 'execute',
+    terminalSettings: freshProjectTerminalSettings(),
     executionSettings: {
-      codex: { model: null, effort: '' },
-      claude: { model: null, effort: '' },
+      codex: { model: null, effort: '', source: 'default', taskId: null },
+      claude: { model: null, effort: '', source: 'default', taskId: null },
     },
     threadExecutionSettings: {},
     planSettings: {
       enabled: false,
       authorThreadId: null,
+      councilOrder: ['claude', 'codex'],
+      claudeModel: 'fable',
+      claudeEffort: 'max',
+      codexModel: null,
+      codexEffort: 'high',
       authorModel: 'fable',
       authorEffort: 'max',
       reviewerModel: null,
@@ -75,8 +135,22 @@ export function rememberThreadExecution(session, provider, threadId, settings, {
 } = {}) {
   const remembered = executionSettingsForThread(session, provider, threadId);
   Object.assign(remembered, settings, { source, taskId });
-  Object.assign(session.executionSettings[provider], settings);
+  const providerSettings = session.executionSettings[provider];
+  if (remembered !== providerSettings) {
+    Object.assign(providerSettings, settings, { source, taskId });
+  }
   return remembered;
+}
+
+function hydrateExecutionTarget(target, task) {
+  if (target.source === 'user') return;
+  if (target.source === 'task' && Number(target.taskId) >= Number(task.id)) return;
+  Object.assign(target, {
+    model: task.model || target.model,
+    effort: task.effort || target.effort,
+    source: 'task',
+    taskId: task.id,
+  });
 }
 
 export function hydrateThreadExecutionSettings(session, tasks) {
@@ -91,12 +165,8 @@ export function hydrateThreadExecutionSettings(session, tasks) {
   }
   for (const task of latestByThread.values()) {
     const current = executionSettingsForThread(session, task.provider, task.thread_id);
-    if (current.source === 'user') continue;
-    if (current.source === 'task' && Number(current.taskId) >= Number(task.id)) continue;
-    rememberThreadExecution(session, task.provider, task.thread_id, {
-      model: task.model || current.model,
-      effort: task.effort || current.effort,
-    }, { source: 'task', taskId: task.id });
+    hydrateExecutionTarget(current, task);
+    hydrateExecutionTarget(session.executionSettings[task.provider], task);
   }
   return session.threadExecutionSettings;
 }

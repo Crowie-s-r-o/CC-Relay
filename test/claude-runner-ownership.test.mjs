@@ -50,7 +50,7 @@ test('a second stage for the same owner is still refused', () => {
   runner.run('First.', stageOptions(101)).catch(() => {});
   assert.throws(
     () => runner.run('Again.', stageOptions(101)),
-    /already has an active Relay plan stage/,
+    /already has an active CC Relay plan stage/,
   );
 });
 

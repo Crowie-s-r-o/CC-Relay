@@ -9,7 +9,7 @@ const sourceTask = {
   thread_id: 'relay-one',
   repo_path: '/repo/project',
 };
-const thread = { id: 'relay-one', title: 'Relay 1', source: 'cli', cwd: '/repo/project' };
+const thread = { id: 'relay-one', title: 'CC Relay 1', source: 'cli', cwd: '/repo/project' };
 
 test('follow-up reuses the source task and exact session without building a queue task', () => {
   const continuation = buildSessionFollowUp({

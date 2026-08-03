@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { ClaudeRunner, claudeFailureMessage, parseClaudeResult } from '../src/claude-runner.mjs';
+import { RELAY_NON_INTERACTIVE_INSTRUCTION } from '../src/relay-prompt.mjs';
 
 test('Claude runner spawns the resolved absolute binary path', () => {
   let invocation;
@@ -113,7 +114,7 @@ test('Claude runner uses subscription CLI in safe read-only plan mode', async ()
     invocation.args.slice(invocation.args.indexOf('--add-dir'), invocation.args.indexOf('--add-dir') + 2),
     ['--add-dir', '/tmp/relay-images'],
   );
-  assert.equal(input, 'Inspect and plan.');
+  assert.equal(input, `Inspect and plan.\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`);
   assert.equal(result.text, '# Plan');
   assert.equal(events.length, 2);
 });

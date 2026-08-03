@@ -161,7 +161,7 @@ test('the Planner does not reuse the protected Plan council component classes', 
 
 test('the Planner degrades gracefully when the backend lacks the capability', () => {
   assert.match(app, /plannerCapable\(state\.status\)/);
-  assert.match(app, /Restart Relay to use the Planner/);
+  assert.match(app, /Restart CC Relay to use the Planner/);
 });
 
 test('the Planner reviews proposals before queueing them (no auto-execute)', () => {

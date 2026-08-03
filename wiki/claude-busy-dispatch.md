@@ -15,7 +15,7 @@ tags:
 > This page records the legacy persistent-session dispatch contract. Current tasks use [[disposable-terminal-pools]]: they wait on the selected project's Claude instance limit, then launch a fresh Claude terminal. They never target an unrelated existing busy session, overwrite its draft, or offer manual reassignment. The busy-session guard below remains required for existing persistent tasks and as a final race guard after an automatic terminal binds.
 
 Task 284 exposed a misleading state transition on July 27, 2026. The selected `documi-ai-73`
-Claude session reported `busy`, so Relay correctly typed nothing, but the queue had already
+Claude session reported `busy`, so CC Relay correctly typed nothing, but the queue had already
 changed the task from `queued` to `running`. Task Activity therefore showed **Live** and
 **Claude session busy** even though no provider runner had started and the task could no longer
 be reassigned.
@@ -32,9 +32,9 @@ in-memory dispatch guard synchronously, but remain persisted as `queued` until o
 conditions is true:
 
 1. The selected Claude session reports idle.
-2. **Use an idle Relay when available** finds an unassigned idle Claude session in the same
+2. **Use an idle CC Relay when available** finds an unassigned idle Claude session in the same
    workspace and moves the task there.
-3. The queued task is explicitly assigned to another live Claude Relay in the same workspace.
+3. The queued task is explicitly assigned to another live Claude CC Relay in the same workspace.
 
 Conditions 2 and 3 apply to direct Execute tasks. Plan council is pinned to its explicit author
 terminal, so it waits for condition 1 or is cancelled and resumed with another author assignment.
@@ -49,7 +49,7 @@ While waiting:
   reassignable.
 - Repeated discovery polls do not append repeated waiting events.
 
-When a destination becomes ready, Relay records that the Claude session is ready, calls
+When a destination becomes ready, CC Relay records that the Claude session is ready, calls
 `beginTask()`, and only then gives the task to `ClaudeExecutionRunner`.
 
 > [!important]
@@ -74,7 +74,7 @@ another Claude terminal and the explicit **Assign** control use the same guarded
 
 ## Existing running tasks
 
-The change is backend behavior and requires a Relay restart. A task that an older backend already
+The change is backend behavior and requires a CC Relay restart. A task that an older backend already
 promoted to `running`, such as task 284, is not silently rewritten to queued by refreshed static
 assets. It must finish, be cancelled, or be recovered normally during restart, then be retried
 under the current scheduler.

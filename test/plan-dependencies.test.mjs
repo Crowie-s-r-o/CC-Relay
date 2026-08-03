@@ -17,7 +17,7 @@ test('the breakdown contract asks for ids and a dependency list', () => {
   assert.match(prompt, /"id":"step-1"/);
   assert.match(prompt, /"dependsOn":\[\]/);
   assert.match(prompt, /must finish first/);
-  // Independence is the point: it is what lets Relay fan steps out across sessions.
+  // Independence is the point: it is what lets CC Relay fan steps out across sessions.
   assert.match(prompt, /at the same time in different sessions/);
 });
 

@@ -1,26 +1,26 @@
 /**
- * Stable, DOM-free Relay identity helpers.
+ * Stable, DOM-free CC Relay identity helpers.
  *
- * Relay identity is assigned and persisted by the server.  The browser must
+ * CC Relay identity is assigned and persisted by the server.  The browser must
  * therefore read the identity fields from a thread directly instead of
  * deriving a number from the order in which threads happen to be returned.
  */
 
-export const UNKNOWN_RELAY = 'Unknown Relay';
+export const UNKNOWN_RELAY = 'Unknown CC Relay';
 
-/** Return a Relay number only when the value is a positive integer number. */
+/** Return a CC Relay number only when the value is a positive integer number. */
 export function validRelayNumber(value) {
   return typeof value === 'number' && Number.isInteger(value) && value > 0
     ? value
     : null;
 }
 
-/** Read the persisted Relay number without consulting any collection. */
+/** Read the persisted CC Relay number without consulting any collection. */
 export function relayNumber(thread) {
   return validRelayNumber(thread?.relayNumber);
 }
 
-/** Read a persisted Relay name, returning null for missing or blank values. */
+/** Read a persisted CC Relay name, returning null for missing or blank values. */
 function storedRelayName(thread) {
   const value = thread?.relayName;
   return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -30,20 +30,20 @@ function storedRelayName(thread) {
  * Return the stable display label for one thread.
  *
  * A persisted name wins.  Older thread records can still display a useful
- * `Relay n` label when only their valid persisted number is available.  No
+ * `CC Relay n` label when only their valid persisted number is available.  No
  * number is fabricated for malformed or missing identity data.
  */
 export function relayDisplayName(thread) {
   const name = storedRelayName(thread);
   if (name) return name;
   const number = relayNumber(thread);
-  return number === null ? UNKNOWN_RELAY : `Relay ${number}`;
+  return number === null ? UNKNOWN_RELAY : `CC Relay ${number}`;
 }
 
-/** Return the display name for one Relay, including its safe fallback. */
+/** Return the display name for one CC Relay, including its safe fallback. */
 export const relayName = relayDisplayName;
 
-/** Select one of the six stable Relay identity classes. */
+/** Select one of the six stable CC Relay identity classes. */
 export function relayColorClass(thread) {
   const number = relayNumber(thread);
   return number === null ? '' : `relay-color-${((number - 1) % 6) + 1}`;

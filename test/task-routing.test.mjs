@@ -53,7 +53,7 @@ test('only Execute tasks count as direct terminal activity', () => {
   assert.equal(runningDirectTask(tasks, 'relay-2')?.id, 133);
 });
 
-test('idle routing selects an unassigned Codex Relay in the same project', () => {
+test('idle routing selects an unassigned Codex CC Relay in the same project', () => {
   const threads = [
     { id: 'busy', provider: 'codex', cwd: '/repo', status: 'active' },
     { id: 'free', provider: 'codex', cwd: '/repo', status: 'idle' },
@@ -65,7 +65,7 @@ test('idle routing selects an unassigned Codex Relay in the same project', () =>
   }), 'free');
 });
 
-test('idle routing does not treat a Relay with queued work as free', () => {
+test('idle routing does not treat a CC Relay with queued work as free', () => {
   const threads = [
     { id: 'selected', provider: 'codex', cwd: '/repo', status: 'active' },
     { id: 'claimed', provider: 'codex', cwd: '/repo', status: 'idle' },

@@ -10,6 +10,7 @@ import {
   normalizeThread,
   SHARED_CODEX_ENDPOINT,
 } from '../src/codex-app-server.mjs';
+import { RELAY_NON_INTERACTIVE_INSTRUCTION } from '../src/relay-prompt.mjs';
 
 const THREAD_ID = '019f6b51-cad9-7582-99fb-e9a6ee76ead2';
 
@@ -46,6 +47,78 @@ function messageEvent(message) {
   Object.defineProperty(event, 'data', { value: JSON.stringify(message) });
   return event;
 }
+
+test('Codex user-input server requests raise terminal attention without changing fallback responses', () => {
+  const sent = [];
+  const requested = [];
+  const diagnostics = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    diagnostic: (event, fields) => diagnostics.push({ event, fields }),
+  });
+  client.socket = {
+    readyState: 1,
+    send: (value) => sent.push(JSON.parse(value)),
+    close: () => {},
+  };
+  client.on('userInputRequested', (request) => requested.push(request));
+
+  try {
+    client.handleLine(JSON.stringify({
+      id: 91,
+      method: 'item/tool/requestUserInput',
+      params: {
+        threadId: THREAD_ID,
+        turnId: 'turn-question',
+        itemId: 'item-question',
+        questions: [{ id: 'scope', question: 'What should I review?' }],
+      },
+    }));
+    client.handleLine(JSON.stringify({
+      id: 92,
+      method: 'mcpServer/elicitation/request',
+      params: {
+        threadId: THREAD_ID,
+        turnId: 'turn-question',
+        serverName: 'review-helper',
+        mode: 'form',
+        message: 'Choose the review scope.',
+      },
+    }));
+
+    assert.deepEqual(sent, [
+      { id: 91, result: { answers: {} } },
+      { id: 92, result: { action: 'cancel' } },
+    ]);
+    assert.deepEqual(
+      requested.map(({ requestId, method, threadId, turnId, itemId }) => ({
+        requestId, method, threadId, turnId, itemId,
+      })),
+      [
+        {
+          requestId: 91,
+          method: 'item/tool/requestUserInput',
+          threadId: THREAD_ID,
+          turnId: 'turn-question',
+          itemId: 'item-question',
+        },
+        {
+          requestId: 92,
+          method: 'mcpServer/elicitation/request',
+          threadId: THREAD_ID,
+          turnId: 'turn-question',
+          itemId: null,
+        },
+      ],
+    );
+    assert.equal(
+      diagnostics.filter(({ event }) => event === 'task.codex.input_requested').length,
+      2,
+    );
+  } finally {
+    client.close();
+  }
+});
 
 class FakeWebSocket extends EventTarget {
   constructor(received, {
@@ -93,7 +166,7 @@ class FakeWebSocket extends EventTarget {
           thread: {
             id: message.params.threadId,
             sessionId: message.params.threadId,
-            name: 'Relay test thread',
+            name: 'CC Relay test thread',
             preview: 'A test session',
             cwd: '/tmp/repository',
             source: 'cli',
@@ -263,7 +336,11 @@ test('a live update steers the exact active Codex turn', async () => {
     params: {
       threadId: THREAD_ID,
       input: [
-        { type: 'text', text: 'Correct the current work', text_elements: [] },
+        {
+          type: 'text',
+          text: `Correct the current work\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`,
+          text_elements: [],
+        },
         { type: 'localImage', path: '/tmp/follow-up.png' },
       ],
       expectedTurnId: 'turn-live',
@@ -357,7 +434,10 @@ test('shared app-server lists connected threads and completes a queued turn', as
 
     const turnStart = received.find((message) => message.method === 'turn/start');
     assert.equal(turnStart.params.threadId, THREAD_ID);
-    assert.equal(turnStart.params.input[0].text, 'Complete the queued task.');
+    assert.equal(
+      turnStart.params.input[0].text,
+      `Complete the queued task.\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`,
+    );
     assert.deepEqual(turnStart.params.input[1], {
       type: 'localImage',
       path: '/tmp/relay/reference.png',

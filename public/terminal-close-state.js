@@ -8,7 +8,7 @@ export function terminalClosePresentation({
     return {
       state: 'unavailable',
       label: threadLabel ? `Close ${threadLabel}` : 'Close selected terminal',
-      reason: 'Restart Relay after running tasks finish to activate Close. On macOS, existing one-tab Terminal sessions will be detected automatically.',
+      reason: 'Restart CC Relay after running tasks finish to activate Close. On macOS, existing one-tab Terminal sessions will be detected automatically.',
       buttonLabel: 'Restart required',
       disabled: true,
     };
@@ -17,7 +17,7 @@ export function terminalClosePresentation({
     return {
       state: 'unavailable',
       label: 'Close selected terminal',
-      reason: 'Select a terminal to see whether Relay owns its native window.',
+      reason: 'Select a terminal to see whether CC Relay owns its native window.',
       buttonLabel: 'Close selected',
       disabled: true,
     };
@@ -35,7 +35,7 @@ export function terminalClosePresentation({
     return {
       state: 'ready',
       label: `Close ${threadLabel}`,
-      reason: `Relay owns the exact native window for ${threadLabel}.`,
+      reason: `CC Relay owns the exact native window for ${threadLabel}.`,
       buttonLabel: 'Close selected',
       disabled: false,
     };
@@ -46,7 +46,7 @@ export function terminalClosePresentation({
       label: `Close ${threadLabel}`,
       reason: control.owned
         ? control.reason
-        : `${control.reason} Keep it in its own native terminal or relaunch it with Relay.`,
+        : `${control.reason} Keep it in its own native terminal or relaunch it with CC Relay.`,
       buttonLabel: 'Close selected',
       disabled: true,
     };
@@ -54,7 +54,7 @@ export function terminalClosePresentation({
   return {
     state: 'unavailable',
     label: `Close ${threadLabel}`,
-    reason: `Relay has not reported ownership for ${threadLabel}. Refresh the session list or relaunch it with Relay.`,
+    reason: `CC Relay has not reported ownership for ${threadLabel}. Refresh the session list or relaunch it with CC Relay.`,
     buttonLabel: 'Close selected',
     disabled: true,
   };

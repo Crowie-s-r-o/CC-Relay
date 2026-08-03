@@ -435,9 +435,9 @@ test('refine is labeled as sending the current edited steps and flushes them fir
   assert.match(app, /Refine sends your current edited steps for revision/);
 });
 
-test('an older backend keeps v1 queueing and gets the standing Restart Relay convention', () => {
+test('an older backend keeps v1 queueing and gets the standing Restart CC Relay convention', () => {
   assert.match(app, /plannerV2Capable\(state\.status\)/);
-  assert.match(app, /Restart Relay to run this plan wave by wave/);
+  assert.match(app, /Restart CC Relay to run this plan wave by wave/);
   // v1 behavior is preserved, not replaced
   assert.match(app, /function queueSelectedProposals\(/);
   assert.match(app, /id="planner-queue-selected"/);

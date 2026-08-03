@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   activeSubAgentCount,
   entryItem,
+  entryLastEvent,
   eventStreamStats,
   filterEventEntries,
   groupEventEntries,
@@ -39,6 +40,45 @@ test('event stream groups item start and completion into one signal', () => {
   assert.equal(entries[1].startedEvent.id, 2);
   assert.equal(entries[1].completedEvent.id, 3);
   assert.equal(entryItem(entries[1]).aggregatedOutput, '22 tests passed');
+});
+
+test('event stream folds live Claude message batches into one updating signal', () => {
+  const entries = groupEventEntries([
+    {
+      id: 1,
+      kind: 'claude',
+      message: 'Working.',
+      created_at: '2026-07-16T10:00:00.000Z',
+      payload: {
+        type: 'claude/message',
+        liveMessageId: 'message-1',
+        liveIndex: 0,
+        liveFinal: false,
+        liveDelta: 'Working.\n',
+        text: 'Working.',
+      },
+    },
+    {
+      id: 2,
+      kind: 'claude',
+      message: 'Done.',
+      created_at: '2026-07-16T10:00:01.000Z',
+      payload: {
+        type: 'claude/message',
+        liveMessageId: 'message-1',
+        liveIndex: 1,
+        liveFinal: true,
+        liveDelta: 'Done.',
+        text: 'Done.',
+      },
+    },
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].events.length, 2);
+  assert.equal(entries[0].events.at(-1).payload.text, 'Done.');
+  assert.equal(entryLastEvent(entries[0]).payload.text, 'Working.\nDone.');
+  assert.equal(eventStreamStats(entries).messages, 1);
 });
 
 test('event stream summarizes execution telemetry', () => {
@@ -133,7 +173,7 @@ test('Claude terminal input requests remain visible in Highlights', () => {
   assert.equal(filterEventEntries(entries, 'messages').length, 1);
 });
 
-// Sub-agent shapes below mirror the events Relay records for a real Claude team session:
+// Sub-agent shapes below mirror the events CC Relay records for a real Claude team session:
 // an `Agent` tool call that returns immediately, then a task notification minutes later.
 function subAgentEvent(toolUseId, phase, overrides = {}) {
   const completed = phase === 'completed';

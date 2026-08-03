@@ -12,7 +12,7 @@ tags:
 
 # Provider Installation Detection
 
-Relay detects Codex and Claude independently in the background and exposes the result through `GET /api/status`. Each provider has separate installation and authentication state:
+CC Relay detects Codex and Claude independently in the background and exposes the result through `GET /api/status`. Each provider has separate installation and authentication state:
 
 - `available: true` means the CLI executable answered its version probe.
 - `authenticated: true` means the installed CLI also passed its authentication check.
@@ -33,7 +33,7 @@ In [[disposable-terminal-pools]] mode:
 - The tab says **Not installed**.
 - An installed but signed-out provider remains enabled and says **Sign in required**.
 - A pending or transiently failed probe says **Checking installation** and remains enabled.
-- If the selected provider is confirmed missing and the other provider is installed, Relay selects the installed provider automatically.
+- If the selected provider is confirmed missing and the other provider is installed, CC Relay selects the installed provider automatically.
 - If both are missing, the selection stays stable while both provider choices are disabled.
 - Direct Execute, Plan council, and Turbo submission are blocked only when one of their required CLIs is confirmed missing.
 - Planner provider choices, reviewed-plan execution choices, and queued-task provider switching omit or disable confirmed missing alternatives.
@@ -44,7 +44,7 @@ Legacy live-terminal launch buttons use the same installation result.
 
 Claude refreshes its cached runtime status every 15 seconds. Codex refreshes every 30 seconds. The visible status snapshot refreshes while the app is open, so installing a CLI enables it without reloading the renderer.
 
-When a later Codex probe becomes installed and authenticated, Relay starts or reconnects the shared Codex app-server and warms the model catalog. This covers installing or signing into Codex while Relay is already running.
+When a later Codex probe becomes installed and authenticated, CC Relay starts or reconnects the shared Codex app-server and warms the model catalog. This covers installing or signing into Codex while CC Relay is already running.
 
 ## Files and coverage
 

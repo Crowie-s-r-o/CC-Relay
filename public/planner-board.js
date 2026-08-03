@@ -375,7 +375,7 @@ export function breakdownNoteLabel(note, proposals) {
   const step = index >= 0 ? `Step ${index + 1}` : 'A step';
   switch (note.code) {
     case 'unknown-dependency':
-      return `${step} referenced a dependency Relay could not resolve, so it was dropped.`;
+      return `${step} referenced a dependency CC Relay could not resolve, so it was dropped.`;
     case 'self-dependency':
       return `${step} depended on itself, so that dependency was dropped.`;
     case 'cycle-dropped':

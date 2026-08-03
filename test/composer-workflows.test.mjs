@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { continuationDispatchOutcome } from '../public/task-continuation-state.js';
 
 const composer = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const composerApp = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const composerState = readFileSync(new URL('../public/project-composer-state.js', import.meta.url), 'utf8');
+const continuationState = readFileSync(new URL('../public/task-continuation-state.js', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const registry = readFileSync(new URL('../src/claude-session-registry.mjs', import.meta.url), 'utf8');
@@ -26,7 +29,7 @@ test('Plan council is optional inside Execute and Forward-planning Turbo', () =>
 
   assert.ok(executeStart >= 0 && executeCouncil > executeStart && executeCouncil < turboStart);
   assert.ok(turboStart >= 0 && turboCouncil > turboStart);
-  assert.match(composer, /Creates a reviewed, read-only plan instead of running the prompt directly\./);
+  assert.match(composer, /Builds a reviewed, read-only plan instead of executing\./);
 });
 
 test('Execute and Forward-planning Turbo share the same Plan council option component', () => {
@@ -46,7 +49,22 @@ test('both Plan council routes use the shared node and connector design', () => 
   assert.equal((composer.match(/class="council-connector"/g) || []).length, 2);
   assert.match(composer, /class="council-connector"[^>]*><span>review<\/span><b>→<\/b>/);
   assert.match(composer, /class="council-connector" aria-hidden="true"><span>review<\/span><b>→<\/b>/);
-  assert.match(composerApp, /elements\.turboCouncilRoute\.hidden = !council\.councilEnabled/);
+});
+
+test('Forward-planning Turbo exposes one planning model without requiring council', () => {
+  const turboStart = composer.indexOf('id="turbo-config"');
+  const routeStart = composer.indexOf('id="turbo-council-route"', turboStart);
+  const plannerModel = composer.indexOf('id="turbo-planner-model"', routeStart);
+  const plannerEffort = composer.indexOf('id="turbo-planner-effort"', routeStart);
+  const workerModel = composer.indexOf('id="turbo-worker-model"', routeStart);
+
+  assert.ok(turboStart >= 0 && routeStart > turboStart);
+  assert.ok(plannerModel > routeStart && plannerEffort > plannerModel && workerModel > plannerEffort);
+  assert.match(composer, /id="turbo-planning-count"[^>]*>1 planner<\/span>/);
+  assert.match(composer, /id="turbo-council-route"[^>]*data-enabled="false"/);
+  assert.doesNotMatch(composerApp, /turboCouncilRoute\.hidden = !council\.councilEnabled/);
+  assert.match(composerApp, /turboPlanningCount\.textContent = council\.councilEnabled \? '2 providers' : '1 planner'/);
+  assert.match(composerApp, /turboCouncilCodexRole\.textContent = council\.councilEnabled[\s\S]*: 'Planner'/);
 });
 
 test('terminal settings does not break the task form ownership', () => {
@@ -62,6 +80,15 @@ test('terminal settings does not break the task form ownership', () => {
   assert.equal((formPrefix.match(/<form\b/g) || []).length, 1);
   assert.match(composer, /<div class="terminal-settings-card">/);
   assert.doesNotMatch(composer, /<form[^>]*class="terminal-settings-card"/);
+});
+
+test('terminal window layout settings default to enabled', () => {
+  assert.match(composer, /id="terminal-layout-enabled"[^>]*\bchecked\b/);
+  assert.match(composer, /id="terminal-launch-background"[^>]*\bchecked\b/);
+  assert.match(composerState, /layout:\s*\{[\s\S]*enabled: true,[\s\S]*background: true,/);
+  assert.match(composerApp, /terminalLayoutEnabled\.checked = settings\.layout\.enabled/);
+  assert.match(composerApp, /terminalLaunchBackground\.checked = settings\.layout\.background/);
+  assert.doesNotMatch(composerApp, /relay\.terminalLayout/);
 });
 
 test('provider choice is explicit and the left panel configures automatic instance limits', () => {
@@ -87,9 +114,75 @@ test('provider choice is explicit and the left panel configures automatic instan
   assert.match(applySelectionSource, /renderExecutionControls\(\)/);
 });
 
+test('provider tabs render safely before the first status response', () => {
+  const renderStart = composerApp.indexOf('function renderProviderTabs()');
+  const renderEnd = composerApp.indexOf('\nfunction isActiveProjectPaused()', renderStart);
+  const renderSource = composerApp.slice(renderStart, renderEnd);
+
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  assert.match(renderSource, /const terminalPool = state\.status\?\.terminalPool/);
+  assert.match(renderSource, /const pool = terminalPool\s+&& sameProjectPath/);
+  assert.doesNotMatch(renderSource, /state\.status\.terminalPool/);
+});
+
+test('Plan council controls render safely during the initial paint', () => {
+  const renderStart = composerApp.indexOf('function renderPlanControls()');
+  const renderEnd = composerApp.indexOf('\nfunction turboWorkerThreads()', renderStart);
+  const renderSource = composerApp.slice(renderStart, renderEnd);
+
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  assert.match(renderSource, /const codexModels = catalogs\.codex/);
+  assert.match(renderSource, /const claudeModels = catalogs\.claude/);
+  assert.doesNotMatch(renderSource, /\bmodels\./);
+  assert.doesNotMatch(renderSource, /settings\.reviewerModel/);
+});
+
+test('automatic terminal controls render safely before a project is selected', () => {
+  const renderStart = composerApp.indexOf('function renderAutomaticTerminalPool()');
+  const renderEnd = composerApp.indexOf('\nasync function saveProjectInstanceLimits()', renderStart);
+  const renderSource = composerApp.slice(renderStart, renderEnd);
+
+  assert.ok(renderStart >= 0 && renderEnd > renderStart);
+  assert.match(renderSource, /const terminalPool = state\.status\?\.terminalPool/);
+  assert.match(renderSource, /const active = terminalPool\s+&& project\s+&& sameProjectPath/);
+  assert.doesNotMatch(renderSource, /state\.status\.terminalPool/);
+});
+
+test('Launchpad configuration and active project are shared through the backend', () => {
+  assert.match(server, /sharedProjectConfig: true/);
+  assert.match(server, /activeProjectPath: database\.activeProjectPath\(\)/);
+  assert.match(server, /pathname === '\/api\/projects\/active'/);
+  assert.match(composerApp, /function persistActiveProject\(path\)/);
+  assert.match(composerApp, /api\('\/api\/projects\/active'/);
+  assert.match(composerApp, /body\.activeProjectPath/);
+  assert.match(composerApp, /selectProject\(sharedActiveProject\.path, \{ persist: false \}\)/);
+});
+
+test('automatic terminals close sessions by default and apply project-only retention immediately', () => {
+  assert.match(composer, /id="keep-terminal-open"[^>]*type="checkbox"[^>]*role="switch"/);
+  assert.doesNotMatch(composer, /id="keep-terminal-open"[^>]*checked/);
+  assert.match(composer, /Keep task terminals open/);
+  assert.match(composerState, /keepTerminalOpen: false/);
+  assert.match(composerApp, /api\(`\/api\/projects\/\$\{project\.id\}\/settings`/);
+  assert.match(composerApp, /projectTerminalSettingsRecord\(settings\)/);
+  assert.doesNotMatch(composerApp, /Restart CC Relay to save terminal settings/);
+  assert.doesNotMatch(composerApp, /relay\.keepTerminalOpen/);
+  assert.doesNotMatch(composerApp, /relay\.preferIdleTerminal/);
+  assert.match(server, /projectTerminalSettings: true/);
+  assert.match(server, /updateProjectTerminalSettings/);
+  assert.match(composerApp, /function terminalRetentionRequest/);
+  assert.match(composerApp, /\.\.\.terminalRetentionRequest\(retainTerminals\)/);
+  assert.match(composerApp, /keepTerminalOpen: retainTerminals/);
+  assert.match(server, /retainedTerminalSessions: true/);
+  assert.match(server, /const keepTerminalOpen = disposable && body\.keepTerminalOpen === true/);
+  assert.match(server, /sourceTask\.keep_terminal_open/);
+  assert.match(server, /const connectedThread = resumeDisposable[\s\S]*retainedThread \|\|/);
+  assert.match(style, /\.terminal-keep-open-option input:checked/);
+});
+
 test('a Codex launch timeout explains a possible required update in the app', () => {
   assert.match(composerApp, /launched\?\.connectionStatus === 'timed_out'/);
-  assert.match(composerApp, /Could not open a Codex Relay\. If Codex says an update is required in the terminal, update Codex, then try again\./);
+  assert.match(composerApp, /Could not open a Codex CC Relay\. If Codex says an update is required in the terminal, update Codex, then try again\./);
 });
 
 test('waiting queue tasks expose a guarded prompt editor', () => {
@@ -106,10 +199,10 @@ test('waiting queue tasks expose a guarded prompt editor', () => {
   assert.match(composerApp, /queuedTaskProviderSwitch === true/);
   assert.match(composerApp, /function renderTaskEditExecution\(\)/);
   assert.match(composerApp, /method: 'PATCH'/);
-  assert.match(composerApp, /Restart Relay to edit queued tasks\./);
+  assert.match(composerApp, /Restart CC Relay to edit queued tasks\./);
 });
 
-test('busy queued Claude tasks can move to another same-workspace Claude Relay', () => {
+test('busy queued Claude tasks can move to another same-workspace Claude CC Relay', () => {
   assert.match(server, /queuedClaudeAssignment:\s*true/);
   assert.match(server, /!\['codex', 'claude'\]\.includes\(task\.provider\)/);
   assert.match(server, /task\.provider === 'codex'\s+\? await codexAppServer\.readConnectedThread\(threadId\)\s+: await claudeSessions\.readConnectedSession\(threadId\)/);
@@ -125,19 +218,19 @@ test('busy queued Claude tasks can move to another same-workspace Claude Relay',
   );
 });
 
-test('idle Relay routing is enabled for Claude only when the backend supports parallel sessions', () => {
+test('idle CC Relay routing is enabled for Claude only when the backend supports parallel sessions', () => {
   assert.match(server, /parallelClaudeExecution:\s*true/);
   assert.match(composerApp, /provider === 'claude' && state\.status\?\.capabilities\?\.parallelClaudeExecution === true/);
   assert.match(composerApp, /provider:\s*state\.selectedProvider/);
 });
 
-test('selected Relay terminals expose guarded native close control', () => {
+test('selected CC Relay terminals expose guarded native close control', () => {
   assert.match(composer, /id="terminal-close-row" class="terminal-close-row"/);
   assert.match(composer, /id="terminal-close-reason" role="status"/);
   assert.match(composer, /id="close-terminal-button"[^>]*>Close selected<\/button>/);
   assert.doesNotMatch(composer, /id="close-terminal-button"[^>]*\bhidden\b/);
   assert.match(composerApp, /launched\.threadId !== thread\.id/);
-  assert.match(composerApp, /Relay could not verify its exact native window/);
+  assert.match(composerApp, /CC Relay could not verify its exact native window/);
   assert.match(composerApp, /window\.confirm\(`Close \$\{label\} and its native terminal window\?/);
   assert.match(composerApp, /api\(`\/api\/terminals\/\$\{encodeURIComponent\(thread\.id\)\}`/);
   assert.match(composerApp, /control\?\.canClose !== true/);
@@ -148,13 +241,29 @@ test('selected Relay terminals expose guarded native close control', () => {
   assert.doesNotMatch(composerApp, /closeTerminalButton\.hidden = !supported/);
 });
 
-test('Plan council selects an owned Claude author terminal separately from its Codex reviewer', () => {
+test('Plan council selects separate owned provider terminals and a provider order', () => {
   const launchWaitStart = composerApp.indexOf('async function waitForProjectThread(');
   const launchProjectStart = composerApp.indexOf('async function launchProject(', launchWaitStart);
   const launchWaitSource = composerApp.slice(launchWaitStart, launchProjectStart);
 
   assert.match(composer, /id="plan-author-terminal"/);
+  assert.match(composer, /id="plan-council-order" class="turbo-council-order plan-council-order"/);
+  assert.match(composer, /data-plan-council-first="claude"/);
+  assert.match(composer, /data-plan-council-first="codex"/);
+  assert.match(
+    composerApp,
+    /planCouncilOrder\.hidden = !settings\.enabled \|\| !planCouncilOrderEnabled\(\)/,
+  );
+  assert.match(
+    style,
+    /\.plan-council-order button\[data-plan-council-first="codex"\]\[aria-pressed="true"\]/,
+  );
+  assert.match(
+    style,
+    /\.plan-council-order button\[data-plan-council-first="claude"\]\[aria-pressed="true"\]/,
+  );
   assert.match(server, /planCouncilTerminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION/);
+  assert.match(server, /planCouncilProviderOrder: true/);
   assert.match(launchWaitSource, /state\.planSettings\.authorThreadId = thread\.id/);
   assert.ok(
     launchWaitSource.indexOf('state.planSettings.authorThreadId = thread.id')
@@ -162,13 +271,14 @@ test('Plan council selects an owned Claude author terminal separately from its C
   );
   assert.match(composerApp, /function planClaudeAuthorThreads\(\)/);
   assert.match(composerApp, /thread\.terminalControl\?\.owned === true/);
-  assert.match(composerApp, /authorThreadId: state\.planSettings\.authorThreadId/);
-  assert.match(composerApp, /Choose the Claude author terminal in the Plan council card/);
+  assert.match(composerApp, /authorThreadId: councilSettings\.authorThreadId/);
+  assert.match(composerApp, /planCouncilRequest\(councilSettings, planCouncilCatalogs\(\)\)/);
+  assert.match(composerApp, /Choose the Claude council terminal in the Plan council card/);
   assert.match(server, /const authorThreadId = typeof body\.authorThreadId/);
-  assert.match(server, /projectLauncher\.terminalForThread\(authorThread\.id\)/);
+  assert.match(server, /projectLauncher\.terminalForThread\(claudeThread\.id\)/);
 });
 
-test('completed Plan council exposes one canonical plan file and explicit Relay execution', () => {
+test('completed Plan council exposes one canonical plan file and explicit CC Relay execution', () => {
   assert.match(gitignore, /^\.data\/$/m);
   assert.match(composer, /id="plan-artifact-path"/);
   assert.match(composer, /id="plan-artifact-link"[^>]*>Open plan\.md<\/a>/);
@@ -187,11 +297,27 @@ test('completed Plan council exposes one canonical plan file and explicit Relay 
   assert.match(composerApp, /function selectedPlanExecutionTarget\(task\)/);
   assert.match(composerApp, /state\.planExecutionTargets\.get\(task\.id\)/);
   assert.match(composerApp, /planArtifactRow\.hidden = !hasFinal/);
-  assert.match(composerApp, /Restart Relay to enable reviewed-plan execution\./);
+  assert.match(composerApp, /Restart CC Relay to enable reviewed-plan execution\./);
   assert.match(composerApp, /Execute plan with \$\{providerLabel\(threadProvider\(target\)\)\} on \$\{threadDisplayName\(target\)\}/);
   assert.match(composerApp, /api\(`\/api\/tasks\/\$\{sourceTask\.id\}\/execute-plan`/);
   assert.match(composerApp, /threadProvider\(target\) === 'claude'/);
-  assert.match(composerApp, /Resume on Relay \$\{relayNumber\(retryTarget\)\}/);
+  assert.match(composerApp, /Resume on CC Relay \$\{relayNumber\(retryTarget\)\}/);
+});
+
+test('Plan council draft and review disclosures show their durable stage file', () => {
+  const draftSection = composer.indexOf('id="plan-draft-section"');
+  const draftRow = composer.indexOf('id="plan-draft-artifact-row"');
+  const reviewSection = composer.indexOf('id="plan-review-section"');
+  const reviewRow = composer.indexOf('id="plan-review-artifact-row"');
+
+  assert.ok(draftSection >= 0 && draftRow > draftSection && draftRow < reviewSection);
+  assert.ok(reviewRow > reviewSection);
+  assert.match(composer, /id="plan-draft-artifact-path"/);
+  assert.match(composer, /id="plan-review-artifact-path"/);
+  assert.match(style, /\.plan-stage-artifact-row \{/);
+  assert.match(composerApp, /function renderPlanStageArtifact\(row, path, filePath\)/);
+  assert.match(composerApp, /plan\?\.stageArtifacts\?\.draft/);
+  assert.match(composerApp, /plan\?\.stageArtifacts\?\.review/);
 });
 
 test('completed Plan council promotes execution as the next visible step', () => {
@@ -209,7 +335,7 @@ test('completed Plan council promotes execution as the next visible step', () =>
   assert.match(composerApp, /function revealPlanExecution\(\)[\s\S]*planExecutionPanel\.scrollIntoView/);
 });
 
-test('direct execution settings render below the Relay picker', () => {
+test('direct execution settings render below the CC Relay picker', () => {
   const terminalList = composer.indexOf('id="terminal-list"');
   const terminalPanelEnd = composer.indexOf('</fieldset>', terminalList);
   const executionControls = composer.indexOf('id="execution-controls"');
@@ -228,13 +354,18 @@ test('direct effort slider submits its exact mapped value', () => {
   assert.match(submitSource, /JSON\.parse\(elements\.effortSelect\.dataset\.values/);
   assert.ok(
     submitSource.indexOf('const execution = {') < submitSource.indexOf('await settleIdleSubmissionThread'),
-    'effort must be captured before asynchronous idle-Relay routing',
+    'effort must be captured before asynchronous idle-CC Relay routing',
   );
   assert.match(composerApp, /executionSettingsForThread\(state, state\.selectedProvider, state\.selectedThreadId\)/);
   assert.match(composerApp, /state\.selectedThreadId = threadId;\s+renderExecutionControls\(\)/);
   assert.match(submitSource, /rememberThreadExecution\(state, submissionProvider, routedThreadId, execution\)/);
   assert.match(submitSource, /rememberThreadExecution\(state, createdTask\.provider \|\| submissionProvider, acceptedThreadId/);
   assert.match(composerApp, /<i class="\$\{index === effortIndex \? 'active' : ''\}" title="\$\{escapeHtml\(effort\)\}"><\/i>/);
+  const effortInputStart = composerApp.indexOf("elements.effortSelect.addEventListener('input'");
+  const effortInputEnd = composerApp.indexOf("elements.attachmentInput.addEventListener('change'", effortInputStart);
+  const effortInputSource = composerApp.slice(effortInputStart, effortInputEnd);
+  assert.match(effortInputSource, /renderEffortSelection\(selectedModel\(\)\?\.supportedReasoningEfforts \|\| \[\], effort\)/);
+  assert.doesNotMatch(effortInputSource, /renderExecutionControls\(\)/);
   assert.doesNotMatch(composerApp, /--effort-step-position/);
 });
 
@@ -260,6 +391,12 @@ test('fresh Claude initialization renders as Claude session activity', () => {
   assert.match(presentationSource, /payloadType !== 'claude\/session-initializing'/);
 });
 
+test('Claude and Codex questions route to exact native terminal attention', () => {
+  assert.match(server, /requestAttention: \(\{ thread \}\) => projectLauncher\.requestTerminalAttention\(thread\)/);
+  assert.match(server, /codexAppServer\.on\('userInputRequested'/);
+  assert.match(server, /projectLauncher\.requestTerminalAttention\(thread\)/);
+});
+
 test('the header is a global running-task feed instead of a status switchboard', () => {
   assert.match(composer, /id="header-running-tasks"[^>]*aria-label="Running tasks across all projects"/);
   assert.doesNotMatch(composer, /class="header-status-strip"/);
@@ -272,8 +409,8 @@ test('the header is a global running-task feed instead of a status switchboard',
 test('an old backend explains when separate project queues require a restart', () => {
   assert.match(server, /projectQueueIsolation: true/);
   assert.match(composerApp, /projectQueueRestartRequired\(\{/);
-  assert.match(composerApp, /Restart Relay for separate project queues/);
-  assert.match(composerApp, /Restart Relay to activate this project's independent queue/);
+  assert.match(composerApp, /Restart CC Relay for separate project queues/);
+  assert.match(composerApp, /Restart CC Relay to activate this project's independent queue/);
   assert.match(composerApp, /task\.status === 'running' && !sameProjectPath\(task\.repo_path, path\)/);
   assert.match(composerApp, /Array\.isArray\(pausedProjectPaths\)/);
   assert.match(composerApp, /supported: state\.status\?\.capabilities\?\.projectQueueIsolation/);
@@ -287,7 +424,6 @@ test('successful submission opens the new task in Queue view', () => {
 
   assert.match(submitSource, /const body = await api\('\/api\/tasks'/);
   assert.match(submitSource, /state\.taskView = 'queue'/);
-  assert.match(submitSource, /state\.taskScope = 'workspace'/);
   assert.match(submitSource, /state\.selectedTaskId = createdTask\.id/);
   // The post-submit refresh must not join a snapshot requested before the task existed.
   assert.match(submitSource, /await load\(\{ fresh: true \}\)/);
@@ -309,7 +445,7 @@ test('composer locks before asynchronous routing and sends an idempotency key', 
   assert.match(submitSource, /finally \{\s+setComposerPending\(false\);/);
   assert.match(composerApp, /function setComposerPending\(pending\) \{\s+state\.submitting = pending;/);
   assert.match(server, /duplicateSubmission: true/);
-  assert.match(server, /Task submission ID is required\. Refresh Relay and try again\./);
+  assert.match(server, /Task submission ID is required\. Refresh CC Relay and try again\./);
   assert.match(server, /Task submission ID is invalid\./);
 });
 
@@ -336,17 +472,17 @@ test('submit ignores the live process list but blocks a confirmed missing CLI', 
 
   assert.ok(gateStart >= 0 && gateEnd > gateStart);
   assert.match(gateSource, /Write a prompt before adding the task\./);
-  assert.match(gateSource, /Choose a connected Relay before adding the task\./);
+  assert.match(gateSource, /Choose a connected CC Relay before adding the task\./);
   assert.match(gateSource, /return providerInstallationIssue\(\) \|\| attachmentLimitIssue\(\)/);
   assert.match(gateSource, /elements\.submitButton\.disabled = state\.submitting \|\| Boolean\(issue\)/);
   assert.match(composerApp, /providerIsMissing\(provider\)/);
-  assert.match(composerApp, /Relay will enable/);
-  // A Relay missing from the last /api/threads answer must never disable the composer.
+  assert.match(composerApp, /CC Relay will enable/);
+  // A CC Relay missing from the last /api/threads answer must never disable the composer.
   assert.doesNotMatch(gateSource, /state\.threads/);
   assert.doesNotMatch(gateSource, /isClaudePlanReady|turboWorkerThreads|hasSelectedCodexThread/);
 });
 
-test('a submission in flight owns the Relay selection', () => {
+test('a submission in flight owns the CC Relay selection', () => {
   const renderStart = composerApp.indexOf('function renderThreads()');
   const renderEnd = composerApp.indexOf('\nfunction ', renderStart + 1);
   const renderSource = composerApp.slice(renderStart, renderEnd);
@@ -430,7 +566,7 @@ test('dispatch-time idle routing replaces the client settle loop when advertised
 });
 
 test('dispatch reroute is read from the task record, not from client discovery', () => {
-  // The server can move a task to another free Relay after it was enqueued, so every
+  // The server can move a task to another free CC Relay after it was enqueued, so every
   // destination-dependent surface must derive from the task, not from pre-POST routing.
   assert.match(composerApp, /function taskRelayLabel\(task\) \{\s+const thread = state\.threads\.find\(\(item\) => item\.id === task\.thread_id\)/);
   assert.match(composerApp, /if \(task\.thread_name\) return task\.provider === 'codex'/);
@@ -507,7 +643,7 @@ test('a background provider probe reads as checking, never as unavailable', () =
   assert.match(server, /pending: true/);
   assert.match(composerApp, /const providersChecking = !relayReady && \['codex', 'claude'\]\.some/);
   assert.match(composerApp, /elements\.codexStatus\.dataset\.state = relayReady \? 'online' : providersChecking \? 'checking' : 'offline'/);
-  assert.match(composerApp, /providersChecking \? 'Checking Relay' : 'Relay unavailable'/);
+  assert.match(composerApp, /providersChecking \? 'Checking CC Relay' : 'CC Relay unavailable'/);
   // The neutral checking dot needs no override; only online and offline recolor it.
   assert.match(composer, /id="codex-status"[^>]*data-state="checking"/);
   assert.doesNotMatch(style, /\.connection-pill\[data-state="checking"\]/);
@@ -537,7 +673,7 @@ test('a failed Claude probe is staleness, not an outage', () => {
   assert.ok(noteStart >= 0);
   assert.match(noteSource, /if \(!state\.connection\?\.claudeDiscoveryError\) return ''/);
   assert.match(noteSource, /may be out of date/);
-  assert.match(noteSource, /Relay retries automatically\./);
+  assert.match(noteSource, /CC Relay retries automatically\./);
   // Quiet copy only. Check the user-facing strings, not the identifiers around them: the
   // note must never claim an outage or imply the sessions are gone.
   const noteCopy = [...noteSource.matchAll(/' ([^']+)'/g)].map((match) => match[1]);
@@ -557,7 +693,26 @@ test('queue counts and selection recovery handle several running tasks', () => {
   assert.match(composerApp, /state\.selectedTaskId = mostRecentlyStartedRunningTask\(scopedTasks\)\?\.id \|\| null/);
 });
 
-test('Task Activity steers live work and queues disposable same-conversation continuations', () => {
+test('switching projects restores each project selected task', () => {
+  const saveStart = composerApp.indexOf('function saveProjectComposerState');
+  const saveEnd = composerApp.indexOf('\nfunction ', saveStart + 1);
+  const saveSource = composerApp.slice(saveStart, saveEnd);
+  const restoreStart = composerApp.indexOf('function restoreProjectComposerState');
+  const restoreEnd = composerApp.indexOf('\nfunction ', restoreStart + 1);
+  const restoreSource = composerApp.slice(restoreStart, restoreEnd);
+  const selectStart = composerApp.indexOf('function selectProject');
+  const selectEnd = composerApp.indexOf('\nfunction ', selectStart + 1);
+  const selectSource = composerApp.slice(selectStart, selectEnd);
+
+  assert.match(saveSource, /selectedTaskId: state\.selectedTaskId/);
+  assert.match(restoreSource, /task\.id === session\.selectedTaskId/);
+  assert.match(restoreSource, /sameProjectPath\(task\.repo_path, path\)/);
+  assert.match(restoreSource, /state\.selectedTaskId = selectedTask\?\.id \|\| null/);
+  assert.doesNotMatch(selectSource, /state\.selectedTaskId = null/);
+  assert.match(selectSource, /if \(state\.selectedTaskId\) \{\s+selectTask\(state\.selectedTaskId\)/);
+});
+
+test('Task Activity keeps every continuation in the selected task and conversation', () => {
   const continuationStart = composerApp.indexOf('async function submitTaskContinuation');
   const continuationEnd = composerApp.indexOf('async function deleteTask', continuationStart);
   const continuationSource = composerApp.slice(continuationStart, continuationEnd);
@@ -570,21 +725,35 @@ test('Task Activity steers live work and queues disposable same-conversation con
   assert.match(composer, /id="task-continuation-clear-images"/);
   assert.match(composerApp, /continuationSubmission\(sourceTask, prompt/);
   assert.match(continuationSource, /const body = await api\(request\.path/);
+  assert.match(continuationSource, /sourceTask\.provider === 'claude' && sourceTask\.status === 'running'/);
+  assert.match(continuationSource, /timeoutMs: 35_000/);
+  assert.match(continuationSource, /may already be queued in Claude/);
+  assert.match(continuationSource, /const runningSteeringAvailable = sourceTask\?\.status === 'running'/);
+  assert.match(continuationSource, /!resumableSession && !runningSteeringAvailable/);
   assert.match(continuationSource, /taskDirectFollowUp === true/);
   assert.match(composerApp, /supportsTaskSteering: state\.status\?\.capabilities\?\.taskSteering === true/);
-  assert.match(continuationSource, /!body\.steered && !body\.followUpStarted && !body\.continuationQueued/);
-  assert.match(continuationSource, /No queue task was created/);
+  assert.match(composerApp, /supportsClaudeTaskSteering: state\.status\?\.capabilities\?\.claudeTaskSteering === true/);
+  assert.match(continuationSource, /continuationDispatchOutcome\(\{ ok: true, \.\.\.body, prompt \}\)/);
+  // A response confirming neither route is still not a delivery, so it keeps the draft.
+  assert.equal(continuationDispatchOutcome({ ok: true }).clearComposer, false);
+  assert.equal(continuationDispatchOutcome({ ok: true, steered: true }).clearComposer, true);
+  assert.match(continuationState, /created no new task/);
+  assert.match(continuationSource, /await load\(\{ fresh: true \}\)/);
   assert.doesNotMatch(composerApp, /continuationInput\.disabled = !available/);
   assert.match(composerApp, /event\.key !== 'Enter' \|\| event\.shiftKey \|\| event\.isComposing/);
   assert.match(composerApp, /task\?\.mode === 'execute' && \['codex', 'claude'\]\.includes\(task\.provider\)/);
   assert.match(composerApp, /!isFailedSessionFollowUp\(task\)/);
-  assert.match(continuationSource, /state\.selectedTaskId = body\.task\.id/);
+  assert.doesNotMatch(continuationSource, /state\.selectedTaskId = body\.task\.id/);
   assert.doesNotMatch(continuationSource, /state\.taskView = 'queue'/);
   assert.match(composerApp, /const requestSequence = \+\+state\.taskLoadSequence/);
   assert.match(composerApp, /requestSequence !== state\.taskLoadSequence \|\| state\.selectedTaskId !== taskId/);
   assert.match(server, /taskDirectFollowUp: true/);
   assert.match(server, /taskFollowUpAttachments: true/);
   assert.match(server, /taskSteering: true/);
+  assert.match(server, /claudeTaskSteering: CLAUDE_TASK_STEERING/);
+  assert.match(server, /if \(error\.deliveryUncertain === true\)/);
+  assert.match(server, /Unconfirmed live-update reference images/);
+  assert.match(server, /type: 'claude\/steer-uncertain'/);
   assert.match(server, /resumableDisposableSessions: true/);
   assert.match(continuationSource, /taskFollowUpAttachments === true/);
   assert.match(continuationSource, /mimeType: attachment\.mimeType/);
@@ -593,9 +762,14 @@ test('Task Activity steers live work and queues disposable same-conversation con
   assert.match(server, /\/api\\\/tasks\\\/\\d\+\\\/steer/);
   assert.match(followUpRouteSource, /queue\.startFollowUp\(buildSessionFollowUp/);
   assert.match(followUpRouteSource, /sourceTask\.terminal_lifecycle === 'disposable'/);
-  assert.match(followUpRouteSource, /const task = queue\.enqueue\(/);
-  assert.match(followUpRouteSource, /continuationQueued: true/);
+  assert.match(followUpRouteSource, /\{ resumeDisposable \}/);
+  assert.doesNotMatch(followUpRouteSource, /queue\.enqueue\(/);
+  assert.doesNotMatch(followUpRouteSource, /continuationQueued/);
   assert.match(followUpRouteSource, /sendJson\(response, 202/);
+  assert.match(server, /prompts: database\.listTaskPrompts\(taskId\)/);
+  assert.match(composerApp, /normalizeTaskPrompts\(task, prompts\)/);
+  assert.match(composerApp, /elements\.promptSection\.open = promptHistory\.length > 1/);
   assert.match(server, /sourceTask\.status === 'running'/);
+  assert.match(server, /claudeExecution\.steer\(task\.id, prompt, storedAttachments\)/);
   assert.match(server, /Your follow-up was not queued/);
 });

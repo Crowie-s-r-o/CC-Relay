@@ -15,12 +15,27 @@ export function blockingTerminalTask(tasks, threadId) {
   return matching.find((task) => task.status === 'running') || matching[0] || null;
 }
 
+// The session task that kept this terminal alive after its work finished. Deliberately
+// unfiltered by status: a finished task is the normal case here, and an active one cannot
+// reach this path because terminalControlState already refuses the close while it runs.
+export function retainedSessionTaskForThread(tasks, threadId) {
+  if (!threadId) return null;
+  const matching = (tasks || []).filter((task) => (
+    task?.thread_id === threadId
+    && task.keep_terminal_open === true
+    && task.terminal_lifecycle === 'disposable'
+  ));
+  return matching.reduce((latest, task) => (
+    !latest || task.id > latest.id ? task : latest
+  ), null);
+}
+
 export function terminalControlState(tasks, threadId, ownedTerminal) {
   if (!ownedTerminal) {
     return {
       owned: false,
       canClose: false,
-      reason: 'Relay could not map this session to one unambiguous native terminal window.',
+      reason: 'CC Relay could not map this session to one unambiguous native terminal window.',
     };
   }
   const blocker = blockingTerminalTask(tasks, threadId);

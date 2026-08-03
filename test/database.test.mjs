@@ -70,6 +70,68 @@ test('database persists tasks in queue order and records events', () => {
   }
 });
 
+test('desktop history import copies finished localhost tasks idempotently and skips active work', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-task-import-'));
+  const sourcePath = join(directory, 'localhost', 'relay.sqlite');
+  const destinationPath = join(directory, 'desktop', 'relay.sqlite');
+  const source = new RelayDatabase(sourcePath);
+  const destination = new RelayDatabase(destinationPath);
+  try {
+    const parent = source.createTask({
+      title: 'Finished parent',
+      prompt: 'Ship the parent',
+      thread: { id: 'source-one', title: 'Source one', source: 'cli', cwd: '/repo' },
+    });
+    source.updateTask(parent.id, {
+      status: 'complete',
+      result: 'Parent shipped',
+      finished_at: new Date().toISOString(),
+    });
+    source.addEvent(parent.id, 'assistant', 'Finished response', { type: 'result' });
+
+    const child = source.createTask({
+      title: 'Failed follow-up',
+      prompt: 'Inspect the follow-up',
+      thread: { id: 'source-one', title: 'Source one', source: 'cli', cwd: '/repo' },
+      continuedFromTaskId: parent.id,
+    });
+    source.updateTask(child.id, {
+      status: 'failed',
+      error: 'Follow-up failed',
+      finished_at: new Date().toISOString(),
+    });
+    source.createTask({
+      title: 'Still queued',
+      prompt: 'Do not import this',
+      thread: { id: 'source-two', title: 'Source two', source: 'cli', cwd: '/repo' },
+    });
+
+    const firstImport = destination.importTaskHistory(sourcePath);
+    assert.equal(firstImport.imported, 2);
+    assert.equal(firstImport.updated, 0);
+    assert.equal(firstImport.skippedActive, 1);
+
+    const imported = destination.listTasks();
+    const importedParent = imported.find((task) => task.import_task_id === parent.id);
+    const importedChild = imported.find((task) => task.import_task_id === child.id);
+    assert.equal(imported.length, 2);
+    assert.equal(importedParent.result, 'Parent shipped');
+    assert.equal(importedChild.continued_from_task_id, importedParent.id);
+    assert.equal(destination.listEvents(importedParent.id).at(-1).message, 'Finished response');
+
+    source.updateTask(parent.id, { result: 'Parent shipped and verified' });
+    const secondImport = destination.importTaskHistory(sourcePath);
+    assert.equal(secondImport.imported, 0);
+    assert.equal(secondImport.updated, 2);
+    assert.equal(destination.listTasks().length, 2);
+    assert.equal(destination.getTask(importedParent.id).result, 'Parent shipped and verified');
+  } finally {
+    destination.close();
+    source.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('database persists one unique submission ID per task', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-submission-id-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
@@ -90,6 +152,138 @@ test('database persists one unique submission ID per task', () => {
       thread: { id: 'thread-twice', title: 'Twice', source: 'cli', cwd: '/repo' },
       submissionId,
     }), /UNIQUE constraint failed/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('database returns every prompt even when the console event window is full', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-prompt-history-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  try {
+    const task = database.createTask({
+      title: 'Prompt history',
+      prompt: 'Original request',
+      thread: { id: 'prompt-history', title: 'Prompt history', source: 'cli', cwd: '/repo' },
+    });
+    database.addEvent(task.id, 'codex', 'First follow-up', {
+      type: 'item/completed',
+      item: {
+        id: `relay-follow-up-${task.id}-1`,
+        type: 'userMessage',
+        content: [{ type: 'text', text: 'First follow-up' }],
+      },
+    });
+    const steeredItem = {
+      id: 'provider-prompt-2',
+      clientId: `relay-steer-${task.id}-1`,
+      type: 'userMessage',
+      content: [{ type: 'text', text: 'Second follow-up' }],
+    };
+    database.addEvent(task.id, 'codex', 'Second follow-up started', {
+      type: 'item/started',
+      item: steeredItem,
+    });
+    database.addEvent(task.id, 'codex', 'Second follow-up completed', {
+      type: 'item/completed',
+      item: steeredItem,
+    });
+    for (let index = 0; index < 510; index += 1) {
+      database.addEvent(task.id, 'codex', `Noise ${index}`);
+    }
+
+    assert.equal(database.listEvents(task.id).length, 500);
+    assert.deepEqual(
+      database.listTaskPrompts(task.id).map(({ kind, text }) => ({ kind, text })),
+      [
+        { kind: 'original', text: 'Original request' },
+        { kind: 'follow-up', text: 'First follow-up' },
+        { kind: 'follow-up', text: 'Second follow-up' },
+      ],
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('database returns recorded assistant responses with the latest result as a fallback', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-response-history-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  try {
+    const task = database.createTask({
+      title: 'Response history',
+      prompt: 'Original request',
+      thread: { id: 'response-history', title: 'Response history', source: 'cli', cwd: '/repo' },
+    });
+    database.addEvent(task.id, 'result', 'First response', {
+      type: 'item/completed',
+      item: {
+        id: 'agent-one',
+        type: 'agentMessage',
+        text: 'First response',
+      },
+    });
+    database.addEvent(task.id, 'result', 'Duplicate response', {
+      type: 'item/completed',
+      item: {
+        id: 'agent-two',
+        type: 'agent_message',
+        text: 'First response',
+      },
+    });
+    database.addEvent(task.id, 'claude', 'Second response', {
+      type: 'claude/message',
+      text: 'Second response',
+    });
+    database.updateTask(task.id, {
+      status: 'complete',
+      result: 'Latest result without a matching event',
+      finished_at: '2026-07-29T12:00:00.000Z',
+    });
+
+    assert.deepEqual(
+      database.listTaskResponses(task.id).map(({ text }) => text),
+      [
+        'First response',
+        'Second response',
+        'Latest result without a matching event',
+      ],
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('database does not repeat the stored result when a recorded response already carries it', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-response-dedupe-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  try {
+    const task = database.createTask({
+      title: 'Session turns',
+      prompt: 'First turn',
+      thread: { id: 'response-dedupe', title: 'Session turns', source: 'cli', cwd: '/repo' },
+    });
+    database.addEvent(task.id, 'result', 'First turn answer', {
+      type: 'item/completed',
+      item: { id: 'agent-one', type: 'agentMessage', text: 'First turn answer' },
+    });
+    database.addEvent(task.id, 'claude', 'Second turn answer', {
+      type: 'claude/message',
+      text: 'Second turn answer',
+    });
+    database.updateTask(task.id, {
+      status: 'complete',
+      result: 'Second turn answer',
+      finished_at: '2026-07-29T12:00:00.000Z',
+    });
+
+    assert.deepEqual(
+      database.listTaskResponses(task.id).map(({ text }) => text),
+      ['First turn answer', 'Second turn answer'],
+    );
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
@@ -398,9 +592,38 @@ test('database persists, deduplicates, launches, and removes pinned projects', (
     assert.equal(duplicate.id, first.id);
     assert.equal(first.max_codex_instances, 1);
     assert.equal(first.max_claude_instances, 1);
+    assert.equal(first.keep_terminal_open, false);
+    assert.equal(first.prefer_idle_terminal, false);
+    assert.equal(first.terminal_layout, null);
+    assert.equal(first.color, null);
+    assert.equal(database.updateProjectColor(first.id, '#f04fc3').color, '#f04fc3');
+    assert.equal(database.updateProjectColor(first.id, null).color, null);
     const resized = database.updateProjectInstanceLimits(first.id, { codex: 4, claude: 2 });
     assert.equal(resized.max_codex_instances, 4);
     assert.equal(resized.max_claude_instances, 2);
+    const configured = database.updateProjectTerminalSettings(first.id, {
+      keepTerminalOpen: false,
+      preferIdleTerminal: true,
+      terminalLayout: {
+        enabled: true,
+        columns: 2,
+        rows: 4,
+        display: 1,
+        background: false,
+      },
+    });
+    assert.equal(configured.keep_terminal_open, false);
+    assert.equal(configured.prefer_idle_terminal, true);
+    assert.deepEqual(configured.terminal_layout, {
+      enabled: true,
+      columns: 2,
+      rows: 4,
+      display: 1,
+      background: false,
+    });
+    assert.equal(database.getProject(second.id).keep_terminal_open, false);
+    assert.equal(database.getProject(second.id).prefer_idle_terminal, false);
+    assert.equal(database.getProject(second.id).terminal_layout, null);
     assert.equal(database.getProjectByPath('/repo/one').id, first.id);
     assert.deepEqual(database.listProjects().map((project) => project.id), [first.id, second.id]);
     assert.ok(database.markProjectLaunched(first.id).last_launched_at);

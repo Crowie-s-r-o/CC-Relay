@@ -91,7 +91,7 @@ test('history fallback supplies a provider-appropriate default source', async ()
 });
 
 // The only remaining rejection: nothing anywhere knows this session.
-test('a session Relay has never seen anywhere is rejected', async () => {
+test('a session CC Relay has never seen anywhere is rejected', async () => {
   const { options } = deps();
   const resolved = await resolveSubmissionThread('claude', 'session-a', options);
   assert.equal(resolved.thread, null);

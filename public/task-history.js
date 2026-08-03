@@ -13,12 +13,9 @@ export function isFinishedTaskStatus(status) {
   return FINISHED_STATUSES.has(status);
 }
 
-export function tasksForScope(tasks, { projectPath = null, taskScope = 'workspace', threadId = null } = {}) {
+export function tasksForScope(tasks, { projectPath = null } = {}) {
   if (!projectPath) return [];
-  const projectTasks = tasks.filter((task) => normalizedProjectPath(task.repo_path) === normalizedProjectPath(projectPath));
-  return taskScope === 'relay' && threadId
-    ? projectTasks.filter((task) => task.thread_id === threadId)
-    : projectTasks;
+  return tasks.filter((task) => normalizedProjectPath(task.repo_path) === normalizedProjectPath(projectPath));
 }
 
 function validPeriod(period) {

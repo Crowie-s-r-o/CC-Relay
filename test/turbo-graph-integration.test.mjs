@@ -34,8 +34,8 @@ function turboTask(id = 91) {
       workerModel: 'luna',
       workerEffort: 'high',
       workers: [
-        { threadId: 'worker-alpha', title: 'Relay Alpha history' },
-        { threadId: 'worker-beta', title: 'Relay Beta history' },
+        { threadId: 'worker-alpha', title: 'CC Relay Alpha history' },
+        { threadId: 'worker-beta', title: 'CC Relay Beta history' },
       ],
     },
   };
@@ -76,7 +76,7 @@ function fixture(directory, codex, id = 91) {
   return { artifacts, runner: new TurboRunner({ artifacts, codex }), task };
 }
 
-test('persists live and completed worker Relay assignments through graph progress', async () => {
+test('persists live and completed worker CC Relay assignments through graph progress', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-graph-'));
   const alpha = deferred();
   const beta = deferred();
@@ -142,7 +142,7 @@ test('persists live and completed worker Relay assignments through graph progres
   }
 });
 
-test('failed worker retains Relay attribution and contributes failed progress', async () => {
+test('failed worker retains CC Relay attribution and contributes failed progress', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-graph-failed-'));
   const held = deferred();
   const codex = {
@@ -185,17 +185,17 @@ test('failed worker retains Relay attribution and contributes failed progress', 
   }
 });
 
-test('disconnected worker history keeps its stored title without a fabricated Relay number', () => {
+test('disconnected worker history keeps its stored title without a fabricated CC Relay number', () => {
   const packageItem = {
     id: 'historical',
     status: 'complete',
     workerThreadId: 'closed-thread',
-    workerTitle: 'Archived Relay session',
+    workerTitle: 'Archived CC Relay session',
   };
   const resolved = resolvePackageWorker(packageItem, { workers: [] });
   assert.deepEqual(resolved, {
     threadId: 'closed-thread',
-    title: 'Archived Relay session',
+    title: 'Archived CC Relay session',
     slot: null,
   });
   assert.equal('relayNumber' in resolved, false);
