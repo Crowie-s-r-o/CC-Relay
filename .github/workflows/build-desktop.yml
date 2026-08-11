@@ -50,7 +50,7 @@ jobs:
           cache: npm
       - run: npm run release:check -- --tag "$GITHUB_REF_NAME"
       - run: npm run release:notes -- "$GITHUB_REF_NAME" > release-notes.md
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: cc-relay-*
           path: dist
