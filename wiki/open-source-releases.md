@@ -83,6 +83,7 @@ The public-release audit found and resolved these concrete issues:
 - One untracked real incident fixture contained a personal path and real UUIDs. The public fixture preserves the event shape with synthetic values.
 - `public/app.js` contained literal NUL and SOH delimiter bytes. They are now source-safe `\u0000` and `\u0001` escapes with identical runtime strings.
 - Compatible Electron, WebSocket, and transitive dependency updates reduced `npm audit` from five advisories to zero.
+- The public lockfile uses default peer-dependency semantics, so clean GitHub runners include the optional Windows builder peers instead of inheriting a developer machine's legacy install preference.
 - Current-tree and full-history scans found no credential-shaped private keys, cloud keys, GitHub tokens, OpenAI keys, Anthropic keys, or Slack tokens.
 - Real no-tools structured-output smoke tests passed for both Codex and Claude using the exact release invocation flags.
 - The final complete suite passes 1,189 of 1,189 tests, including five focused release-tooling tests. JavaScript syntax checks, YAML parsing, release metadata checks, documentation link checks, and `git diff --check` also pass.
