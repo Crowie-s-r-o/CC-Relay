@@ -13,6 +13,7 @@ import {
   codexRelayCommand,
   firstAvailableGridSlot,
   gridBounds,
+  macTerminalRuntimeProcessMissing,
   normalizeMacTerminalWindowBounds,
   normalizeTerminalLayout,
   shellQuote,
@@ -430,6 +431,138 @@ test('retained launches survive CC Relay shutdown and remain explicitly closable
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('a macOS Terminal.app window the user already closed releases its ownership', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-macos-missing-window-'));
+  const calls = [];
+  const diagnostics = [];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'ps' && args[0] === '-p') {
+        throw Object.assign(new Error('Command failed: ps'), { code: 1, stdout: '', stderr: '' });
+      }
+      if (command === 'osascript' && args[1].includes('__CC_RELAY_TERMINAL_WINDOW_MISSING__')) {
+        return { stdout: '__CC_RELAY_TERMINAL_WINDOW_MISSING__\n' };
+      }
+      return { stdout: '' };
+    },
+  });
+  try {
+    const path = validateProjectPath(directory).path;
+    launcher.trackOwnedTerminal({
+      launchId: 'missing-window-launch',
+      provider: 'claude',
+      path,
+      terminalWindowId: 519,
+      terminalTty: '/dev/ttys051',
+      runtimeProcessId: 819,
+    });
+    launcher.bindOwnedTerminal('missing-window-launch', {
+      id: 'missing-window-thread', provider: 'claude', cwd: directory,
+    });
+
+    const closed = await launcher.closeOwnedTerminal('missing-window-thread');
+
+    assert.equal(closed.threadId, 'missing-window-thread');
+    assert.equal(launcher.terminalForThread('missing-window-thread'), null);
+    assert.equal(calls.some(([command]) => command === 'kill'), false);
+    assert.equal(calls.some(([command, args]) => (
+      command === 'osascript' && args[1].includes('then close window id')
+    )), false);
+    assert.equal(
+      diagnostics.some(({ event }) => event === 'terminal.close.runtime_already_exited'),
+      true,
+    );
+    assert.equal(
+      diagnostics.some(({ event }) => event === 'terminal.close.already_exited'),
+      true,
+    );
+    assert.equal(diagnostics.some(({ event }) => event === 'terminal.close.failed'), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a dead Claude pid does not block cleanup of its still-open exact macOS terminal', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-macos-missing-runtime-'));
+  const calls = [];
+  const diagnostics = [];
+  const processSnapshots = ['901\n', '', ''];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'ps' && args[0] === '-p') {
+        throw Object.assign(new Error('Command failed: ps'), { code: 1, stdout: '', stderr: '' });
+      }
+      if (command === 'osascript' && args[1].includes('return tty')) {
+        return { stdout: '/dev/ttys059\n' };
+      }
+      if (command === 'ps' && args[0] === '-t') {
+        return { stdout: processSnapshots.shift() ?? '' };
+      }
+      return { stdout: '' };
+    },
+  });
+  try {
+    const path = validateProjectPath(directory).path;
+    launcher.trackOwnedTerminal({
+      launchId: 'missing-runtime-launch',
+      provider: 'claude',
+      path,
+      terminalWindowId: 529,
+      terminalTty: '/dev/ttys059',
+      runtimeProcessId: 829,
+    });
+    launcher.bindOwnedTerminal('missing-runtime-launch', {
+      id: 'missing-runtime-thread', provider: 'claude', cwd: directory,
+    });
+
+    await launcher.closeOwnedTerminal('missing-runtime-thread');
+
+    assert.equal(launcher.terminalForThread('missing-runtime-thread'), null);
+    assert.deepEqual(
+      calls.filter(([command]) => command === 'kill').map(([, args]) => args),
+      [['-9', '901']],
+    );
+    assert.equal(
+      diagnostics.some(({ event }) => event === 'terminal.close.runtime_already_exited'),
+      true,
+    );
+    assert.equal(
+      diagnostics.some(({ event }) => event === 'terminal.close.processes_terminated'),
+      true,
+    );
+    assert.equal(diagnostics.some(({ event }) => event === 'terminal.close.failed'), false);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('macOS missing-runtime detection accepts only exit 1 with no process output', () => {
+  assert.equal(
+    macTerminalRuntimeProcessMissing(Object.assign(new Error('missing'), {
+      code: 1, stdout: '', stderr: '',
+    })),
+    true,
+  );
+  assert.equal(
+    macTerminalRuntimeProcessMissing(Object.assign(new Error('denied'), {
+      code: 1, stdout: '', stderr: 'operation not permitted',
+    })),
+    false,
+  );
+  assert.equal(
+    macTerminalRuntimeProcessMissing(Object.assign(new Error('failure'), {
+      code: 2, stdout: '', stderr: '',
+    })),
+    false,
+  );
 });
 
 test('macOS terminal close does not close the window when its exact TTY cannot be killed', async () => {

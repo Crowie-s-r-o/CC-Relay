@@ -714,6 +714,60 @@ test('an unbound launch remains counted when exact cleanup fails', async () => {
   }
 });
 
+test('a macOS terminal closed outside CC Relay decrements the Claude pool usage', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-disposable-macos-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'artifacts'));
+  database.addProject({ path: directory, name: 'macOS pool project' });
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    createId: () => 'closed-macos-launch',
+    run: async (command, args) => {
+      if (command === 'osascript' && args[1].includes('set launchedTab to do script')) {
+        return { stdout: '619|true\n' };
+      }
+      if (command === 'osascript' && args[1].includes('__CC_RELAY_TERMINAL_WINDOW_MISSING__')) {
+        return { stdout: '__CC_RELAY_TERMINAL_WINDOW_MISSING__\n' };
+      }
+      return { stdout: '' };
+    },
+  });
+  const coordinator = {
+    async launch(path, provider, layout, options) {
+      const launched = await launcher.launch(path, provider, layout, options);
+      const thread = {
+        id: launched.expectedThreadId,
+        provider,
+        cwd: path,
+        title: `${provider} terminal`,
+        source: 'CC Relay managed terminal',
+      };
+      launcher.bindOwnedTerminal(launched.launchId, thread);
+      return { ...launched, threadId: thread.id, thread };
+    },
+  };
+  const pool = new DisposableTerminalPool({ database, artifacts, coordinator, launcher });
+  try {
+    const task = database.createTask({
+      title: 'macOS Claude task',
+      prompt: 'Work',
+      repoPath: directory,
+      provider: 'claude',
+      terminalLifecycle: 'disposable',
+      terminalLayout: { enabled: false, background: true },
+    });
+    artifacts.initializeTask(task);
+
+    await pool.prepare(task);
+    assert.deepEqual(pool.usage(directory), { codex: 0, claude: 1 });
+    assert.deepEqual(await pool.release(task.id), { closed: 1, failed: 0 });
+    assert.deepEqual(pool.usage(directory), { codex: 0, claude: 0 });
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 // End-to-end proof over a real ProjectLauncher: a Windows terminal the user closed by hand must
 // still hand its project slot back, while any other native failure keeps the slot reserved.
 function windowsPoolSetup(taskkill) {

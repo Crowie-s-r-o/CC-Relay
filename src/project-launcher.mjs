@@ -13,6 +13,7 @@ const TERMINAL_PROCESS_DRAIN_POLL_MS = 50;
 const TERMINAL_ATTENTION_TIMEOUT_MS = 10_000;
 const TERMINAL_SHELL_READY_POLL_COUNT = 200;
 const TERMINAL_SHELL_READY_POLL_MS = 50;
+const TERMINAL_WINDOW_MISSING = '__CC_RELAY_TERMINAL_WINDOW_MISSING__';
 const SHARED_CODEX_ENDPOINT = 'ws://127.0.0.1:4769';
 // A pending Codex CLI release makes the interactive TUI stop on an "Update available" prompt
 // before it dials --remote, so a CC Relay-owned turn would wait forever for a session that never
@@ -51,6 +52,18 @@ export function windowsTerminalProcessMissing(error) {
   if (!error) return false;
   if (error.code === 128) return true;
   return /not found/i.test(`${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`);
+}
+
+// `ps -p` exits 1 with no output after the exact provider process has already exited. That is
+// expected when the user kills Claude or closes its Terminal.app window before pool cleanup.
+// Any stderr or other exit code remains a real inspection failure and keeps ownership reserved.
+export function macTerminalRuntimeProcessMissing(error) {
+  return Boolean(
+    error
+    && error.code === 1
+    && !String(error.stdout || '').trim()
+    && !String(error.stderr || '').trim()
+  );
 }
 
 function terminalTtyName(value) {
@@ -1246,12 +1259,13 @@ JSON.stringify(screens.map((screen, index) => {
     const expectedTtyCheck = terminal.terminalTty
       ? `\nif (tty of first tab of targetWindow) is not ${JSON.stringify(terminal.terminalTty)} then error "The recovered terminal identity changed."`
       : '';
-    const inspectScript = `tell application "Terminal"\nif not (exists window id ${terminal.terminalWindowId}) then error "The terminal window is no longer open."\nset targetWindow to window id ${terminal.terminalWindowId}\nif (count of tabs of targetWindow) is not 1 then error "The terminal now contains multiple tabs."${expectedTtyCheck}\nreturn tty of first tab of targetWindow\nend tell`;
+    const inspectScript = `tell application "Terminal"\nif not (exists window id ${terminal.terminalWindowId}) then return ${JSON.stringify(TERMINAL_WINDOW_MISSING)}\nset targetWindow to window id ${terminal.terminalWindowId}\nif (count of tabs of targetWindow) is not 1 then error "The terminal now contains multiple tabs."${expectedTtyCheck}\nreturn tty of first tab of targetWindow\nend tell`;
     const { stdout = '' } = await this.run(
       'osascript',
       ['-e', inspectScript],
       { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
     );
+    if (String(stdout).trim() === TERMINAL_WINDOW_MISSING) return null;
     const tty = normalizeTerminalTty(stdout);
     const ttyName = terminalTtyName(tty);
     if (!tty || !ttyName) {
@@ -1352,22 +1366,42 @@ JSON.stringify(screens.map((screen, index) => {
     try {
       if (this.platform === 'darwin' && terminal.terminalWindowId) {
         if (terminal.terminalTty && terminal.runtimeProcessId) {
-          const { stdout = '' } = await this.run(
-            'ps',
-            ['-p', String(terminal.runtimeProcessId), '-o', 'tty='],
-            { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
-          );
-          if (normalizeTerminalTty(stdout) !== terminal.terminalTty) {
-            throw new Error('The recovered terminal process identity changed.');
+          try {
+            const { stdout = '' } = await this.run(
+              'ps',
+              ['-p', String(terminal.runtimeProcessId), '-o', 'tty='],
+              { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+            );
+            if (normalizeTerminalTty(stdout) !== terminal.terminalTty) {
+              throw new Error('The recovered terminal process identity changed.');
+            }
+          } catch (error) {
+            if (!macTerminalRuntimeProcessMissing(error)) throw error;
+            this.diagnostic('terminal.close.runtime_already_exited', {
+              launchId: terminal.launchId,
+              threadId,
+              terminalWindowId: terminal.terminalWindowId,
+              terminalTty: terminal.terminalTty,
+              runtimeProcessId: terminal.runtimeProcessId,
+            });
           }
         }
         const terminalTty = await this.terminateMacTerminalWindow(terminal);
-        this.diagnostic('terminal.close.processes_terminated', {
-          launchId: terminal.launchId,
-          threadId,
-          terminalWindowId: terminal.terminalWindowId,
-          terminalTty,
-        });
+        if (terminalTty) {
+          this.diagnostic('terminal.close.processes_terminated', {
+            launchId: terminal.launchId,
+            threadId,
+            terminalWindowId: terminal.terminalWindowId,
+            terminalTty,
+          });
+        } else {
+          this.diagnostic('terminal.close.already_exited', {
+            launchId: terminal.launchId,
+            threadId,
+            platform: this.platform,
+            terminalWindowId: terminal.terminalWindowId,
+          });
+        }
       } else if (this.platform === 'win32' && terminal.terminalProcessId) {
         try {
           await this.run(

@@ -306,3 +306,27 @@ One real close defect was found and fixed in the same pass. `DisposableTerminalP
 > A close target must be an exact launch handle or a non-empty conversation ID. Never let a null identifier fall through to a first-match lookup: unbound launches are indistinguishable from each other, and the match will be somebody else's terminal.
 
 #relay #terminal #macos #process-cleanup #safety
+
+## August 12 2026 externally killed Claude slot reconciliation
+
+Three failed talent-finder tasks, 218, 222, and 223, still occupied three Claude pool allocations after their terminals had already died. Task 236 was the one genuinely running Claude task, which produced the reported **4 / 4 active** state and prevented another launch.
+
+The diagnostics were exact. Each stale task reached `terminal.pool.cleanup_failed` because `ps -p <runtime-pid> -o tty=` exited 1 with no output. An earlier task 179 showed the second form of the same bug: Terminal.app reported that the exact tracked window ID no longer existed. Both facts prove there is nothing left for CC Relay to preserve, but the cleanup path treated them as native failures and deliberately retained the allocation.
+
+`ProjectLauncher.closeTrackedTerminalNow()` now distinguishes those positive absence results:
+
+1. `macTerminalRuntimeProcessMissing()` accepts only `ps -p` exit 1 with empty stdout and stderr. It then continues through the existing exact window and TTY inspection so a dead Claude PID cannot block cleanup of the remaining shell window.
+2. The exact Terminal.app window inspection returns a private sentinel when the tracked window ID is absent. That result skips all kill and close actions, forgets the tracked launch, and lets `DisposableTerminalPool.release()` decrement provider usage.
+3. A PID found on a different TTY, a multi-tab window, stderr from `ps`, any other process-inspection exit code, a kill failure, or a TTY that does not drain still fails closed and retains ownership.
+
+> [!important]
+> A positively absent exact process or exact window is not an ambiguous cleanup failure. Release its launch and pool slot. Never broaden that tolerance to identity mismatch, unreadable state, or permission failure.
+
+> [!note]
+> The installed August 11 backend still holds the already-leaked allocations in memory. Restarting onto the fixed backend clears those historical entries, and subsequent externally killed Claude terminals release their slots during ordinary task cleanup.
+
+Focused launcher and pool coverage proves an already-closed macOS window, a dead Claude PID with a still-open exact terminal, strict missing-process classification, and the direct `claude: 1` to `claude: 0` pool transition. The full suite passes 1,204 tests. No environment variable or database migration was added.
+
+See [[disposable-terminal-pools]], [[claude-terminal-visibility]], and [[diagnostics]].
+
+#relay #terminal #macos #claude #capacity #incident

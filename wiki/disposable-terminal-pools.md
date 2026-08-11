@@ -55,6 +55,8 @@ Cleanup uses `ProjectLauncher.closeOwnedLaunch(launchId)`, not a title, working 
 
 If exact native cleanup fails, the allocation remains counted. CC Relay records the failure and refuses to pretend that capacity was released. A later reconciliation drops the retained allocation only after the exact launch is no longer tracked.
 
+Positive proof that the exact native target is already gone is a successful reconciliation, not a cleanup failure. On macOS, Terminal.app reporting that the tracked window ID no longer exists releases the launch. A missing tracked provider PID also allows cleanup to continue against the freshly verified exact window and TTY. On Windows, the equivalent missing `taskkill` target releases the launch. Identity changes, multi-tab windows, unreadable process state, permission failures, and TTY drain failures still keep the allocation counted. See [[terminal-close-review]].
+
 Retention promotion follows the same fail-closed rule. If an exact launch cannot be promoted, its allocation remains counted. Automatic retry attempts are still released normally, and only the final attempt is retained.
 
 ## Provider requirements

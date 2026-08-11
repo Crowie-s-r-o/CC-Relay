@@ -7,6 +7,9 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 12: Windows support is code-complete and gated on a real-machine smoke run.** Before this pass the Windows build could not work at all: every static asset 404ed (backslash-blind containment guards), every direct provider spawn failed (npm `.cmd` shims plus a resolver probe that rejected them), kills orphaned providers holding port 4769, the grid-placement PowerShell never compiled, and manually closed terminals leaked pool slots forever. All fixed across 14 src files with win32-simulated tests; macOS behavior is byte-identical per adversarial review. Full suite 1194/1194, `release:check` green. Plan council terminal execution, live steering, and runtime terminal recovery stay macOS-only by design and are advertised through `capabilities`. The 15-item Windows smoke checklist (items 1-5 are the release gate) and the unproven-on-macOS register live in [[windows-compatibility]].
+
+> [!important]
 > **August 12: the repository is ready for its MIT open-source publication at `Crowie-s-r-o/CC-Relay`.** The README leads with the honest macOS-only validation status and the selected overview screenshot. One local release command now owns deterministic SemVer, isolated Codex-to-Claude AI changelog generation, metadata checks, all tests, dependency auditing, the release commit, annotated tag, and atomic GitHub push. The GitHub release body is extracted from the same changelog entry. The audit also removed tracked IDE files and a stale `undefined/asar-src` package snapshot, made plugin installation portable, sanitized the real incident fixture, replaced literal source control bytes, and cleared all five dependency advisories. See [[open-source-releases]], [[licensing]], and [[desktop-updates]].
 
 > [!note]
