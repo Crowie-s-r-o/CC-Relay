@@ -21,6 +21,7 @@ import {
   compareVersions,
   formatChangelogEntry,
   inferReleaseType,
+  localCalendarDate,
   nextVersion,
   normalizeReleaseNotes,
   parseVersion,
@@ -274,7 +275,6 @@ function runAiProcess(provider, prompt, workspace, schemaPath) {
     });
     child.stderr.on('data', (chunk) => {
       stderr = `${stderr}${chunk}`.slice(-32_000);
-      process.stderr.write(chunk);
     });
     child.stdin.on('error', () => {});
     child.once('error', (error) => finish(rejectPromise, error));
@@ -372,7 +372,7 @@ async function main() {
   const changes = gitText(['log', '--format=', '--name-status', range]);
   const prompt = buildReleasePrompt({ previousTag: latestTag, nextTag: tag, commits, changes });
   const generated = await generateReleaseNotes(prompt, options.provider);
-  const date = new Date().toISOString().slice(0, 10);
+  const date = localCalendarDate();
   const entry = formatChangelogEntry({ version, date, notes: generated.notes });
 
   console.log(`\n${tag} (${releaseType}, ${commits.length} commits, AI: ${generated.provider})\n`);

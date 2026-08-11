@@ -48,6 +48,16 @@ export function parseVersion(value) {
   };
 }
 
+export function localCalendarDate(value = new Date()) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
+    throw new Error('Release date must be a valid Date.');
+  }
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
 export function compareVersions(left, right) {
   const a = typeof left === 'string' ? parseVersion(left) : left;
   const b = typeof right === 'string' ? parseVersion(right) : right;

@@ -6,6 +6,7 @@ import {
   compareVersions,
   formatChangelogEntry,
   inferReleaseType,
+  localCalendarDate,
   nextVersion,
   normalizeReleaseNotes,
   parseVersion,
@@ -21,6 +22,11 @@ test('semantic versions parse, compare, and bump without prerelease ambiguity', 
   assert.throws(() => parseVersion('v1.2.3'), /Invalid semantic version/);
   assert.throws(() => parseVersion('01.2.3'), /Invalid semantic version/);
   assert.throws(() => nextVersion('1.2.3', 'automatic'), /Invalid release type/);
+});
+
+test('release dates follow the operator local calendar', () => {
+  assert.equal(localCalendarDate(new Date(2026, 7, 12, 0, 5)), '2026-08-12');
+  assert.throws(() => localCalendarDate(new Date('invalid')), /valid Date/);
 });
 
 test('automatic release type follows breaking, feature, then patch precedence', () => {
