@@ -12,9 +12,9 @@ tags:
 
 # Retained Terminal Sessions
 
-CC Relay automatic terminal work still launches through the disposable pool, but **Keep task terminals open** defaults to disabled for every new project. The switch is available when the backend advertises `capabilities.retainedTerminalSessions`.
+CC Relay automatic terminal work still launches through the disposable pool, but the project terminal-retention switch defaults to disabled for every new project. The switch is available when the backend advertises `capabilities.retainedTerminalSessions`. For direct Execute work the renderer now labels it **Terminal session mode** and adds the explicit task lifecycle from [[manual-terminal-session-mode]]. Plan council and Turbo label the same persisted choice **Keep workflow terminals open** and retain only their automatic workflow terminals.
 
-The project row stores the preference as `projects.keep_terminal_open`. It is never shared with another project. Each automatic task snapshots it as `tasks.keep_terminal_open`, so changing the switch later cannot change a queued or running task. Planner breakdowns, selected proposals, plan runs, reviewed-plan execution, direct Execute, Plan council, and Turbo all carry the same preference. Plan runs persist it on `plan_runs` and copy it to every released step. See [[project-terminal-settings]].
+The project row stores the preference as `projects.keep_terminal_open`. It is never shared with another project. Each automatic task snapshots it as `tasks.keep_terminal_open`, so changing the project switch later cannot change a queued or running task. Planner breakdowns, selected proposals, plan runs, reviewed-plan execution, direct Execute, Plan council, and Turbo all carry the same preference. Plan runs persist it on `plan_runs` and copy it to every released step. A running task can separately latch its own retention through **Stop auto-close** without changing the project or any other task; see [[live-terminal-retention]].
 
 > [!important]
 > Retention is a launch lifecycle choice, not a change from automatic work to legacy persistent routing. The task still launches through [[disposable-terminal-pools]], receives an exact native launch ID, and binds its provider conversation before execution.
@@ -58,11 +58,13 @@ Partial launch or binding failure never retains a window. `DisposableTerminalPoo
 
 ## Persistence and compatibility
 
-The additive SQLite columns are:
+The additive retention SQLite columns are:
 
 - `projects.keep_terminal_open INTEGER NOT NULL DEFAULT 0`
 - `tasks.keep_terminal_open INTEGER NOT NULL DEFAULT 0`
 - `plan_runs.keep_terminal_open INTEGER NOT NULL DEFAULT 0`
+
+Direct manual sessions add `tasks.manual_completion INTEGER NOT NULL DEFAULT 0`; see [[manual-terminal-session-mode]].
 
 Project and task normalization expose the values as booleans. An older backend that does not advertise `retainedTerminalSessions` cannot retain task terminals, so refreshed renderer assets keep the switch disabled and do not send the new request field. A backend that has retention but lacks `capabilities.projectTerminalSettings` still applies the selected project's in-memory choice to new tasks immediately. Current backends also persist that choice.
 
@@ -87,6 +89,6 @@ Project and task normalization expose the values as booleans. An older backend t
 
 The complete suite passed at 764 tests on July 28, 2026.
 
-See [[disposable-terminal-pools]], [[terminal-close-review]], [[automatic-retry-safety]], [[task-history]], and [[session-tasks]] for the queue badge, kill action, and paired conversation history built on this retention lifecycle.
+See [[disposable-terminal-pools]], [[terminal-close-review]], [[automatic-retry-safety]], [[task-history]], [[session-tasks]], and [[manual-terminal-session-mode]] for the queue badge, kill action, paired conversation history, and explicit completion lifecycle built on this retention layer.
 
 #relay #terminal #session #queue #continuation

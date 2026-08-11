@@ -27,6 +27,8 @@ test('header exposes an accessible persisted position control', () => {
     /toggle\.setAttribute\('aria-label', `Move monitor bar to \$\{nextPosition\}`\)/,
   );
   assert.match(app, /localStorage\.setItem\('relay\.headerPosition', nextPosition\)/);
+  assert.match(app, /setHeaderPosition\(preferences\.headerPosition, \{ persist: false \}\)/);
+  assert.match(app, /queueUiPreferencesSave\(\)/);
   assert.match(app, /elements\.headerPositionToggle\.addEventListener\('click'/);
 });
 

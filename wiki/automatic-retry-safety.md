@@ -8,6 +8,8 @@ type: incident
 
 Automatic retry is reserved for transient execution failures and is bounded to three retries per automatic chain. Direct Execute and Forward-planning Turbo preparation share this guard. When the limit is reached, the task remains failed and Task Activity tells the user to fix the cause before retrying manually. A manual retry starts a new bounded chain.
 
+Only a manual retry of an automatic direct Execute task may change executor, model, or effort. Automatic retry timers always reuse the task's existing settings, so a transient failure cannot silently cross providers or change reasoning depth. See [[configurable-task-retry]].
+
 Terminal identity failures are not transient. `CodexAppServerError` carries an explicit `retryable` property, and both a missing task thread ID and a selected Codex terminal that is no longer connected set it to `false`. The queue records one failed outcome and waits for manual reassignment or reconnection instead of repeating the same impossible dispatch.
 
 > [!important]

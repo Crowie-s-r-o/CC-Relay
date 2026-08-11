@@ -1,53 +1,186 @@
 # CC Relay
 
-CC Relay is a local, sequential AI task queue for subscription-authenticated Codex and Claude Code sessions. It discovers live sessions, sends queued prompts into the selected conversation, and can run a read-only planning council across both providers. CC Relay does not call the OpenAI or Anthropic APIs directly.
+> [!WARNING]
+> CC Relay has been tested only on macOS. Windows and Linux have not been validated yet. Their code paths are experimental, so expect rough edges and please report what you find.
 
-The source is publicly visible so developers can inspect how CC Relay interacts with authenticated Codex and Claude sessions and local task data. Public visibility does not grant permission to use or copy the code. See [License](#license).
+[![CI](https://github.com/Crowie-s-r-o/CC-Relay/actions/workflows/ci.yml/badge.svg)](https://github.com/Crowie-s-r-o/CC-Relay/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-5b7cfa.svg)](LICENSE)
+[![Node.js 24+](https://img.shields.io/badge/Node.js-24%2B-3c873a.svg)](https://nodejs.org/)
 
-## What it does
+Stop babysitting one AI terminal at a time.
 
-- Persists tasks and state in local SQLite.
-- Pins project folders and launches a fresh Claude or Codex terminal only when queued work receives a provider slot.
-- Stores per-project maximum Codex and Claude instance counts in the Launchpad.
-- Closes an idle Codex or Claude terminal only after verifying its exact native identity. On macOS, existing one-tab Terminal sessions can be recovered through their live process and TTY without targeting unrelated windows.
-- Supports provider-specific model and reasoning effort selection.
-- Runs independent direct tasks concurrently up to each project's provider limits.
-- Keeps the legacy Codex parallel-bundle action for older persistent tasks while new work scales through project instance limits.
-- Waits five seconds after a genuine task failure, then automatically requeues the same task.
-- Refreshes visible queue, retry, task detail, and terminal state automatically every two seconds as a fallback to live updates.
-- Automatically starts the next queued task.
-- Reorders waiting tasks with drag and drop or Move up and Move down buttons.
-- Shows live elapsed time on running task cards and total execution time on finished cards.
-- Builds reviewed plans through a selectable Claude-first or Codex-first author, review, and revision loop.
-- Attaches local reference images to Execute and Plan council tasks.
-- Groups raw AI events into a live terminal panel with command output, tool calls, file changes, messages, filters, follow mode, and copyable logs.
-- Continues a finished direct task by launching a new terminal and resuming its saved Claude or Codex conversation.
-- Supports pause, resume, cancel, retry, and delete.
-- Stores internal task state under CC Relay's `.data/tasks/` and final Plan council Markdown under the selected project's `.data/tasks/`.
-- Includes a personal Codex plugin skill for managing the queue from Codex.
+CC Relay is a local control plane for Codex and Claude Code. Queue work across projects, run independent tasks in parallel, inspect every live command, keep conversations alive, and send important plans through a two-provider review loop. It uses the provider CLIs you already authenticate with and never calls the OpenAI or Anthropic APIs directly.
 
-## Requirements
+![CC Relay running multiple projects and AI tasks](docs/assets/cc-relay-overview.png)
 
+## Why CC Relay
+
+AI coding tools are excellent inside one terminal. Real development rarely stays inside one terminal.
+
+CC Relay gives you one place to manage the larger system:
+
+- Pin multiple repositories in a project Launchpad.
+- Queue prompts before another task finishes.
+- Set separate Codex and Claude concurrency limits per project.
+- Launch a fresh provider terminal only when work receives a slot.
+- Follow commands, tools, messages, file changes, errors, and reasoning summaries live.
+- Continue the same saved conversation without creating a second task.
+- Keep selected terminal sessions open for hands-on follow-up work.
+- Run a reviewed Plan council with one provider authoring and the other challenging it.
+- Use Forward-planning Turbo to turn one request into a dependency graph and dispatch ready work across multiple Codex workers.
+- Attach local PNG, JPEG, and WebP reference images.
+- Keep task state, history, artifacts, and configuration on your machine.
+
+The complete feature inventory lives in [FEATURES.md](FEATURES.md).
+
+## Quick start
+
+### Requirements
+
+- macOS for the currently validated experience.
 - Node.js 24 or newer.
 - Codex CLI 0.144.5 or newer, installed and signed in with ChatGPT.
-- At least one pinned project folder.
-- Claude Code CLI 2.1.211 or newer, installed and signed in with a Claude subscription for Claude execution and Plan council.
+- Claude Code CLI 2.1.218 or newer, installed and signed in with a Claude subscription if you want Claude execution or Plan council.
 
-## Run
+At least one provider must be installed and authenticated.
 
-The following development instructions are for the copyright holder and people who have received separate written permission. The view-only source license does not grant permission to run CC Relay.
+### Run the local app
 
 ```bash
+git clone https://github.com/Crowie-s-r-o/CC-Relay.git
+cd CC-Relay
+npm ci
 npm start
 ```
 
-Open [http://127.0.0.1:4768](http://127.0.0.1:4768).
+Open [http://127.0.0.1:4768](http://127.0.0.1:4768), pin a project folder, choose Codex or Claude, and queue your first prompt.
 
-The server only listens on `127.0.0.1`. No environment variables are required.
+CC Relay listens only on `127.0.0.1`. It requires no API keys and no project environment variables.
 
-## Desktop builds
+### Run the desktop app
 
-CC Relay can run as an Electron desktop application on macOS and Windows. The packaged app starts the same localhost server internally and stores its task SQLite database and task artifacts in the operating system's per-user application-data directory. Its pinned-project configuration is stored separately and shared with standalone localhost CC Relay on the same user account.
+```bash
+npm run desktop
+```
+
+The Electron app embeds the same loopback server. It stores its task database and artifacts in the operating system's per-user application-data directory while sharing pinned-project configuration with the standalone localhost app.
+
+## The basic loop
+
+1. Select a project in the Launchpad.
+2. Choose Execute or Forward-planning Turbo.
+3. Pick Codex or Claude, a model, and a reasoning effort.
+4. Add an optional task name, prompt, and reference images.
+5. Queue the work or use `Ctrl+Enter` to prioritize it.
+6. CC Relay waits for project capacity, opens an owned terminal, binds the exact provider conversation, and starts the turn.
+7. Task Activity streams the execution trace and final response.
+8. CC Relay closes only the terminal it owns, unless terminal retention is enabled.
+
+Each project keeps its own queue order, pause state, provider limits, terminal layout, history, and in-progress composer draft.
+
+## How it works
+
+| Layer | Responsibility |
+| --- | --- |
+| Browser or Electron UI | Launchpad, composer, queue, history, Planner, and live Task Activity |
+| Loopback Node.js server | Validation, local routes, provider status, and graceful shutdown |
+| SQLite stores | Tasks, events, plans, settings, queue positions, and continuation history |
+| Scheduler | Project-scoped FIFO ordering, provider capacity, retries, and workflow ownership |
+| Native terminal coordinator | Opens, binds, lays out, retains, and closes only exact CC Relay-owned terminals |
+| Codex and Claude CLIs | Execute turns using the user's existing subscription authentication |
+
+Codex traffic runs through a local WebSocket proxy that binds a launched terminal to its exact conversation. Claude sessions are discovered through `claude agents --json`; on macOS, CC Relay drives the exact owned Terminal.app tab and mirrors the conversation transcript and hooks into Task Activity.
+
+New tasks use disposable terminal ownership. A provider conversation ID is saved before execution, so **Continue session** can later reopen or reuse that exact conversation under the original task. Older persistent task records keep their previous routing behavior for compatibility.
+
+## Workflows
+
+### Execute
+
+Execute sends one task to the selected provider. Independent tasks can run concurrently within the selected project's Codex and Claude limits. Manual retries can change provider, model, and effort while preserving the task's history.
+
+### Plan council
+
+Enable Plan council inside Execute when a request deserves a reviewed implementation plan:
+
+1. The selected first provider inspects the project and writes a read-only plan.
+2. The other provider independently reviews the brief, references, and draft.
+3. The first provider revises the plan into one final deliverable.
+
+The checkpoint stays in CC Relay's task artifacts. The final plan is also written to the selected project at `.data/tasks/<task-id>/plan.md`, ready for explicit execution.
+
+### Forward-planning Turbo
+
+Turbo asks a Codex planner to create a validated dependency graph, then dispatches dependency-ready packages across a disposable Codex worker fleet. An optional Codex and Claude council can review the graph before execution starts.
+
+### Planner
+
+Planner stores reusable project plans, breaks them into dependency-aware steps, and releases ready steps through the same queue instead of maintaining a second scheduler.
+
+## Safety model
+
+> [!CAUTION]
+> CC Relay can launch Codex with approval bypass and Claude with permission checks disabled for writable work. Use it only with repositories, prompts, hooks, and local machines you trust.
+
+Important boundaries:
+
+- The HTTP server and Codex proxy bind to loopback only.
+- Provider credentials remain owned by the installed provider CLIs.
+- Reference images stay on disk and are passed as local files.
+- Planning stages are explicitly read-only.
+- Writable Codex turns use explicit full workspace access and unattended approval settings.
+- Terminal actions re-resolve live process, conversation, TTY, and native window identity before acting.
+- CC Relay never intentionally closes a terminal it did not launch or explicitly adopt.
+- `.data/`, logs, SQLite databases, build output, and IDE state are ignored by Git.
+
+## Local data
+
+Standalone task data lives under the checkout:
+
+```text
+.data/
+  relay.sqlite
+  relay-diagnostics.jsonl
+  tasks/<task-id>/
+    task.md
+    events.jsonl
+    attachments/
+    plan.json
+    result.md
+    error.txt
+```
+
+Shared Launchpad configuration uses the compatibility directory name `dual-agent-orchestrator`:
+
+```text
+macOS:  ~/Library/Application Support/dual-agent-orchestrator/relay-config.sqlite
+Windows: ~/AppData/Roaming/dual-agent-orchestrator/relay-config.sqlite
+Linux:  ~/.config/dual-agent-orchestrator/relay-config.sqlite
+```
+
+Renaming that directory would make existing projects and settings appear missing, so the legacy name is intentional.
+
+## Platform status
+
+| Platform | Status | Notes |
+| --- | --- | --- |
+| macOS | Tested | Current development and real terminal validation use Terminal.app on macOS. |
+| Windows | Not yet tested | Native launcher, path handling, NSIS, portable packaging, and updater code exist, but need real end-to-end validation. |
+| Linux | Not yet tested | The localhost server may be useful, but terminal lifecycle and desktop behavior have not been validated. |
+
+Windows and Linux help is especially welcome. Please include the operating system version, Node.js version, provider CLI versions, and relevant diagnostic excerpt in a bug report.
+
+## Development
+
+```bash
+npm ci
+npm test
+npm run release:check
+```
+
+The test suite covers queue invariants, task ownership, continuation, terminal identity, Windows command shaping, renderer state, planning workflows, updater behavior, and release metadata. Passing simulated Windows tests does not replace real Windows validation.
+
+Native development and package builds:
 
 ```bash
 npm run desktop
@@ -55,174 +188,67 @@ npm run desktop:build:mac
 npm run desktop:build:win
 ```
 
-macOS builds produce DMG and ZIP artifacts. Windows builds produce an NSIS installer and a portable executable. Build each release on its native operating system. The GitHub Actions workflow at `.github/workflows/build-desktop.yml` runs tests and uploads both platform artifacts when a `v*` tag is pushed or the workflow is started manually.
+Build each production artifact on its native operating system. Public macOS distribution needs Apple signing and notarization. Public Windows installation needs a trusted code-signing certificate. Credentials must never be committed to this repository.
 
-Local and CI builds work without signing credentials, but public distribution should add an Apple Developer signing and notarization identity for macOS and a trusted code-signing certificate for Windows. Those credentials are intentionally not stored in this repository.
+## Releases
 
-### Desktop updates and releases
-
-Packaged CC Relay builds check GitHub for updates once shortly after the desktop window finishes loading. The check is enabled only for packaged macOS builds and installed Windows NSIS builds. `npm run desktop` never checks for updates, and the Windows portable executable remains a manual-download build because it has no installer-managed update path.
-
-When a release is available, CC Relay shows the current and available versions and waits for an explicit **Download** choice. After the download completes, it offers **Restart and install** or **Later**. Background no-update results and check or download failures stay out of the user's way and are logged only. Restarting first shuts down CC Relay's embedded server so SQLite and active task state close through the normal graceful-shutdown path.
-
-Releases are created by pushing a matching version tag such as `v0.2.0`. The tag must match the `version` field in `package.json`; the GitHub Actions release job verifies this before publishing. The native macOS and Windows build jobs upload their complete `dist/` directories, and the release job publishes those files to the GitHub release. Expected update metadata and artifacts are:
-
-- macOS: `latest-mac.yml`, DMG, ZIP, and their blockmaps.
-- Windows: `latest.yml`, NSIS installer, portable executable, and installer blockmaps.
-
-macOS update installation requires signed and notarized release builds. Windows installed updates require a trusted signed NSIS build. Portable Windows artifacts remain manual-download only. See [desktop update notes](wiki/desktop-updates.md) for the implementation contract and troubleshooting checklist.
-
-The desktop project picker uses the macOS folder dialog or Windows Forms folder dialog. Terminal launching uses Terminal.app on macOS and a new `cmd.exe` window on Windows. Codex and Claude must be installed and authenticated on the target computer.
-
-In another terminal, start Codex through CC Relay's shared server:
+CC Relay uses Semantic Versioning, annotated Git tags, a compact AI-written changelog, and an atomic GitHub push.
 
 ```bash
-codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769
+npm run release -- auto
 ```
 
-To reconnect an existing Codex conversation, pass its session ID:
+The release command:
+
+1. Requires a clean `main` branch and a configured `origin`.
+2. Fetches `origin/main` and release tags, then rejects divergent history.
+3. Reads commits since the latest `vX.Y.Z` tag.
+4. Infers `major`, `minor`, or `patch` from Conventional Commit messages when `auto` is used.
+5. Runs an isolated, no-tools Codex CLI turn to create compact release notes, with Claude CLI as the automatic fallback.
+6. Updates `package.json`, `package-lock.json`, and `CHANGELOG.md` together.
+7. Runs the release metadata check, full test suite, and dependency audit.
+8. Creates `chore(release): vX.Y.Z` plus an annotated `vX.Y.Z` tag.
+9. Pushes `main` and the tag to GitHub atomically.
+
+No AI API key is needed. Release notes use an authenticated local Codex or Claude subscription CLI. A release stops without changing files if neither provider can produce valid notes.
+
+Choose the bump explicitly when commit history does not communicate intent:
 
 ```bash
-codex resume <session-id> --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769
+npm run release -- patch
+npm run release -- minor --provider claude
+npm run release -- major --provider codex
+npm run release -- auto --dry-run
 ```
 
-An already-running plain `codex` process cannot be attached retroactively. Restart it with `--remote` so CC Relay and the terminal share the same app-server.
+Automatic bump rules:
 
-To connect Claude Code with unrestricted permissions, start it in the project you want to work on:
+| Commit signal | Version bump |
+| --- | --- |
+| `BREAKING CHANGE:` or `type!:` | Major |
+| `feat:` | Minor |
+| Everything else | Patch |
 
-```bash
-claude --dangerously-skip-permissions
-```
+Pushing the tag starts `.github/workflows/build-desktop.yml`. GitHub verifies that the tag, package manifests, and changelog agree, builds native artifacts, and publishes the matching AI-written changelog entry as the GitHub Release body.
 
-CC Relay discovers live interactive and background Claude sessions through the official `claude agents --json` command. No special launcher, API key, or credential access is required.
+See [CHANGELOG.md](CHANGELOG.md) and [the release architecture notes](wiki/open-source-releases.md).
 
-> **Danger:** These interactive launch commands disable Codex sandboxing and approvals or Claude permission checks. Use them only in projects and environments you fully trust. This setting applies to terminals you copy or launch from CC Relay. Queued CC Relay turns keep their guarded execution policies.
+## Codex queue plugin
 
-## How sessions and tasks work
-
-CC Relay starts one persistent local Codex app-server on port `4770`. A localhost WebSocket proxy on `ws://127.0.0.1:4769` forwards terminal traffic and binds each CC Relay-owned Codex launch to the thread that joined through its unique launch reservation.
-
-Each pinned project stores separate maximum Codex and Claude instance counts from 1 through 8. A new task is persisted without a thread ID. When queue order and capacity allow it to run, CC Relay opens a fresh native terminal in that project, binds the launched provider session, and runs the turn. **Keep task terminals open** defaults to disabled, so the exact task launch closes at completion, failure, cancellation, or interruption. Enabling it keeps the final launch connected after its outcome and after CC Relay exits. The project choice applies to new tasks immediately. Manually opened terminals are never closed by this automatic lifecycle. Retained idle windows do not consume active task capacity.
-
-For Claude, CC Relay uses the official `claude agents --json` discovery command. On macOS, it types the task into the exact CC Relay-owned Terminal.app window and mirrors the conversation transcript into Task Activity. On supported fallback paths it uses the installed Claude CLI headlessly.
-
-The bound provider conversation ID is saved on the task before execution. **Continue session** always stays on that task. A running Codex or interactive Claude task can receive an exact active-turn update without creating queue work. After completion, CC Relay reuses an idle retained window when it is still connected. Otherwise it reserves a free provider slot, opens another terminal, and resumes the saved ID with `claude --resume` or `codex resume`. It never creates a continuation task, and it rejects submission visibly when capacity or the conversation is busy. The task detail keeps the original request and every accepted follow-up together in its Prompts disclosure.
-
-Existing task records that were created for persistent terminals retain their former session assignment and immediate follow-up behavior for compatibility.
-
-### Project launchpad
-
-Pin favorite project folders in the top Launchpad. Selecting a project scopes its queue, history, Planner, running state, provider settings, automatic instance limits, terminal retention, and terminal window layout. The left composer panel sets the maximum Codex and Claude instances for that project. Terminal Settings controls placement and background launch behavior only for the selected project.
-
-Each project has its own queue order, pause state, and FIFO barriers. A Plan council or other exclusive task in one project does not block eligible direct Codex work in another project. Provider-wide exclusive tasks are still serialized when they require the same shared runner.
-
-Pinned projects, their limits, terminal retention, terminal layout, idle-routing choice, and the active Launchpad selection are stored in the per-user `relay-config.sqlite` database. Every setting row is keyed by its exact project path, so changing one project never changes another. Standalone localhost CC Relay and the desktop app use that same configuration file while retaining separate task databases. Existing projects migrate from the standalone `.data/relay.sqlite` database the first time the upgraded backend starts. The launcher targets macOS Terminal.app and Windows `cmd.exe`. Restart CC Relay after upgrading from a version without the disposable-pool backend capability.
-
-For writable Codex work, CC Relay starts the interactive CLI with the unrestricted bypass flag and sends the turn with explicit `danger-full-access` sandboxing plus an unattended `never` approval policy. Planning stages remain explicitly read-only. Use CC Relay only in projects and environments you trust.
-
-CC Relay disables login-shell semantics for task commands. This avoids loading interactive shell startup files in unattended runs while preserving the inherited process environment.
-
-Queued prompts and answers appear in the provider terminal as well as CC Relay. Each task snapshots its selected project's retention choice when it is submitted.
-
-The composer has Execute and Forward-planning Turbo workflows. Execute has provider, model, and effort controls, plus an optional Plan council checkbox for creating a reviewed read-only plan instead of direct execution. Forward-planning Turbo has its own optional council pass before workers start. Codex choices come from the local app-server model catalog. Claude choices use supported official CLI aliases. Both are validated again when the task is queued. Press Enter in the prompt to add the task to the queue. Press Shift+Enter to insert a new line.
-
-## Terminal output
-
-CC Relay turns the raw provider event protocol into a readable execution trace. Start and completion records for the same item are paired into one signal. Command cards show the command, working directory, duration, exit state, and expandable captured output. File edits, connected tools, web searches, images, AI messages, queue state, and errors each have distinct treatments.
-
-Highlights is the default view and removes low-value protocol noise such as empty reasoning and message transport events. Commands, Messages, and All filters remain available. Follow mode stays pinned to new activity until you scroll away, and Copy log copies the current filtered view. Raw events are still preserved in SQLite and `events.jsonl`.
-
-## Optional Plan council
-
-Plan council is enabled from Execute when a prompt needs a reviewed plan rather than direct execution. It requires two different providers and lets you choose which one starts:
-
-1. The selected first provider inspects the project and writes an implementation plan with its chosen model and effort.
-2. The other provider independently reviews the draft with its own chosen model and effort.
-3. The first provider receives the draft and review, then returns the final revised plan.
-
-Claude runs through the official `claude` CLI with its existing subscription login. Codex runs through CC Relay's shared app-server with its existing ChatGPT login. Both planning agents are restricted to read-only work.
-
-The activity panel shows live stage progress, the expandable first draft and review, and a formatted final plan. CC Relay keeps the council checkpoint record in its own `.data/tasks/<task-id>/plan.json` and writes the final-only Markdown to `<project-root>/.data/tasks/<task-id>/plan.md`.
-
-## Image attachments
-
-Choose, drop, or paste up to 99 PNG, JPEG, or WebP images in the composer. Each image may be up to 5 MB and the task may contain up to 20 MB total. CC Relay validates the declared type and file signature before it stores anything.
-
-Images are written under the task artifact directory before the task can start. Codex Execute and Plan council stages send them as native local image inputs. Claude Execute and Plan council stages receive local paths with a scoped attachment directory and explicit instructions to inspect them through Read. The task activity panel shows the persisted image contact sheet and opens full images through a task-scoped local route.
-
-CC Relay never converts image attachments into remote URLs and never calls an image or model API directly. The official Codex and Claude Code processes read the local files using their existing subscription authentication.
-
-## Queue ordering
-
-Only tasks with `queued` status can move. Drag a queued card above or below another queued card, or use its arrow buttons. Running, completed, failed, cancelled, and interrupted tasks stay fixed. CC Relay validates the full queued task set before applying a reorder so stale browser state cannot silently overwrite newer queue changes.
-
-## Legacy parallel bundles
-
-Persistent tasks created by an older backend can still be bundled into one Codex command on a selected live terminal. Disposable tasks do not expose this destructive replacement flow. Set a higher Codex project limit to run new independent tasks concurrently.
-
-All selected legacy tasks must belong to the chosen Codex session's workspace. Existing image attachments are copied into the combined task before the original task artifacts are removed. The normal 99-image and 20 MB total limits still apply.
-
-## Forward-planning Turbo
-
-Turbo allocates one disposable Codex planner plus the requested worker count, then dispatches its validated JSON dependency graph across that fleet. Choose planner and worker models, efforts, and worker count in the composer. The project's Codex maximum must be at least planner plus workers. CC Relay starts dependency-ready packages concurrently, reuses workers until the graph is complete, and closes the fleet when Turbo ends unless terminal retention is enabled.
-
-## Personal Codex plugin
-
-The source plugin is in `plugin/relay-queue`. Sync and install it into the personal Codex marketplace with:
+The repository includes a personal Codex plugin in `plugin/relay-queue` for inspecting and managing the local queue from Codex:
 
 ```bash
 npm run plugin:install
 ```
 
-Start a new Codex thread after installation. Invoke the skill as `$relay-queue:relay-queue` when you want Codex to inspect connected terminals or manage queue items.
+Start a new Codex thread after installation, then invoke `$relay-queue:relay-queue`.
 
-## Local data
+## Contributing
 
-```text
-.data/
-  relay.sqlite
-  tasks/<task-id>/
-    task.md
-    events.jsonl
-    attachments/
-      01.png
-      02.jpg
-    plan.json
-    result.md
-    error.txt
-```
-
-Completed Plan councils also create:
-
-```text
-<project-root>/
-  .data/tasks/<task-id>/
-    plan.md
-```
-
-CC Relay's own `.data` directory is ignored by Git. CC Relay does not edit a target project's `.gitignore`.
-
-Launchpad configuration is stored outside the repository so localhost and desktop CC Relay share it:
-
-```text
-macOS:
-  ~/Library/Application Support/dual-agent-orchestrator/relay-config.sqlite
-
-Windows:
-  ~/AppData/Roaming/dual-agent-orchestrator/relay-config.sqlite
-
-Linux:
-  ~/.config/dual-agent-orchestrator/relay-config.sqlite
-```
-
-The `dual-agent-orchestrator` directory name is retained only for data compatibility. Renaming that directory would make existing projects, task history, and settings appear missing.
-
-Only project configuration is shared. Standalone and desktop task queues, task history, plans, artifacts, and pause state remain isolated in their respective data roots.
+Issues, focused pull requests, macOS regression reports, and real Windows or Linux validation are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md). Please report suspected vulnerabilities through the private process in [SECURITY.md](SECURITY.md), not a public issue.
 
 ## License
 
-CC Relay is source-available for inspection only. It is not open-source software.
+CC Relay is open-source software released under the [MIT License](LICENSE).
 
-Copyright (c) 2026 Patrik Kelemen. All rights reserved. You may read the source as displayed by an authorized repository host, but you may not use, run, copy, download, modify, redistribute, incorporate, or derive another project from it without prior written permission.
-
-See [LICENSE](LICENSE) for the complete terms. Contact the copyright holder for a separate commercial, evaluation, or development license.
+Copyright (c) 2026 Patrik Kelemen.

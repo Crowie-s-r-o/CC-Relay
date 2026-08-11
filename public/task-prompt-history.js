@@ -40,6 +40,15 @@ export function taskPromptHistoryText(prompts) {
   }).join('\n\n');
 }
 
+// The numbered labels belong to the Task Activity presentation, not to the user's
+// request. Clipboard text stays reusable by carrying only the authored prompt bodies.
+export function taskPromptCopyText(prompts) {
+  return (Array.isArray(prompts) ? prompts : [])
+    .map((prompt) => cleanPrompt(prompt?.text))
+    .filter(Boolean)
+    .join('\n\n');
+}
+
 export function taskPromptHistoryPreview(prompts, maxLength = 96) {
   if (!prompts.length) return 'No prompts recorded';
   const latest = prompts.at(-1).text.replace(/\s+/g, ' ').trim();

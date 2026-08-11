@@ -8,6 +8,7 @@ import {
   filterEventEntries,
   groupEventEntries,
   isSubAgentEntry,
+  subAgentEntryDetails,
   subAgentEntryState,
 } from '../public/event-stream.js';
 
@@ -226,6 +227,55 @@ function agentFinishedEvent(toolUseId, overrides = {}) {
   };
 }
 
+function codexAgentActivity(agentThreadId, kind, overrides = {}) {
+  const itemId = overrides.itemId || `activity-${kind}-${agentThreadId}`;
+  return {
+    id: overrides.eventId || itemId,
+    kind: 'codex',
+    message: overrides.message || `Codex sub-agent ${kind}.`,
+    created_at: overrides.createdAt || '2026-08-04T10:00:00.000Z',
+    payload: {
+      type: overrides.phase || 'item/completed',
+      provider: 'codex',
+      item: {
+        type: 'subAgentActivity',
+        id: itemId,
+        kind,
+        agentThreadId,
+        agentPath: overrides.agentPath || '/root/codex_ui_worker',
+      },
+    },
+  };
+}
+
+function codexAgentSpawn(agentThreadId, phase, overrides = {}) {
+  return {
+    id: overrides.eventId || `spawn-${phase}`,
+    kind: 'codex',
+    message: `Codex sub-agent spawn ${phase}.`,
+    created_at: overrides.createdAt || '2026-08-04T09:59:59.000Z',
+    payload: {
+      type: `item/${phase}`,
+      provider: 'codex',
+      item: {
+        type: 'collabAgentToolCall',
+        id: overrides.itemId || 'spawn-codex-ui-worker',
+        tool: 'spawnAgent',
+        status: phase === 'completed' ? 'completed' : 'inProgress',
+        senderThreadId: 'root-thread',
+        receiverThreadIds: phase === 'completed' ? [agentThreadId] : [],
+        prompt: 'Audit and implement the Codex sub-agent console.',
+        model: 'gpt-test',
+        reasoningEffort: 'high',
+        agentsStates: phase === 'completed'
+          ? { [agentThreadId]: { status: 'running', message: null } }
+          : {},
+        ...overrides.item,
+      },
+    },
+  };
+}
+
 test('a backgrounded sub-agent stays active until its task notification arrives', () => {
   const launch = [
     subAgentEvent('toolu_01Aso7KBUau8jdFaHD8WtB9N', 'started', { eventId: 1 }),
@@ -243,6 +293,128 @@ test('a backgrounded sub-agent stays active until its task notification arrives'
   assert.equal(resolved[0].events.length, 3);
   assert.equal(subAgentEntryState(resolved[0]), 'finished');
   assert.equal(activeSubAgentCount(resolved), 0);
+});
+
+test('Codex spawn and activity items fold into one named live sub-agent', () => {
+  const agentThreadId = '019fcd5b-aaaa-7000-8000-000000000001';
+  const entries = groupEventEntries([
+    codexAgentSpawn(agentThreadId, 'started', { eventId: 1 }),
+    codexAgentSpawn(agentThreadId, 'completed', { eventId: 2 }),
+    codexAgentActivity(agentThreadId, 'started', { eventId: 3 }),
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].events.length, 3);
+  assert.equal(isSubAgentEntry(entries[0]), true);
+  assert.equal(subAgentEntryState(entries[0]), 'running');
+  assert.equal(activeSubAgentCount(entries), 1);
+  assert.deepEqual(subAgentEntryDetails(entries[0]), {
+    provider: 'codex',
+    name: 'codex_ui_worker',
+    agentType: 'gpt-test / high',
+    prompt: 'Audit and implement the Codex sub-agent console.',
+    reportedStatus: 'running',
+    statusLabel: 'Running',
+    note: '',
+    failed: false,
+  });
+  assert.equal(filterEventEntries(entries, 'highlights').length, 1);
+  assert.equal(filterEventEntries(entries, 'commands').length, 1);
+});
+
+test('a Windows sub-agent path is named by its last segment, not by the whole path', () => {
+  const agentThreadId = '019fcd5b-cccc-7000-8000-000000000003';
+  const windows = groupEventEntries([
+    codexAgentActivity(agentThreadId, 'started', {
+      eventId: 1,
+      agentPath: 'C:\\Users\\Pat\\.codex\\agents\\codex_ui_worker',
+    }),
+  ]);
+
+  assert.equal(subAgentEntryDetails(windows[0]).name, 'codex_ui_worker');
+
+  const posix = groupEventEntries([
+    codexAgentActivity(agentThreadId, 'started', { eventId: 1, agentPath: '/root/codex_ui_worker' }),
+  ]);
+  assert.equal(subAgentEntryDetails(posix[0]).name, 'codex_ui_worker');
+});
+
+test('a Codex interaction keeps its matching sub-agent active', () => {
+  const firstId = '019fcd5b-aaaa-7000-8000-000000000001';
+  const secondId = '019fcd5b-bbbb-7000-8000-000000000002';
+  const entries = groupEventEntries([
+    codexAgentActivity(firstId, 'started', { eventId: 1, agentPath: '/root/first_worker' }),
+    codexAgentActivity(secondId, 'started', { eventId: 2, agentPath: '/root/second_worker' }),
+    codexAgentActivity(firstId, 'interacted', {
+      eventId: 3,
+      agentPath: '/root/first_worker',
+      createdAt: '2026-08-04T10:05:00.000Z',
+    }),
+  ]);
+
+  assert.equal(entries.length, 2);
+  assert.equal(subAgentEntryDetails(entries[0]).name, 'first_worker');
+  assert.equal(subAgentEntryState(entries[0]), 'running');
+  assert.equal(subAgentEntryDetails(entries[0]).statusLabel, 'Running');
+  assert.equal(subAgentEntryState(entries[1]), 'running');
+  assert.equal(activeSubAgentCount(entries), 2);
+  assert.equal(eventStreamStats(entries).agents, 2);
+});
+
+test('Codex wait state updates resolve each matching sub-agent independently', () => {
+  const firstId = '019fcd5b-aaaa-7000-8000-000000000001';
+  const secondId = '019fcd5b-bbbb-7000-8000-000000000002';
+  const entries = groupEventEntries([
+    codexAgentActivity(firstId, 'started', { eventId: 1, agentPath: '/root/first_worker' }),
+    codexAgentActivity(secondId, 'started', { eventId: 2, agentPath: '/root/second_worker' }),
+    codexAgentSpawn(firstId, 'completed', {
+      eventId: 3,
+      itemId: 'wait-for-workers',
+      item: {
+        tool: 'wait',
+        receiverThreadIds: [firstId, secondId],
+        agentsStates: {
+          [firstId]: { status: 'completed', message: 'First worker finished.' },
+          [secondId]: { status: 'running', message: null },
+        },
+      },
+    }),
+  ]);
+
+  assert.equal(entries.length, 2);
+  assert.equal(subAgentEntryState(entries[0]), 'finished');
+  assert.equal(subAgentEntryDetails(entries[0]).statusLabel, 'Finished');
+  assert.equal(subAgentEntryDetails(entries[0]).note, 'First worker finished.');
+  assert.equal(subAgentEntryState(entries[1]), 'running');
+  assert.equal(activeSubAgentCount(entries), 1);
+});
+
+test('Codex interrupted agents are finished and counted as attention', () => {
+  const agentThreadId = '019fcd5b-aaaa-7000-8000-000000000001';
+  const entries = groupEventEntries([
+    codexAgentActivity(agentThreadId, 'started', { eventId: 1 }),
+    codexAgentActivity(agentThreadId, 'interrupted', { eventId: 2 }),
+  ]);
+
+  assert.equal(subAgentEntryState(entries[0]), 'finished');
+  assert.equal(subAgentEntryDetails(entries[0]).statusLabel, 'Interrupted');
+  assert.equal(subAgentEntryDetails(entries[0]).failed, true);
+  assert.equal(activeSubAgentCount(entries), 0);
+  assert.equal(eventStreamStats(entries).errors, 1);
+});
+
+test('Codex activity after an interruption does not invent a resume', () => {
+  const agentThreadId = '019fcd5b-aaaa-7000-8000-000000000001';
+  const entries = groupEventEntries([
+    codexAgentActivity(agentThreadId, 'started', { eventId: 1 }),
+    codexAgentActivity(agentThreadId, 'interacted', { eventId: 2 }),
+    codexAgentActivity(agentThreadId, 'interrupted', { eventId: 3 }),
+    codexAgentActivity(agentThreadId, 'interacted', { eventId: 4 }),
+  ]);
+
+  assert.equal(subAgentEntryState(entries[0]), 'finished');
+  assert.equal(subAgentEntryDetails(entries[0]).statusLabel, 'Interrupted');
+  assert.equal(activeSubAgentCount(entries), 0);
 });
 
 test('a task notification recorded before its own launch still folds into one signal', () => {
@@ -272,6 +444,19 @@ test('a notification for a launch this stream never saw keeps its own signal', (
   assert.equal(subAgentEntryState(entries[1]), 'finished');
   // The orphan notification never resolves the unrelated launch, which is still working.
   assert.equal(activeSubAgentCount(entries), 1);
+});
+
+test('Claude background command notifications do not masquerade as sub-agents', () => {
+  const event = agentFinishedEvent('toolu_background_command', { eventId: 1 });
+  event.message = 'Background command "Production build" completed (exit code 0)';
+  event.payload.agentName = '';
+  event.payload.summary = event.message;
+  const entries = groupEventEntries([event]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(isSubAgentEntry(entries[0]), false);
+  assert.equal(activeSubAgentCount(entries), 0);
+  assert.equal(filterEventEntries(entries, 'messages').length, 1);
 });
 
 test('the active sub-agent count never goes negative', () => {

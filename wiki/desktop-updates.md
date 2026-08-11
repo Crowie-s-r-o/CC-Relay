@@ -6,7 +6,7 @@ type: architecture
 
 # Desktop Updates
 
-CC Relay uses `electron-updater` with the GitHub publisher configured for `patrikkelemen/relay`. The updater is deliberately an Electron-main-process concern. The localhost server, renderer, preload surface, and task API do not expose update controls or update state.
+CC Relay uses `electron-updater` with the GitHub publisher configured for `Crowie-s-r-o/CC-Relay`. The updater is deliberately an Electron-main-process concern. The localhost server, renderer, preload surface, and task API do not expose update controls or update state.
 
 ## Runtime contract
 
@@ -41,7 +41,7 @@ The shared `relayShutdown` path also closes every native terminal launched by th
 
 ## Release contract
 
-The build configuration lives in [[../electron-builder.yml|electron-builder.yml]], the package metadata lives in [[../package.json|package.json]], and the native matrix plus GitHub release job live in [[../.github/workflows/build-desktop.yml|build-desktop.yml]]. The publisher is GitHub with owner `patrikkelemen`, repository `relay`, and release type `release`.
+The build configuration lives in [[../electron-builder.yml|electron-builder.yml]], the package metadata lives in [[../package.json|package.json]], and the native matrix plus GitHub release job live in [[../.github/workflows/build-desktop.yml|build-desktop.yml]]. The publisher is GitHub with owner `Crowie-s-r-o`, repository `CC-Relay`, and release type `release`.
 
 > [!important]
 > The product display name is `CC Relay`, but release artifact files use the hyphenated `CC-Relay-${version}-${os}-${arch}.${ext}` form. A space in `artifactName` produces files with spaces while `latest-mac.yml` normalizes its URLs to hyphens, leaving the update feed pointed at missing files. Keep the artifact name hyphenated and the bundle, DMG volume, menu, About item, and UI name spaced. See [[product-naming]].
@@ -52,14 +52,20 @@ The build configuration lives in [[../electron-builder.yml|electron-builder.yml]
 > [!note]
 > A native icon change is not hot-reloaded into an existing bundle. On July 28, 2026, the stale `dist/mac-arm64/CC Relay.app` still contained `electron.icns` after the favicon changed. A full macOS rebuild replaced it with `icon.icns`; the app bundle, ZIP, and DMG then carried the same icon hash, the DMG checksum passed, and strict code-signature verification passed. Rebuild and reopen the native app after changing `build/icon.png`.
 
-Create a release by pushing a tag whose version exactly matches `package.json`, for example:
+Create a release from a clean `main` branch with:
+
+```bash
+npm run release -- auto
+```
+
+The local release command infers or accepts the Semantic Versioning bump, requires an isolated Codex or Claude CLI to generate compact notes, updates both package manifests and `CHANGELOG.md`, runs metadata checks, all tests, and the dependency audit, creates an annotated tag, then atomically pushes `main` and the tag. The resulting version contract remains:
 
 ```text
 package.json version: 0.2.0
 git tag:             v0.2.0
 ```
 
-The release job rejects a mismatch before downloading or publishing artifacts. Each native build uploads its complete `dist/` directory, and the release job attaches those files to the tag release. The expected feed metadata and artifacts are:
+The release job rejects any tag, package, lockfile, changelog, or publisher mismatch before downloading or publishing artifacts. It extracts the matching AI-written changelog entry as the GitHub Release body. Each native build uploads its complete `dist/` directory, and the release job attaches those files to the tag release. The expected feed metadata and artifacts are:
 
 | Platform | Update metadata | Installable artifacts |
 | --- | --- | --- |
@@ -83,6 +89,10 @@ Signing credentials are not stored in the repository. Production macOS releases 
 - `build/icon.png`: 1024px transparent Crowie source used for native application icons and the development Dock icon.
 - `electron-builder.yml`: native targets, artifact names, update metadata generation, and GitHub publisher.
 - `.github/workflows/build-desktop.yml`: native build matrix, tag/version guard, artifact upload, and GitHub release publishing.
+- `scripts/release.mjs`: clean-tree checks, version selection, isolated AI generation, verification, commit, tag, and atomic push.
+- `scripts/release-core.mjs`: deterministic SemVer, changelog normalization, formatting, and extraction helpers.
+- `scripts/release-check.mjs` and `scripts/release-notes.mjs`: CI metadata enforcement and GitHub Release body extraction.
+- `CHANGELOG.md`: canonical compact release history.
 - `package.json` and `package-lock.json`: app version and `electron-updater` dependency.
 
 No renderer IPC, preload permission, localhost route, or environment variable is required for updates. The existing `PORTABLE_EXECUTABLE_FILE` marker is read only to identify the Windows portable runtime; CC Relay does not create or mutate it.

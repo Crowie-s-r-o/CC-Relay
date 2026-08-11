@@ -16,6 +16,7 @@ test('task queue exposes a date-driven, copy-ready AI standup dialog', async () 
   assert.match(html, /<dialog id="standup-modal"[^>]+aria-labelledby="standup-title"/);
   assert.match(html, /id="standup-date" type="date"/);
   assert.match(html, /id="standup-length"/);
+  assert.match(html, /<option value="all" selected>All tasks<\/option>/);
   assert.match(html, /id="standup-task-list"/);
   assert.match(html, /id="standup-blocker-list"/);
   assert.match(html, /id="standup-generator-provider"/);
@@ -32,11 +33,14 @@ test('task queue exposes a date-driven, copy-ready AI standup dialog', async () 
   assert.doesNotMatch(openStandup, /generateStandup/);
   assert.match(app, /state\.standupGenerating = true/);
   assert.match(app, /length: state\.standupLength/);
+  assert.match(app, /standupLength: \['all', 'short', 'standard', 'detailed'\]/);
+  assert.match(app, /\? localStorage\.getItem\('relay\.standupLength'\) : 'all'/);
   assert.match(app, /standupSections\(\{/);
   assert.match(app, /navigator\.clipboard\.writeText\(state\.standupClipboardText\)/);
   assert.match(app, /without bullet prefixes/);
   assert.match(app, /capabilities\?\.aiStandupGeneration === true/);
   assert.match(app, /capabilities\?\.aiStandupConfiguration === true/);
+  assert.match(app, /capabilities\?\.aiStandupAllTasks === true/);
 
   assert.match(server, /pathname === '\/api\/standup\/generate'/);
   assert.match(server, /database\.listTaskPrompts\(task\.id\)/);
@@ -44,6 +48,7 @@ test('task queue exposes a date-driven, copy-ready AI standup dialog', async () 
   assert.match(server, /validateStandupLength\(body\.length\)/);
   assert.match(server, /aiStandupGeneration: true/);
   assert.match(server, /aiStandupConfiguration: true/);
+  assert.match(server, /aiStandupAllTasks: true/);
 
   assert.match(style, /\.standup-modal/);
   assert.match(style, /\.standup-list li/);

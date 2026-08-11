@@ -1949,7 +1949,7 @@ summary:focus-visible,
 .task-edit-body { padding: 18px 20px 8px; }
 
 .task-edit-execution {
-  margin: 0 0 16px;
+  margin: 16px 0;
   padding: 0 0 15px;
   border: 0;
   border-bottom: 1px solid var(--line);
@@ -2001,6 +2001,39 @@ summary:focus-visible,
   text-transform: uppercase;
 }
 
+.task-edit-name-field {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-edit-name-field small {
+  color: var(--muted);
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-align: right;
+  text-transform: none;
+}
+
+#task-edit-name {
+  width: 100%;
+  min-height: 38px;
+  margin-top: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #fff;
+}
+
+.task-edit-body > label[for="task-edit-prompt"] {
+  display: block;
+  margin-top: 16px;
+}
+
 .task-edit-body textarea {
   min-height: 220px;
   max-height: min(52vh, 520px);
@@ -2012,6 +2045,19 @@ summary:focus-visible,
   margin: 7px 0 0;
   color: var(--danger);
   font-size: 10px;
+}
+
+.task-edit-modal[data-mode="retry"] .task-edit-name-field,
+.task-edit-modal[data-mode="retry"] #task-edit-name,
+.task-edit-modal[data-mode="retry"] label[for="task-edit-prompt"],
+.task-edit-modal[data-mode="retry"] #task-edit-prompt {
+  display: none;
+}
+
+.task-edit-modal[data-mode="retry"] .task-edit-execution {
+  margin-top: 0;
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .task-edit-actions {
@@ -2131,13 +2177,104 @@ summary:focus-visible,
   line-height: 1.4;
 }
 
+.completion-alert-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
+  gap: 10px 16px;
+  align-items: center;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+  background: #f8faf9;
+}
+
+.completion-alert-heading {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  color: #315047;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.completion-alert-settings > label:not(.completion-speech-toggle) {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.completion-alert-settings select {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  font: 11px var(--font-mono);
+}
+
+.completion-speech-toggle {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: #40544d;
+  font-size: 11px;
+}
+
+.completion-speech-toggle span { display: grid; gap: 2px; }
+.completion-speech-toggle strong { font-size: 11px; }
+.completion-speech-toggle small,
+.completion-alert-settings > small { color: var(--muted); font-size: 9px; line-height: 1.4; }
+.completion-alert-settings > small { grid-column: 1 / -1; }
+
 @media (max-width: 760px) {
   .terminal-layout-settings { grid-template-columns: 1fr 1fr; }
   .terminal-layout-heading, .terminal-layout-display { grid-column: 1 / -1; }
+  .completion-alert-settings { grid-template-columns: 1fr; }
+  .completion-alert-heading, .completion-alert-settings > small { grid-column: 1; }
 }
 
 .prompt-field {
   display: block;
+}
+
+.task-name-field {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.task-name-field > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.task-name-field strong {
+  color: var(--graphite);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.task-name-field small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  text-align: right;
+}
+
+.task-name-field input {
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid #dbe3ef;
+  border-radius: 9px;
+  color: var(--ink);
+  background: #f8faff;
 }
 
 .prompt-label-row {
@@ -2464,6 +2601,7 @@ textarea::placeholder {
 }
 
 /* Subtle in-flight treatment. The prompt stays editable so nothing the user typed is lost. */
+#task-form[data-pending="true"] .task-name-field,
 #task-form[data-pending="true"] .prompt-field,
 #task-form[data-pending="true"] .attachment-composer {
   opacity: 0.72;
@@ -2474,6 +2612,7 @@ textarea::placeholder {
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  #task-form[data-pending="true"] .task-name-field,
   #task-form[data-pending="true"] .prompt-field,
   #task-form[data-pending="true"] .attachment-composer {
     transition: opacity 140ms ease;
@@ -2608,7 +2747,46 @@ textarea::placeholder {
   opacity: 0.45;
 }
 
-.task-assign-button,
+.task-rename-button,
+.task-assign-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid #cfd7e6;
+  border-radius: 7px;
+  color: #354ec4;
+  background: #ffffff;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 80%),
+    0 1px 2px rgb(38 51 82 / 8%);
+  font-size: 9.5px;
+  font-weight: 750;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.task-rename-button::before {
+  width: 10px;
+  height: 10px;
+  content: "";
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.7' d='m10.8 2.2 3 3L6 13H3v-3l7.8-7.8ZM9.4 3.6l3 3'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.7' d='m10.8 2.2 3 3L6 13H3v-3l7.8-7.8ZM9.4 3.6l3 3'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.task-rename-button:hover:not(:disabled),
+.task-assign-button:hover:not(:disabled) {
+  border-color: #aebcf5;
+  color: #263ec0;
+  background: #f2f4ff;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 90%),
+    0 3px 8px -5px rgb(47 75 240 / 55%);
+}
+
 .task-assignment-options button {
   min-height: 24px;
   padding: 3px 7px;
@@ -2619,6 +2797,11 @@ textarea::placeholder {
   font-size: 9px;
   font-weight: 700;
   cursor: pointer;
+}
+
+.task-rename-button:disabled {
+  cursor: not-allowed;
+  opacity: .48;
 }
 
 .task-assignment-options {
@@ -2690,33 +2873,66 @@ textarea::placeholder {
 
 .queue-reorder {
   display: inline-flex;
-  gap: 2px;
+  overflow: hidden;
+  border: 1px solid #cfd7e0;
+  border-radius: 7px;
+  background: #f7f9fc;
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 82%),
+    0 1px 2px rgb(38 51 82 / 7%);
 }
 
 .queue-reorder button {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 26px;
+  height: 26px;
   padding: 0;
-  border: 1px solid #bdcbc6;
-  color: #40544d;
+  border: 0;
+  color: #59667b;
   cursor: pointer;
-  background: #ffffff;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 800;
+  background: transparent;
+  font-size: 0;
+}
+
+.queue-reorder button + button {
+  border-left: 1px solid #dce2ea;
+}
+
+.queue-reorder button::before {
+  width: 12px;
+  height: 12px;
+  content: "";
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m4 10 4-4 4 4'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m4 10 4-4 4 4'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.queue-reorder button[data-move="down"]::before {
+  transform: rotate(180deg);
 }
 
 .queue-reorder button:hover:not(:disabled) {
-  border-color: var(--signal);
   color: var(--signal);
-  background: #f5f7ff;
+  background: #edf1ff;
 }
 
 .queue-reorder button:disabled {
   cursor: not-allowed;
-  opacity: 0.32;
+  opacity: 0.38;
+}
+
+.task-rename-button:focus-visible,
+.task-assign-button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.queue-reorder button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--signal);
+  outline-offset: -3px;
 }
 
 .agent-pair {
@@ -2797,6 +3013,19 @@ textarea::placeholder {
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
+}
+
+.task-name {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 11px 0 0;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .task-footer {
@@ -4405,10 +4634,6 @@ button.term-seg { border: 0; cursor: pointer; font: inherit; letter-spacing: inh
   .turbo-settings {
     grid-template-columns: minmax(0, 1fr);
   }
-
-  .turbo-heading {
-    flex-direction: column;
-  }
 }
 
 @media (max-width: 720px) {
@@ -4676,7 +4901,7 @@ body {
 
 .workspace {
   height: calc(100vh - 102px); min-height: 0; padding: 12px 14px;
-  grid-template-columns: var(--composer-width, 540px) 14px minmax(320px, 1fr) 14px var(--detail-width, 620px); gap: 0;
+  grid-template-columns: var(--composer-width, 580px) 14px var(--queue-width, 500px) 14px minmax(420px, 1fr); gap: 0;
   background: var(--mist);
 }
 
@@ -4789,7 +5014,8 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
 .task-card.selected { border: 1.5px solid var(--signal); background: var(--signal-soft); box-shadow: 0 10px 25px -20px rgba(79,95,246,.48); }
 .task-number, .task-footer, .detail-meta { font-family: var(--font-mono); }
 .task-number { color: #8b93a1; }
-.task-prompt { margin: 12px 0 0; font-size: 14px; line-height: 1.5; }
+.task-name { margin-top: 12px; font-size: 15px; line-height: 1.35; }
+.task-prompt { margin: 5px 0 0; color: #687184; font-size: 13px; font-weight: 550; line-height: 1.5; }
 .task-status { border-radius: 7px; letter-spacing: .08em; }
 
 .detail-header { padding-bottom: 22px; border-bottom: 1px solid var(--line); }
@@ -4803,7 +5029,7 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
 /* (legacy navy execution-ledger override removed; see Tokyo Night terminal block) */
 
 @media (max-width: 1500px) {
-  .workspace { grid-template-columns: var(--composer-width, 420px) 14px minmax(320px, 1fr) 14px var(--detail-width, 500px); }
+  .workspace { grid-template-columns: var(--composer-width, 450px) 14px var(--queue-width, 440px) 14px minmax(420px, 1fr); }
   .header-status-strip .status-module { min-width: 100px; padding-inline: 14px; }
 }
 @media (max-width: 1344px) {
@@ -6591,10 +6817,6 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
   margin: 12px 0;
 }
 
-.turbo-council-route .council-node {
-  min-height: 184px;
-}
-
 .turbo-council-route[data-enabled="false"] {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -7056,9 +7278,171 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
   }
 }
 
+/* ---------------------------------------------------------------------------
+   Compact Forward-planning Turbo top.
+
+   The panel used to stack four layers before the first worker control: an
+   eyebrow-plus-title panel header, a second eyebrow-plus-title council header,
+   a two-line bordered council switch, and a tall provider card with a 29px icon
+   tile, a display-size provider name, a description paragraph, and two stacked
+   selects. That is roughly 450px of chrome above WORKER MODEL.
+
+   It is now one slim title row, one single-line council switch, and one planner
+   node whose Model and Effort selects share a two-column row like the worker
+   grid below it. The council surface keeps its class (so it keeps the shared
+   Plan council component, the --council-* tokens, and the dark cascade) but
+   stops painting a second frame inside .turbo-config.
+
+   Layout only, plus --council-* colors, so every html[data-theme="dark"] rule
+   below still wins on color.
+   --------------------------------------------------------------------------- */
+.turbo-config {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f9faff;
+}
+
+.turbo-council-config {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.turbo-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 5px 8px;
+  margin: 0 0 8px;
+  padding-bottom: 6px;
+}
+
+.turbo-heading h3 {
+  margin: 0 auto 0 0;
+  font-size: 13px;
+  line-height: 1.15;
+}
+
+.turbo-heading .council-minimum,
+.turbo-heading .turbo-readiness {
+  padding: 3px 7px;
+  font-size: 10px;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.turbo-council-toggle-row {
+  gap: 8px;
+  padding: 5px 8px;
+}
+
+.turbo-council-order {
+  margin-top: 8px;
+  padding: 3px;
+}
+
+.turbo-council-order button {
+  min-height: 24px;
+}
+
+.turbo-council-route {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+/* The planner node is an instrument row, not a provider card: identity on the
+   first line, Model and Effort side by side on the second. */
+.turbo-council-route .council-node {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+  gap: 7px 10px;
+  padding: 9px 10px;
+}
+
+.turbo-council-route[data-enabled="false"] .council-node {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.turbo-council-route .council-node::before {
+  grid-column: 1 / -1;
+  margin: -9px -10px 0;
+}
+
+.turbo-council-route .council-node-heading {
+  grid-column: 1 / -1;
+  justify-content: flex-start;
+  gap: 7px;
+  min-width: 0;
+}
+
+.turbo-council-route .council-node-heading .agent-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  font-size: 8px;
+}
+
+.turbo-council-route .council-node-heading .agent-icon-claude {
+  font-size: 10px;
+}
+
+/* strong moved inside the heading, so .council-node > strong no longer supplies
+   its color. --council-ink is redeclared in the dark cascade, so this stays
+   theme-correct without a hardcoded value. */
+.turbo-council-route .council-node-heading strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--council-ink);
+  font-family: var(--font-display);
+  font-size: 12px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.turbo-council-route .council-role {
+  margin-left: auto;
+}
+
+/* The description moved into the ? disclosure. It stays in the DOM as the node's
+   accessible description through aria-describedby. */
+.turbo-council-route .council-node > small {
+  display: none;
+}
+
+.turbo-council-route .council-node label {
+  margin-top: 0;
+}
+
+.turbo-council-route .council-node select {
+  height: 30px;
+}
+
+.turbo-settings {
+  margin-top: 10px;
+}
+
+.turbo-note {
+  margin-top: 10px;
+}
+
+@media (max-width: 480px) {
+  .turbo-council-route[data-enabled="false"] .council-node {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Compact task inspector header and user-resizable terminal split. */
 .detail-panel #task-detail {
-  grid-template-rows: minmax(0, 1fr) 7px minmax(180px, var(--event-terminal-height, 50%));
+  grid-template-rows: minmax(7.5em, 1fr) .4375em minmax(11.25em, var(--event-terminal-height, min(84%, calc(100% - 9.375em))));
+}
+
+.detail-panel #task-detail:has(.session-strip:not([hidden])) {
+  grid-template-rows: minmax(7.5em, 1fr) .4375em minmax(11.25em, var(--event-terminal-height, min(72%, calc(100% - 9.375em))));
 }
 
 .terminal-height-resizer {
@@ -7098,10 +7482,88 @@ body[data-resizing-terminal="true"] {
 }
 
 .detail-panel .detail-header {
-  align-items: center;
+  align-items: flex-start;
   min-height: 0;
   padding-bottom: 10px;
   gap: 10px;
+}
+
+.detail-panel .detail-identity {
+  min-width: 0;
+}
+
+.detail-panel .detail-title-line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.detail-header-controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: .375em;
+}
+
+.detail-header-controls .detail-actions {
+  gap: .25em;
+}
+
+.task-detail-open {
+  border-color: #cbd2fa;
+  color: #2f4bf0;
+  background: #f4f6ff;
+  font-weight: 800;
+}
+
+.task-detail-open:hover:not(:disabled) {
+  border-color: #8f9cf1;
+  background: #ebeefe;
+}
+
+.task-detail-modal {
+  width: min(72em, calc(100vw - 2em));
+  max-height: calc(100vh - 2em);
+}
+
+.task-detail-modal-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  height: min(54em, calc(100vh - 2em));
+}
+
+.task-detail-modal-header .eyebrow {
+  display: block;
+  margin-bottom: .375em;
+  font-size: 8px;
+}
+
+.task-detail-modal-header h2 {
+  font-size: 18px;
+}
+
+.task-detail-modal-header p {
+  font-size: 12px;
+}
+
+.task-detail-modal-body {
+  min-height: 0;
+  padding: 1.25em 1.5em 1.75em;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: #f7f9fc;
+  scrollbar-width: thin;
+}
+
+.task-detail-modal-body > :first-child {
+  margin-top: 0;
+}
+
+.task-detail-modal-body .detail-section {
+  margin-top: .875em;
+  margin-bottom: 0;
 }
 
 .detail-panel .detail-header .eyebrow {
@@ -7110,10 +7572,50 @@ body[data-resizing-terminal="true"] {
 }
 
 .detail-panel .detail-header h2 {
-  display: inline-block;
-  margin: 3px 10px 0 0;
+  margin: 0;
   font-size: 20px;
   line-height: 1;
+}
+
+.detail-panel .detail-task-name {
+  display: block;
+  max-width: 100%;
+  margin-top: 6px;
+  overflow: hidden;
+  color: #252b36;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-panel .detail-execution-profile {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+  align-items: center;
+  margin-top: 7px;
+}
+
+.detail-panel .detail-execution-profile .detail-agent {
+  flex: 0 0 auto;
+  color: #687184;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.detail-panel .detail-execution-profile strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #30394a;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .detail-panel .detail-meta {
@@ -7122,6 +7624,14 @@ body[data-resizing-terminal="true"] {
   gap: 5px;
   margin-top: 4px;
   vertical-align: bottom;
+}
+
+html[data-theme="dark"] .detail-panel .detail-task-name {
+  color: var(--app-text);
+}
+
+html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
+  color: #c7d5f2;
 }
 
 .detail-panel .detail-meta > span {
@@ -7186,8 +7696,22 @@ body[data-resizing-terminal="true"] {
 }
 
 @media (max-width: 760px) {
-  .detail-panel #task-detail {
-    grid-template-rows: minmax(150px, 1fr) 7px minmax(180px, var(--event-terminal-height, 45%));
+  .detail-panel #task-detail,
+  .detail-panel #task-detail:has(.session-strip:not([hidden])) {
+    grid-template-rows: minmax(7.5em, 1fr) .4375em minmax(11.25em, var(--event-terminal-height, min(68%, calc(100% - 9.375em))));
+  }
+
+  .task-detail-modal {
+    width: calc(100vw - .75em);
+    max-height: calc(100vh - .75em);
+  }
+
+  .task-detail-modal-card {
+    height: calc(100vh - .75em);
+  }
+
+  .task-detail-modal-body {
+    padding: 1em;
   }
 }
 
@@ -7480,14 +8004,14 @@ body[data-resizing-terminal="true"] {
 .detail-copy-disclosure > summary b {
   color: #263249;
   font-family: var(--font-display);
-  font-size: 11px;
+  font-size: 13px;
 }
 
 .detail-copy-disclosure > summary small {
   overflow: hidden;
   color: #8b95a6;
   font-family: var(--font-body);
-  font-size: 9px;
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -7495,7 +8019,7 @@ body[data-resizing-terminal="true"] {
 .detail-copy-disclosure > summary i {
   color: #65728a;
   font-family: var(--font-mono);
-  font-size: 7px;
+  font-size: 8px;
   font-style: normal;
   font-weight: 800;
   letter-spacing: .06em;
@@ -7508,7 +8032,7 @@ body[data-resizing-terminal="true"] {
 
 .detail-copy-disclosure[open] > summary i::after {
   content: "Hide";
-  font-size: 7px;
+  font-size: 8px;
 }
 
 .detail-panel .detail-copy-disclosure > pre {
@@ -7518,8 +8042,8 @@ body[data-resizing-terminal="true"] {
   border-top: 1px solid #e4e8ee;
   border-radius: 0;
   background: #fff;
-  font-size: 10px;
-  line-height: 1.45;
+  font-size: 13px;
+  line-height: 1.55;
 }
 
 .detail-panel .detail-copy-disclosure > .result-markdown {
@@ -7528,8 +8052,8 @@ body[data-resizing-terminal="true"] {
   padding: 14px 15px 16px;
   border-top: 1px solid #e4e8ee;
   background: #fff;
-  font-size: 12.5px;
-  line-height: 1.65;
+  font-size: 15px;
+  line-height: 1.7;
 }
 
 .content-copy-button {
@@ -7929,6 +8453,8 @@ body[data-resizing-terminal="true"] {
 .history-period-tabs button,
 .history-date-nav button,
 .queue-heading-button,
+.task-rename-button,
+.task-assign-button,
 .queue-reorder button,
 .content-copy-button,
 .project-launch,
@@ -7982,6 +8508,8 @@ body[data-resizing-terminal="true"] {
   .history-period-tabs button,
   .history-date-nav button,
   .queue-heading-button,
+  .task-rename-button,
+  .task-assign-button,
   .queue-reorder button,
   .content-copy-button,
   .project-launch,
@@ -10211,6 +10739,7 @@ html[data-theme="dark"] .task-card.selected {
   box-shadow: 0 12px 30px -22px rgb(81 99 226 / 80%);
 }
 
+html[data-theme="dark"] .task-name,
 html[data-theme="dark"] .task-prompt,
 html[data-theme="dark"] .detail-section-heading h3,
 html[data-theme="dark"] .terminal-primary strong,
@@ -10297,6 +10826,40 @@ html[data-theme="dark"] .project-color-preset {
   background: var(--app-control);
 }
 
+html[data-theme="dark"] .task-detail-modal-body {
+  color: var(--app-text-body);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .task-detail-modal .plan-stage {
+  border-color: var(--app-border);
+  color: var(--app-text-body);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .task-detail-modal .plan-stage[data-state="running"] {
+  border-color: color-mix(in srgb, var(--app-violet) 46%, var(--app-border));
+  background: color-mix(in srgb, var(--app-violet) 11%, var(--app-panel));
+}
+
+html[data-theme="dark"] .task-detail-modal .plan-stage[data-state="complete"] {
+  border-color: color-mix(in srgb, var(--app-teal) 44%, var(--app-border));
+  background: color-mix(in srgb, var(--app-teal) 10%, var(--app-panel));
+}
+
+html[data-theme="dark"] .task-detail-modal .plan-stage strong {
+  color: var(--app-text);
+}
+
+html[data-theme="dark"] .task-detail-modal .plan-stage small,
+html[data-theme="dark"] .task-detail-modal .plan-stage-number {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .task-detail-modal .plan-stage:not(:last-child)::after {
+  background: var(--app-border-strong);
+}
+
 html[data-theme="dark"] .project-color-preset:hover {
   border-color: color-mix(in srgb, var(--swatch, var(--app-blue)) 52%, var(--app-border));
   background: color-mix(in srgb, var(--swatch, var(--app-blue)) 9%, var(--app-control));
@@ -10327,6 +10890,7 @@ html[data-theme="dark"] .terminal-settings-close {
 
 html[data-theme="dark"] .command-row,
 html[data-theme="dark"] .terminal-layout-settings,
+html[data-theme="dark"] .completion-alert-settings,
 html[data-theme="dark"] .task-edit-body,
 html[data-theme="dark"] .standup-controls,
 html[data-theme="dark"] .standup-body {
@@ -11972,7 +12536,8 @@ html[data-theme="dark"] .task-unread-marker {
 
 html[data-theme="dark"] .command-row code,
 html[data-theme="dark"] .terminal-layout-settings input[type="number"],
-html[data-theme="dark"] .terminal-layout-settings select {
+html[data-theme="dark"] .terminal-layout-settings select,
+html[data-theme="dark"] .completion-alert-settings select {
   border-color: var(--app-border);
   color: var(--app-text-body);
   background: var(--app-control);
@@ -11983,6 +12548,11 @@ html[data-theme="dark"] .terminal-layout-heading {
 }
 
 html[data-theme="dark"] .terminal-background-toggle {
+  color: var(--app-text-body) !important;
+}
+
+html[data-theme="dark"] .completion-alert-heading,
+html[data-theme="dark"] .completion-speech-toggle {
   color: var(--app-text-body) !important;
 }
 
@@ -12166,4 +12736,606 @@ html[data-theme="dark"] .task-card[data-session="true"][data-session-state="pend
 
 html[data-theme="dark"] .session-turn summary:focus-visible {
   outline-color: color-mix(in srgb, var(--app-blue) 55%, transparent);
+}
+
+/* Queue operations form one compact instrument cluster. Neutral raised chrome keeps
+   them inside the task card while blue remains the interaction signal. */
+html[data-theme="dark"] .task-rename-button,
+html[data-theme="dark"] .task-assign-button {
+  border-color: color-mix(in srgb, var(--app-blue) 26%, var(--app-border));
+  color: #aebfff;
+  background: color-mix(in srgb, var(--app-blue) 6%, var(--app-control));
+  box-shadow:
+    inset 0 1px 0 rgb(233 235 239 / 5%),
+    0 1px 2px rgb(0 0 0 / 24%);
+}
+
+html[data-theme="dark"] .task-rename-button:hover:not(:disabled),
+html[data-theme="dark"] .task-assign-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--app-blue) 58%, var(--app-border));
+  color: #d6dfff;
+  background: color-mix(in srgb, var(--app-blue) 14%, var(--app-control));
+  box-shadow:
+    inset 0 1px 0 rgb(233 235 239 / 7%),
+    0 5px 12px -8px rgb(122 162 247 / 70%);
+}
+
+html[data-theme="dark"] .task-rename-button:disabled {
+  border-color: var(--app-border);
+  color: var(--app-text-quiet);
+  background: var(--app-control);
+  box-shadow: none;
+  opacity: .42;
+}
+
+html[data-theme="dark"] .queue-reorder {
+  border-color: var(--app-border-strong);
+  background: var(--app-control);
+  box-shadow:
+    inset 0 1px 0 rgb(233 235 239 / 4%),
+    0 1px 2px rgb(0 0 0 / 22%);
+}
+
+html[data-theme="dark"] .queue-reorder button {
+  color: var(--app-text-muted);
+  background: transparent;
+}
+
+html[data-theme="dark"] .queue-reorder button + button {
+  border-left-color: var(--app-border-strong);
+}
+
+html[data-theme="dark"] .queue-reorder button:hover:not(:disabled) {
+  color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 14%, var(--app-control));
+}
+
+html[data-theme="dark"] .queue-reorder button:disabled {
+  color: var(--app-text-quiet);
+  opacity: .38;
+}
+
+html[data-theme="dark"] .task-assignment-options {
+  border-color: var(--app-border);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .task-assignment-options button {
+  border-color: color-mix(in srgb, var(--app-blue) 28%, var(--app-border));
+  color: var(--app-blue);
+  background: var(--app-control);
+}
+
+/* Live terminal retention is a latched safety control. Its bright instrument color keeps
+   it findable beside destructive task actions without borrowing Claude orange. */
+.detail-panel .detail-actions .terminal-retention-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 30px;
+  padding: 0 10px;
+  border-width: 1px;
+  border-radius: 8px;
+  font-size: 9.5px;
+  font-weight: 780;
+  line-height: 1;
+  letter-spacing: .01em;
+  opacity: 1;
+}
+
+.terminal-retention-button::before {
+  content: "";
+  flex: none;
+  width: 13px;
+  height: 13px;
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.8' d='M6 2.5h8l-1.2 4L15 8.7v1.4H5V8.7l2.2-2.2L6 2.5ZM10 10.1v7.4'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.8' d='M6 2.5h8l-1.2 4L15 8.7v1.4H5V8.7l2.2-2.2L6 2.5ZM10 10.1v7.4'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.terminal-retention-button[data-state="available"] {
+  border-color: #76c7e8;
+  color: #08638b;
+  background: #effaff;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 3px 10px -8px rgb(14 116 144 / 80%);
+}
+
+.terminal-retention-button[data-state="available"]:hover:not(:disabled) {
+  border-color: #279bc8;
+  color: #064f73;
+  background: #def5ff;
+  box-shadow:
+    inset 0 1px 0 #ffffff,
+    0 6px 14px -9px rgb(14 116 144 / 90%);
+}
+
+.terminal-retention-button[data-state="protected"],
+.terminal-retention-button[data-state="protected"]:disabled {
+  border-color: #2ba98e;
+  color: #063d34;
+  background: #9ce8d3;
+  box-shadow:
+    0 0 0 2px rgb(20 184 166 / 13%),
+    0 6px 18px -11px rgb(5 150 105 / 95%);
+  opacity: 1;
+}
+
+.terminal-retention-button[data-state="protected"]::before {
+  background: #075848;
+}
+
+.terminal-retention-button[data-state="pending"] {
+  border-color: #59b8dd;
+  color: #075f87;
+  background: #e7f8ff;
+}
+
+.terminal-retention-button[data-state="unsupported"] {
+  border-color: #c7d5da;
+  color: #66777d;
+  background: #edf3f4;
+}
+
+.terminal-retention-message {
+  max-width: 250px;
+  margin: 0;
+  color: #397060;
+  font-size: 8.5px;
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.terminal-retention-message[data-kind="error"] {
+  color: var(--danger);
+}
+
+.terminal-retention-button:focus-visible {
+  outline: 2px solid #087cae;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .terminal-retention-button[data-state="pending"]::before {
+    animation: terminal-retention-pulse 900ms ease-in-out infinite alternate;
+  }
+}
+
+@keyframes terminal-retention-pulse {
+  from { opacity: .5; filter: drop-shadow(0 0 0 currentColor); }
+  to { opacity: 1; filter: drop-shadow(0 0 4px currentColor); }
+}
+
+html[data-theme="dark"] .terminal-retention-button[data-state="available"] {
+  border-color: color-mix(in srgb, var(--app-cyan) 46%, var(--app-border));
+  color: var(--app-cyan);
+  background: color-mix(in srgb, var(--app-cyan) 8%, var(--app-control));
+  box-shadow:
+    inset 0 1px 0 rgb(233 235 239 / 5%),
+    0 5px 14px -11px rgb(125 207 255 / 75%);
+}
+
+html[data-theme="dark"] .terminal-retention-button[data-state="available"]:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--app-cyan) 75%, var(--app-border));
+  color: #a8ddff;
+  background: color-mix(in srgb, var(--app-cyan) 15%, var(--app-control));
+  box-shadow:
+    inset 0 1px 0 rgb(233 235 239 / 7%),
+    0 7px 16px -11px rgb(125 207 255 / 88%);
+}
+
+html[data-theme="dark"] .terminal-retention-button[data-state="protected"],
+html[data-theme="dark"] .terminal-retention-button[data-state="protected"]:disabled {
+  border-color: var(--app-teal);
+  color: #071b18;
+  background: var(--app-teal);
+  box-shadow:
+    0 0 0 2px rgb(115 218 202 / 15%),
+    0 7px 22px -12px rgb(115 218 202 / 95%);
+}
+
+html[data-theme="dark"] .terminal-retention-button[data-state="protected"]::before {
+  border-color: #102c27;
+  background: #102c27;
+}
+
+html[data-theme="dark"] .terminal-retention-button[data-state="pending"] {
+  border-color: var(--app-cyan);
+  color: var(--app-cyan);
+  background: color-mix(in srgb, var(--app-cyan) 16%, var(--app-panel));
+}
+
+html[data-theme="dark"] .terminal-retention-button[data-state="unsupported"] {
+  border-color: var(--app-border);
+  color: var(--app-text-quiet);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .terminal-retention-message {
+  color: var(--app-teal);
+}
+
+html[data-theme="dark"] .terminal-retention-message[data-kind="error"] {
+  color: var(--app-red);
+}
+
+@media (max-width: 520px) {
+  .terminal-retention-message {
+    max-width: 100%;
+    text-align: left;
+  }
+}
+
+/* Manual terminal sessions are workspaces, not automatic task outcomes. The compact
+   title bar is borrowed from a terminal window, while the rest stays inside Relay's
+   existing cool interface palette. */
+.terminal-keep-open-option[data-intent="session"] {
+  border-color: #c9d7f3;
+  background: #f5f8ff;
+}
+
+.terminal-keep-open-option[data-intent="session"][data-active="true"] {
+  border-color: #6f91e8;
+  color: #1f3f91;
+  background: #edf3ff;
+  box-shadow: inset 3px 0 0 #3f64e8;
+}
+
+.terminal-keep-open-option[data-intent="session"][data-active="true"] strong {
+  color: #17377f;
+}
+
+.project-chip[data-activity="session"] .project-activity strong {
+  color: #3158c8;
+}
+
+.project-chip[data-activity="session"] .project-activity i {
+  background: #4b75e5;
+  box-shadow: 0 0 0 3px rgb(75 117 229 / 14%);
+}
+
+.task-status.status-open {
+  color: #174a91;
+  background: #e8f1ff;
+}
+
+.task-card[data-status="open"] .task-duration {
+  color: #3158b8;
+}
+
+.task-card[data-status="open"] .task-duration::before {
+  border: 2px solid #4b75e5;
+  background: #f8fbff;
+}
+
+.task-card[data-manual-completion="true"] {
+  border-color: #9ab5e9;
+  border-left-color: #4b75e5;
+  background: #f6f9ff;
+}
+
+.task-card[data-manual-completion="true"]:hover {
+  border-color: #6f91db;
+}
+
+.task-card[data-manual-completion="true"].selected {
+  border-color: #3f64e8;
+  border-left-color: #3f64e8;
+  background: #edf3ff;
+}
+
+.task-session-modebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: -13px -14px 11px -12px;
+  padding: 5px 9px 5px 8px;
+  border-bottom: 1px solid #c8d7f2;
+  color: #3158b8;
+  background: #e8f0ff;
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  font-weight: 850;
+  letter-spacing: .085em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.task-session-modebar span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-session-modebar span i {
+  width: 7px;
+  height: 7px;
+  border: 2px solid #4b75e5;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.task-card[data-status="running"] .task-session-modebar span i {
+  border-color: #7355cf;
+  background: #7355cf;
+}
+
+.task-session-modebar b {
+  color: #66759a;
+  font-size: inherit;
+  white-space: nowrap;
+}
+
+.detail-panel #task-detail[data-session-mode="true"] .detail-header {
+  padding-top: 9px;
+  border-top: 3px solid #4b75e5;
+}
+
+.session-strip[data-completion="manual"] {
+  border-color: #9eb7e8;
+  border-left-color: #4b75e5;
+  background: #f4f8ff;
+}
+
+.session-mode-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  min-height: 21px;
+  padding: 3px 7px;
+  border: 1px solid #aec0e7;
+  border-radius: 999px;
+  color: #3158b8;
+  background: #e8f0ff;
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  font-weight: 850;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.session-complete-button {
+  flex: none;
+  min-width: 118px;
+  border-color: #3158c8;
+  color: #fff;
+  background: #3158c8;
+  font-weight: 800;
+}
+
+.session-complete-button:hover:not(:disabled) {
+  border-color: #2447aa;
+  color: #fff;
+  background: #2447aa;
+}
+
+.session-complete-button[data-state="complete"],
+.session-complete-button[data-state="complete"]:disabled {
+  border-color: #9dcdbd;
+  color: #17634d;
+  background: #e9f7f2;
+  opacity: 1;
+}
+
+.session-complete-button[data-state="blocked"]:disabled {
+  border-color: #cbd5e6;
+  color: #77849b;
+  background: #edf1f7;
+  opacity: 1;
+}
+
+.task-continuation[data-session-mode="true"] {
+  --continuation-accent: #67d4e6;
+  border-top-width: 2px;
+  background: #080d16;
+}
+
+.task-continuation[data-session-mode="true"] .task-continuation-context small {
+  color: #8edbea;
+}
+
+html[data-theme="dark"] .terminal-keep-open-option[data-intent="session"] {
+  border-color: var(--app-border);
+  color: var(--app-text-body);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .terminal-keep-open-option[data-intent="session"][data-active="true"] {
+  border-color: color-mix(in srgb, var(--app-blue) 58%, var(--app-border));
+  color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 12%, var(--app-panel));
+  box-shadow: inset 3px 0 0 var(--app-blue);
+}
+
+html[data-theme="dark"] .terminal-keep-open-option[data-intent="session"][data-active="true"] strong,
+html[data-theme="dark"] .project-chip[data-activity="session"] .project-activity strong,
+html[data-theme="dark"] .task-status.status-open {
+  color: var(--app-blue);
+}
+
+html[data-theme="dark"] .project-chip[data-activity="session"] .project-activity i {
+  background: var(--app-blue);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--app-blue) 18%, transparent);
+}
+
+html[data-theme="dark"] .task-status.status-open {
+  background: color-mix(in srgb, var(--app-blue) 17%, var(--app-panel));
+}
+
+html[data-theme="dark"] .task-card[data-status="open"] .task-duration {
+  color: var(--app-blue);
+}
+
+html[data-theme="dark"] .task-card[data-status="open"] .task-duration::before {
+  border-color: var(--app-blue);
+  background: var(--app-panel);
+}
+
+html[data-theme="dark"] .task-card[data-manual-completion="true"] {
+  border-color: color-mix(in srgb, var(--app-blue) 42%, var(--app-border));
+  border-left-color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 6%, var(--app-panel));
+}
+
+html[data-theme="dark"] .task-card[data-manual-completion="true"].selected {
+  border-color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 11%, var(--app-panel));
+}
+
+html[data-theme="dark"] .task-session-modebar {
+  border-bottom-color: color-mix(in srgb, var(--app-blue) 34%, var(--app-border));
+  color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 13%, var(--app-control));
+}
+
+html[data-theme="dark"] .task-session-modebar span i {
+  border-color: var(--app-blue);
+  background: var(--app-panel);
+}
+
+html[data-theme="dark"] .task-session-modebar b {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .detail-panel #task-detail[data-session-mode="true"] .detail-header {
+  border-top-color: var(--app-blue);
+}
+
+html[data-theme="dark"] .session-strip[data-completion="manual"] {
+  border-color: color-mix(in srgb, var(--app-blue) 42%, var(--app-border));
+  border-left-color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 7%, var(--app-panel));
+}
+
+html[data-theme="dark"] .session-mode-badge {
+  border-color: color-mix(in srgb, var(--app-blue) 44%, var(--app-border));
+  color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 14%, var(--app-panel));
+}
+
+html[data-theme="dark"] .session-complete-button {
+  border-color: var(--app-blue);
+  color: #071021;
+  background: var(--app-blue);
+}
+
+html[data-theme="dark"] .session-complete-button:hover:not(:disabled) {
+  border-color: var(--app-cyan);
+  color: #071021;
+  background: var(--app-cyan);
+}
+
+html[data-theme="dark"] .session-complete-button[data-state="complete"],
+html[data-theme="dark"] .session-complete-button[data-state="complete"]:disabled {
+  border-color: color-mix(in srgb, var(--app-teal) 48%, var(--app-border));
+  color: var(--app-teal);
+  background: color-mix(in srgb, var(--app-teal) 13%, var(--app-panel));
+}
+
+html[data-theme="dark"] .session-complete-button[data-state="blocked"]:disabled {
+  border-color: var(--app-border);
+  color: var(--app-text-muted);
+  background: var(--app-control);
+}
+
+@media (max-width: 640px) {
+  .detail-panel #task-detail:has(.session-strip[data-completion="manual"]:not([hidden])) {
+    grid-template-rows: minmax(15em, 1fr) .4375em minmax(11.25em, var(--event-terminal-height, min(56%, calc(100% - 15.4375em))));
+  }
+
+  .session-mode-badge,
+  .session-strip-state,
+  .session-complete-button,
+  .session-kill-button {
+    flex: 1 1 calc(50% - 5px);
+    justify-content: center;
+  }
+}
+
+/* Queue density and default panel balance. The queue is an index, while Task
+   activity is the working surface, so cards stay scannable and give the right
+   panel the remaining desktop width. */
+.queue-panel > .section-heading {
+  margin-bottom: 10px;
+  padding-bottom: 12px;
+}
+
+.queue-panel > .section-heading h2 {
+  font-size: 21px;
+}
+
+.task-list {
+  gap: 8px;
+}
+
+.task-card {
+  padding: 11px 12px;
+  border-radius: 12px;
+}
+
+.task-topline {
+  gap: 7px;
+}
+
+.task-top-actions {
+  gap: 5px;
+}
+
+.task-agent-icon {
+  width: 18px;
+  height: 18px;
+}
+
+.task-status {
+  padding: 2px 6px;
+  font-size: 8px;
+}
+
+.task-name {
+  margin-top: 8px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.task-prompt {
+  margin: 3px 0 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+  -webkit-line-clamp: 2;
+}
+
+.task-footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+  margin-top: 8px;
+  padding-top: 7px;
+  font-size: 8px;
+}
+
+.task-footer-dates {
+  grid-column: 1 / -1;
+  gap: 8px;
+  padding-top: 5px;
+}
+
+.task-lifecycle-date {
+  gap: 4px;
+}
+
+.task-duration {
+  padding-left: 11px;
+}
+
+.task-duration::before {
+  width: 6px;
+  height: 6px;
+}
+
+.task-session-modebar {
+  margin: -11px -12px 8px;
 }

@@ -45,6 +45,46 @@ test('Codex status reports a missing executable only when the version probe fail
   assert.equal(status.reason, 'not_installed');
 });
 
+test('Codex status probes the Windows shim through cmd.exe instead of reporting it missing', async () => {
+  const invocations = [];
+  const status = await readCodexRuntimeStatus({
+    platform: 'win32',
+    // Windows PATH search only appends .com and .exe, so the bare name found nothing and the
+    // header reported an installed Codex as not installed.
+    resolveExecutable: () => 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd',
+    run: async (command, args, options) => {
+      invocations.push({ command, args, options });
+      return { stdout: args[3].includes('--version') ? 'codex-cli 1.2.3\n' : 'Logged in using ChatGPT\n' };
+    },
+  });
+
+  assert.equal(status.available, true);
+  assert.equal(status.authenticated, true);
+  assert.equal(invocations.length, 2);
+  for (const invocation of invocations) {
+    assert.equal(invocation.command, 'cmd.exe');
+    assert.ok(invocation.args[3].includes('codex.cmd'));
+    assert.equal(invocation.options.windowsVerbatimArguments, true);
+    assert.equal(invocation.options.windowsHide, true);
+    assert.equal(invocation.options.encoding, 'utf8');
+  }
+});
+
+test('Codex status keeps the POSIX probe byte-identical', async () => {
+  const invocations = [];
+  await readCodexRuntimeStatus({
+    platform: 'darwin',
+    run: async (command, args, options) => {
+      invocations.push({ command, args, options });
+      return { stdout: 'codex-cli 1.2.3\n' };
+    },
+  });
+
+  assert.deepEqual(invocations[0].command, 'codex');
+  assert.deepEqual(invocations[0].args, ['--version']);
+  assert.equal(invocations[0].options.windowsHide, undefined);
+});
+
 test('Codex status does not call a transient version probe failure not installed', async () => {
   const status = await readCodexRuntimeStatus({
     run: async () => {

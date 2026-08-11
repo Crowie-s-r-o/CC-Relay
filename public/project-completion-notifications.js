@@ -79,6 +79,7 @@ export class ProjectCompletionNotifications {
   observe(tasks, { activeProjectPath = null, selectedTaskId = null } = {}) {
     const nextStatuses = new Map();
     const currentTaskIds = new Map();
+    const completedTasks = [];
     let changed = false;
     const activePath = normalizedProjectPath(activeProjectPath);
     const selectedId = Number(selectedTaskId);
@@ -94,11 +95,13 @@ export class ProjectCompletionNotifications {
 
       const previousStatus = this.previousStatuses.get(path)?.get(id);
       const activelyChecked = path === activePath && id === selectedId;
-      if (
-        this.initialized
+      const justCompleted = this.initialized
         && previousStatus
         && previousStatus !== 'complete'
-        && task.status === 'complete'
+        && task.status === 'complete';
+      if (justCompleted) completedTasks.push(task);
+      if (
+        justCompleted
         && !activelyChecked
       ) {
         if (!this.unread.has(path)) this.unread.set(path, new Map());
@@ -129,6 +132,7 @@ export class ProjectCompletionNotifications {
       changed = true;
     }
     if (changed || this.storage) this.persist();
+    return completedTasks;
   }
 
   acknowledge(task) {

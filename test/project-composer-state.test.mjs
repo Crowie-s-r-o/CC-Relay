@@ -15,6 +15,7 @@ import {
 test('project composer sessions isolate prompts, images, workflow state, and terminals', () => {
   const store = new ProjectComposerStore();
   store.save('/work/alpha', {
+    taskName: 'Alpha release',
     prompt: 'Alpha task',
     attachments: [{ id: 'alpha-image', data: 'data:image/png;base64,alpha' }],
     selectedTaskId: 41,
@@ -31,6 +32,7 @@ test('project composer sessions isolate prompts, images, workflow state, and ter
     turboSettings: { workerCount: 4 },
   });
   store.save('/work/beta', {
+    taskName: 'Beta audit',
     prompt: 'Beta task',
     attachments: [],
     selectedTaskId: 73,
@@ -49,6 +51,7 @@ test('project composer sessions isolate prompts, images, workflow state, and ter
 
   const alpha = store.load('/work/alpha/');
   const beta = store.load('/work/beta');
+  assert.equal(alpha.taskName, 'Alpha release');
   assert.equal(alpha.prompt, 'Alpha task');
   assert.equal(alpha.attachments[0].id, 'alpha-image');
   assert.equal(alpha.selectedTaskId, 41);
@@ -56,6 +59,7 @@ test('project composer sessions isolate prompts, images, workflow state, and ter
   assert.equal(alpha.taskMode, 'turbo');
   assert.equal(alpha.terminalSettings.keepTerminalOpen, false);
   assert.equal(alpha.terminalSettings.layout.columns, 2);
+  assert.equal(beta.taskName, 'Beta audit');
   assert.equal(beta.prompt, 'Beta task');
   assert.equal(beta.attachments.length, 0);
   assert.equal(beta.selectedTaskId, 73);
@@ -77,6 +81,7 @@ test('a project without a saved session receives an independent blank composer',
   first.attachments.push({ id: 'image' });
 
   const second = store.load('/work/new');
+  assert.equal(second.taskName, '');
   assert.equal(second.prompt, '');
   assert.deepEqual(second.attachments, []);
   assert.equal(second.selectedTaskId, null);
@@ -257,4 +262,20 @@ test('provider defaults hydrate from the newest accepted task regardless of term
     source: 'task',
     taskId: 402,
   });
+});
+
+test('task history preserves Fable model selections', () => {
+  const session = freshProjectComposerState();
+
+  hydrateThreadExecutionSettings(session, [{
+    id: 403,
+    mode: 'execute',
+    provider: 'claude',
+    thread_id: 'claude-legacy',
+    model: 'fable',
+    effort: 'max',
+  }]);
+
+  assert.equal(session.executionSettings.claude.model, 'fable');
+  assert.equal(executionSettingsForThread(session, 'claude', 'claude-legacy').model, 'fable');
 });

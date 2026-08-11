@@ -11,6 +11,9 @@ tags:
 
 # Daily Standup Review
 
+> [!note]
+> This review records the original three-mode implementation. The current default is the terse **All tasks** mode documented in [[daily-standup]].
+
 ## Executive Summary
 
 **Ticket confidence: Medium**

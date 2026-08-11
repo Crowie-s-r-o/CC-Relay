@@ -40,6 +40,6 @@ nsis:
 artifactName: CC-Relay-${version}-${os}-${arch}.${ext}
 publish:
   provider: github
-  owner: patrikkelemen
-  repo: relay
+  owner: Crowie-s-r-o
+  repo: CC-Relay
   releaseType: release

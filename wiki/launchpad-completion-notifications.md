@@ -54,10 +54,15 @@ its detail request succeeds. `public/style.css` renders the count on the project
 Screen-reader copy includes the unchecked completion count, and unread task cards announce
 **not viewed**.
 
+`observe()` also returns every task that genuinely transitioned from unfinished to `complete`.
+This transition list drives [[task-completion-alerts]] independently of unread state, so a task
+already open in Task Activity can still sound while remaining acknowledged.
+
 Tests live in `test/project-completion-notifications.test.mjs` and the Launchpad markup and style
 contracts remain in `test/project-layout.test.mjs`. The full repository suite passed 926 tests
 after the task-level markers and project clear action were added.
 
-See [[project-workspaces]], [[task-history]], and [[compact-interface-density]].
+See [[project-workspaces]], [[task-history]], [[task-completion-alerts]], and
+[[compact-interface-density]].
 
 #launchpad #notifications #tasks #ui

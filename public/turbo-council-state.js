@@ -1,3 +1,5 @@
+import { normalizeClaudeModelSelection } from './claude-model-selection.js';
+
 export const TURBO_COUNCIL_ORDERS = Object.freeze([
   Object.freeze(['codex', 'claude']),
   Object.freeze(['claude', 'codex']),
@@ -21,8 +23,11 @@ function modelsFor(catalogs, provider) {
 
 function preferredModel(catalogs, provider, requested) {
   const models = modelsFor(catalogs, provider);
-  return models.find((model) => model?.model === requested)
-    || models.find((model) => provider === 'claude' && model?.model === 'best')
+  const selected = provider === 'claude'
+    ? normalizeClaudeModelSelection(requested)
+    : requested;
+  return models.find((model) => model?.model === selected)
+    || models.find((model) => provider === 'claude' && model?.model === 'fable')
     || models.find((model) => model?.isDefault)
     || models[0]
     || null;

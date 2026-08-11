@@ -2,6 +2,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ProjectConfigStore } from './project-config-store.mjs';
+import { parseUiPreferences, UI_PREFERENCES_SETTING } from './ui-preferences.mjs';
 
 const TASK_FIELDS = new Set([
   'title',
@@ -27,6 +28,7 @@ const TASK_FIELDS = new Set([
   'submission_id',
   'terminal_lifecycle',
   'keep_terminal_open',
+  'manual_completion',
   'terminal_layout_json',
   'turbo_json',
   'attachments_json',
@@ -62,6 +64,7 @@ const IMPORTABLE_TASK_COLUMNS = [
   'reviewer_effort',
   'terminal_lifecycle',
   'keep_terminal_open',
+  'manual_completion',
   'terminal_layout_json',
   'turbo_json',
   'attachments_json',
@@ -111,6 +114,7 @@ function normalizeTask(row) {
   return {
     ...task,
     keep_terminal_open: task.keep_terminal_open === 1 || task.keep_terminal_open === true,
+    manual_completion: task.manual_completion === 1 || task.manual_completion === true,
     attachments: Array.isArray(attachments) ? attachments : [],
     turbo,
     terminal_layout: terminalLayout,
@@ -224,6 +228,7 @@ export class RelayDatabase {
         submission_id TEXT,
         terminal_lifecycle TEXT NOT NULL DEFAULT 'persistent',
         keep_terminal_open INTEGER NOT NULL DEFAULT 0,
+        manual_completion INTEGER NOT NULL DEFAULT 0,
         terminal_layout_json TEXT,
         turbo_json TEXT,
         attachments_json TEXT NOT NULL DEFAULT '[]',
@@ -379,6 +384,7 @@ export class RelayDatabase {
     this.ensureColumn('submission_id', 'TEXT');
     this.ensureColumn('terminal_lifecycle', "TEXT NOT NULL DEFAULT 'persistent'");
     this.ensureColumn('keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureColumn('manual_completion', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('terminal_layout_json', 'TEXT');
     this.ensureColumn('turbo_json', 'TEXT');
     this.ensureColumn('attachments_json', "TEXT NOT NULL DEFAULT '[]'");
@@ -432,7 +438,10 @@ export class RelayDatabase {
   recoverInterruptedTasks() {
     const timestamp = now();
     const runningTasks = this.database.prepare(
-      `SELECT id FROM tasks WHERE status = 'running' ORDER BY id`,
+      `SELECT id, provider, mode, terminal_lifecycle, keep_terminal_open, manual_completion
+       FROM tasks
+       WHERE status = 'running'
+       ORDER BY id`,
     ).all();
 
     for (const task of runningTasks) {
@@ -452,17 +461,24 @@ export class RelayDatabase {
       const error = followUpInterrupted
         ? 'Same-session follow-up interrupted: CC Relay stopped while the follow-up was running.'
         : 'CC Relay stopped while this task was running.';
+      const manualSession = (task.manual_completion === 1 || task.manual_completion === true)
+        && (task.keep_terminal_open === 1 || task.keep_terminal_open === true)
+        && task.terminal_lifecycle === 'disposable'
+        && task.mode === 'execute'
+        && ['codex', 'claude'].includes(task.provider);
       this.database.prepare(`
         UPDATE tasks
-        SET status = 'interrupted',
+        SET status = ?,
             finished_at = ?,
             error = ?
         WHERE id = ?
-      `).run(timestamp, error, task.id);
+      `).run(manualSession ? 'open' : 'interrupted', manualSession ? null : timestamp, error, task.id);
       this.addEvent(
         task.id,
         'system',
-        followUpInterrupted
+        manualSession
+          ? 'The interrupted turn ended, but the terminal session remains open for another message or manual completion.'
+          : followUpInterrupted
           ? 'Same-session follow-up marked interrupted after CC Relay restarted. It was not queued.'
           : 'Task marked interrupted after CC Relay restarted.',
       );
@@ -486,6 +502,7 @@ export class RelayDatabase {
     submissionId = null,
     terminalLifecycle = 'persistent',
     keepTerminalOpen = false,
+    manualCompletion = false,
     terminalLayout = null,
     priority = false,
     preferIdleTerminal = false,
@@ -508,10 +525,11 @@ export class RelayDatabase {
         author_provider, author_thread_id, author_thread_name, author_thread_source,
         author_model, author_effort, reviewer_provider, reviewer_model, reviewer_effort,
         continued_from_task_id, submission_id, terminal_lifecycle, keep_terminal_open,
+        manual_completion,
         terminal_layout_json, turbo_json,
         prefer_idle_terminal,
         status, position, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
     `).run(
       title,
       prompt,
@@ -536,6 +554,13 @@ export class RelayDatabase {
       submissionId,
       terminalLifecycle,
       keepTerminalOpen && terminalLifecycle === 'disposable' ? 1 : 0,
+      manualCompletion
+        && keepTerminalOpen
+        && terminalLifecycle === 'disposable'
+        && mode === 'execute'
+        && ['codex', 'claude'].includes(provider)
+        ? 1
+        : 0,
       terminalLayout ? JSON.stringify(terminalLayout) : null,
       turbo ? JSON.stringify(turbo) : null,
       preferIdleTerminal ? 1 : 0,
@@ -549,7 +574,9 @@ export class RelayDatabase {
       this.addEvent(
         task.id,
         'queue',
-        'Terminal retention enabled. CC Relay will leave this task session open after its final outcome.',
+        task.manual_completion
+          ? 'Terminal session mode enabled. This task stays open between turns until it is completed manually.'
+          : 'Terminal retention enabled. CC Relay will leave this task session open after its final outcome.',
       );
     }
     return task;
@@ -594,12 +621,13 @@ export class RelayDatabase {
       ORDER BY
         CASE status
           WHEN 'running' THEN 0
-          WHEN 'queued' THEN 1
-          ELSE 2
+          WHEN 'open' THEN 1
+          WHEN 'queued' THEN 2
+          ELSE 3
         END,
         CASE WHEN status = 'queued' THEN position END ASC,
-        CASE WHEN status IN ('running', 'queued') THEN id END ASC,
-        CASE WHEN status NOT IN ('running', 'queued') THEN id END DESC
+        CASE WHEN status IN ('running', 'open', 'queued') THEN id END ASC,
+        CASE WHEN status NOT IN ('running', 'open', 'queued') THEN id END DESC
     `).all().map(normalizeTask);
   }
 
@@ -714,7 +742,7 @@ export class RelayDatabase {
         imported,
         updated,
         skippedActive: Number(source.prepare(`
-          SELECT COUNT(*) AS value FROM tasks WHERE status IN ('queued', 'running')
+          SELECT COUNT(*) AS value FROM tasks WHERE status IN ('queued', 'running', 'open')
         `).get().value),
         tasks: [...originToLocal].map(([sourceTaskId, taskId]) => ({
           sourceTaskId,
@@ -849,6 +877,41 @@ export class RelayDatabase {
       const task = this.getTask(id);
       if (!task) throw new Error('Task not found.');
       throw new Error('Only a task that is still waiting in the queue can be edited.');
+    }
+    return this.getTask(id);
+  }
+
+  updateRetryableTask(id, changes) {
+    const retryFields = new Set([
+      'status',
+      'position',
+      'started_at',
+      'finished_at',
+      'session_id',
+      'result',
+      'error',
+      'exit_code',
+      'provider',
+      'model',
+      'effort',
+      'thread_id',
+      'thread_name',
+      'thread_source',
+      'continued_from_task_id',
+    ]);
+    const entries = Object.entries(changes).filter(([key]) => retryFields.has(key));
+    if (entries.length === 0) return this.getTask(id);
+    const assignments = entries.map(([key]) => `${key} = ?`).join(', ');
+    const values = entries.map(([, value]) => value);
+    const result = this.database.prepare(`
+      UPDATE tasks
+      SET ${assignments}
+      WHERE id = ? AND status IN ('failed', 'cancelled', 'interrupted')
+    `).run(...values, id);
+    if (result.changes === 0) {
+      const task = this.getTask(id);
+      if (!task) throw new Error('Task not found.');
+      throw new Error('Only failed, cancelled, or interrupted tasks can be retried.');
     }
     return this.getTask(id);
   }
@@ -1027,6 +1090,15 @@ export class RelayDatabase {
 
   setActiveProjectPath(path) {
     return this.projectConfig.setActiveProjectPath(path);
+  }
+
+  uiPreferences() {
+    return parseUiPreferences(this.projectConfig.setting(UI_PREFERENCES_SETTING));
+  }
+
+  setUiPreferences(preferences) {
+    this.projectConfig.setSetting(UI_PREFERENCES_SETTING, JSON.stringify(preferences));
+    return this.uiPreferences();
   }
 
   createPlan({ repoPath, name, content = '' }) {

@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+
+const args = process.argv.slice(2);
+const sessionFlag = args.includes('--resume') ? '--resume' : '--session-id';
+const sessionIndex = args.indexOf(sessionFlag);
+const sessionId = sessionIndex >= 0 ? args[sessionIndex + 1] : 'shim-session';
+let prompt = '';
+
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  const launch = {
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'toolu_shim_background',
+        name: 'Agent',
+        input: {
+          description: 'shim-agent: integration verification',
+          subagent_type: 'fullstack-engineer',
+          prompt: 'Verify the integration path.',
+        },
+      }],
+    },
+  };
+  const launched = {
+    type: 'user',
+    toolUseResult: {
+      isAsync: true,
+      status: 'async_launched',
+      agentId: 'shim-agent-id',
+    },
+    message: {
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'toolu_shim_background',
+        content: 'Async agent launched successfully.\nagentId: shim-agent-id\nThe agent is working in the background.',
+      }],
+    },
+  };
+  const records = [launch, launched];
+
+  if (prompt.includes('RELAY_SHIM_PENDING')) {
+    records.push({
+      type: 'system',
+      subtype: 'turn_duration',
+      pendingBackgroundAgentCount: 1,
+    });
+    process.stderr.write(
+      'Background tasks still running after 600s; terminating. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.\n',
+    );
+  } else {
+    records.push({
+      type: 'queue-operation',
+      operation: 'enqueue',
+      content: '<task-notification>\n'
+        + '<task-id>shim-agent-id</task-id>\n'
+        + '<tool-use-id>toolu_shim_background</tool-use-id>\n'
+        + '<status>completed</status>\n'
+        + '<summary>Agent "shim-agent: integration verification" finished</summary>\n'
+        + '</task-notification>',
+    });
+    records.push({
+      type: 'system',
+      subtype: 'turn_duration',
+      pendingBackgroundAgentCount: 0,
+    });
+  }
+
+  records.push({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    result: prompt.includes('RELAY_SHIM_PENDING')
+      ? 'Interim shim response.'
+      : 'Clean shim response.',
+    session_id: sessionId,
+  });
+  process.stdout.write(`${records.map((record) => JSON.stringify(record)).join('\n')}\n`);
+});

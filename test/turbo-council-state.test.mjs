@@ -11,7 +11,7 @@ const catalogs = {
     { model: 'sol', isDefault: true, defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }, { reasoningEffort: 'high' }] },
   ],
   claude: [
-    { model: 'best', isDefault: false, defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] },
+    { model: 'fable', isDefault: false, defaultReasoningEffort: 'high', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] },
     { model: 'sonnet', isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'medium' }] },
   ],
 };
@@ -22,7 +22,7 @@ test('normalizes both selectable council orders with provider-specific settings'
   assert.equal(codexFirst.councilAuthorProvider, 'codex');
   assert.equal(codexFirst.councilAuthorModel, 'sol');
   assert.equal(codexFirst.councilReviewerProvider, 'claude');
-  assert.equal(codexFirst.councilReviewerModel, 'best');
+  assert.equal(codexFirst.councilReviewerModel, 'fable');
 
   const claudeFirst = normalizeTurboCouncilSettings({
     councilEnabled: true,
@@ -38,7 +38,7 @@ test('normalizes both selectable council orders with provider-specific settings'
 
 test('normalizes Claude effort against the selected model', () => {
   assert.equal(normalizeTurboCouncilSettings({ plannerModel: 'sol', councilClaudeModel: 'sonnet', councilClaudeEffort: 'high' }, catalogs).councilClaudeEffort, 'medium');
-  assert.equal(normalizeTurboCouncilSettings({ plannerModel: 'sol', councilClaudeModel: 'missing', councilClaudeEffort: 'low' }, catalogs).councilClaudeModel, 'best');
+  assert.equal(normalizeTurboCouncilSettings({ plannerModel: 'sol', councilClaudeModel: 'missing', councilClaudeEffort: 'low' }, catalogs).councilClaudeModel, 'fable');
 });
 
 test('disabled council never blocks readiness and enabled council names missing requirements', () => {
@@ -68,7 +68,7 @@ test('request state carries the selected author and reviewer route', () => {
     councilEnabled: true,
     councilOrder: ['claude', 'codex'],
     councilAuthorProvider: 'claude',
-    councilAuthorModel: 'best',
+    councilAuthorModel: 'fable',
     councilAuthorEffort: 'low',
     councilReviewerProvider: 'codex',
     councilReviewerModel: 'sol',

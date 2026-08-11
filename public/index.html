@@ -231,26 +231,26 @@
           </section>
 
           <section id="turbo-config" class="turbo-config" role="tabpanel" aria-labelledby="mode-turbo" hidden>
-            <div class="turbo-heading">
-              <div><span class="eyebrow">Multi-terminal workflow</span><h3>Planner and worker fleet</h3></div>
-              <span id="turbo-readiness" class="turbo-readiness" aria-live="polite">Checking terminals</span>
-            </div>
+            <!--
+              One slim header row carries the panel title, the route shape, and pool
+              readiness. The nested council surface keeps its classes so it still owns the
+              shared Plan council component and its --council-* tokens, but it no longer
+              paints a second frame or a second eyebrow-plus-title layer inside the panel.
+            -->
             <section class="council-config turbo-council-config" aria-labelledby="turbo-council-title">
-              <div class="council-heading">
-                <div>
-                  <span class="eyebrow">Forward planner</span>
-                  <h3 id="turbo-council-title">Planning route</h3>
-                </div>
+              <div class="council-heading turbo-heading">
+                <h3 id="turbo-council-title">Planner and workers</h3>
                 <span id="turbo-planning-count" class="council-minimum">1 planner</span>
+                <span id="turbo-readiness" class="turbo-readiness" aria-live="polite">Checking terminals</span>
               </div>
             <div class="plan-council-option turbo-council-toggle-row">
               <label class="plan-council-toggle">
                 <input id="turbo-council-enabled" type="checkbox" aria-controls="turbo-council-order turbo-council-route">
-                <span><strong>Use Plan council for this prompt</strong><small>Adds a second-provider review before workers begin.</small></span>
+                <span><strong>Use Plan council for this prompt</strong></span>
               </label>
               <button id="turbo-council-help-button" class="turbo-council-help-button" type="button" aria-expanded="false" aria-controls="turbo-council-help" aria-describedby="turbo-council-help" aria-label="Explain Turbo Plan council">?</button>
               <div id="turbo-council-help" class="turbo-council-help" role="tooltip" hidden>
-                Choose which AI builds the JSON graph first. The second AI independently checks and corrects it before workers start. This adds time and requires a signed-in Claude CLI.
+                Adds a second-provider review before workers begin. Choose which AI builds the JSON graph first. The second AI independently checks and corrects it before workers start. This adds time and requires a signed-in Claude CLI.
               </div>
             </div>
             <div id="turbo-council-order" class="turbo-council-order" role="group" aria-label="Choose which provider plans first" hidden>
@@ -259,23 +259,24 @@
               <button type="button" data-council-first="claude" aria-pressed="false">Claude first</button>
             </div>
             <div id="turbo-council-route" class="council-route turbo-council-route" aria-label="Codex plans the execution graph" data-enabled="false" data-first="codex">
-              <article id="turbo-council-codex-step" class="council-node council-node-codex turbo-council-provider turbo-council-provider-codex">
+              <article id="turbo-council-codex-step" class="council-node council-node-codex turbo-council-provider turbo-council-provider-codex" aria-describedby="turbo-council-codex-copy">
                 <div class="council-node-heading">
-                  <span id="turbo-council-codex-role" class="council-role">Planner</span>
                   <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
+                  <strong>Codex</strong>
+                  <span id="turbo-council-codex-role" class="council-role">Planner</span>
                 </div>
-                <strong>Codex</strong>
+                <!-- Visually folded into the ? disclosure. It stays the node's accessible description. -->
                 <small id="turbo-council-codex-copy">Inspects the project and builds the execution graph.</small>
                 <label><span>Model</span><select id="turbo-planner-model"></select></label>
                 <label><span>Effort</span><select id="turbo-planner-effort"></select></label>
               </article>
               <div id="turbo-council-connector" class="council-connector" aria-hidden="true"><span>review</span><b>→</b></div>
-              <article id="turbo-council-review-step" class="council-node council-node-claude turbo-council-provider turbo-council-provider-claude">
+              <article id="turbo-council-review-step" class="council-node council-node-claude turbo-council-provider turbo-council-provider-claude" aria-describedby="turbo-council-claude-copy">
                 <div class="council-node-heading">
-                  <span id="turbo-council-claude-role" class="council-role">02 Reviewer</span>
                   <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
+                  <strong>Claude</strong>
+                  <span id="turbo-council-claude-role" class="council-role">02 Reviewer</span>
                 </div>
-                <strong>Claude</strong>
                 <small id="turbo-council-claude-copy">Checks dependencies, ownership, risk, and verification.</small>
                 <label><span>Model</span><select id="turbo-council-reviewer-model"></select></label>
                 <label><span>Effort</span><select id="turbo-council-reviewer-effort"></select></label>
@@ -302,12 +303,12 @@
               </div>
             </div>
             <p id="session-message" class="field-help" role="status">Finding connected Codex terminals.</p>
-            <p id="terminal-pool-controls" class="terminal-pool-note" hidden>CC Relay opens a fresh terminal per task and keeps the final session open. Close its native window when done.</p>
+            <p id="terminal-pool-controls" class="terminal-pool-note" hidden>CC Relay opens a fresh terminal for each automatic task.</p>
             <label id="keep-terminal-open-option" class="terminal-keep-open-option" hidden>
               <input id="keep-terminal-open" type="checkbox" role="switch">
               <span>
-                <strong>Keep task terminals open</strong>
-                <small id="keep-terminal-open-help">Keeps this project's sessions connected after tasks and after CC Relay exits. This choice is not shared with other projects. Session tasks show terminal state, conversation history, and a Close terminal action in Task activity.</small>
+                <strong>Terminal session mode</strong>
+                <small id="keep-terminal-open-help">Direct tasks stay open between turns and finish only when you press Complete session in Task activity. Their terminal also stays open. This setting belongs only to this project.</small>
               </span>
             </label>
             <div id="legacy-terminal-controls">
@@ -364,7 +365,7 @@
                 <button id="terminal-settings-close" class="terminal-settings-close" type="button" aria-label="Close terminal settings">×</button>
               </div>
               <div id="connection-command-row" class="command-row">
-              <code id="launch-command">codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769</code>
+              <code id="launch-command">codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false</code>
               <button id="copy-command-button" class="button compact" type="button">Copy</button>
               <button id="copy-diagnostics-button" class="button compact" type="button">Copy diagnostics</button>
               <small class="diagnostics-note">Diagnostics include local paths and session IDs.</small>
@@ -380,8 +381,36 @@
                 <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
                 <small>Background launches are minimized. Grid launches use the next available cell.</small>
               </div>
+              <div class="completion-alert-settings" aria-label="Task completion alerts">
+                <div class="completion-alert-heading">
+                  <span>Completion alert</span>
+                  <button id="completion-alert-preview" class="button compact" type="button">Test</button>
+                </div>
+                <label for="completion-sound">
+                  <span>Sound</span>
+                  <select id="completion-sound">
+                    <option value="none">Silent</option>
+                    <option value="chime" selected>Gentle chime</option>
+                    <option value="bell">Bright bell</option>
+                    <option value="pulse">Digital pulse</option>
+                  </select>
+                </label>
+                <label class="completion-speech-toggle">
+                  <input id="completion-speech" type="checkbox">
+                  <span><strong>Speak project and task word</strong><small>For example: “Relay. Add.”</small></span>
+                </label>
+                <small id="completion-alert-status" role="status">Plays when a task finishes.</small>
+              </div>
             </div>
           </dialog>
+
+          <label class="task-name-field" for="task-name">
+            <span>
+              <strong>Task name</strong>
+              <small>Optional. CC Relay uses the request when this is blank.</small>
+            </span>
+            <input id="task-name" name="title" type="text" maxlength="120" autocomplete="off" placeholder="Give this task a short, recognizable name">
+          </label>
 
           <label class="prompt-field" for="task-prompt">
             <span class="prompt-label-row">
@@ -485,26 +514,48 @@
         <div id="task-detail" hidden>
           <div class="task-detail-scroll">
           <div class="detail-header">
-            <div>
-              <span class="eyebrow">Task activity</span>
-              <h2 id="detail-title"></h2>
+            <div class="detail-identity">
+              <div class="detail-title-line">
+                <span class="eyebrow">Task activity</span>
+                <h2 id="detail-title"></h2>
+              </div>
+              <strong id="detail-task-name" class="detail-task-name"></strong>
+              <div id="detail-execution-profile" class="detail-execution-profile"></div>
               <div id="detail-meta" class="detail-meta"></div>
             </div>
-            <div id="detail-actions" class="detail-actions"></div>
+            <div class="detail-header-controls">
+              <button id="task-detail-open" class="button compact task-detail-open" type="button" aria-haspopup="dialog" aria-controls="task-detail-modal">Full details</button>
+              <div id="detail-actions" class="detail-actions"></div>
+              <p id="terminal-retention-message" class="terminal-retention-message" role="status" hidden></p>
+            </div>
           </div>
 
           <section id="session-strip" class="session-strip" hidden data-state="closed">
             <span class="session-strip-identity">
               <span class="session-strip-glyph" aria-hidden="true">⧉</span>
               <span class="session-strip-copy">
-                <strong>Retained terminal session</strong>
+                <strong id="session-strip-title">Retained terminal session</strong>
                 <small id="session-strip-context"></small>
               </span>
             </span>
+            <span id="session-mode-badge" class="session-mode-badge" hidden>Manual finish</span>
             <span id="session-strip-state" class="session-strip-state" data-state="closed"></span>
+            <button id="session-complete-button" class="button compact session-complete-button" type="button" hidden>Complete session</button>
             <button id="session-kill-button" class="button danger compact session-kill-button" type="button">Close terminal</button>
             <p id="session-strip-message" class="session-strip-message" role="status"></p>
           </section>
+
+          <dialog id="task-detail-modal" class="terminal-settings-modal task-detail-modal" aria-labelledby="task-detail-modal-title">
+            <div class="terminal-settings-card task-detail-modal-card">
+              <div class="terminal-settings-header task-detail-modal-header">
+                <div>
+                  <span class="eyebrow">Full task record</span>
+                  <h2 id="task-detail-modal-title">Task details</h2>
+                  <p id="task-detail-modal-subtitle">Prompt, result, artifacts, and execution context.</p>
+                </div>
+                <button id="task-detail-modal-close" class="terminal-settings-close" type="button" aria-label="Close task details">×</button>
+              </div>
+              <div class="task-detail-modal-body">
 
           <section id="plan-preview" class="plan-preview" hidden>
             <div class="plan-preview-header">
@@ -620,6 +671,9 @@
             </summary>
             <div id="detail-result" class="markdown-document result-markdown"></div>
           </details>
+              </div>
+            </div>
+          </dialog>
           </div>
 
           <div id="terminal-height-resizer" class="terminal-height-resizer" role="separator" aria-label="Resize task details and terminal" aria-orientation="horizontal" tabindex="0"><span aria-hidden="true"></span></div>
@@ -642,7 +696,7 @@
               <div class="task-continuation-context">
                 <span class="task-continuation-glyph" aria-hidden="true">↳</span>
                 <span>
-                  <small>Continue session</small>
+                  <small id="task-continuation-label">Continue session</small>
                   <strong id="task-continuation-context">Same CC Relay · same conversation</strong>
                 </span>
                 <span id="task-continuation-state" class="task-continuation-state" data-state="ready">Ready</span>
@@ -700,8 +754,9 @@
             <label class="standup-length-field" for="standup-length">
               <span>Length</span>
               <select id="standup-length">
+                <option value="all" selected>All tasks</option>
                 <option value="short">Short</option>
-                <option value="standard" selected>Standard</option>
+                <option value="standard">Standard</option>
                 <option value="detailed">Detailed</option>
               </select>
             </label>
@@ -833,16 +888,21 @@
         <div class="terminal-settings-header">
           <div>
             <h2 id="task-edit-title">Edit queued task</h2>
-            <p>The request can change only while this task is still waiting to start.</p>
+            <p id="task-edit-subtitle">The request can change only while this task is still waiting to start.</p>
           </div>
           <button id="task-edit-close" class="terminal-settings-close" type="button" aria-label="Close task editor">×</button>
         </div>
         <div class="task-edit-body">
+          <label class="task-edit-name-field" for="task-edit-name">
+            <span>Task name</span>
+            <small id="task-edit-name-hint">Clear the name to regenerate it from the request.</small>
+          </label>
+          <input id="task-edit-name" type="text" maxlength="120" autocomplete="off">
           <fieldset id="task-edit-execution" class="task-edit-execution" hidden>
             <legend>Execution</legend>
             <div class="task-edit-settings-grid">
               <label for="task-edit-provider">
-                <span>AI provider</span>
+                <span id="task-edit-provider-label">AI provider</span>
                 <select id="task-edit-provider">
                   <option value="codex">Codex</option>
                   <option value="claude">Claude</option>

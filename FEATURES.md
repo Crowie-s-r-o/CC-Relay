@@ -10,11 +10,13 @@ CC Relay is designed to make AI development work easier to control:
 
 - Pin projects and set separate maximum Codex and Claude instances for each one.
 - Queue prompts instead of waiting for one task to finish before preparing the next.
+- Give tasks recognizable names and rename them without replacing queued work.
 - Choose the provider, model, and reasoning effort without keeping a target terminal open.
 - Launch a fresh provider terminal only when a queued task receives capacity.
 - Optionally keep final task terminal sessions open, with an independent saved choice for every project.
 - Run independent tasks concurrently up to each project's provider limits.
 - Continue a direct Codex or Claude task by relaunching and resuming its saved conversation.
+- Retry a failed direct task with a newly selected Codex or Claude executor, model, and effort.
 - Attach screenshots and other reference images to tasks.
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
 - Persist prompts, events, results, plans, errors, and attachments locally.
@@ -96,7 +98,13 @@ Pin frequently used folders and treat each one as a workspace. A project card sc
 
 Tasks are stored in SQLite and survive restarts. Each project owns its queue order, pause state, FIFO barriers, and provider limits. Waiting tasks can be reordered. Disposable tasks are not assigned manually because the pool creates their terminal when they start. Legacy persistent tasks retain compatible reassignment support.
 
+Task names are optional and fall back to a compact form of the request. A waiting task can be
+renamed in place while its task ID, prompt, position, routing, workflow configuration, and images
+remain unchanged.
+
 Task Activity includes a compact continuation dock for direct tasks. A follow-up always reuses the selected task row and saved conversation. While a direct task is running, Codex and interactive Claude accept exact active-turn updates without creating queue work. After a task finishes, CC Relay uses a live retained session immediately, or reserves a free provider slot, relaunches the saved conversation, and sends the next turn without creating a task. If no slot is free, submission stays on the finished task and asks the user to try again. The Prompts disclosure above the event rail lists the original request and every accepted follow-up.
+
+Retrying a failed, cancelled, or interrupted automatic Execute task opens its execution settings first. The executor, model, and effort can change before the task returns to the queue. Keeping the same executor preserves the saved conversation when available. Switching between Codex and Claude starts a fresh provider conversation while preserving the task ID, request, images, and queue history.
 
 ### Run now
 
@@ -108,13 +116,13 @@ Tasks can include PNG, JPEG, or WebP reference images. CC Relay validates and st
 
 ### Task activity
 
-CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. Filters, follow mode, and log copying make long executions easier to monitor.
+CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. Filters, follow mode, and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
 
 ### AI daily standup
 
-The Task queue includes a **Standup** action. Opening it does not run AI. Choose Short, Standard, or Detailed, then select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved prompts, assistant responses, final results, and failures for that project and Relay scope. It never uses a task terminal.
+The Task queue includes a **Standup** action. Opening it does not run AI. **All tasks** is the default and produces one very short changed-thing item per recorded task. Short, Standard, and Detailed remain available for grouped summaries. Select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved prompts, assistant responses, final results, and failures for that project and Relay scope. It never uses a task terminal.
 
-The AI groups related work, explains what changed and how, and separates completed Tasks from unresolved Blockers. The modal lets you regenerate or copy plain sectioned text with no Markdown hyphen prefixes. Standup generation does not create a queue task, resume an existing task conversation, or add itself to history.
+All tasks keeps each recorded task separate. The other modes group related work and explain what changed and how. Every mode separates completed Tasks from unresolved Blockers. The modal lets you regenerate or copy plain sectioned text with no Markdown hyphen prefixes. Standup generation does not create a queue task, resume an existing task conversation, or add itself to history.
 
 ### Local persistence
 

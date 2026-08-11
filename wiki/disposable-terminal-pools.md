@@ -81,8 +81,12 @@ A continuation keeps the source task ID and first checks that the project has a 
 
 ```text
 claude --dangerously-skip-permissions --resume <conversation-id> --model <model> --effort <effort> --settings <hooks>
-codex resume <conversation-id> --dangerously-bypass-approvals-and-sandbox --cd <project> --remote ws://127.0.0.1:4769
+codex resume <conversation-id> --dangerously-bypass-approvals-and-sandbox --cd <project> --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false
 ```
+
+Every interactive Codex launch, fresh or resumed, ends with `-c check_for_update_on_startup=false`
+so a pending Codex CLI release cannot stop the TUI on an update prompt before it dials `--remote`.
+See [[codex-update-prompt-freeze]].
 
 A direct Execute Claude launch, fresh or resumed, carries the queued turn's model and effort on
 that first command, so the terminal opens already configured and `ClaudeTerminalExecutor` no longer

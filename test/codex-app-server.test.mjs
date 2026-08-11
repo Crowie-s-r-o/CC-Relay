@@ -120,6 +120,118 @@ test('Codex user-input server requests raise terminal attention without changing
   }
 });
 
+test('Codex collaboration items reach the task event stream with useful messages', () => {
+  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  const events = [];
+  client.activeTurns.set(THREAD_ID, {
+    taskId: 114,
+    threadId: THREAD_ID,
+    turnId: 'turn-agents',
+    reasoningSummaries: new Map(),
+    onEvent: (event) => events.push(event),
+  });
+
+  try {
+    client.handleNotification('item/completed', {
+      threadId: THREAD_ID,
+      turnId: 'turn-agents',
+      item: {
+        type: 'collabAgentToolCall',
+        id: 'spawn-worker',
+        tool: 'spawnAgent',
+        status: 'completed',
+        senderThreadId: THREAD_ID,
+        receiverThreadIds: ['agent-thread'],
+        prompt: 'Inspect the renderer.',
+        model: 'gpt-test',
+        reasoningEffort: 'high',
+        agentsStates: { 'agent-thread': { status: 'running', message: null } },
+      },
+    });
+    client.handleNotification('item/completed', {
+      threadId: THREAD_ID,
+      turnId: 'turn-agents',
+      item: {
+        type: 'subAgentActivity',
+        id: 'activity-started',
+        kind: 'started',
+        agentThreadId: 'agent-thread',
+        agentPath: '/root/renderer_worker',
+      },
+    });
+    client.handleNotification('item/completed', {
+      threadId: THREAD_ID,
+      turnId: 'turn-agents',
+      item: {
+        type: 'subAgentActivity',
+        id: 'activity-finished',
+        kind: 'interacted',
+        agentThreadId: 'agent-thread',
+        agentPath: '/root/renderer_worker',
+      },
+    });
+
+    assert.deepEqual(events.map(({ event }) => event.item.type), [
+      'collabAgentToolCall',
+      'subAgentActivity',
+      'subAgentActivity',
+    ]);
+    assert.deepEqual(events.map(({ message }) => message), [
+      'Codex started a sub-agent.',
+      'Codex started sub-agent "renderer_worker".',
+      'Codex recorded activity for sub-agent "renderer_worker".',
+    ]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('Windows and POSIX sub-agent paths resolve to the same sub-agent name', () => {
+  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  const events = [];
+  client.activeTurns.set(THREAD_ID, {
+    taskId: 115,
+    threadId: THREAD_ID,
+    turnId: 'turn-agents',
+    reasoningSummaries: new Map(),
+    onEvent: (event) => events.push(event),
+  });
+
+  try {
+    client.handleNotification('item/completed', {
+      threadId: THREAD_ID,
+      turnId: 'turn-agents',
+      item: {
+        type: 'subAgentActivity',
+        id: 'activity-windows',
+        kind: 'started',
+        agentThreadId: 'agent-thread',
+        agentPath: 'C:\\Users\\dev\\agents\\renderer_worker',
+      },
+    });
+    client.handleNotification('item/completed', {
+      threadId: THREAD_ID,
+      turnId: 'turn-agents',
+      item: {
+        type: 'subAgentActivity',
+        id: 'activity-posix',
+        kind: 'started',
+        agentThreadId: 'agent-thread',
+        agentPath: '/home/dev/agents/renderer_worker',
+      },
+    });
+
+    assert.deepEqual(events.map(({ message }) => message), [
+      'Codex started sub-agent "renderer_worker".',
+      'Codex started sub-agent "renderer_worker".',
+    ]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
 class FakeWebSocket extends EventTarget {
   constructor(received, {
     emitCompletion = true,
@@ -367,6 +479,84 @@ test('live updates reject an unexpected turn response', async () => {
   await assert.rejects(client.steer(42, 'Correct the current work'), /different turn/);
 });
 
+test('shared app-server resolves the Windows codex shim and launches it through cmd.exe', async () => {
+  let invocation = null;
+  const client = new CodexAppServer({
+    platform: 'win32',
+    // Windows PATH search only appends .com and .exe, so the bare name finds nothing.
+    resolveExecutable: (name) => (name === 'codex' ? 'C:\\Users\\dev\\AppData\\Roaming\\npm\\codex.cmd' : name),
+    spawnProcess: (command, args, options) => {
+      invocation = { command, args, options };
+      return fakeAppServerProcess();
+    },
+    webSocketFactory: () => new FakeWebSocket([]),
+    proxy: new FakeProxy(),
+    // Keeps the win32 teardown from reaching the real taskkill implementation on this host.
+    terminateProcess: () => true,
+  });
+
+  try {
+    await client.listConnectedThreads();
+    assert.equal(invocation.command, 'cmd.exe');
+    assert.deepEqual(invocation.args.slice(0, 3), ['/d', '/s', '/c']);
+    assert.ok(invocation.args[3].includes('codex.cmd'));
+    assert.ok(invocation.args[3].includes('app-server'));
+    assert.ok(invocation.args[3].includes(CODEX_APP_SERVER_ENDPOINT));
+    assert.equal(invocation.options.windowsVerbatimArguments, true);
+    assert.equal(invocation.options.windowsHide, true);
+    // Windows has no process groups, so the detached launch must stay off there.
+    assert.equal(invocation.options.detached, false);
+    assert.deepEqual(invocation.options.stdio, ['ignore', 'pipe', 'pipe']);
+  } finally {
+    client.close();
+  }
+});
+
+test('shared app-server spawns a real Windows codex executable directly', async () => {
+  let invocation = null;
+  const client = new CodexAppServer({
+    platform: 'win32',
+    resolveExecutable: () => 'C:\\Program Files\\codex\\codex.exe',
+    spawnProcess: (command, args, options) => {
+      invocation = { command, args, options };
+      return fakeAppServerProcess();
+    },
+    webSocketFactory: () => new FakeWebSocket([]),
+    proxy: new FakeProxy(),
+    terminateProcess: () => true,
+  });
+
+  try {
+    await client.listConnectedThreads();
+    assert.equal(invocation.command, 'C:\\Program Files\\codex\\codex.exe');
+    assert.deepEqual(invocation.args, ['-c', 'allow_login_shell=false', 'app-server', '--listen', CODEX_APP_SERVER_ENDPOINT]);
+    assert.equal(invocation.options.windowsVerbatimArguments, undefined);
+    assert.equal(invocation.options.windowsHide, true);
+  } finally {
+    client.close();
+  }
+});
+
+test('shared app-server termination reports its platform so Windows kills the whole tree', async () => {
+  const terminations = [];
+  const client = new CodexAppServer({
+    platform: 'win32',
+    resolveExecutable: () => 'C:\\npm\\codex.cmd',
+    spawnProcess: () => fakeAppServerProcess(),
+    webSocketFactory: () => new FakeWebSocket([]),
+    proxy: new FakeProxy(),
+    terminateProcess: (child, signal, platform) => {
+      terminations.push({ pid: child?.pid ?? null, signal, platform });
+      return true;
+    },
+  });
+
+  await client.listConnectedThreads();
+  client.close();
+  // An orphaned app-server would keep the shared WebSocket port bound after a restart.
+  assert.deepEqual(terminations, [{ pid: null, signal: 'SIGTERM', platform: 'win32' }]);
+});
+
 test('shared app-server lists connected threads and completes a queued turn', async () => {
   const received = [];
   let spawnArgs = null;
@@ -397,7 +587,7 @@ test('shared app-server lists connected threads and completes a queued turn', as
     assert.equal(spawnOptions.detached, process.platform !== 'win32');
     assert.equal(
       client.status().launchCommand,
-      `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${SHARED_CODEX_ENDPOINT}`,
+      `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${SHARED_CODEX_ENDPOINT} -c check_for_update_on_startup=false`,
     );
 
     const models = await client.listModels();

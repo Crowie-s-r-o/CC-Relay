@@ -3,7 +3,7 @@ import { cpSync, existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ArtifactStore } from './artifacts.mjs';
+import { ArtifactStore, isPathInside } from './artifacts.mjs';
 import {
   decodeImageAttachments,
   MAX_IMAGE_ATTACHMENTS,
@@ -11,7 +11,7 @@ import {
   MAX_TOTAL_IMAGE_BYTES,
 } from './attachments.mjs';
 import { ClaudeBinaryResolver } from './claude-binary.mjs';
-import { ClaudeExecutionRunner } from './claude-execution-runner.mjs';
+import { ClaudeExecutionRunner, sameWorkspacePath } from './claude-execution-runner.mjs';
 import { ClaudeHookBridge } from './claude-hook-bridge.mjs';
 import { ClaudeRuntimeStatus, isConfidentlyUnavailable } from './claude-runtime-status.mjs';
 import { ClaudeRunner } from './claude-runner.mjs';
@@ -48,11 +48,12 @@ import { PlanRunCoordinator } from './plan-run.mjs';
 import {
   ProjectLauncher,
   claudeRelayCommand,
+  cmdQuote,
   normalizeTerminalLayout,
   shellQuote,
   validateProjectPath,
 } from './project-launcher.mjs';
-import { TaskQueue } from './queue.mjs';
+import { isManualSessionTask, TaskQueue } from './queue.mjs';
 import {
   resolveSubmissionThread,
   SESSION_NEVER_SEEN,
@@ -63,6 +64,8 @@ import { TerminalCloseCoordinator } from './terminal-close-coordinator.mjs';
 import { retainedSessionTaskForThread } from './terminal-control.mjs';
 import { TerminalLaunchCoordinator } from './terminal-launch-coordinator.mjs';
 import { TerminalRuntimeResolver } from './terminal-runtime-resolver.mjs';
+import { taskTitleFromInput, titleFromPrompt } from './task-title.mjs';
+import { normalizeUiPreferences } from './ui-preferences.mjs';
 import { TurboPlanCouncilReviewer } from './turbo-plan-council.mjs';
 import { validateTurboCouncilConfig } from './turbo-council-config.mjs';
 import { TurboRunner } from './turbo-runner.mjs';
@@ -99,6 +102,12 @@ const IS_DESKTOP = process.argv.includes('--relay-desktop');
 const LOCALHOST_TASK_DATABASE_SETTING = 'localhost-task-database';
 const PLAN_COUNCIL_TERMINAL_EXECUTION = process.platform === 'darwin';
 const CLAUDE_TASK_STEERING = PLAN_COUNCIL_TERMINAL_EXECUTION;
+// The connection helper hands the user a command to paste into their own terminal, so it has to
+// be quoted for the shell that will read it. cmd.exe gives single quotes no meaning at all, and
+// the Claude binary now resolves to an absolute Windows path such as
+// C:\Users\me\AppData\Roaming\npm\claude.cmd, which splits at its spaces without real quoting.
+// Every other platform keeps shellQuote by reference, so its output cannot drift.
+const LAUNCH_COMMAND_QUOTE = process.platform === 'win32' ? cmdQuote : shellQuote;
 const MAX_CLAUDE_HOOK_BYTES = 10 * 1024 * 1024;
 let relayEndpointUrl = null;
 
@@ -458,11 +467,6 @@ function taskIdFromPath(pathname) {
   return match ? Number(match[1]) : null;
 }
 
-function titleFromPrompt(prompt) {
-  const compact = prompt.replace(/\s+/g, ' ').trim();
-  return compact.length > 80 ? `${compact.slice(0, 77)}...` : compact;
-}
-
 function validateInstanceLimit(value, provider) {
   const limit = Number(value);
   if (!Number.isInteger(limit) || limit < 1 || limit > 8) {
@@ -754,7 +758,7 @@ function standupRecord(task) {
 function serveStatic(pathname, response) {
   const requested = pathname === '/' ? '/index.html' : pathname;
   const filePath = resolve(PUBLIC_ROOT, `.${requested}`);
-  if (!filePath.startsWith(`${PUBLIC_ROOT}/`) || !existsSync(filePath) || !statSync(filePath).isFile()) {
+  if (!isPathInside(PUBLIC_ROOT, filePath) || !existsSync(filePath) || !statSync(filePath).isFile()) {
     sendError(response, 404, 'Not found.');
     return;
   }
@@ -779,7 +783,7 @@ function serveTaskAttachment(task, attachment, response) {
   const attachmentRoot = resolve(artifacts.taskDirectory(task.id), 'attachments');
   const filePath = resolve(attachmentRoot, attachment.fileName);
   if (
-    !filePath.startsWith(`${attachmentRoot}/`)
+    !isPathInside(attachmentRoot, filePath)
     || !existsSync(filePath)
     || !statSync(filePath).isFile()
   ) {
@@ -945,7 +949,9 @@ export const server = createServer(async (request, response) => {
           taskDirectFollowUp: true,
           taskFollowUpAttachments: true,
           queuedTaskEditing: true,
+          queuedTaskNaming: true,
           queuedTaskProviderSwitch: true,
+          retryTaskExecutionSettings: true,
           queuedClaudeAssignment: true,
           taskSteering: true,
           claudeTaskSteering: CLAUDE_TASK_STEERING,
@@ -957,12 +963,15 @@ export const server = createServer(async (request, response) => {
           disposableTerminalPools: true,
           resumableDisposableSessions: true,
           retainedTerminalSessions: true,
+          liveTerminalRetention: true,
+          manualSessionTasks: true,
           sharedProjectConfig: true,
           localhostTaskImport: true,
           projectTerminalSettings: true,
           projectColors: true,
           aiStandupGeneration: true,
           aiStandupConfiguration: true,
+          aiStandupAllTasks: true,
           crossProcessLaunchOwnership: true,
         },
         taskCount: tasks.length,
@@ -1014,7 +1023,7 @@ export const server = createServer(async (request, response) => {
         ],
         connection: {
           ...codexAppServer.status(),
-          claudeLaunchCommand: claudeRelayCommand(null, shellQuote, claudeBinaryPath),
+          claudeLaunchCommand: claudeRelayCommand(null, LAUNCH_COMMAND_QUOTE, claudeBinaryPath),
           claudeDiscoveryError: claudeSessions.lastError,
           codexDiscoveryError: codexResult.status === 'rejected' ? codexResult.reason.message : null,
         },
@@ -1203,6 +1212,19 @@ export const server = createServer(async (request, response) => {
         projects: database.listProjects(),
         activeProjectPath: database.activeProjectPath(),
       });
+      return;
+    }
+
+    if (request.method === 'GET' && pathname === '/api/ui-preferences') {
+      sendJson(response, 200, { preferences: database.uiPreferences() });
+      return;
+    }
+
+    if (request.method === 'PATCH' && pathname === '/api/ui-preferences') {
+      const body = await readJson(request, 16 * 1024);
+      const preferences = normalizeUiPreferences(body);
+      if (!preferences) throw new Error('Valid panel widths are required.');
+      sendJson(response, 200, { preferences: database.setUiPreferences(preferences) });
       return;
     }
 
@@ -1735,6 +1757,10 @@ export const server = createServer(async (request, response) => {
       if (!prompt) {
         throw new Error('Task prompt is required.');
       }
+      const title = taskTitleFromInput(
+        Object.hasOwn(body, 'title') ? body.title : undefined,
+        prompt,
+      );
       const submissionId = typeof body.submissionId === 'string' ? body.submissionId.trim() : null;
       if (!submissionId) {
         throw new Error('Task submission ID is required. Refresh CC Relay and try again.');
@@ -1749,6 +1775,10 @@ export const server = createServer(async (request, response) => {
         : 'persistent';
       const disposable = terminalLifecycle === 'disposable';
       const keepTerminalOpen = disposable && body.keepTerminalOpen === true;
+      const manualCompletion = disposable
+        && keepTerminalOpen
+        && mode === 'execute'
+        && body.manualCompletion === true;
       const terminalLayout = disposable ? validateTaskTerminalLayout(body.terminalLayout) : null;
       // Run now pins the task to the visibly selected terminal, so it deliberately opts out
       // of idle routing. Plan council occupies both of its providers and never reroutes.
@@ -1769,6 +1799,7 @@ export const server = createServer(async (request, response) => {
       const existingSubmission = database.getTaskBySubmissionId(submissionId);
       if (existingSubmission) {
         const sameSubmission = existingSubmission.prompt === prompt
+          && existingSubmission.title === title
           && existingSubmission.mode === mode
           && existingSubmission.provider === provider;
         if (!sameSubmission) {
@@ -1827,6 +1858,7 @@ export const server = createServer(async (request, response) => {
         preferIdleTerminal,
         terminalLifecycle,
         keepTerminalOpen,
+        manualCompletion,
       });
 
       if (mode === 'turbo') {
@@ -1870,7 +1902,7 @@ export const server = createServer(async (request, response) => {
           reviewerEffort: council.enabled ? council.reviewerEffort : undefined,
         });
         const taskInput = {
-          title: titleFromPrompt(prompt), prompt, thread, provider: 'codex', mode, attachments, runNow,
+          title, prompt, thread, provider: 'codex', mode, attachments, runNow,
           submissionId,
           model: planner.model, effort: planner.effort,
           repoPath: thread.cwd,
@@ -1957,7 +1989,7 @@ export const server = createServer(async (request, response) => {
           repoPath: thread.cwd,
         });
         const task = queue.enqueue({
-          title: titleFromPrompt(prompt),
+          title,
           prompt,
           thread,
           provider: 'council',
@@ -1991,7 +2023,7 @@ export const server = createServer(async (request, response) => {
           models: CLAUDE_MODELS,
         });
         const task = queue.enqueue({
-          title: titleFromPrompt(prompt),
+          title,
           prompt,
           thread,
           provider,
@@ -2004,6 +2036,7 @@ export const server = createServer(async (request, response) => {
           repoPath: thread.cwd,
           terminalLifecycle,
           keepTerminalOpen,
+          manualCompletion,
           terminalLayout,
         });
         sendJson(response, 201, { task });
@@ -2015,7 +2048,7 @@ export const server = createServer(async (request, response) => {
         models: await codexAppServer.listModels(),
       });
       const task = queue.enqueue({
-        title: titleFromPrompt(prompt),
+        title,
         prompt,
         thread,
         provider,
@@ -2028,6 +2061,7 @@ export const server = createServer(async (request, response) => {
         repoPath: thread.cwd,
         terminalLifecycle,
         keepTerminalOpen,
+        manualCompletion,
         terminalLayout,
       });
       sendJson(response, 201, { task });
@@ -2140,6 +2174,9 @@ export const server = createServer(async (request, response) => {
       if (sourceTask.mode !== 'execute' || !['codex', 'claude'].includes(sourceTask.provider)) {
         throw new Error('Only direct Codex or Claude tasks can continue in one terminal session.');
       }
+      if (isManualSessionTask(sourceTask) && sourceTask.status === 'complete') {
+        throw new Error('This terminal session task is complete and cannot accept more messages.');
+      }
       if (sourceTask.status === 'running') {
         const steered = await steerRunningTask(sourceTask, prompt, attachments);
         sendJson(response, 200, {
@@ -2160,7 +2197,7 @@ export const server = createServer(async (request, response) => {
           ? await codexAppServer.readConnectedThread(sourceTask.thread_id)
           : await claudeSessions.readConnectedSession(sourceTask.thread_id)
         : null;
-      if (!['complete', 'failed', 'cancelled', 'interrupted'].includes(sourceTask.status)) {
+      if (!['open', 'complete', 'failed', 'cancelled', 'interrupted'].includes(sourceTask.status)) {
         throw new Error('That task is not ready to continue yet.');
       }
       const resumeDisposable = sourceTask.terminal_lifecycle === 'disposable' && !retainedThread;
@@ -2262,10 +2299,23 @@ export const server = createServer(async (request, response) => {
     if (request.method === 'PATCH' && /^\/api\/tasks\/\d+$/.test(pathname)) {
       const taskId = taskIdFromPath(pathname);
       const body = await readJson(request, MAX_TASK_REQUEST_BYTES);
-      const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+      const currentTask = database.getTask(taskId);
+      if (!currentTask) throw new Error('Task not found.');
+      const promptProvided = Object.hasOwn(body, 'prompt');
+      const titleProvided = Object.hasOwn(body, 'title');
+      if (!promptProvided && !titleProvided && !Object.hasOwn(body, 'provider')) {
+        throw new Error('A task name, prompt, or execution setting is required.');
+      }
+      if (promptProvided && typeof body.prompt !== 'string') {
+        throw new Error('Task prompt must be text.');
+      }
+      const prompt = promptProvided ? body.prompt.trim() : currentTask.prompt;
       if (!prompt) throw new Error('Task prompt is required.');
       if (prompt.length > 12_000) throw new Error('Task prompt must be 12,000 characters or fewer.');
-      const changes = { title: titleFromPrompt(prompt), prompt };
+      const title = titleProvided
+        ? taskTitleFromInput(body.title, prompt)
+        : promptProvided ? titleFromPrompt(prompt) : currentTask.title;
+      const changes = { title, prompt };
       if (Object.hasOwn(body, 'provider')) {
         const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
         if (!['codex', 'claude'].includes(provider)) {
@@ -2282,7 +2332,37 @@ export const server = createServer(async (request, response) => {
         throw new Error('Choose an AI provider when changing execution settings.');
       }
       const task = queue.edit(taskId, changes);
-      diagnostic('api.task.edited', { taskId, repoPath: task.repo_path, mode: task.mode, provider: task.provider });
+      diagnostic('api.task.edited', {
+        taskId,
+        repoPath: task.repo_path,
+        mode: task.mode,
+        provider: task.provider,
+        title: task.title,
+      });
+      sendJson(response, 200, { task });
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/tasks\/\d+\/keep-terminal-open$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const task = queue.keepTerminalOpen(taskId);
+      diagnostic('api.task.terminal_retention_enabled', {
+        taskId,
+        repoPath: task.repo_path,
+        mode: task.mode,
+      });
+      sendJson(response, 200, { task });
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/tasks\/\d+\/complete-session$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const task = queue.completeSession(taskId);
+      diagnostic('api.task.session_completed', {
+        taskId,
+        repoPath: task.repo_path,
+        provider: task.provider,
+      });
       sendJson(response, 200, { task });
       return;
     }
@@ -2341,7 +2421,7 @@ export const server = createServer(async (request, response) => {
       const attachments = sourceTask.attachments.map((attachment) => {
         const filePath = resolve(attachmentRoot, attachment.fileName || '');
         if (
-          !filePath.startsWith(`${attachmentRoot}/`)
+          !isPathInside(attachmentRoot, filePath)
           || !existsSync(filePath)
           || !statSync(filePath).isFile()
         ) {
@@ -2396,18 +2476,42 @@ export const server = createServer(async (request, response) => {
       if (!['failed', 'cancelled', 'interrupted'].includes(task.status)) {
         throw new Error('Only failed, cancelled, or interrupted tasks can be retried.');
       }
+      const body = await readJson(request);
+      const retryExecutionRequested = ['provider', 'model', 'effort']
+        .some((field) => Object.hasOwn(body, field));
+      let retryExecution = null;
+      if (retryExecutionRequested) {
+        if (task.mode !== 'execute' || task.terminal_lifecycle !== 'disposable') {
+          throw new Error('Only automatic Execute tasks can change executor or effort when retrying.');
+        }
+        const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
+        if (!['codex', 'claude'].includes(provider)) {
+          throw new Error('Choose Codex or Claude as the retry executor.');
+        }
+        if (provider === 'claude') requireClaudeReady('Claude execution');
+        const execution = validateExecutionSettings({
+          model: body.model,
+          effort: body.effort,
+          models: provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
+        });
+        retryExecution = { provider, ...execution };
+      }
       let reuseRetainedTerminal = false;
       if (
         task.mode === 'execute'
         && task.terminal_lifecycle === 'disposable'
         && task.keep_terminal_open
         && task.thread_id
+        && (!retryExecution || retryExecution.provider === task.provider)
       ) {
         const retainedThread = task.provider === 'codex'
           ? await codexAppServer.readConnectedThread(task.thread_id)
           : await claudeSessions.readConnectedSession(task.thread_id);
         if (retainedThread) {
-          if (resolve(retainedThread.cwd) !== resolve(task.repo_path)) {
+          // Windows reports the retained terminal's cwd in whatever drive-letter and path case
+          // the shell recorded, so a verbatim resolved comparison rejects the very terminal
+          // CC Relay opened. POSIX keeps the exact byte comparison this replaces.
+          if (!sameWorkspacePath(retainedThread.cwd, task.repo_path)) {
             throw new Error('The retained terminal is no longer open in this task project.');
           }
           if (retainedThread.status !== 'idle') {
@@ -2417,7 +2521,6 @@ export const server = createServer(async (request, response) => {
         }
       }
       if (task.mode === 'plan' && task.terminal_lifecycle !== 'disposable') {
-        const body = await readJson(request);
         const requestedThreadId = typeof body.threadId === 'string' ? body.threadId.trim() : '';
         const requestedAuthorThreadId = typeof body.authorThreadId === 'string'
           ? body.authorThreadId.trim()
@@ -2471,7 +2574,9 @@ export const server = createServer(async (request, response) => {
           database.addEvent(taskId, 'queue', `Plan council Codex terminal moved to ${reviewerThread.title}.`);
         }
       }
-      sendJson(response, 200, { task: queue.retry(taskId, { reuseRetainedTerminal }) });
+      sendJson(response, 200, {
+        task: queue.retry(taskId, { reuseRetainedTerminal, execution: retryExecution }),
+      });
       return;
     }
 

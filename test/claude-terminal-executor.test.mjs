@@ -4,10 +4,17 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { ClaudeExecutionRunner, taskPrompt } from '../src/claude-execution-runner.mjs';
 import {
+  CLAUDE_COMPOSER_ANCHOR_CHARS,
   CLAUDE_COMPOSER_CLEAR_KEYS,
+  CLAUDE_COMPOSER_MAX_CHROME_LINES,
+  CLAUDE_COMPOSER_MAX_TAIL_DEPTH,
+  CLAUDE_COMPOSER_MIN_STRIPPED_ANCHOR_CHARS,
+  CLAUDE_COMPOSER_STATUS_ROW_PATTERNS,
+  CLAUDE_COMPOSER_TAIL_LINES,
   CLAUDE_PASTE_COLLAPSE_MIN_LINES,
   CLAUDE_RESUME_PICKER_FALLBACK_KEYS,
   CLAUDE_RESUME_PICKER_KEYS,
+  CLAUDE_SCREEN_RULE_PATTERN,
   ClaudeTerminalExecutor,
   classifyClaudeScreen,
   claudeComposerContent,
@@ -925,6 +932,132 @@ test('the status row family recognizes every composer state, including a held pa
   assert.equal(claudeComposerState(afterClear, 'List the files.'), 'empty');
 });
 
+// The frame a text-only live steer actually leaves on screen, reproduced from a Claude Code
+// 2.1.224 capture taken through a private pty at 80 columns on Darwin 25.5.0. The workspace and
+// host row are neutralized; every structural fact is byte-faithful.
+//
+// This is THE shape the old classifier could not read. A single-line follow-up message becomes a
+// THREE line paste once taskPrompt() appends the non-interactive notice after a blank line, three
+// lines are under the collapse threshold, so the text renders literally and word-wraps over four
+// rows. That puts the caret nine non-empty lines above the bottom of the screen, past the former
+// CLAUDE_COMPOSER_MAX_TAIL_DEPTH of 8, so claudeComposerContent() reported found:false and the
+// whole guarded submit schedule classified it as 'unreadable' and sent nothing at all.
+const LIVE_TEXT_STEER_CAPTURE = [
+  '⏺ Working on the previous instruction.',
+  '',
+  '────────────────────────────────────────────────────────────────────────────────',
+  '❯ also fix the spacing in the header',
+  '',
+  '  CC Relay orchestrator notice: this is a non-interactive run and no answers',
+  '  can be provided. Do not ask questions, request approval, or wait for user',
+  '  input. Make reasonable assumptions and proceed autonomously. If progress is',
+  '  impossible, report the blocker and end the run.',
+  '────────────────────────────────────────────────────────────────────────────────',
+  '  dev@host:/private/tmp/probe-cwd',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  '                                                                            /rc',
+].join('\n');
+
+test('a text-only live steer is recognized in its captured multi-row composer frame', () => {
+  const delivered = taskPrompt({
+    prompt: 'also fix the spacing in the header',
+    attachments: [],
+  });
+  // The exact reason this frame exists: three lines never collapse.
+  assert.equal(delivered.split('\n').length, 3);
+  assert.ok(delivered.split('\n').length < CLAUDE_PASTE_COLLAPSE_MIN_LINES);
+
+  // The caret sits deeper than the one-row composer bound, which is the whole defect.
+  const tail = claudeScreenTailLines(LIVE_TEXT_STEER_CAPTURE);
+  const caretIndex = tail.findIndex((line) => line.startsWith('❯'));
+  assert.ok(caretIndex >= 0);
+  assert.ok(
+    tail.length - caretIndex > CLAUDE_COMPOSER_MAX_TAIL_DEPTH,
+    'the captured caret must sit past the one-row composer depth bound',
+  );
+
+  assert.equal(classifyClaudeScreen(LIVE_TEXT_STEER_CAPTURE), 'composer');
+  assert.equal(claudeComposerContent(LIVE_TEXT_STEER_CAPTURE).found, true);
+  // Positive: this exact update is visibly held, so a guarded Return is allowed.
+  assert.equal(claudeComposerState(LIVE_TEXT_STEER_CAPTURE, delivered), 'held');
+  // Negative, unchanged: relative to somebody else's prompt the same frame is foreign text.
+  assert.equal(claudeComposerState(LIVE_TEXT_STEER_CAPTURE, taskPrompt({
+    prompt: 'a completely different instruction',
+    attachments: [],
+  })), 'junk');
+
+  // An empty composer in the same chrome still reads empty, so widening the search cannot turn a
+  // cleared composer into a held one on the opening-prompt path that re-injects for 'empty'.
+  const emptied = LIVE_TEXT_STEER_CAPTURE
+    .split('\n')
+    .filter((line) => !line.startsWith('  CC Relay orchestrator') && !line.startsWith('  can be')
+      && !line.startsWith('  input.') && !line.startsWith('  impossible,'))
+    .join('\n')
+    .replace('❯ also fix the spacing in the header', '❯ ');
+  assert.equal(claudeComposerState(emptied, delivered), 'empty');
+});
+
+test('the composer scan is bounded by the chrome below its closing rule', () => {
+  // A caret with more than the allowed chrome below its closing rule is transcript, not a
+  // composer. This is what replaces the old raw depth bound, and it is what stops a replayed
+  // `❯ user message` from being read as the input box.
+  const replayed = [
+    '❯ an earlier user message replayed by --resume',
+    ...Array.from({ length: CLAUDE_COMPOSER_MAX_CHROME_LINES + 2 }, (_, i) => `⏺ output line ${i}`),
+    SCREEN_RULE,
+    ...Array.from({ length: CLAUDE_COMPOSER_MAX_CHROME_LINES + 2 }, (_, i) => `  trailing ${i}`),
+  ].join('\n');
+  assert.equal(claudeComposerContent(replayed).found, false);
+  assert.equal(claudeComposerState(replayed, 'anything at all'), 'unreadable');
+
+  // A composer taller than the composer scan window fails closed rather than guessing.
+  const enormous = composerFrame(
+    Array.from({ length: CLAUDE_COMPOSER_TAIL_LINES + 5 }, (_, i) => `row ${i}`).join('\n'),
+  );
+  assert.equal(claudeComposerContent(enormous).found, false);
+
+  // Widening the scan must not let a composer read 'empty' that could not read 'empty' before,
+  // because on the opening-prompt path 'empty' re-injects the whole prompt. It cannot: an empty
+  // composer is one body row, and blank rows are filtered out of the tail before classification,
+  // so even an all-blank body collapses to the shallow shape the old bound already accepted.
+  const blankBody = composerFrame('\n\n\n\n\n');
+  const blankTail = claudeScreenTailLines(blankBody);
+  const blankCaret = blankTail.findIndex((line) => line.startsWith('❯'));
+  assert.ok(blankTail.length - blankCaret <= CLAUDE_COMPOSER_MAX_TAIL_DEPTH);
+  assert.equal(claudeComposerState(blankBody, 'an opening prompt'), 'empty');
+});
+
+test('a wrapped row that begins with a quote marker is not mistaken for the caret', () => {
+  // The caret pattern also matches a plain `>`, and a literal multi-row paste can start a wrapped
+  // row with one: a quoted error, a markdown blockquote, a diff marker. Taking that row as the
+  // caret extracts only the TAIL of the paste, so this turn's own held text stops containing its
+  // own first line and classifies as a foreign draft. On the steer path that silently ends
+  // recovery; on the opening-prompt path 'junk' clears the composer CC Relay just pasted into.
+  const deliveredPrompt = taskPrompt({
+    prompt: 'please fix the crash below and keep the retry path intact '
+      + '> TypeError: cannot read properties of undefined reading composer',
+    attachments: [],
+  });
+  assert.equal(deliveredPrompt.split('\n').length, 3);
+  const frame = heldPasteFrame(deliveredPrompt, { columns: 58 });
+  // Prove the hazard is really present in this frame, otherwise the test would pass for free.
+  const rows = frame.split('\n');
+  assert.ok(
+    rows.some((row) => row.startsWith('  >')),
+    'the wrap must put a quote marker at the start of a continuation row',
+  );
+
+  assert.equal(claudeComposerContent(frame).found, true);
+  // The whole paste is extracted, starting from the real caret, so it is still this turn's text.
+  assert.match(claudeComposerContent(frame).text, /^please fix the crash below/);
+  assert.equal(claudeComposerState(frame, deliveredPrompt), 'held');
+  // The negative is unchanged: against a different prompt the same frame is still foreign text.
+  assert.equal(claudeComposerState(frame, taskPrompt({
+    prompt: 'something else entirely',
+    attachments: [],
+  })), 'junk');
+});
+
 test('held-paste verification follows the verified collapse threshold', () => {
   const frameWith = (content) => composerFrame(content, { statusRow: '  paste again to expand' });
   const lines = (count) => Array.from({ length: count }, (_, index) => `line ${index}`).join('\n');
@@ -1200,6 +1333,43 @@ const userPrompt = (value, promptId = null) => ({
   message: { content: [text(value)] },
 });
 const toolResult = (id, value) => ({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, content: value }] } });
+const BACKGROUND_AGENT_TOOL_USE_ID = 'toolu_background_dev_1';
+const BACKGROUND_AGENT_ID = 'agent-background-dev-1';
+const backgroundAgentLaunch = () => assistant('tool_use', [toolUse(
+  BACKGROUND_AGENT_TOOL_USE_ID,
+  'Agent',
+  {
+    description: 'dev-1: completion gate',
+    subagent_type: 'fullstack-engineer',
+    prompt: 'Verify the completion gate.',
+  },
+)]);
+const backgroundAgentResult = () => ({
+  type: 'user',
+  toolUseResult: {
+    isAsync: true,
+    status: 'async_launched',
+    agentId: BACKGROUND_AGENT_ID,
+  },
+  message: {
+    content: [{
+      type: 'tool_result',
+      tool_use_id: BACKGROUND_AGENT_TOOL_USE_ID,
+      content: `Async agent launched successfully.\nagentId: ${BACKGROUND_AGENT_ID}\nThe agent is working in the background.`,
+    }],
+  },
+});
+const backgroundAgentNotification = () => queueEnqueue(
+  QUEUED_TASK_NOTIFICATION
+    .replaceAll('a21d93d8cd05ec4fb', BACKGROUND_AGENT_ID)
+    .replaceAll('toolu_012M2JjykSAMBUw7JewJMYeX', BACKGROUND_AGENT_TOOL_USE_ID)
+    .replace('dev-2: standby core developer', 'dev-1: completion gate'),
+);
+const turnDuration = (pendingBackgroundAgentCount) => ({
+  type: 'system',
+  subtype: 'turn_duration',
+  pendingBackgroundAgentCount,
+});
 // How Claude stores a prompt that carried images: one rewritten text block plus one image block
 // per attachment, which is why the raw delivered text can never anchor such a turn.
 const imagePromptRecord = (value, images = 1) => ({
@@ -1226,24 +1396,71 @@ const SCREEN_RULE = '─'.repeat(100);
 // The composer exactly as Claude Code 2.1.220 renders it: an opening rule, the `❯` caret line, a
 // closing rule, then the status row family. Reproduced from dev-2's pty frames at 100x40 and from
 // a live Terminal.app `contents()` read on Darwin 25.5.0.
+// Inner width of the composer box: the rule minus the two column `❯ ` gutter.
+const COMPOSER_INNER_WIDTH = SCREEN_RULE.length - 2;
+// Claude Code WORD-wraps the literal rendering and hard-splits only a token that is longer than
+// the box. Verified on the 2.1.224 pty capture: "...no answers can be provided. Do" / "not ask
+// questions...". A 400 character unbroken token instead breaks exactly at the column boundary.
+const wrapComposerRows = (text, width = COMPOSER_INNER_WIDTH) => {
+  const rows = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    if (line === '') {
+      rows.push('');
+      continue;
+    }
+    let current = '';
+    for (const word of line.split(' ')) {
+      let token = word;
+      while (token.length > width) {
+        if (current) {
+          rows.push(current);
+          current = '';
+        }
+        rows.push(token.slice(0, width));
+        token = token.slice(width);
+      }
+      if (!current) {
+        current = token;
+      } else if (current.length + 1 + token.length <= width) {
+        current = `${current} ${token}`;
+      } else {
+        rows.push(current);
+        current = token;
+      }
+    }
+    rows.push(current);
+  }
+  return rows;
+};
 const composerFrame = (content = '', {
   scrollback = ['⏺ Ready.'],
   statusRow = '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
-} = {}) => [
-  ...scrollback,
-  '',
-  SCREEN_RULE,
-  `❯ ${content}`.trimEnd(),
-  SCREEN_RULE,
-  '  dev@host:/private/tmp/probe',
-  statusRow,
-  '                                                                                          /rc',
-].join('\n');
+} = {}) => {
+  const [first = '', ...rest] = String(content).split('\n');
+  return [
+    ...scrollback,
+    '',
+    SCREEN_RULE,
+    `❯ ${first}`.trimEnd(),
+    // Continuation rows sit in the same box under the caret gutter.
+    ...rest.map((row) => `  ${row}`.trimEnd()),
+    SCREEN_RULE,
+    '  dev@host:/private/tmp/probe',
+    statusRow,
+    '                                                                                          /rc',
+  ].join('\n');
+};
 // A multi-line paste never renders its text: Claude collapses it to `[Pasted text #N +M lines]`
 // where M is the pasted line count minus one, and the status row swaps to "paste again to expand".
 // The frame is derived from what was actually pasted so the fake terminal reports the same count a
 // real one would, which is what the held-paste verification checks against.
-const heldPasteFrame = (pasted, { chips = '', counter = 5 } = {}) => {
+//
+// A paste of one to three lines does NOT collapse. It renders every line, word-wrapped over as
+// many composer rows as it needs, which is what a real terminal draws and what this fixture used
+// to hide by emitting only the first non-empty line on a single row. Every text-only live steer is
+// exactly that shape, because taskPrompt() appends the non-interactive notice after a blank line
+// and keeps the paste under the collapse threshold. See [[claude-steer-text-hold-reliability]].
+const heldPasteFrame = (pasted, { chips = '', counter = 5, columns = null } = {}) => {
   // The terminal consumes the bracketed paste markers, so they never appear on screen.
   const text = String(pasted ?? '')
     .split(`${ESC}[200~`).join('')
@@ -1252,7 +1469,8 @@ const heldPasteFrame = (pasted, { chips = '', counter = 5 } = {}) => {
   // Faithful to the verified behavior: one to three lines render literally and keep the normal
   // status row, four or more collapse into the placeholder and swap the row.
   if (lines.length < CLAUDE_PASTE_COLLAPSE_MIN_LINES) {
-    return composerFrame(`${chips}${lines.find((line) => line.trim()) || ''}`);
+    const rows = wrapComposerRows(`${chips}${text}`, columns || COMPOSER_INNER_WIDTH);
+    return composerFrame(rows.join('\n'));
   }
   return composerFrame(
     `${chips}[Pasted text #${counter} +${expectedPastePlaceholderLines(text)} lines]`,
@@ -1433,6 +1651,297 @@ test('terminal turn mirrors the transcript and completes on a stable idle after 
   assert.equal(io.events.some((e) => e.event.type === 'claude/message' && /Listed the files\./.test(e.message)), true);
 });
 
+test('a backgrounded sub-agent blocks completion until it finishes and Claude consolidates', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const io = collect();
+  let settled = false;
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        backgroundAgentLaunch(),
+        backgroundAgentResult(),
+        assistant('end_turn', [text('Interim response while dev-1 is running.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    { status: 'idle', append: [backgroundAgentNotification()] },
+    {
+      status: 'idle',
+      mutate: () => {
+        assert.equal(settled, false);
+        assert.equal(
+          io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+          1,
+        );
+      },
+    },
+    { status: 'busy', append: [assistant('end_turn', [text('Consolidated response after dev-1 finished.')])] },
+    { status: 'idle' },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({ sessions, openTranscript: () => fake.source });
+
+  const execution = executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+  void execution.then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+  const outcome = await execution;
+
+  assert.equal(outcome.finalResponse, 'Consolidated response after dev-1 finished.');
+  assert.equal(settled, true);
+  const pending = io.events.filter(
+    (entry) => entry.event.deliveryState === 'background-work-pending',
+  );
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].event.backgroundWorkCount, 1);
+  assert.match(pending[0].message, /dev-1: completion gate/);
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
+});
+
+test('a positive turn-duration count independently holds completion until a fresh final', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        turnDuration(1),
+        assistant('end_turn', [text('Interim response with one pending agent.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        turnDuration(0),
+        assistant('end_turn', [text('Fresh response after the authoritative count cleared.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({ sessions, openTranscript: () => fake.source });
+  const io = collect();
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, 'Fresh response after the authoritative count cleared.');
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-pending').length,
+    1,
+  );
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
+});
+
+test('a Stop hook background task cannot be overridden by a transcript end_turn', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  let liveHook = null;
+  let settled = false;
+  const io = collect();
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'UserPromptSubmit',
+          prompt_id: 'prompt-background-task',
+          prompt: deliveredPrompt(),
+        });
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-background-task',
+          last_assistant_message: 'Interim hook response.',
+          background_tasks: [{ id: 'background-task-1' }],
+          session_crons: [],
+        });
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        assistant('end_turn', [text('Transcript interim response.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'idle',
+      mutate: () => {
+        assert.equal(settled, false);
+        liveHook({
+          session_id: SESSION_ID,
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-background-task',
+          last_assistant_message: 'Fresh consolidated hook response.',
+          background_tasks: [],
+          session_crons: [],
+        });
+      },
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({ sessions, hookBridge, openTranscript: () => fake.source });
+  const execution = executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+  void execution.then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+
+  const outcome = await execution;
+  assert.equal(outcome.finalResponse, 'Fresh consolidated hook response.');
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-pending').length,
+    1,
+  );
+});
+
+test('a Stop hook session cron independently holds completion', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  let liveHook = null;
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'UserPromptSubmit',
+          prompt_id: 'prompt-cron',
+          prompt: deliveredPrompt(),
+        });
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-cron',
+          last_assistant_message: 'Interim cron response.',
+          background_tasks: [],
+          session_crons: [{ id: 'cron-1' }],
+        });
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const io = collect();
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    { status: 'busy', append: [userPrompt(deliveredPrompt())] },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'idle',
+      mutate: () => liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'Stop',
+        prompt_id: 'prompt-cron',
+        last_assistant_message: 'Fresh response after the cron cleared.',
+        background_tasks: [],
+        session_crons: [],
+      }),
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({ sessions, hookBridge, openTranscript: () => fake.source });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, 'Fresh response after the cron cleared.');
+  const pending = io.events.find(
+    (entry) => entry.event.deliveryState === 'background-work-pending',
+  );
+  assert.ok(pending);
+  assert.match(pending.message, /1 session cron/);
+});
+
+test('background work that never finishes enriches the inactivity failure', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        turnDuration(2),
+        assistant('end_turn', [text('Interim response with background work.')]),
+      ],
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    openTranscript: () => fake.source,
+    inactivityCeilingMs: 3000,
+  });
+
+  await assert.rejects(
+    () => executor.runTurn(
+      baseTask,
+      { cancelRequested: false },
+      { id: SESSION_ID },
+      TERMINAL,
+      collect(),
+    ),
+    (error) => {
+      assert.equal(error.retryable, false);
+      assert.match(error.message, /2 pending background agents never reported finishing/);
+      assert.match(error.message, /Continue session/);
+      assert.match(error.message, /Retry re-sends the original prompt/);
+      return true;
+    },
+  );
+});
+
 test('a running terminal turn accepts an exact live update without creating another task', async () => {
   const fake = fakeTranscript();
   fake.append({ type: 'mode' });
@@ -1523,6 +2032,9 @@ test('a running terminal turn accepts an exact live update without creating anot
     clientUserMessageId: 'relay-steer-7-1',
     promptSubmissionEvidence: 'transcript-anchor-normalized',
     submitAttempted: false,
+    submitAttempts: 0,
+    // Exact evidence arrived before the recovery loop ran, so no composer pass was classified.
+    composerStates: [],
   });
   const update = io.events.find((entry) => (
     entry.event.type === 'item/completed'
@@ -1604,7 +2116,539 @@ test('a held live update receives one guarded submit and exact transcript confir
   assert.equal(outcome.finalResponse, 'Used the guarded live update.');
   assert.deepEqual(submits, [WINDOW_ID]);
   assert.equal(steerOutcome.submitAttempted, true);
+  assert.equal(steerOutcome.submitAttempts, 1);
   assert.equal(steerOutcome.promptSubmissionEvidence, 'transcript-prompt');
+});
+
+test('task 129: an image live update retries its exact held paste after the first submit is swallowed', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const active = { cancelRequested: false };
+  const injections = [];
+  const submits = [];
+  let finalReady = false;
+  let steerPromise = null;
+  let steerOutcome = null;
+  const liveAttachments = [{
+    id: 'task-129-image',
+    name: 'new-modal.png',
+    path: '/repo/.data/tasks/129/attachments/new-modal.png',
+  }];
+  const sessions = {
+    readConnectedSession: async () => ({
+      id: SESSION_ID,
+      provider: 'claude',
+      source: 'Claude interactive',
+      cwd: '/repo',
+      // The earlier response ends after the swallowed action. Recovery still owns this exact
+      // held update and must be allowed to submit it across the busy-to-idle boundary.
+      rawStatus: injections.length > 0 && submits.length === 0 && !finalReady ? 'busy' : 'idle',
+      pid: PID,
+    }),
+  };
+  const io = collect();
+  const onEvent = (entry) => {
+    io.onEvent(entry);
+    if (entry.event.type !== 'claude/started' || steerPromise) return;
+    steerPromise = active.steer('Use this additional modal design.', liveAttachments)
+      .then((outcome) => {
+        steerOutcome = outcome;
+        fake.append(assistant('end_turn', [text('Applied the additional modal design.')]));
+        finalReady = true;
+      });
+  };
+  const { executor } = makeExecutor({
+    sessions,
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    openTranscript: () => fake.source,
+    readScreen: async () => ({
+      ok: true,
+      reason: 'read',
+      text: injections.length < 2
+        ? EMPTY_COMPOSER_FRAME
+        : heldPasteFrame(injections[1].value, { chips: '[Image #2]', counter: 3 }),
+    }),
+    inject: async (windowId, value) => {
+      injections.push({ windowId, value });
+      if (injections.length === 1) fake.append(userPrompt(value, 'original-prompt'));
+    },
+    submit: async (windowId) => {
+      submits.push(windowId);
+      // Task 129 stopped here after one action. Model that swallowed Return by writing nothing
+      // until the second independently verified action reaches the same exact held paste.
+      if (submits.length !== 2) return;
+      const [recordedPrompt] = attachmentRewrittenPrompts(
+        injections[1].value,
+        [liveAttachments[0].path],
+      );
+      fake.append({
+        ...imagePromptRecord(renumberChips(recordedPrompt, 2)),
+        promptId: 'steer-prompt',
+      });
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    pollMs: 2,
+    steerSubmitNudgeMs: 10,
+    steerAcceptanceTimeoutMs: 100,
+    submitRetryMs: 12,
+    submitRetryBackoffMs: 0,
+    maxSubmitAttempts: 3,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    active,
+    { id: SESSION_ID },
+    TERMINAL,
+    { onEvent, onStderr: io.onStderr },
+  );
+  await steerPromise;
+
+  assert.equal(outcome.finalResponse, 'Applied the additional modal design.');
+  assert.equal(injections.length, 2);
+  assert.deepEqual(submits, [WINDOW_ID, WINDOW_ID]);
+  assert.equal(steerOutcome.submitAttempted, true);
+  assert.equal(steerOutcome.submitAttempts, 2);
+  assert.equal(steerOutcome.promptSubmissionEvidence, 'transcript-anchor-normalized');
+});
+
+function unacknowledgedSteerRequest(deliveredPrompt) {
+  let releaseAcknowledgement;
+  const acknowledgement = new Promise((resolve) => {
+    releaseAcknowledgement = resolve;
+  });
+  const request = {
+    deliveredPrompt,
+    acknowledged: false,
+    closedError: null,
+    acknowledgement,
+    releaseAcknowledgement,
+    injectionStarted: false,
+    submitAttempted: false,
+    submitAttempts: 0,
+    composerStates: [],
+    result: () => null,
+  };
+  return request;
+}
+
+test('a held live update receives no second Return once the composer is empty', async () => {
+  const deliveredPrompt = taskPrompt({
+    prompt: 'Do not duplicate this live update.',
+    attachments: [],
+  });
+  const request = unacknowledgedSteerRequest(deliveredPrompt);
+  let screenReads = 0;
+  const { executor, submitted } = makeExecutor({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: 'busy',
+        pid: PID,
+      }),
+    },
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    readScreen: async () => {
+      screenReads += 1;
+      if (screenReads === 1) {
+        return { ok: true, reason: 'read', text: EMPTY_COMPOSER_FRAME };
+      }
+      if (screenReads === 2) {
+        return { ok: true, reason: 'read', text: heldPasteFrame(deliveredPrompt) };
+      }
+      return { ok: true, reason: 'read', text: EMPTY_COMPOSER_FRAME };
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    steerSubmitNudgeMs: 3,
+    steerAcceptanceTimeoutMs: 30,
+    submitRetryMs: 3,
+    submitRetryBackoffMs: 0,
+    maxSubmitAttempts: 4,
+  });
+
+  await assert.rejects(
+    executor.deliverActiveSteer(baseTask, { cancelRequested: false }, TERMINAL, request),
+    (error) => error.deliveryUncertain === true,
+  );
+
+  // An empty composer can mean the first action landed and its evidence was lost. Never press
+  // Return again unless the exact held paste is positively visible again.
+  assert.deepEqual(submitted, [WINDOW_ID]);
+  assert.equal(request.submitAttempts, 1);
+});
+
+test('a live update that stays held exhausts the bounded submit limit', async () => {
+  const deliveredPrompt = taskPrompt({
+    prompt: 'Keep this live update held for the full schedule.',
+    attachments: [],
+  });
+  const request = unacknowledgedSteerRequest(deliveredPrompt);
+  let screenReads = 0;
+  const { executor, submitted } = makeExecutor({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: 'busy',
+        pid: PID,
+      }),
+    },
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    readScreen: async () => {
+      screenReads += 1;
+      return {
+        ok: true,
+        reason: 'read',
+        text: screenReads === 1 ? EMPTY_COMPOSER_FRAME : heldPasteFrame(deliveredPrompt),
+      };
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    steerSubmitNudgeMs: 3,
+    steerAcceptanceTimeoutMs: 35,
+    submitRetryMs: 3,
+    submitRetryBackoffMs: 0,
+    maxSubmitAttempts: 3,
+  });
+
+  await assert.rejects(
+    executor.deliverActiveSteer(baseTask, { cancelRequested: false }, TERMINAL, request),
+    (error) => {
+      assert.equal(error.deliveryUncertain, true);
+      assert.match(error.message, /after 3 guarded submit actions/);
+      assert.match(error.message, /exact update may still be held/);
+      return true;
+    },
+  );
+
+  assert.deepEqual(submitted, [WINDOW_ID, WINDOW_ID, WINDOW_ID]);
+  assert.equal(request.submitAttempts, 3);
+  // Every recovery pass that ran is reported, so an unconfirmed update is explainable from
+  // diagnostics alone. The pre-injection gate read is not a recovery pass and is not recorded.
+  assert.deepEqual(request.composerStates, ['held', 'held', 'held']);
+});
+
+// ---- text-only held live updates ---------------------------------------------
+//
+// The operator report on 2026-08-07 was that a follow-up message to a running Claude session is
+// typed into the composer and then never submitted. A single-line follow-up is a THREE line paste
+// after taskPrompt() appends the non-interactive notice, three lines never collapse, and the
+// literal word-wrapped rendering puts the caret past the old one-row composer depth bound. Every
+// recovery pass then classified 'unreadable' and sent nothing, so the text sat there forever.
+// These pin the recovery for each real rendered form.
+
+// Drives deliverActiveSteer against a scripted sequence of RECOVERY screen reads and reports what
+// happened. The pre-injection gate read is supplied here, because it must show an empty composer
+// or nothing is ever typed; `screens` describes only what the recovery loop sees, in order, with
+// the last entry repeating once the script runs out.
+async function runSteerRecovery(deliveredPrompt, recoveryScreens, options = {}) {
+  const screens = [EMPTY_COMPOSER_FRAME, ...recoveryScreens];
+  const request = unacknowledgedSteerRequest(deliveredPrompt);
+  let screenReads = 0;
+  const { executor, submitted } = makeExecutor({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: 'busy',
+        pid: PID,
+      }),
+    },
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    readScreen: async () => {
+      const entry = screens[Math.min(screenReads, screens.length - 1)];
+      screenReads += 1;
+      return typeof entry === 'string'
+        ? { ok: true, reason: 'read', text: entry }
+        : entry;
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    steerSubmitNudgeMs: 3,
+    steerAcceptanceTimeoutMs: 60,
+    submitRetryMs: 3,
+    submitRetryBackoffMs: 0,
+    steerRecheckMs: 1,
+    maxSubmitAttempts: 4,
+    ...options,
+  });
+
+  let error = null;
+  try {
+    await executor.deliverActiveSteer(baseTask, { cancelRequested: false }, TERMINAL, request);
+  } catch (thrown) {
+    error = thrown;
+  }
+  return { request, submitted, error };
+}
+
+test('a text-only live update held in its literal multi-row form receives a guarded submit', async () => {
+  const deliveredPrompt = taskPrompt({
+    prompt: 'when I send a follow-up it should immediately reach the terminal',
+    attachments: [],
+  });
+  // The exact shape of the operator's report: three lines, so no collapse and a tall composer.
+  assert.equal(deliveredPrompt.split('\n').length, 3);
+  // Terminal.app's default window is 80 columns, which is where this reproduces. Pin the caret
+  // depth so this test can never quietly stop exercising the defect if the notice text changes.
+  const heldFrame = heldPasteFrame(deliveredPrompt, { columns: 78 });
+  const heldTail = claudeScreenTailLines(heldFrame);
+  const heldCaret = heldTail.findIndex((line) => line.startsWith('❯'));
+  assert.ok(
+    heldTail.length - heldCaret > CLAUDE_COMPOSER_MAX_TAIL_DEPTH,
+    'the literal rendering must put the caret past the one-row composer depth bound',
+  );
+
+  const { request, submitted } = await runSteerRecovery(deliveredPrompt, [heldFrame]);
+
+  // Before the fix this frame classified 'unreadable' and produced zero actions.
+  assert.ok(submitted.length >= 1, 'a held text-only update must receive a guarded Return');
+  assert.deepEqual(submitted[0], WINDOW_ID);
+  assert.equal(request.submitAttempts >= 1, true);
+  assert.equal(request.composerStates[0], 'held');
+});
+
+test('a long single-line live update hard-wrapped across the composer still recovers', async () => {
+  // One unbroken token longer than the composer width is the only case Claude Code does not word
+  // wrap. It breaks at the column boundary with no space, so rejoining the rows inserts a space
+  // the prompt never had and the plain containment check fails inside the anchor.
+  const token = `steerreliability${'0123456789'.repeat(30)}`;
+  const deliveredPrompt = taskPrompt({ prompt: token, attachments: [] });
+  const heldFrame = heldPasteFrame(deliveredPrompt, { columns: 24 });
+  // Prove the wrap really does split the anchor, otherwise this test would pass for free.
+  const composerText = claudeComposerContent(heldFrame).text.replace(/\s+/g, ' ').trim();
+  assert.equal(composerText.includes(token.slice(0, 40)), false);
+
+  const { request, submitted } = await runSteerRecovery(deliveredPrompt, [heldFrame]);
+
+  assert.ok(submitted.length >= 1, 'a hard-wrapped held update must still receive a guarded Return');
+  assert.equal(request.composerStates[0], 'held');
+});
+
+test('a short whitespace-heavy anchor is refused by the stripped comparison floor', async () => {
+  // The negative side of the hard-wrap recovery above. Ignoring whitespace makes the anchor weaker,
+  // and a short anchor built mostly of spaces strips down towards the empty string, which EVERY
+  // composer contains. Accepting one would let a foreign draft read as this turn's held paste and
+  // earn a guarded Return, so the weak comparison is refused below the floor and the turn falls
+  // back to the clear and re-inject path that still delivers the exact prompt.
+  const deliveredPrompt = taskPrompt({ prompt: 'fix  the  composerwrap', attachments: [] });
+  // What promptComposerAnchor() derives: the first non-empty line, whitespace collapsed, capped at
+  // CLAUDE_COMPOSER_ANCHOR_CHARS. That helper is not exported, so the derivation this whole test
+  // depends on is pinned here rather than assumed.
+  const anchor = 'fix the composerwrap';
+  assert.equal(deliveredPrompt.split('\n')[0].replace(/\s+/g, ' ').trim(), anchor);
+  assert.ok(anchor.length <= CLAUDE_COMPOSER_ANCHOR_CHARS, 'the cap must not truncate this anchor');
+  assert.ok(
+    anchor.replace(/\s+/g, '').length < CLAUDE_COMPOSER_MIN_STRIPPED_ANCHOR_CHARS,
+    'the anchor must strip below the floor, otherwise this test would not exercise it',
+  );
+  // And prove that this exact string is what the classifier matches on, not some longer or shorter
+  // derivation that happens to agree on the frames below. The whole anchor is required: a composer
+  // one character short of it is not this turn's paste.
+  assert.equal(claudeComposerState(composerFrame(anchor), deliveredPrompt), 'held');
+  assert.equal(claudeComposerState(composerFrame(anchor.slice(0, -1)), deliveredPrompt), 'junk');
+
+  // Positive control: rendered normally this exact prompt IS recoverable, so nothing about the
+  // prompt itself is what refuses the frame below.
+  assert.equal(claudeComposerState(heldPasteFrame(deliveredPrompt), deliveredPrompt), 'held');
+
+  // The same prompt after a wrap split its last word: the notice rows are exactly what the default
+  // composer width renders, and only the first line is hard-broken at the column boundary.
+  const [, ...noticeRows] = wrapComposerRows(deliveredPrompt);
+  const mangledFrame = composerFrame(['fix  the  composerwr', 'ap', ...noticeRows].join('\n'));
+  const composerText = claudeComposerContent(mangledFrame).text.replace(/\s+/g, ' ').trim();
+  // Prove the floor is the ONLY thing standing between this frame and 'held'.
+  assert.equal(
+    composerText.includes(anchor),
+    false,
+    'the split word must break the plain anchor comparison',
+  );
+  assert.equal(
+    composerText.replace(/\s+/g, '').includes(anchor.replace(/\s+/g, '')),
+    true,
+    'the stripped comparison would otherwise accept it, which is what the floor refuses',
+  );
+
+  assert.equal(claudeComposerState(mangledFrame, deliveredPrompt), 'junk');
+
+  const { request, submitted, error } = await runSteerRecovery(deliveredPrompt, [mangledFrame]);
+
+  // Fail closed: a weak agreement never earns a guarded Return.
+  assert.deepEqual(submitted, []);
+  assert.equal(request.submitAttempts, 0);
+  assert.equal(error.deliveryUncertain, true);
+  assert.deepEqual(request.composerStates, ['junk']);
+});
+
+test('a text-only live update collapsed under a cumulative paste counter recovers', async () => {
+  // A multi-line follow-up crosses the collapse threshold and renders as a chip whose counter is
+  // session-cumulative, so it does not start at 1.
+  const deliveredPrompt = taskPrompt({
+    prompt: 'first change the header\nthen change the footer\nthen re-run the suite',
+    attachments: [],
+  });
+  assert.ok(deliveredPrompt.split('\n').length >= CLAUDE_PASTE_COLLAPSE_MIN_LINES);
+  const heldFrame = heldPasteFrame(deliveredPrompt, { counter: 17 });
+  assert.match(heldFrame, /\[Pasted text #17 \+4 lines\]/);
+
+  const { request, submitted } = await runSteerRecovery(deliveredPrompt, [heldFrame]);
+
+  assert.ok(submitted.length >= 1);
+  assert.equal(request.composerStates[0], 'held');
+
+  // The counter identifies nothing; the LINE COUNT is what proves which paste is held. A chip for
+  // a different sized paste under the same counter is still somebody else's text.
+  assert.equal(
+    claudeComposerState(composerFrame('[Pasted text #17 +99 lines]', {
+      statusRow: '  paste again to expand',
+    }), deliveredPrompt),
+    'junk',
+  );
+});
+
+test('an unreadable first read does not consume a guarded submit attempt', async () => {
+  const deliveredPrompt = taskPrompt({
+    prompt: 'this one is only visible on a later read',
+    attachments: [],
+  });
+  const heldFrame = heldPasteFrame(deliveredPrompt, { columns: 78 });
+  // Echo lag and a transient osascript failure both look like this: the composer proves nothing on
+  // the first passes and only becomes readable later. The action backoff here is deliberately a
+  // large fraction of the acceptance window, so if an inconclusive read consumed a schedule slot
+  // the window would be gone before the paste ever became readable, which is the pre-fix
+  // behaviour: three inconclusive reads at 110 of a 300 window retire it with zero actions.
+  const { request, submitted } = await runSteerRecovery(deliveredPrompt, [
+    { ok: false, reason: 'osascript-timeout' },
+    { ok: false, reason: 'osascript-timeout' },
+    { ok: false, reason: 'osascript-timeout' },
+    heldFrame,
+  ], {
+    steerAcceptanceTimeoutMs: 300,
+    steerSubmitNudgeMs: 5,
+    submitRetryMs: 110,
+    submitRetryBackoffMs: 0,
+    steerRecheckMs: 1,
+    maxSubmitAttempts: 2,
+  });
+
+  assert.ok(submitted.length >= 1, 'recovery must survive inconclusive reads');
+  // The inconclusive passes are recorded but cost no attempt from the hard cap, and they use the
+  // short recheck gap rather than the action backoff, so the window survives them.
+  assert.deepEqual(
+    request.composerStates.slice(0, 4),
+    ['unreadable', 'unreadable', 'unreadable', 'held'],
+  );
+  // The cap counts ACTIONS, never reads. The full action budget is still available afterwards and
+  // is still enforced exactly.
+  assert.equal(request.submitAttempts, 2);
+  assert.deepEqual(submitted, [WINDOW_ID, WINDOW_ID]);
+});
+
+test('an unreadable composer alone never presses Return and stays bounded', async () => {
+  const deliveredPrompt = taskPrompt({ prompt: 'never proven held', attachments: [] });
+  const { request, submitted, error } = await runSteerRecovery(deliveredPrompt, [
+    { ok: false, reason: 'osascript-timeout' },
+  ]);
+
+  // Fail-closed: nothing is ever submitted on an unprovable composer, and the recheck budget
+  // keeps the loop finite instead of spinning against the acceptance deadline.
+  assert.deepEqual(submitted, []);
+  assert.equal(request.submitAttempts, 0);
+  assert.equal(error.deliveryUncertain, true);
+  assert.ok(request.composerStates.every((state) => state === 'unreadable'));
+});
+
+test('a foreign draft in the composer still receives zero guarded submit actions', async () => {
+  const deliveredPrompt = taskPrompt({ prompt: 'do the thing', attachments: [] });
+  const { request, submitted, error } = await runSteerRecovery(deliveredPrompt, [
+    JUNK_COMPOSER_FRAME,
+  ]);
+
+  assert.deepEqual(submitted, []);
+  assert.equal(request.submitAttempts, 0);
+  assert.equal(error.deliveryUncertain, true);
+  // One definite foreign-draft classification stops the schedule immediately.
+  assert.deepEqual(request.composerStates, ['junk']);
+});
+
+// A scrolled-up transcript can end on every structural feature of the composer box without being
+// one: an opening rule, a row that starts with a plain `>` because it quotes an error, prose, a
+// closing rule, and a few prose lines under it that clear the chrome bound. The one feature it
+// cannot have is the bottom status row, which every captured real composer frame carries, so the
+// box scan requires that corroboration before it accepts a caret. Without it this shape reads as a
+// composer holding foreign text: harmless on its own, but 'junk' on the opening-prompt path sends
+// the clearing Ctrl+C, which lands in the REAL composer further down the screen and destroys this
+// turn's own held paste, turning a recoverable turn into a failed one.
+const SCROLLED_QUOTE_BLOCK_FRAME = [
+  '⏺ The deploy step failed. This is what the build log reported:',
+  '',
+  SCREEN_RULE,
+  '  > Error: ENOENT no such file or directory, open dist/manifest.json',
+  '  The retry path swallowed it and moved on to the next stage.',
+  SCREEN_RULE,
+  '  I will rebuild the manifest before retrying the deploy.',
+  '  The live composer is further down, below the scrolled viewport.',
+].join('\n');
+
+test('a scrolled quote block shaped like the composer box is unreadable, never a foreign draft', async () => {
+  // Prove the hazard is really present in this frame, otherwise the test would pass for free.
+  const tail = claudeScreenTailLines(SCROLLED_QUOTE_BLOCK_FRAME, CLAUDE_COMPOSER_TAIL_LINES);
+  const caret = tail.findIndex((line) => line.startsWith('>'));
+  assert.ok(caret > 0, 'the quoted row must present itself as a caret line');
+  assert.ok(
+    CLAUDE_SCREEN_RULE_PATTERN.test(tail[caret - 1]),
+    'a rule must sit directly above the quoted row, exactly as the composer opening rule does',
+  );
+  const closing = tail.findLastIndex((line) => CLAUDE_SCREEN_RULE_PATTERN.test(line));
+  assert.ok(closing > caret, 'a second rule must close the block below the quoted row');
+  assert.ok(
+    tail.length - 1 - closing <= CLAUDE_COMPOSER_MAX_CHROME_LINES,
+    'the prose under the closing rule must be short enough to clear the chrome bound',
+  );
+  assert.equal(
+    tail.some((line) => CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(line))),
+    false,
+    'the transcript shape must carry no status row, which is what separates it from a composer',
+  );
+
+  // Fail closed: nothing about this screen is proof of anything, so no state is derived from it.
+  assert.equal(claudeComposerContent(SCROLLED_QUOTE_BLOCK_FRAME).found, false);
+  assert.equal(classifyClaudeScreen(SCROLLED_QUOTE_BLOCK_FRAME), 'unknown');
+  assert.equal(
+    claudeComposerState(SCROLLED_QUOTE_BLOCK_FRAME, taskPrompt({
+      prompt: 'rebuild the manifest and retry the deploy',
+      attachments: [],
+    })),
+    'unreadable',
+  );
+  // found:false is also what keeps normalizeComposerBeforePaste from sending its clearing Ctrl+C,
+  // which is the destructive half of this misread.
+
+  const deliveredPrompt = taskPrompt({
+    prompt: 'rebuild the manifest and retry the deploy',
+    attachments: [],
+  });
+  const { request, submitted, error } = await runSteerRecovery(deliveredPrompt, [
+    SCROLLED_QUOTE_BLOCK_FRAME,
+  ]);
+
+  assert.deepEqual(submitted, []);
+  assert.equal(request.submitAttempts, 0);
+  assert.equal(error.deliveryUncertain, true);
+  // The load-bearing assertion. Without the status-row corroboration this frame classifies 'junk',
+  // which also sends nothing but stops the schedule on a fabricated foreign draft instead of
+  // admitting the screen proved nothing and re-reading it.
+  assert.ok(request.composerStates.length > 0);
+  assert.ok(request.composerStates.every((state) => state === 'unreadable'));
 });
 
 test('a live prompt id rejects a delayed Stop hook from the earlier prompt', async () => {
@@ -1910,6 +2954,9 @@ test('a live update queued by a busy Claude session confirms on its enqueue reco
     clientUserMessageId: 'relay-steer-7-1',
     promptSubmissionEvidence: 'transcript-queued-prompt',
     submitAttempted: false,
+    submitAttempts: 0,
+    // A queued update is confirmed from its enqueue record, so no composer pass ever ran.
+    composerStates: [],
   });
   // The enqueue confirms delivery but not the turn boundary, so the earlier response cannot be
   // attributed to the update. Only the record of the text LEAVING the queue releases that.
@@ -6085,7 +7132,8 @@ test('the executor defaults keep the whole guarded submit schedule inside the su
   assert.equal(executor.submitRetryBackoffMs, 3_000);
   assert.equal(executor.submitConfirmMs, 15_000);
   assert.equal(executor.steerSubmitNudgeMs, 6_000);
-  assert.equal(executor.steerAcceptanceTimeoutMs, 25_000);
+  assert.equal(executor.steerAcceptanceTimeoutMs, 80_000);
+  assert.equal(executor.steerSubmitConfirmMs, 15_000);
 
   // The first attempt waits for a large paste to settle but stays responsive for small prompts.
   assert.ok(executor.submitNudgeMs >= 5_000 && executor.submitNudgeMs <= 8_000);
@@ -6098,6 +7146,8 @@ test('the executor defaults keep the whole guarded submit schedule inside the su
   }
   // Every attempt, including the last, has room to be confirmed inside the window.
   assert.ok(last + executor.submitConfirmMs <= executor.submissionTimeoutMs);
+  // Live updates use the same held-paste attempts and therefore need the same complete window.
+  assert.ok(last + executor.submitConfirmMs <= executor.steerAcceptanceTimeoutMs);
   // The window stays well inside the separate processing-verification ceiling.
   assert.ok(executor.submissionTimeoutMs < executor.promptAcceptanceTimeoutMs);
 });

@@ -69,6 +69,53 @@ test('task queue header controls remain readable at compact desktop density', ()
   );
 });
 
+test('desktop defaults widen the composer while keeping the queue compact', () => {
+  assert.match(
+    style,
+    /grid-template-columns: var\(--composer-width, 580px\) 14px var\(--queue-width, 500px\) 14px minmax\(420px, 1fr\);/,
+  );
+  assert.match(app, /composer: Number\.isFinite\(saved\.composer\) \? saved\.composer : 580/);
+  assert.match(app, /queue: Number\.isFinite\(saved\.queue\) \? saved\.queue : null/);
+  assert.match(app, /const minimumComposer = 400/);
+  assert.match(app, /composerQueueResizer\.setAttribute\('aria-valuemin', '400'\)/);
+  assert.match(app, /: 500;[\s\S]*?constrainPanelWidths\(state\.panelWidths\.composer, state\.panelWidths\.queue\)/);
+  assert.match(app, /Task queue \$\{Math\.round\(state\.panelWidths\.queue\)\} pixels wide/);
+});
+
+test('task cards use the compact queue scan rhythm', () => {
+  assert.match(style, /\.task-card \{\s*padding: 11px 12px;\s*border-radius: 12px;/);
+  assert.match(style, /\.task-prompt \{[\s\S]*?font-size: 11\.5px;[\s\S]*?-webkit-line-clamp: 2;/);
+  assert.match(style, /\.task-footer \{\s*display: grid;\s*grid-template-columns: minmax\(0, 1fr\) auto;[\s\S]*?margin-top: 8px;\s*padding-top: 7px;/);
+});
+
+test('queued task actions use compact icon controls with dark-theme surfaces', () => {
+  assert.match(
+    style,
+    /\.task-rename-button,\s*\.task-assign-button \{[\s\S]*?min-height: 26px;[\s\S]*?border-radius: 7px;/,
+  );
+  assert.match(style, /\.task-rename-button::before \{[\s\S]*?-webkit-mask: url\(/);
+  assert.match(
+    style,
+    /\.queue-reorder \{[\s\S]*?overflow: hidden;[\s\S]*?border-radius: 7px;[\s\S]*?background: #f7f9fc;/,
+  );
+  assert.match(style, /\.queue-reorder button::before \{[\s\S]*?-webkit-mask: url\(/);
+  assert.match(
+    style,
+    /html\[data-theme="dark"\] \.task-rename-button,[\s\S]*?background: color-mix\(in srgb, var\(--app-blue\) 6%, var\(--app-control\)\);/,
+  );
+  assert.match(
+    style,
+    /html\[data-theme="dark"\] \.queue-reorder \{[\s\S]*?border-color: var\(--app-border-strong\);[\s\S]*?background: var\(--app-control\);/,
+  );
+});
+
+test('task cards do not repeat an automatically generated task name as the prompt preview', () => {
+  assert.match(
+    app,
+    /\$\{taskHasCustomName\(task\) \? `<p class="task-prompt">\$\{escapeHtml\(task\.prompt\)\}<\/p>` : ''\}/,
+  );
+});
+
 test('task queue omits the obsolete relay scope control', () => {
   assert.doesNotMatch(markup, /id="task-scope-button"/);
   assert.doesNotMatch(app, /taskScope|taskScopeButton|renderTaskScope/);

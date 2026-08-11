@@ -329,6 +329,48 @@ test('database edits only tasks that are still queued', () => {
   }
 });
 
+test('database applies retry settings only to retryable task outcomes', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-db-retry-settings-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  try {
+    const task = database.createTask({
+      title: 'Retry with Claude',
+      prompt: 'Try the other executor',
+      thread: { id: 'old-codex-thread', title: 'Old Codex', source: 'cli', cwd: '/repo' },
+      provider: 'codex',
+      model: 'gpt-test',
+      effort: 'high',
+      terminalLifecycle: 'disposable',
+    });
+    database.updateTask(task.id, { status: 'failed', error: 'Provider failed.' });
+    const retried = database.updateRetryableTask(task.id, {
+      status: 'queued',
+      provider: 'claude',
+      model: 'sonnet',
+      effort: 'max',
+      thread_id: null,
+      thread_name: null,
+      thread_source: null,
+      session_id: null,
+      error: null,
+    });
+    assert.equal(retried.status, 'queued');
+    assert.equal(retried.provider, 'claude');
+    assert.equal(retried.model, 'sonnet');
+    assert.equal(retried.effort, 'max');
+    assert.equal(retried.thread_id, null);
+
+    assert.throws(
+      () => database.updateRetryableTask(task.id, { effort: 'low' }),
+      /Only failed, cancelled, or interrupted tasks/,
+    );
+    assert.equal(database.getTask(task.id).effort, 'max');
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('database marks active tasks interrupted after restart', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-recovery-'));
   const filePath = join(directory, 'relay.sqlite');
@@ -345,6 +387,38 @@ test('database marks active tasks interrupted after restart', () => {
   try {
     assert.equal(reopened.recoverInterruptedTasks(), 1);
     assert.equal(reopened.getTask(task.id).status, 'interrupted');
+  } finally {
+    reopened.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('database recovery keeps a manually completed terminal session open after an interrupted turn', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-manual-session-recovery-'));
+  const filePath = join(directory, 'relay.sqlite');
+  const database = new RelayDatabase(filePath);
+  const task = database.createTask({
+    title: 'Persistent terminal workspace',
+    prompt: 'Long running command',
+    repoPath: '/repo',
+    provider: 'codex',
+    mode: 'execute',
+    terminalLifecycle: 'disposable',
+    keepTerminalOpen: true,
+    manualCompletion: true,
+  });
+  database.updateTask(task.id, { status: 'running', started_at: '2026-08-04T10:00:00.000Z' });
+  database.close();
+
+  const reopened = new RelayDatabase(filePath);
+  try {
+    assert.equal(reopened.recoverInterruptedTasks(), 1);
+    const recovered = reopened.getTask(task.id);
+    assert.equal(recovered.status, 'open');
+    assert.equal(recovered.manual_completion, true);
+    assert.equal(recovered.finished_at, null);
+    assert.match(recovered.error, /stopped while this task was running/i);
+    assert.match(reopened.listEvents(task.id).at(-1).message, /session remains open/i);
   } finally {
     reopened.close();
     rmSync(directory, { recursive: true, force: true });

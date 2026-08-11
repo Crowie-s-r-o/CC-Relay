@@ -131,6 +131,10 @@ test('queue treats repeated submission IDs as one task', () => {
       () => queue.enqueue({ ...input, prompt: 'Different work' }),
       /submission ID was already used for different work/,
     );
+    assert.throws(
+      () => queue.enqueue({ ...input, title: 'A different name' }),
+      /submission ID was already used for different work/,
+    );
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
@@ -1024,6 +1028,134 @@ test('retry appends after existing queued work and preserves the smallest next p
   }
 });
 
+test('manual retry can change executor, model, and effort for an automatic Execute task', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-retry-execution-settings-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { run() {}, cancel() { return false; } },
+  });
+
+  try {
+    queue.pause();
+    const task = queue.enqueue({
+      ...directInput('Retry elsewhere', 'saved-codex-thread', directory),
+      terminalLifecycle: 'disposable',
+      model: 'gpt-test',
+      effort: 'high',
+      continuedFromTaskId: 41,
+    });
+    database.updateTask(task.id, {
+      status: 'failed',
+      session_id: 'saved-codex-thread',
+      result: 'Stale result',
+      error: 'Codex failed.',
+    });
+
+    const retried = queue.retry(task.id, {
+      execution: { provider: 'claude', model: 'sonnet', effort: 'max' },
+    });
+    assert.equal(retried.status, 'queued');
+    assert.equal(retried.provider, 'claude');
+    assert.equal(retried.model, 'sonnet');
+    assert.equal(retried.effort, 'max');
+    assert.equal(retried.thread_id, null);
+    assert.equal(retried.thread_name, null);
+    assert.equal(retried.thread_source, null);
+    assert.equal(retried.session_id, null);
+    assert.equal(retried.continued_from_task_id, null);
+    assert.equal(retried.result, null);
+    assert.equal(retried.error, null);
+    const events = database.listEvents(task.id).map((event) => event.message).join('\n');
+    assert.match(events, /Retry executor changed from Codex to Claude/);
+    assert.match(events, /fresh Claude conversation/);
+    const markdown = readFileSync(join(artifacts.taskDirectory(task.id), 'task.md'), 'utf8');
+    assert.match(markdown, /Provider: claude/);
+    assert.match(markdown, /Model: sonnet/);
+    assert.match(markdown, /Effort: max/);
+    assert.doesNotMatch(markdown, /Continues task:/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('manual retry can change effort without discarding the same-provider conversation', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-retry-effort-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { run() {}, cancel() { return false; } },
+  });
+
+  try {
+    queue.pause();
+    const task = queue.enqueue({
+      ...directInput('Retry with more effort', 'same-codex-thread', directory),
+      terminalLifecycle: 'disposable',
+      model: 'gpt-test',
+      effort: 'medium',
+    });
+    database.updateTask(task.id, { status: 'interrupted', error: 'Restarted.' });
+    const retried = queue.retry(task.id, {
+      execution: { provider: 'codex', model: 'gpt-test', effort: 'xhigh' },
+    });
+    assert.equal(retried.provider, 'codex');
+    assert.equal(retried.effort, 'xhigh');
+    assert.equal(retried.thread_id, 'same-codex-thread');
+    assert.match(
+      database.listEvents(task.id).map((event) => event.message).join('\n'),
+      /Retry execution settings changed to Codex \/ gpt-test \/ xhigh/,
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('retry execution changes reject workflow-owned and automatic retry paths', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-retry-settings-guard-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { run() {}, cancel() { return false; } },
+  });
+
+  try {
+    queue.pause();
+    const plan = queue.enqueue(planInput('Owned route', 'plan-reviewer', directory));
+    database.updateTask(plan.id, { status: 'failed', error: 'Review failed.' });
+    assert.throws(
+      () => queue.retry(plan.id, {
+        execution: { provider: 'claude', model: 'sonnet', effort: 'high' },
+      }),
+      /Only automatic Execute tasks/,
+    );
+
+    const direct = queue.enqueue({
+      ...directInput('Automatic guard', 'automatic-guard', directory),
+      terminalLifecycle: 'disposable',
+    });
+    database.updateTask(direct.id, { status: 'failed', error: 'Transient.' });
+    assert.throws(
+      () => queue.retry(direct.id, {
+        automatic: true,
+        execution: { provider: 'codex', model: null, effort: 'high' },
+      }),
+      /Automatic retries cannot change executor or effort/,
+    );
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('failed tasks automatically retry after the configured wait', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-auto-retry-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
@@ -1305,6 +1437,19 @@ test('queued task request can be edited without changing routing, order, or atta
     assert.doesNotMatch(markdown, /Original prompt/);
     assert.match(markdown, /Reference images[\s\S]*reference\.png/);
     assert.match(database.listEvents(task.id).at(-1).message, /request edited before execution/i);
+
+    const renamed = queue.edit(task.id, {
+      title: 'Release readiness review',
+      prompt: edited.prompt,
+    });
+    assert.equal(renamed.title, 'Release readiness review');
+    assert.equal(renamed.prompt, edited.prompt);
+    assert.equal(renamed.position, task.position);
+    assert.match(database.listEvents(task.id).at(-1).message, /renamed from "Updated request" to "Release readiness review"/i);
+    assert.match(
+      readFileSync(join(artifacts.taskDirectory(task.id), 'task.md'), 'utf8'),
+      /# Release readiness review/,
+    );
 
     database.updateTask(task.id, { status: 'running' });
     assert.throws(
@@ -1984,6 +2129,81 @@ test('automatic tasks without a preselected thread launch through the pool and r
   }
 });
 
+test('a background-termination failure never completes or enters automatic retry', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-background-termination-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Background termination' });
+  const lifecycle = [];
+  let attempts = 0;
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      lifecycle.push(`prepare:${task.id}`);
+      return database.updateTask(task.id, {
+        thread_id: 'claude-background-termination',
+        thread_name: 'Claude background termination',
+        thread_source: 'test',
+      });
+    },
+    async release(taskId) {
+      lifecycle.push(`release:${taskId}`);
+    },
+  };
+  const guidance = 'Claude ended this run while 4 pending background agents still working. Review the workspace, then use Continue session with a follow-up telling Claude what to audit and finish.';
+  const runner = {
+    async run() {
+      attempts += 1;
+      const error = new Error(guidance);
+      error.retryable = false;
+      error.exitCode = 0;
+      throw error;
+    },
+    cancel() {
+      return false;
+    },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner,
+    terminalPool,
+    retryDelayMs: 10,
+  });
+  try {
+    const task = queue.enqueue({
+      title: 'Do not replay partial work',
+      prompt: 'Implement everything',
+      repoPath: directory,
+      provider: 'claude',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+    });
+    await waitFor(() => database.getTask(task.id).status === 'failed');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    const stored = database.getTask(task.id);
+    const events = database.listEvents(task.id);
+    assert.equal(stored.status, 'failed');
+    assert.equal(stored.error, guidance);
+    assert.equal(attempts, 1);
+    assert.equal(queue.pendingRetryTaskIds().has(task.id), false);
+    assert.deepEqual(lifecycle, [`prepare:${task.id}`, `release:${task.id}`]);
+    assert.equal(events.some((event) => event.message === 'Task completed.'), false);
+    assert.equal(events.some((event) => /Retrying automatically/.test(event.message)), false);
+    assert.match(events.at(-1).message, /needs attention/i);
+    assert.match(stored.error, /Continue session/);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('automatic tasks retain their prepared terminal when the task opted in', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-retained-queue-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
@@ -2037,6 +2257,325 @@ test('automatic tasks retain their prepared terminal when the task opted in', as
       'run:retained-codex-thread',
       `retain:${task.id}`,
     ]);
+    assert.equal(database.getTask(task.id).keep_terminal_open, true);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('manual terminal sessions stay open across turns and complete only on explicit finish', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-manual-session-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Manual sessions' });
+  const lifecycle = [];
+  const prompts = [];
+  let responseNumber = 0;
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      lifecycle.push(`prepare:${task.id}`);
+      return database.updateTask(task.id, {
+        thread_id: 'manual-session-thread',
+        thread_name: 'Manual session terminal',
+        thread_source: 'test',
+      });
+    },
+    async retain(taskId) {
+      lifecycle.push(`retain:${taskId}`);
+    },
+    async release(taskId) {
+      lifecycle.push(`release:${taskId}`);
+    },
+  };
+  const runner = {
+    async run(task) {
+      prompts.push(task.prompt);
+      responseNumber += 1;
+      return {
+        sessionId: task.thread_id,
+        finalResponse: `response ${responseNumber}`,
+        exitCode: 0,
+      };
+    },
+    cancel() {
+      return false;
+    },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner, terminalPool });
+  try {
+    const task = queue.enqueue({
+      title: 'Persistent terminal workspace',
+      prompt: 'First command',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
+    });
+    await waitFor(() => database.getTask(task.id).status === 'open');
+    const firstStartedAt = database.getTask(task.id).started_at;
+    assert.equal(database.getTask(task.id).manual_completion, true);
+    assert.equal(database.getTask(task.id).finished_at, null);
+    assert.deepEqual(lifecycle, [`prepare:${task.id}`, `retain:${task.id}`]);
+
+    for (const prompt of ['Second command', 'Third command']) {
+      const source = database.getTask(task.id);
+      const started = queue.startFollowUp({ ...source, prompt, attachments: [] });
+      assert.equal(started.status, 'running');
+      await waitFor(() => database.getTask(task.id).status === 'open');
+    }
+
+    const open = database.getTask(task.id);
+    assert.equal(open.started_at, firstStartedAt, 'follow-up turns preserve the session start time');
+    assert.equal(open.finished_at, null);
+    assert.equal(open.result, 'response 3');
+    assert.deepEqual(prompts, ['First command', 'Second command', 'Third command']);
+    assert.equal(database.listTaskPrompts(task.id).length, 3);
+    assert.deepEqual(lifecycle, [`prepare:${task.id}`, `retain:${task.id}`]);
+
+    const completed = queue.completeSession(task.id);
+    assert.equal(completed.status, 'complete');
+    assert.ok(completed.finished_at);
+    assert.deepEqual(lifecycle, [`prepare:${task.id}`, `retain:${task.id}`], 'manual completion does not close the retained terminal');
+    assert.throws(() => queue.completeSession(task.id), /current session turn/);
+    assert.throws(
+      () => queue.startFollowUp({ ...completed, prompt: 'Too late', attachments: [] }),
+      /complete and cannot accept more messages/,
+    );
+    assert.match(database.listEvents(task.id).at(-1).message, /completed manually/i);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a failed manual session turn returns to open without an automatic retry', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-manual-session-failure-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Manual session failure' });
+  const lifecycle = [];
+  let attempts = 0;
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      lifecycle.push(`prepare:${task.id}`);
+      return database.updateTask(task.id, {
+        thread_id: 'failed-manual-session',
+        thread_name: 'Failed manual session',
+        thread_source: 'test',
+      });
+    },
+    async retain(taskId) {
+      lifecycle.push(`retain:${taskId}`);
+    },
+    async release(taskId) {
+      lifecycle.push(`release:${taskId}`);
+    },
+  };
+  const runner = {
+    async run() {
+      attempts += 1;
+      throw new Error('command failed');
+    },
+    cancel() {
+      return false;
+    },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner,
+    terminalPool,
+    retryDelayMs: 5,
+    maxAutomaticRetries: 3,
+  });
+  try {
+    const task = queue.enqueue({
+      title: 'Correct the next command',
+      prompt: 'Fail once',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
+    });
+    await waitFor(() => database.getTask(task.id).status === 'open');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const open = database.getTask(task.id);
+    assert.equal(open.finished_at, null);
+    assert.equal(attempts, 1);
+    assert.match(open.error, /command failed/);
+    assert.deepEqual(lifecycle, [`prepare:${task.id}`, `retain:${task.id}`]);
+    assert.match(database.listEvents(task.id).at(-1).message, /session remains open/i);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a running automatic task can latch terminal retention before its final outcome', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-live-retention-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Live retention' });
+  const lifecycle = [];
+  let finishRun = null;
+  let announceRun;
+  const runStarted = new Promise((resolve) => { announceRun = resolve; });
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      lifecycle.push(`prepare:${task.id}`);
+      return database.updateTask(task.id, {
+        thread_id: 'live-retention-thread',
+        thread_name: 'Live retention terminal',
+        thread_source: 'test',
+      });
+    },
+    async retain(taskId) {
+      lifecycle.push(`retain:${taskId}`);
+    },
+    async release(taskId) {
+      lifecycle.push(`release:${taskId}`);
+    },
+  };
+  const finalOutcome = {
+    sessionId: 'live-retention-thread',
+    finalResponse: 'done',
+    exitCode: 0,
+  };
+  const runner = {
+    run() {
+      announceRun();
+      return new Promise((resolve) => { finishRun = resolve; });
+    },
+    cancel() {
+      finishRun?.(finalOutcome);
+      return true;
+    },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner, terminalPool });
+  try {
+    const task = queue.enqueue({
+      title: 'Protect this live terminal',
+      prompt: 'Keep working until released',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+    });
+    await runStarted;
+    assert.equal(database.getTask(task.id).keep_terminal_open, false);
+
+    const protectedTask = queue.keepTerminalOpen(task.id);
+    assert.equal(protectedTask.keep_terminal_open, true);
+    assert.equal(queue.keepTerminalOpen(task.id).keep_terminal_open, true, 'the latch is idempotent');
+    assert.equal(
+      database.listEvents(task.id).filter((event) => event.message.startsWith('Automatic close stopped.')).length,
+      1,
+    );
+
+    finishRun(finalOutcome);
+    await waitFor(() => database.getTask(task.id).status === 'complete' && lifecycle.includes(`retain:${task.id}`));
+    assert.deepEqual(lifecycle, [
+      `prepare:${task.id}`,
+      `retain:${task.id}`,
+    ]);
+    assert.equal(database.getTask(task.id).keep_terminal_open, true);
+    assert.throws(() => queue.keepTerminalOpen(task.id), /Only a running task/);
+  } finally {
+    finishRun?.(finalOutcome);
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a live retention latch promotes the prepared terminal before queue shutdown cancels the run', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-live-retention-shutdown-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Live retention shutdown' });
+  const lifecycle = [];
+  let rejectRun = null;
+  let announceRun;
+  let retained = false;
+  const runStarted = new Promise((resolve) => { announceRun = resolve; });
+  const terminalPool = {
+    canRun: () => true,
+    projectStatus: () => ({
+      limits: { codex: 1, claude: 1 },
+      active: { codex: 0, claude: 0 },
+    }),
+    async prepare(task) {
+      lifecycle.push(`prepare:${task.id}`);
+      return database.updateTask(task.id, {
+        thread_id: 'live-retention-shutdown-thread',
+        thread_name: 'Live retention shutdown terminal',
+        thread_source: 'test',
+      });
+    },
+    async retain(taskId) {
+      if (retained) return;
+      retained = true;
+      lifecycle.push(`retain:${taskId}`);
+    },
+    async release(taskId) {
+      lifecycle.push(`release:${taskId}`);
+    },
+  };
+  const runner = {
+    run() {
+      announceRun();
+      return new Promise((resolve, reject) => { rejectRun = reject; });
+    },
+    cancel(taskId) {
+      lifecycle.push(`cancel:${taskId}`);
+      rejectRun?.(Object.assign(new Error('shutdown'), { cancelled: true }));
+      return true;
+    },
+  };
+  const queue = new TaskQueue({ database, artifacts, runner, terminalPool });
+  try {
+    const task = queue.enqueue({
+      title: 'Protect before shutdown',
+      prompt: 'Keep this terminal through shutdown',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+    });
+    await runStarted;
+    queue.keepTerminalOpen(task.id);
+    await queue.shutdown();
+
+    assert.deepEqual(lifecycle, [
+      `prepare:${task.id}`,
+      `retain:${task.id}`,
+      `cancel:${task.id}`,
+    ]);
+    assert.equal(database.getTask(task.id).status, 'interrupted');
     assert.equal(database.getTask(task.id).keep_terminal_open, true);
   } finally {
     await queue.shutdown();

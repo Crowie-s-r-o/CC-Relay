@@ -21,6 +21,74 @@ test('Claude runner spawns the resolved absolute binary path', () => {
   assert.equal(invocation.command, '/Users/tester/.local/bin/claude');
 });
 
+test('Claude runner launches the Windows shim through cmd.exe and cancels its whole tree', () => {
+  const invocations = [];
+  const terminations = [];
+  const spawnProcess = (command, args, options) => {
+    invocations.push({ command, args, options });
+    const child = new EventEmitter();
+    child.pid = 1234;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = () => { throw new Error('a Windows cancel must not signal cmd.exe directly'); };
+    return child;
+  };
+  const runner = new ClaudeRunner({
+    command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd',
+    platform: 'win32',
+    spawnProcess,
+    terminateProcess: (child, options) => {
+      terminations.push({ pid: child.pid, ...options });
+      return true;
+    },
+  });
+  runner.run('Plan.', {
+    cwd: 'C:\\work\\app',
+    model: 'opus',
+    effort: 'max',
+    owner: 'task-1',
+    onEvent: () => {},
+    onStderr: () => {},
+  });
+
+  assert.equal(invocations[0].command, 'cmd.exe');
+  assert.deepEqual(invocations[0].args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.ok(invocations[0].args[3].includes('claude.cmd'));
+  assert.ok(invocations[0].args[3].includes('--safe-mode'));
+  assert.equal(invocations[0].options.windowsVerbatimArguments, true);
+  assert.equal(invocations[0].options.windowsHide, true);
+  assert.equal(invocations[0].options.cwd, 'C:\\work\\app');
+
+  // Killing cmd.exe would leave Claude running against the user's workspace.
+  assert.equal(runner.cancel('task-1'), true);
+  assert.deepEqual(terminations, [{ pid: 1234, signal: 'SIGTERM', platform: 'win32' }]);
+});
+
+test('Claude runner cancel still signals the child directly on POSIX', () => {
+  const killed = [];
+  const spawnProcess = () => {
+    const child = new EventEmitter();
+    child.pid = 99;
+    child.stdout = new PassThrough();
+    child.stderr = new PassThrough();
+    child.stdin = new PassThrough();
+    child.kill = (signal) => { killed.push(signal); return true; };
+    return child;
+  };
+  const runner = new ClaudeRunner({ spawnProcess, platform: 'darwin' });
+  runner.run('Plan.', {
+    cwd: '/tmp/project',
+    model: 'opus',
+    effort: 'max',
+    owner: 'task-2',
+    onEvent: () => {},
+    onStderr: () => {},
+  });
+  assert.equal(runner.cancel('task-2'), true);
+  assert.deepEqual(killed, ['SIGTERM']);
+});
+
 test('Claude JSON output extracts only the final result', () => {
   const output = JSON.stringify([
     { type: 'system', subtype: 'init', session_id: 'session-one' },
@@ -59,7 +127,7 @@ test('Claude failure output preserves the actionable provider message', () => {
   assert.equal(claudeFailureMessage(output), 'OAuth session expired and could not be refreshed');
 });
 
-test('Claude runner uses subscription CLI in safe read-only plan mode', async () => {
+test('Claude runner uses subscription CLI in safe read-only plan mode with Fable', async () => {
   let invocation;
   let input = '';
   const spawnProcess = (command, args, options) => {
@@ -86,7 +154,7 @@ test('Claude runner uses subscription CLI in safe read-only plan mode', async ()
   const events = [];
   const result = await runner.run('Inspect and plan.', {
     cwd: '/tmp/project',
-    model: 'opus',
+    model: 'fable',
     effort: 'max',
     attachmentPaths: ['/tmp/relay-images/one.png', '/tmp/relay-images/two.jpg'],
     onEvent: (event) => events.push(event),
@@ -104,7 +172,7 @@ test('Claude runner uses subscription CLI in safe read-only plan mode', async ()
   );
   assert.deepEqual(
     invocation.args.slice(invocation.args.indexOf('--model'), invocation.args.indexOf('--model') + 2),
-    ['--model', 'opus'],
+    ['--model', 'fable'],
   );
   assert.deepEqual(
     invocation.args.slice(invocation.args.indexOf('--effort'), invocation.args.indexOf('--effort') + 2),

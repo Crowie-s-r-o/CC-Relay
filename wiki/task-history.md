@@ -82,7 +82,7 @@ The continuation dock accepts PNG, JPEG, and WebP images through a minimal **Add
 
 Finished-task continuations validate images through `decodeImageAttachments()`, append new non-colliding `image-n` IDs to the source task, and pass only the newly attached images to that turn. Earlier task images remain visible but are not resent. Running Codex steering stages the new files, sends them as `localImage` entries in the same `turn/steer` `UserInput[]`, and commits them only after Codex accepts the exact active turn. Running interactive Claude references only the new staged paths in its live prompt. A definite rejection removes staged files and metadata; an uncertain post-injection result retains them because Claude may already have received the paths.
 
-The upper **Prompts** disclosure is task-level conversation history. `GET /api/tasks/:id` returns the canonical original request plus every CC Relay-marked finished-turn follow-up and running-turn steering message. This query is independent of the terminal console's bounded 500-event window, so old prompts do not disappear from the top of a long-running task. The disclosure opens automatically when a task has more than one prompt, and Copy copies the complete ordered prompt history.
+The upper **Prompts** disclosure is task-level conversation history. `GET /api/tasks/:id` returns the canonical original request plus every CC Relay-marked finished-turn follow-up and running-turn steering message. This query is independent of the terminal console's bounded 500-event window, so old prompts do not disappear from the top of a long-running task. The disclosure opens automatically when a task has more than one prompt. Copy preserves the complete ordered user-authored text but omits generated display headings and numbers.
 
 > [!important]
 > Follow-up images require `/api/status` to advertise `capabilities.taskFollowUpAttachments`. A newer renderer must disable the image control against an older backend because older follow-up routes ignore an unknown `attachments` field. Never silently send image-bearing follow-ups without this capability gate.
@@ -150,12 +150,20 @@ Queue order is scoped by `repo_path`. New and retried tasks append after tasks i
 
 ## Editing waiting tasks
 
-A task whose persisted status is still `queued` exposes **Edit** in Task Activity. The editor changes the request text and regenerates the compact task title, while preserving queue position, provider, model, effort, terminal assignment, workflow configuration, and reference images. The canonical `task.md` artifact is rewritten with the new request and its existing attachment list.
+A task may receive an optional operator-written name at submission. Queue cards, the running-task rail, Task Activity, and task artifacts use the canonical persisted `title`; blank names retain the prompt-derived fallback. A waiting card exposes **Rename**, and the existing Task Activity editor can change the name and request together. See [[task-naming]].
+
+A task whose persisted status is still `queued` exposes **Edit** in Task Activity. The editor changes the name or request text while preserving queue position, provider, model, effort, terminal assignment, workflow configuration, and reference images. Clearing the name regenerates it from the current request. The canonical `task.md` artifact is rewritten with the new heading, request, and existing attachment list.
 
 `PATCH /api/tasks/:id` is guarded by `capabilities.queuedTaskEditing`. The database update includes `status = 'queued'` in its write condition, so a task that starts while the editor is open rejects the save. Turbo work with an active forward preparation also rejects editing because its planner may already have consumed the old request. Editing a queued Turbo task with a completed look-ahead plan invalidates that plan so execution cannot use a graph built from stale text.
 
 > [!important]
 > Editing never changes queue position or routing. Do not implement it as delete plus re-enqueue, because that would change task identity, ordering, artifacts, and submission history.
+
+## Configurable manual retry
+
+A failed, cancelled, or interrupted automatic Execute task opens the execution editor before manual retry. The operator may select Codex or Claude, a model, and an effort. Keeping the provider preserves its saved conversation ID, while changing providers clears provider-specific conversation fields and starts fresh. Task identity, prompt, title, images, project, and history remain intact. See [[configurable-task-retry]].
+
+Plan council, Turbo, breakdown, legacy persistent, and automatic retry paths keep their workflow-owned configuration. A current renderer gates configurable retry through `capabilities.retryTaskExecutionSettings`; an older backend receives the original bodyless retry request.
 
 The backend publishes `capabilities.projectQueueIsolation`. A missing flag means the renderer may be newer than the active Node scheduler. When an unpaused project has queued work, no local running task, and another project is running, the UI shows a restart instruction on both the project card and queue summary. This compatibility message never changes task state or bypasses shared provider constraints. See [[project-queue-isolation-review]].
 

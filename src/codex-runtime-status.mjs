@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { promisify } from 'node:util';
+import { providerCommandInvocation, resolveExecutableOnPath } from './claude-binary.mjs';
 
 const execFile = promisify(execFileCallback);
 const DEFAULT_TIMEOUT_MS = 8_000;
@@ -51,18 +52,28 @@ export async function readCodexRuntimeStatus({
   run = execFile,
   command = 'codex',
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  platform = process.platform,
+  resolveExecutable = resolveExecutableOnPath,
 } = {}) {
   const options = { encoding: 'utf8', timeout: timeoutMs };
+  // On Windows the bare name matches only `codex.cmd`: PATH search never appends that
+  // extension, and the shim cannot be executed directly, so an installed Codex was reported
+  // as missing and every readiness indicator stayed dark.
+  const resolved = resolveExecutable(command, { platform });
+  const invoke = (args) => {
+    const invocation = providerCommandInvocation(resolved, args, { platform });
+    return run(invocation.command, invocation.args, { ...options, ...invocation.options });
+  };
   let version;
   try {
-    const result = await run(command, ['--version'], options);
+    const result = await invoke(['--version']);
     version = outputText(result?.stdout ?? result).trim();
   } catch (error) {
     return missing(error);
   }
 
   try {
-    await run(command, ['login', 'status'], options);
+    await invoke(['login', 'status']);
     return {
       available: true,
       authenticated: true,

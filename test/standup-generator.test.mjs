@@ -107,6 +107,20 @@ test('standup prompt grounds synthesis in every saved prompt, response, and outc
   assert.match(prompt, /Aim for seven to ten total items/);
 });
 
+test('all tasks prompt requests one very short update per source task', () => {
+  const prompt = buildStandupPrompt([
+    { id: 1, status: 'complete', outcome: 'Added task names.' },
+    { id: 2, status: 'complete', outcome: 'Fixed task retry routing.' },
+  ]);
+
+  assert.match(prompt, /requestedLength":"all/);
+  assert.match(prompt, /exactly one item for every recorded task/);
+  assert.match(prompt, /Do not merge or omit tasks/);
+  assert.match(prompt, /4 to 12 words/);
+  assert.match(prompt, /name only the confirmed changed thing/);
+  assert.doesNotMatch(prompt, /Do not mechanically emit one bullet per task/);
+});
+
 test('standup prompt bounds large days and reports omitted source tasks', () => {
   const records = Array.from({ length: MAX_STANDUP_SOURCE_TASKS + 5 }, (_, index) => ({
     id: index + 1,
@@ -156,12 +170,25 @@ No blockers identified.
 });
 
 test('standup length is validated and bounds normalized items', () => {
-  const generated = Array.from({ length: 12 }, (_, index) => `- Task: Update ${index + 1}.`).join('\n');
-  assert.equal(validateStandupLength(), 'standard');
+  const generated = Array.from({ length: 45 }, (_, index) => `- Task: Update ${index + 1}.`).join('\n');
+  assert.equal(validateStandupLength(), 'all');
+  assert.equal(normalizeStandupOutput(generated, { length: 'all' }).tasks.length, MAX_STANDUP_SOURCE_TASKS);
   assert.equal(normalizeStandupOutput(generated, { length: 'short' }).tasks.length, 4);
   assert.equal(normalizeStandupOutput(generated, { length: 'standard' }).tasks.length, 8);
-  assert.equal(normalizeStandupOutput(generated, { length: 'detailed' }).tasks.length, 12);
-  assert.throws(() => validateStandupLength('unbounded'), /short, standard, or detailed/);
+  assert.equal(normalizeStandupOutput(generated, { length: 'detailed' }).tasks.length, 16);
+  assert.throws(() => validateStandupLength('unbounded'), /All tasks, Short, Standard, or Detailed/);
+});
+
+test('all tasks output keeps repeated task entries and caps every item to a short line', () => {
+  const output = normalizeStandupOutput([
+    '- Task: Rebuilt the desktop app.',
+    '- Task: Rebuilt the desktop app.',
+    `- Task: ${'A very long changed thing '.repeat(20)}`,
+  ].join('\n'), { length: 'all' });
+
+  assert.equal(output.tasks.length, 3);
+  assert.equal(output.tasks[0], output.tasks[1]);
+  assert.ok(output.tasks[2].length <= 160);
 });
 
 test('Codex JSONL extracts the final agent message', () => {
@@ -176,6 +203,149 @@ test('Codex JSONL extracts the final agent message', () => {
       item: { id: 'message-two', type: 'agent_message', text: '- Final update.' },
     }),
   ].join('\n')), '- Final update.');
+});
+
+test('standup generator resolves and wraps the Windows Claude shim without losing empty arguments', async () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'relay-standup-generator-test-'));
+  let invocation;
+  try {
+    const generator = new StandupGenerator({
+      temporaryRoot,
+      platform: 'win32',
+      claudeCommand: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd',
+      spawnProcess: (command, args, options) => {
+        invocation = { command, args, options };
+        const child = fakeChild();
+        queueMicrotask(() => {
+          child.stdout.end(JSON.stringify({
+            type: 'result',
+            subtype: 'success',
+            is_error: false,
+            result: '- Shipped the Windows launch path.',
+          }));
+          child.emit('close', 0, null);
+        });
+        return child;
+      },
+    });
+    await generator.generate('Create the standup.', {
+      preferredProvider: 'claude',
+      availability: { codex: false, claude: true },
+    });
+
+    assert.equal(invocation.command, 'cmd.exe');
+    assert.deepEqual(invocation.args.slice(0, 3), ['/d', '/s', '/c']);
+    assert.equal(invocation.options.windowsVerbatimArguments, true);
+    assert.equal(invocation.options.windowsHide, true);
+    const line = invocation.args[3];
+    assert.ok(line.includes('claude.cmd'));
+    // The isolation flags carry empty values and a JSON object. A plain shell join drops the
+    // empty strings, which would silently re-enable this run's tools and setting sources.
+    assert.ok(line.includes('--setting-sources'));
+    assert.ok(line.includes('--tools'));
+    assert.ok(line.includes('mcpServers'));
+    const emptyArgument = '^^^"^^^"';
+    assert.equal(line.split(emptyArgument).length - 1, 2, 'both empty arguments must survive');
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('standup generator resolves the Windows Codex shim that PATH search cannot find', async () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'relay-standup-generator-test-'));
+  const resolved = [];
+  let invocation;
+  try {
+    const generator = new StandupGenerator({
+      temporaryRoot,
+      platform: 'win32',
+      resolveExecutable: (name, options) => {
+        resolved.push({ name, platform: options.platform });
+        return 'C:\\npm\\codex.cmd';
+      },
+      spawnProcess: (command, args, options) => {
+        invocation = { command, args, options };
+        const child = fakeChild();
+        queueMicrotask(() => {
+          child.stdout.end(JSON.stringify({
+            type: 'item.completed',
+            item: { id: 'message-one', type: 'agent_message', text: '- Shipped it.' },
+          }));
+          child.emit('close', 0, null);
+        });
+        return child;
+      },
+    });
+    await generator.generate('Create the standup.', {
+      preferredProvider: 'codex',
+      availability: { codex: true, claude: false },
+    });
+
+    assert.deepEqual(resolved, [{ name: 'codex', platform: 'win32' }]);
+    assert.equal(invocation.command, 'cmd.exe');
+    assert.ok(invocation.args[3].includes('codex.cmd'));
+    assert.ok(invocation.args[3].includes('--ephemeral'));
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
+});
+
+test('standup generator kills the whole provider tree on Windows and signals directly on POSIX', async () => {
+  const temporaryRoot = mkdtempSync(join(tmpdir(), 'relay-standup-generator-test-'));
+  const terminations = [];
+  try {
+    let child = null;
+    const generator = new StandupGenerator({
+      temporaryRoot,
+      platform: 'win32',
+      spawnProcess: () => {
+        child = fakeChild();
+        child.pid = 555;
+        child.kill = () => { throw new Error('a Windows cancel must not signal cmd.exe directly'); };
+        return child;
+      },
+      terminateProcess: (target, options) => {
+        terminations.push({ pid: target.pid, ...options });
+        return true;
+      },
+    });
+    const generation = generator.generate('Create the standup.', {
+      preferredProvider: 'codex',
+      availability: { codex: true, claude: false },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    // The prompt already reached the provider over stdin, so a cancel that only kills cmd.exe
+    // leaves the real run going.
+    assert.equal(generator.cancel(), true);
+    assert.deepEqual(terminations, [{ pid: 555, signal: 'SIGTERM', platform: 'win32' }]);
+    child.emit('close', null, 'SIGTERM');
+    await assert.rejects(generation, /cancelled/);
+
+    // The same cancel on POSIX keeps signalling the child directly.
+    const killed = [];
+    let posixChild = null;
+    const posixGenerator = new StandupGenerator({
+      temporaryRoot,
+      platform: 'darwin',
+      spawnProcess: () => {
+        posixChild = fakeChild();
+        posixChild.pid = 556;
+        posixChild.kill = (signal) => { killed.push(signal); return true; };
+        return posixChild;
+      },
+    });
+    const posixGeneration = posixGenerator.generate('Create the standup.', {
+      preferredProvider: 'codex',
+      availability: { codex: true, claude: false },
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(posixGenerator.cancel(), true);
+    assert.deepEqual(killed, ['SIGTERM']);
+    posixChild.emit('close', null, 'SIGTERM');
+    await assert.rejects(posixGeneration, /cancelled/);
+  } finally {
+    rmSync(temporaryRoot, { recursive: true, force: true });
+  }
 });
 
 test('standup generator uses an ephemeral isolated Codex run', async () => {

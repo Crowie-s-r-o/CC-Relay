@@ -25,6 +25,9 @@ test('task detail exposes copy actions for prompt, result, and every plan output
   }
 
   assert.match(app, /navigator\.clipboard\.writeText\(text\)/);
+  assert.match(app, /prompt: taskPromptCopyText\(promptHistory\)/);
+  assert.match(app, /if \(eventTaskChanged\) setDetailCopyContent\(\{\}, \{ resetFeedback: true \}\)/);
+  assert.doesNotMatch(app, /state\.selectedTaskId = taskId;\s*setDetailCopyContent\(\);/);
   assert.match(app, /planDraft: plan\?\.draft/);
   assert.match(app, /planReview: plan\?\.review/);
   assert.match(app, /planFinal: plan\?\.finalPlan/);

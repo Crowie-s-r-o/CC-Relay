@@ -113,4 +113,13 @@ The executor sets `{ uncertain: true }` only after it has typed the message into
 
 **Still open.** The real defect is upstream: `accepted()` never observes delivery evidence within its 25 second budget, which lives in `claude-terminal-executor.mjs` and `claude-transcript-tail.mjs`. This change makes the renderer correct while that holds, not cured. See [[claude-live-steering-review]] and [[claude-terminal-live-output]].
 
+### August 5 supersession
+
+The upstream Task 85 evidence defect was later closed by [[claude-steer-delivery-evidence]]. Task 129
+then exposed a separate failure: an image-bearing update stayed visibly held after its appended
+Return and Relay's single guarded action were both swallowed. It had no delivery record to observe.
+Live steering now uses the exact-held multi-attempt recovery and 80 second backend bound documented
+in [[claude-live-steer-held-paste-recovery]], while the renderer waits 120 seconds for the
+authoritative outcome. The three-state composer behavior in this review is unchanged.
+
 #relay #review #continuation #steering #codex #claude #no-queue

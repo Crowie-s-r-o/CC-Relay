@@ -1,5 +1,7 @@
 .data/
+.idea/
 node_modules/
 *.log
 .DS_Store
 dist/
+/undefined/

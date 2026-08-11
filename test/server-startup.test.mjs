@@ -6,6 +6,7 @@ import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { RelayDatabase } from '../src/database.mjs';
 
 async function occupyRelayPort() {
@@ -32,7 +33,9 @@ test('a duplicate server start does not recover or dispatch queued work before b
 
   try {
     const child = spawn(process.execPath, [
-      new URL('../src/server.mjs', import.meta.url).pathname,
+      // fileURLToPath, never `.pathname`: on Windows the raw pathname is `/C:/...`, which node
+      // cannot load, so the child would exit 1 for the wrong reason and pass this test blind.
+      fileURLToPath(new URL('../src/server.mjs', import.meta.url)),
       '--relay-data-dir',
       directory,
       '--relay-config-dir',

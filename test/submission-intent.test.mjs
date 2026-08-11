@@ -11,6 +11,7 @@ function composerIntent(overrides = {}) {
     councilRequested: false,
     provider: 'codex',
     threadId: 'thread-a',
+    title: 'Release readiness',
     prompt: 'ship the reviewed plan',
     execution: { model: 'gpt-5.6-sol', effort: 'high' },
     planSettings: { enabled: false },
@@ -79,6 +80,7 @@ test('runNow is not part of the intent in either direction', () => {
 
 test('a genuinely changed intent still receives a new UUID', () => {
   const changes = [
+    { title: 'A different task name' },
     { prompt: 'a different prompt' },
     { provider: 'claude' },
     { threadId: 'thread-b' },

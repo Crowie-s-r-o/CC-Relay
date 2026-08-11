@@ -7,6 +7,7 @@ import {
   groupEventEntries,
   eventStreamStats,
   isSubAgentEntry,
+  subAgentEntryDetails,
   subAgentEntryState,
 } from './event-stream.js';
 import { taskDurationLabel, formatElapsedDuration, taskLifecycleDates } from './task-time.js';
@@ -20,8 +21,16 @@ import {
   projectColorTokens,
 } from './project-colors.js';
 import { ProjectCompletionNotifications } from './project-completion-notifications.js';
+import {
+  CompletionAlerts,
+  normalizeCompletionAlertPreferences,
+} from './completion-alerts.js';
 import { parallelClaudeRestartRequired, projectQueueRestartRequired } from './project-queue-state.js';
 import { terminalClosePresentation } from './terminal-close-state.js';
+import {
+  normalizeClaudeModelSelection,
+  supportedClaudeModelCatalog,
+} from './claude-model-selection.js';
 import { idleExecutionThreadId, runningDirectTask, selectedExecutionProvider, selectedWorkflowMode } from './task-routing.js';
 import { activityBuckets, isFinishedTaskStatus, periodRange, shiftPeriod, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
 import {
@@ -74,6 +83,7 @@ import {
 } from './task-continuation-state.js';
 import {
   normalizeTaskPrompts,
+  taskPromptCopyText,
   taskPromptHistoryPreview,
   taskPromptHistoryText,
 } from './task-prompt-history.js';
@@ -89,6 +99,7 @@ import {
   availableProviderSelection,
   providerInstallationState,
 } from './provider-availability.js';
+import { createTextSelectionGuard } from './text-selection-guard.js';
 import { defaultEffortForModel } from './model-effort.js';
 import {
   breakdownIsActive,
@@ -146,6 +157,10 @@ const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const API_TIMEOUT_MS = 20_000;
 // Task creation carries image data, so it gets a wider budget than a status read.
 const TASK_SUBMIT_TIMEOUT_MS = 45_000;
+const textSelectionGuard = createTextSelectionGuard({
+  documentObject: document,
+  windowObject: window,
+});
 
 function effortOptions(values) {
   return values.map((reasoningEffort) => ({
@@ -177,9 +192,8 @@ const FALLBACK_MODELS = {
   ],
   claude: [
     catalogModel('default', 'Account default', 'Use the recommended Claude model for this account.', { isDefault: true, defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-    catalogModel('best', 'Best available', 'Use Fable when available, otherwise the latest Opus model.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
-    catalogModel('fable', 'Fable', 'Claude model for the hardest and longest-running tasks.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
     catalogModel('opus', 'Opus', 'Latest Opus model for complex reasoning and implementation.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
+    catalogModel('fable', 'Fable', 'Fable 5 for the hardest and longest-running tasks.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
     catalogModel('sonnet', 'Sonnet', 'Latest Sonnet model for daily coding work.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
     catalogModel('haiku', 'Haiku', 'Fast Claude model for simple and narrow tasks.'),
   ],
@@ -243,12 +257,22 @@ function syncHeaderHeight() {
 function setHeaderPosition(position, { persist = true } = {}) {
   const nextPosition = position === 'bottom' ? 'bottom' : 'top';
   document.documentElement.dataset.headerPosition = nextPosition;
-  if (persist) localStorage.setItem('relay.headerPosition', nextPosition);
+  if (persist) {
+    localStorage.setItem('relay.headerPosition', nextPosition);
+    queueUiPreferencesSave();
+  }
   renderHeaderPositionToggle();
   requestAnimationFrame(syncHeaderHeight);
 }
 
 setHeaderPosition(currentHeaderPosition(), { persist: false });
+
+function cachedCompletionAlertPreferences() {
+  return normalizeCompletionAlertPreferences({
+    sound: localStorage.getItem('relay.completionSound'),
+    speak: localStorage.getItem('relay.completionSpeech') === 'true',
+  });
+}
 
 const state = {
   tasks: [],
@@ -262,8 +286,8 @@ const state = {
     ? localStorage.getItem('relay.historyPeriod') : 'week',
   historyAnchor: new Date(),
   standupDate: '',
-  standupLength: ['short', 'standard', 'detailed'].includes(localStorage.getItem('relay.standupLength'))
-    ? localStorage.getItem('relay.standupLength') : 'standard',
+  standupLength: ['all', 'short', 'standard', 'detailed'].includes(localStorage.getItem('relay.standupLength'))
+    ? localStorage.getItem('relay.standupLength') : 'all',
   standupTasks: [],
   standupBlockers: [],
   standupClipboardText: '',
@@ -278,11 +302,12 @@ const state = {
     try {
       const saved = JSON.parse(localStorage.getItem('relay.panelWidths') || '{}');
       return {
-        composer: Number.isFinite(saved.composer) ? saved.composer : 540,
-        detail: Number.isFinite(saved.detail) ? saved.detail : 620,
+        composer: Number.isFinite(saved.composer) ? saved.composer : 580,
+        queue: Number.isFinite(saved.queue) ? saved.queue : null,
+        legacyDetail: Number.isFinite(saved.detail) ? saved.detail : null,
       };
     } catch {
-      return { composer: 540, detail: 620 };
+      return { composer: 580, queue: null, legacyDetail: null };
     }
   })(),
   terminalHeight: (() => {
@@ -299,6 +324,8 @@ const state = {
   taskMode: initialComposerState.taskMode,
   projectComposerStore: new ProjectComposerStore(),
   projectCompletionNotifications: new ProjectCompletionNotifications(localStorage),
+  completionAlerts: new CompletionAlerts(),
+  completionAlertPreferences: cachedCompletionAlertPreferences(),
   reorderPending: false,
   loadPromise: null,
   taskLoadSequence: 0,
@@ -307,6 +334,7 @@ const state = {
   pendingSubmission: null,
   poolLimitSaving: false,
   projectSettingsSaving: false,
+  uiPreferencesSaveTimer: null,
   projectColorTargetId: null,
   projectColorDraft: null,
   projectColorSaving: false,
@@ -318,6 +346,9 @@ const state = {
   closingThreadId: null,
   closingThreadLabel: null,
   killingSessionTaskId: null,
+  completingSessionTaskId: null,
+  terminalRetentionSavingTaskIds: new Set(),
+  terminalRetentionFeedback: new Map(),
   // `${taskId}:${turnId}:prompt|response|earlier` to the disclosure state the user chose.
   // A Map, not a Set: an explicit collapse has to survive the two-second refresh as
   // firmly as an explicit expansion, and only a recorded false can outrank the
@@ -341,6 +372,7 @@ const state = {
   continuationSubmitting: false,
   planExecutionSubmitting: false,
   editingTaskId: null,
+  taskEditMode: null,
   taskEditSubmitting: false,
   taskEditProvider: null,
   taskEditOriginalProvider: null,
@@ -348,6 +380,7 @@ const state = {
   taskEditSettings: null,
   planExecutionTargets: new Map(),
   detailCopyContent: {},
+  detailCopyTimers: new Map(),
   modelCatalogs: {
     codex: FALLBACK_MODELS.codex,
     claude: FALLBACK_MODELS.claude,
@@ -485,6 +518,10 @@ const elements = {
   terminalLayoutRows: document.querySelector('#terminal-layout-rows'),
   terminalLayoutDisplay: document.querySelector('#terminal-layout-display'),
   terminalLaunchBackground: document.querySelector('#terminal-launch-background'),
+  completionSound: document.querySelector('#completion-sound'),
+  completionSpeech: document.querySelector('#completion-speech'),
+  completionAlertPreview: document.querySelector('#completion-alert-preview'),
+  completionAlertStatus: document.querySelector('#completion-alert-status'),
   pauseButton: document.querySelector('#pause-button'),
   themeToggle: document.querySelector('#theme-toggle'),
   headerPositionToggle: document.querySelector('#header-position-toggle'),
@@ -539,9 +576,17 @@ const elements = {
   parallelRunButton: document.querySelector('#parallel-run-button'),
   emptyDetail: document.querySelector('#empty-detail'),
   taskDetail: document.querySelector('#task-detail'),
+  taskDetailOpen: document.querySelector('#task-detail-open'),
+  taskDetailModal: document.querySelector('#task-detail-modal'),
+  taskDetailModalTitle: document.querySelector('#task-detail-modal-title'),
+  taskDetailModalSubtitle: document.querySelector('#task-detail-modal-subtitle'),
+  taskDetailModalClose: document.querySelector('#task-detail-modal-close'),
   detailTitle: document.querySelector('#detail-title'),
+  detailTaskName: document.querySelector('#detail-task-name'),
+  detailExecutionProfile: document.querySelector('#detail-execution-profile'),
   detailMeta: document.querySelector('#detail-meta'),
   detailActions: document.querySelector('#detail-actions'),
+  terminalRetentionMessage: document.querySelector('#terminal-retention-message'),
   promptSection: document.querySelector('#prompt-section'),
   detailPrompt: document.querySelector('#detail-prompt'),
   detailPromptPreview: document.querySelector('#detail-prompt-preview'),
@@ -549,14 +594,18 @@ const elements = {
   detailResult: document.querySelector('#detail-result'),
   detailResultPreview: document.querySelector('#detail-result-preview'),
   sessionStrip: document.querySelector('#session-strip'),
+  sessionStripTitle: document.querySelector('#session-strip-title'),
   sessionStripContext: document.querySelector('#session-strip-context'),
   sessionStripState: document.querySelector('#session-strip-state'),
+  sessionModeBadge: document.querySelector('#session-mode-badge'),
   sessionStripMessage: document.querySelector('#session-strip-message'),
+  sessionCompleteButton: document.querySelector('#session-complete-button'),
   sessionKillButton: document.querySelector('#session-kill-button'),
   sessionHistory: document.querySelector('#session-history'),
   sessionHistoryCount: document.querySelector('#session-history-count'),
   sessionHistoryTurns: document.querySelector('#session-history-turns'),
   contentCopyButtons: [...document.querySelectorAll('[data-copy-content]')],
+  eventsSection: document.querySelector('.events-section'),
   detailEvents: document.querySelector('#detail-events'),
   eventSessionState: document.querySelector('#event-session-state'),
   eventSummary: document.querySelector('#event-summary'),
@@ -569,6 +618,7 @@ const elements = {
   copyEventsButton: document.querySelector('#copy-events-button'),
   followEventsButton: document.querySelector('#follow-events-button'),
   continuationForm: document.querySelector('#task-continuation-form'),
+  continuationLabel: document.querySelector('#task-continuation-label'),
   continuationContext: document.querySelector('#task-continuation-context'),
   continuationState: document.querySelector('#task-continuation-state'),
   continuationAttach: document.querySelector('#task-continuation-attach'),
@@ -608,6 +658,7 @@ const elements = {
   turboGraphProgressbar: document.querySelector('#turbo-graph-progressbar'),
   turboTaskGraph: document.querySelector('#turbo-task-graph'),
   prompt: document.querySelector('#task-prompt'),
+  taskName: document.querySelector('#task-name'),
   promptLabel: document.querySelector('#prompt-label'),
   attachmentRoute: document.querySelector('#attachment-route'),
   attachmentCount: document.querySelector('#attachment-count'),
@@ -618,11 +669,16 @@ const elements = {
   detailAttachmentsCount: document.querySelector('#detail-attachments-count'),
   detailAttachments: document.querySelector('#detail-attachments'),
   taskEditModal: document.querySelector('#task-edit-modal'),
+  taskEditTitle: document.querySelector('#task-edit-title'),
+  taskEditSubtitle: document.querySelector('#task-edit-subtitle'),
   taskEditExecution: document.querySelector('#task-edit-execution'),
   taskEditProvider: document.querySelector('#task-edit-provider'),
+  taskEditProviderLabel: document.querySelector('#task-edit-provider-label'),
   taskEditModel: document.querySelector('#task-edit-model'),
   taskEditEffort: document.querySelector('#task-edit-effort'),
   taskEditExecutionHint: document.querySelector('#task-edit-execution-hint'),
+  taskEditName: document.querySelector('#task-edit-name'),
+  taskEditNameHint: document.querySelector('#task-edit-name-hint'),
   taskEditPrompt: document.querySelector('#task-edit-prompt'),
   taskEditMessage: document.querySelector('#task-edit-message'),
   taskEditClose: document.querySelector('#task-edit-close'),
@@ -833,6 +889,79 @@ async function api(path, options = {}) {
   return body;
 }
 
+function uiPreferencesPayload() {
+  return {
+    panelWidths: {
+      composer: Math.round(state.panelWidths.composer),
+      queue: Math.round(state.panelWidths.queue),
+    },
+    terminalHeight: state.terminalHeight == null ? null : Math.round(state.terminalHeight),
+    headerPosition: currentHeaderPosition(),
+    completionAlerts: state.completionAlertPreferences,
+  };
+}
+
+function cacheUiPreferences(preferences = uiPreferencesPayload()) {
+  localStorage.setItem('relay.panelWidths', JSON.stringify(preferences.panelWidths));
+  if (preferences.terminalHeight == null) localStorage.removeItem('relay.terminalHeight');
+  else localStorage.setItem('relay.terminalHeight', String(preferences.terminalHeight));
+  localStorage.setItem('relay.headerPosition', preferences.headerPosition);
+  const completionAlerts = normalizeCompletionAlertPreferences(preferences.completionAlerts);
+  localStorage.setItem('relay.completionSound', completionAlerts.sound);
+  localStorage.setItem('relay.completionSpeech', String(completionAlerts.speak));
+}
+
+function renderCompletionAlertSettings() {
+  elements.completionSound.value = state.completionAlertPreferences.sound;
+  elements.completionSpeech.checked = state.completionAlertPreferences.speak;
+}
+
+function setCompletionAlertPreferences(value, { persist = true } = {}) {
+  state.completionAlertPreferences = normalizeCompletionAlertPreferences(value);
+  renderCompletionAlertSettings();
+  if (persist) queueUiPreferencesSave();
+}
+
+function queueUiPreferencesSave() {
+  cacheUiPreferences();
+  window.clearTimeout(state.uiPreferencesSaveTimer);
+  state.uiPreferencesSaveTimer = window.setTimeout(async () => {
+    state.uiPreferencesSaveTimer = null;
+    try {
+      await api('/api/ui-preferences', {
+        method: 'PATCH',
+        body: JSON.stringify(uiPreferencesPayload()),
+      });
+    } catch (error) {
+      console.warn('Could not persist UI layout preferences.', error);
+    }
+  }, 100);
+}
+
+async function restoreUiPreferences() {
+  try {
+    const body = await api('/api/ui-preferences');
+    const preferences = body.preferences;
+    if (!preferences) {
+      queueUiPreferencesSave();
+      return;
+    }
+    state.panelWidths = {
+      composer: preferences.panelWidths.composer,
+      queue: preferences.panelWidths.queue,
+      legacyDetail: null,
+    };
+    state.terminalHeight = preferences.terminalHeight;
+    setHeaderPosition(preferences.headerPosition, { persist: false });
+    setCompletionAlertPreferences(preferences.completionAlerts, { persist: false });
+    cacheUiPreferences(preferences);
+    applyPanelWidths();
+    applyTerminalHeight();
+  } catch (error) {
+    console.warn('Could not restore UI layout preferences.', error);
+  }
+}
+
 function projectProvider() {
   return state.taskMode === 'execute' ? state.selectedProvider : 'codex';
 }
@@ -851,6 +980,10 @@ function activeProject() {
 
 function usesDisposableTerminalPools() {
   return state.status?.capabilities?.disposableTerminalPools === true;
+}
+
+function taskNamingSupported() {
+  return state.status?.capabilities?.queuedTaskNaming === true;
 }
 
 function terminalRetentionRequest(enabled = state.keepTerminalOpen) {
@@ -939,6 +1072,7 @@ function projectThreads(provider = state.selectedProvider) {
 
 function saveProjectComposerState(path = state.activeProjectPath) {
   state.projectComposerStore.save(path, {
+    taskName: elements.taskName.value,
     prompt: elements.prompt.value,
     attachments: state.attachments,
     selectedTaskId: state.selectedTaskId,
@@ -958,6 +1092,7 @@ function saveProjectComposerState(path = state.activeProjectPath) {
 
 function restoreProjectComposerState(path) {
   const session = state.projectComposerStore.load(path);
+  elements.taskName.value = session.taskName || '';
   elements.prompt.value = session.prompt;
   elements.formMessage.textContent = '';
   setComposerAlert('');
@@ -1157,6 +1292,7 @@ function renderProjects() {
 function projectActivity(path) {
   const tasks = state.tasks.filter((task) => sameProjectPath(task.repo_path, path));
   const running = tasks.filter((task) => task.status === 'running');
+  const openSessions = tasks.filter((task) => task.status === 'open' && isManualSessionTask(task));
   const queued = tasks.filter((task) => task.status === 'queued');
   if (running.length > 0) {
     const task = running[0];
@@ -1164,6 +1300,13 @@ function projectActivity(path) {
       state: 'running',
       status: 'Running',
       label: `Task #${task.id}${queued.length ? `, ${queued.length} waiting` : ''}`,
+    };
+  }
+  if (openSessions.length > 0) {
+    return {
+      state: 'session',
+      status: openSessions.length === 1 ? 'Session open' : 'Sessions open',
+      label: `${openSessions.length} terminal session${openSessions.length === 1 ? '' : 's'} ready${queued.length ? `, ${queued.length} waiting` : ''}`,
     };
   }
   if (queued.length > 0) {
@@ -1250,6 +1393,7 @@ async function loadProjects() {
     return;
   }
   const body = await api('/api/projects');
+  await textSelectionGuard.waitForClear();
   state.projects = body.projects || [];
   const sharedActiveProject = state.projects.find(
     (project) => sameProjectPath(project.path, body.activeProjectPath),
@@ -1548,13 +1692,23 @@ function taskLifecycleDatesMarkup(task, formatter = formatCardTime) {
 }
 
 function workspaceName(path) {
-  const clean = String(path || '').replace(/\/$/, '');
+  // normalizedPath folds Windows separators, so a C:\Users\Pat\proj workspace shows its
+  // folder name here instead of the whole path.
+  const clean = normalizedPath(path);
   return clean.split('/').filter(Boolean).pop() || clean || 'Unknown workspace';
 }
 
 function compactText(value, limit) {
   const compact = String(value || '').replace(/\s+/g, ' ').trim();
   return compact.length > limit ? `${compact.slice(0, limit - 3)}...` : compact;
+}
+
+function taskDisplayName(task) {
+  return String(task?.title || '').trim() || compactText(task?.prompt, 80) || 'Untitled task';
+}
+
+function taskHasCustomName(task) {
+  return taskDisplayName(task) !== compactText(task?.prompt, 80);
 }
 
 function formatBytes(value) {
@@ -1762,9 +1916,12 @@ const SUB_AGENT_STATUS_LABELS = {
 // written before the launch record) still renders from the notification alone.
 function subAgentPresentation(entry, item, common) {
   const finished = entry.agentFinishedEvent?.payload || null;
+  const details = subAgentEntryDetails(entry);
   const agentState = subAgentEntryState(entry);
-  const reportedStatus = String(finished?.status || '').trim().toLowerCase();
-  const failed = item?.status === 'failed' || (Boolean(reportedStatus) && reportedStatus !== 'completed');
+  const reportedStatus = String(details?.reportedStatus || finished?.status || '').trim().toLowerCase();
+  const failed = details?.failed === true
+    || item?.status === 'failed'
+    || (!details && Boolean(reportedStatus) && reportedStatus !== 'completed');
   const startedAt = entryFirstEvent(entry)?.created_at || null;
   const endedAt = entry.agentFinishedEvent?.created_at || entryLastEvent(entry)?.created_at || null;
   // A notification can be recorded before the launch it resolves, which would otherwise
@@ -1772,22 +1929,22 @@ function subAgentPresentation(entry, item, common) {
   const elapsed = startedAt && endedAt
     ? new Date(endedAt).getTime() - new Date(startedAt).getTime()
     : 0;
-  const summary = String(finished?.summary || '').trim();
+  const summary = String(details?.note || finished?.summary || '').trim();
   const launchOutput = failed ? toolResultText(item?.result) : '';
-  const prompt = String(item?.arguments?.prompt || '').trim();
+  const prompt = String(details?.prompt || item?.arguments?.prompt || '').trim();
   return {
     ...common,
     kind: 'agent',
     glyph: '↳',
     state: failed ? 'error' : (agentState === 'finished' ? 'success' : 'running'),
     title: 'Sub-agent',
-    name: String(item?.agentName || finished?.agentName || '').trim() || 'unnamed agent',
-    agentType: String(item?.agentType || '').trim(),
+    name: String(details?.name || item?.agentName || finished?.agentName || '').trim() || 'unnamed agent',
+    agentType: String(details?.agentType || item?.agentType || '').trim(),
     agentState,
     live: agentState !== 'finished',
-    status: failed
+    status: details?.statusLabel || (failed
       ? (reportedStatus ? `${reportedStatus.charAt(0).toUpperCase()}${reportedStatus.slice(1)}` : 'Failed to start')
-      : SUB_AGENT_STATUS_LABELS[agentState],
+      : SUB_AGENT_STATUS_LABELS[agentState]),
     duration: agentState === 'finished' && elapsed > 0 ? formatElapsedDuration(startedAt, endedAt) : '',
     // The summary repeats the agent name on a clean finish, so it only earns a line when it
     // carries news: a non-standard outcome, or a notification with no launch signal to sit on.
@@ -2161,6 +2318,7 @@ function eventCopyText(entry, task) {
     `[${formatEventTime(event?.created_at)}] ${providerLabel(presentation.provider)} · ${presentation.title} · ${presentation.status}`,
   ];
   if (isSubAgentEntry(entry)) {
+    const details = subAgentEntryDetails(entry);
     lines.push(presentation.agentType
       ? `${presentation.name} (${presentation.agentType})`
       : presentation.name);
@@ -2168,7 +2326,7 @@ function eventCopyText(entry, task) {
     if (summary) {
       lines.push(summary);
     }
-    const brief = String(item?.arguments?.prompt || '').trim();
+    const brief = String(details?.prompt || item?.arguments?.prompt || '').trim();
     if (brief) {
       lines.push(brief);
     }
@@ -2269,6 +2427,13 @@ function isSessionTask(task) {
   return task?.keep_terminal_open === true && task?.terminal_lifecycle === 'disposable';
 }
 
+function isManualSessionTask(task) {
+  return isSessionTask(task)
+    && task?.manual_completion === true
+    && task?.mode === 'execute'
+    && ['codex', 'claude'].includes(task?.provider);
+}
+
 /*
  * Plan council and Turbo keep-open tasks hold several terminals and their own staged
  * artifacts, so a single session strip would describe none of them honestly. The session
@@ -2312,9 +2477,16 @@ function resizeContinuationInput() {
 
 function renderTaskContinuation(task, { taskChanged = false } = {}) {
   const direct = task?.mode === 'execute' && ['codex', 'claude'].includes(task.provider);
-  elements.continuationForm.hidden = !direct;
-  if (!direct) return;
+  const manualSession = isManualSessionTask(task);
+  const manualSessionComplete = manualSession && task.status === 'complete';
+  elements.continuationForm.hidden = !direct || manualSessionComplete;
+  if (!direct || manualSessionComplete) return;
   elements.continuationForm.dataset.provider = task.provider;
+  elements.continuationForm.dataset.sessionMode = String(manualSession);
+  elements.continuationLabel.textContent = manualSession ? 'Terminal session' : 'Continue session';
+  elements.continuationInput.placeholder = manualSession
+    ? 'Send the next command or request to this terminal...'
+    : 'Ask a follow-up in this terminal...';
   if (taskChanged || elements.continuationMessage.dataset.taskId !== String(task.id)) {
     // A draft held after an unconfirmed delivery deliberately rehydrates as nothing. The
     // words remain recoverable from the map; putting them back here would resurrect a
@@ -2372,7 +2544,11 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   elements.continuationAttachments.hidden = attachments.length === 0;
   elements.continuationClearImages.hidden = attachments.length === 0;
   elements.continuationClearImages.disabled = presentation.inputDisabled;
-  elements.continuationSend.querySelector('span').textContent = presentation.buttonLabel;
+  elements.continuationSend.querySelector('span').textContent = manualSession
+    && task.status === 'open'
+    && presentation.state === 'ready'
+    ? 'Send command'
+    : presentation.buttonLabel;
   // A dispatch outcome outlives the two-second refresh. Without warning in this list the
   // next render would replace an unconfirmed-delivery notice with a generic hint.
   if (!['error', 'success', 'warning'].includes(elements.continuationMessage.dataset.kind)) {
@@ -2717,7 +2893,8 @@ function resetStandupOutput() {
 
 function standupGenerationSupported() {
   return state.status?.capabilities?.aiStandupGeneration === true
-    && state.status?.capabilities?.aiStandupConfiguration === true;
+    && state.status?.capabilities?.aiStandupConfiguration === true
+    && state.status?.capabilities?.aiStandupAllTasks === true;
 }
 
 function standupScopeLabel() {
@@ -2735,10 +2912,11 @@ function standupDateLabel(anchor) {
 
 function standupLengthLabel(length = state.standupLength) {
   return {
+    all: 'All tasks',
     short: 'Short',
     standard: 'Standard',
     detailed: 'Detailed',
-  }[length] || 'Standard';
+  }[length] || 'All tasks';
 }
 
 function standupListMarkup(items, kind) {
@@ -2847,7 +3025,7 @@ function renderStandup() {
   } else {
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = 'Ready to generate';
-    elements.standupEmptyMessage.textContent = `Generate a ${state.standupLength} standup for the selected workday.`;
+    elements.standupEmptyMessage.textContent = `Generate the ${standupLengthLabel()} standup for the selected workday.`;
     elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
     elements.standupSourceNote.textContent = 'Changing the length does not start another AI run';
     elements.standupGenerate.textContent = 'Generate standup';
@@ -2925,7 +3103,7 @@ async function generateStandup() {
     state.standupTaskCount = Number(body.taskCount || sourceTasks.length);
     state.standupIncludedTaskCount = Number(body.includedTaskCount || state.standupTaskCount);
     state.standupProvider = body.provider || null;
-    if (['short', 'standard', 'detailed'].includes(body.length)) state.standupLength = body.length;
+    if (['all', 'short', 'standard', 'detailed'].includes(body.length)) state.standupLength = body.length;
     if (state.standupTasks.length + state.standupBlockers.length === 0) {
       state.standupError = 'The AI returned no usable standup items. Try generating it again.';
       state.standupTasks = [];
@@ -3023,11 +3201,16 @@ function renderExecutionControls() {
   const models = state.modelCatalogs[state.selectedProvider];
   const settings = selectedExecution();
   elements.executionControls.dataset.provider = state.selectedProvider;
-  let model = models.find((item) => item.model === settings.model);
+  const requestedModel = state.selectedProvider === 'claude'
+    ? normalizeClaudeModelSelection(settings.model)
+    : settings.model;
+  let model = models.find((item) => item.model === requestedModel);
   if (!model) {
     model = models.find((item) => item.isDefault) || models[0];
     settings.model = model?.model || '';
     settings.effort = defaultEffortForModel(model);
+  } else if (settings.model !== requestedModel) {
+    settings.model = requestedModel;
   }
 
   elements.modelSelect.innerHTML = models.map((item) => `
@@ -3479,6 +3662,9 @@ function providerInstallationIssue() {
  */
 function composerValidationIssue() {
   if (!elements.prompt.value.trim()) return 'Write a prompt before adding the task.';
+  if (elements.taskName.value.trim() && state.status && !taskNamingSupported()) {
+    return 'Restart CC Relay before naming a task.';
+  }
   if (usesDisposableTerminalPools()) {
     if (!activeProject()) return 'Choose a project before adding the task.';
   } else if (!state.selectedThreadId) {
@@ -3489,13 +3675,21 @@ function composerValidationIssue() {
 
 function updateSubmitState() {
   const issue = composerValidationIssue();
+  elements.taskName.title = taskNamingSupported() || !state.status
+    ? 'Optional task name. Leave blank to derive it from the request.'
+    : 'Restart CC Relay to name tasks.';
+  const openingSession = usesDisposableTerminalPools()
+    && state.status?.capabilities?.manualSessionTasks === true
+    && state.keepTerminalOpen
+    && state.taskMode === 'execute'
+    && !isExecuteCouncilEnabled();
   elements.submitButton.disabled = state.submitting || Boolean(issue);
   elements.submitButton.title = state.submitting ? '' : issue;
   elements.submitButton.textContent = state.submitting
-    ? isExecuteCouncilEnabled() ? 'Starting council' : state.taskMode === 'turbo' ? 'Starting turbo' : 'Adding task'
+    ? isExecuteCouncilEnabled() ? 'Starting council' : state.taskMode === 'turbo' ? 'Starting turbo' : openingSession ? 'Opening session' : 'Adding task'
     : isExecuteCouncilEnabled()
       ? 'Build reviewed plan'
-      : state.taskMode === 'turbo' ? 'Plan and execute' : 'Add to queue';
+      : state.taskMode === 'turbo' ? 'Plan and execute' : openingSession ? 'Open session' : 'Add to queue';
 }
 
 /*
@@ -3575,7 +3769,10 @@ async function loadModels(provider) {
   try {
     const body = await api(`/api/models?provider=${encodeURIComponent(provider)}`);
     if (Array.isArray(body.models) && body.models.length > 0) {
-      state.modelCatalogs[provider] = body.models;
+      const models = provider === 'claude'
+        ? supportedClaudeModelCatalog(body.models)
+        : body.models;
+      if (models.length > 0) state.modelCatalogs[provider] = models;
       if (provider === state.selectedProvider) {
         renderExecutionControls();
       }
@@ -3718,6 +3915,7 @@ function renderHeaderRunningTasks() {
     task.repo_path,
     task.thread_id,
     task.thread_name,
+    task.title,
     task.prompt,
     task.latestAgentUpdate?.provider,
     task.latestAgentUpdate?.text,
@@ -3748,7 +3946,7 @@ function renderHeaderRunningTasks() {
           <span class="header-running-loc" title="${escapeHtml(task.repo_path)}"><span class="header-running-project">${escapeHtml(project)}</span> · ${escapeHtml(relay)}</span>
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
-        <strong class="header-running-prompt" title="${escapeHtml(task.prompt)}">${escapeHtml(compactText(task.prompt, 96))}</strong>
+        <strong class="header-running-prompt" title="${escapeHtml(taskDisplayName(task))}">${escapeHtml(compactText(taskDisplayName(task), 96))}</strong>
         <span class="header-running-response" data-provider="${escapeHtml(updateProvider)}" title="${escapeHtml(response)}">
           <b>${escapeHtml(providerLabel(updateProvider))}</b>
           <span>${escapeHtml(compactText(response, 200))}</span>
@@ -3798,6 +3996,7 @@ function renderStatus() {
   const scopedTasks = projectTasks();
   const queuedCount = scopedTasks.filter((task) => task.status === 'queued').length;
   const runningInProject = scopedTasks.filter((task) => task.status === 'running');
+  const openSessionCount = scopedTasks.filter((task) => task.status === 'open' && isManualSessionTask(task)).length;
   const staleProjectScheduler = projectQueueRestartRequired({
     supported: state.status.capabilities?.projectQueueIsolation,
     paused,
@@ -3838,7 +4037,9 @@ function renderStatus() {
         ? `${runningInProject.length} tasks running · ${queuedCount} waiting`
       : runningInProject.length === 1
         ? `Task ${runningInProject[0].id} is running · ${queuedCount} waiting`
-        : `${queuedCount} waiting · queue ready`;
+        : openSessionCount > 0
+          ? `${openSessionCount} terminal session${openSessionCount === 1 ? '' : 's'} open · ${queuedCount} waiting`
+          : `${queuedCount} waiting · queue ready`;
   }
 }
 
@@ -3874,7 +4075,7 @@ function renderTasks() {
     ? tasksInPeriod(scopedTasks, state.historyPeriod, state.historyAnchor)
       .sort((left, right) => new Date(right.created_at) - new Date(left.created_at))
     : [...scopedTasks].sort((left, right) => {
-      const statusRank = (task) => task.status === 'running' ? 0 : task.status === 'queued' ? 1 : 2;
+      const statusRank = (task) => task.status === 'running' ? 0 : task.status === 'open' ? 1 : task.status === 'queued' ? 2 : 3;
       const rankDifference = statusRank(left) - statusRank(right);
       if (rankDifference !== 0) return rankDifference;
       if (left.status === 'queued' && right.status === 'queued') {
@@ -3955,8 +4156,14 @@ function renderTasks() {
     // A session task outlives its own run, so the card carries the live terminal state as
     // a word. Colour reinforces it; it never carries the meaning alone.
     const sessionCard = isDirectSessionTask(task);
+    const manualSessionCard = isManualSessionTask(task);
     const sessionState = sessionCard ? sessionTaskState(task) : '';
     const sessionWord = sessionCard ? sessionBadgeWord(sessionState) : '';
+    const displayName = taskDisplayName(task);
+    const preparing = state.status?.planningTaskIds?.includes(task.id) === true;
+    const renameable = queued
+      && task.mode !== 'breakdown'
+      && taskNamingSupported();
     const unread = state.projectCompletionNotifications.includes(task.repo_path, task.id);
     const reorderControls = reorderable ? `
       <span class="queue-reorder" aria-label="Reorder queued task">
@@ -3973,27 +4180,36 @@ function renderTasks() {
         data-mode="${escapeHtml(task.mode || 'execute')}"
         data-unread="${unread}"
         ${sessionCard ? `data-session="true" data-session-state="${escapeHtml(sessionState)}"` : ''}
+        ${manualSessionCard ? 'data-manual-completion="true"' : ''}
         tabindex="0"
-        aria-label="Task ${task.id}, ${escapeHtml(task.status)}${sessionCard ? `, retained session, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', not viewed' : ''}${queued ? ', draggable queue item' : ''}"
+        aria-label="Task ${task.id}, ${escapeHtml(displayName)}, ${escapeHtml(task.status)}${manualSessionCard ? ', terminal session with manual completion' : sessionCard ? ', retained session' : ''}${sessionCard ? `, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', not viewed' : ''}${queued ? ', draggable queue item' : ''}"
       >
+        ${manualSessionCard ? `
+          <div class="task-session-modebar">
+            <span><i aria-hidden="true"></i>Terminal session</span>
+            <b>Manual finish</b>
+          </div>
+        ` : ''}
         <div class="task-topline">
           <span class="task-identity">
             ${batchable ? `<input class="parallel-task-check" type="checkbox" aria-label="Select task ${task.id} for parallel Codex execution" ${state.parallelTaskIds.has(task.id) ? 'checked' : ''}>` : ''}
             ${reorderable ? '<span class="drag-grip" draggable="true" role="button" tabindex="0" aria-label="Drag task to reorder">⠿</span>' : ''}
             ${agentBadgeMarkup(task, 'task-agent-icon')}
             <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
-            ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>Session · ${escapeHtml(sessionWord)}</span>` : ''}
+            ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>${manualSessionCard ? 'Terminal' : 'Session'} · ${escapeHtml(sessionWord)}</span>` : ''}
             ${unread ? '<span class="task-unread-marker">New</span>' : ''}
             ${task.continued_from_task_id ? `<span class="task-parent-link">↳ #${String(task.continued_from_task_id).padStart(3, '0')}</span>` : ''}
           </span>
           <span class="task-top-actions">
+            ${renameable ? `<button class="task-rename-button" type="button" data-rename-task ${preparing ? 'disabled title="This task is already being prepared."' : ''}>Rename</button>` : ''}
             ${assignmentTargets.length ? `<button class="task-assign-button" type="button" data-show-assignment aria-expanded="${state.assigningTaskId === task.id}">Assign</button>` : ''}
             ${reorderControls}
             ${turboMarker ? `<span class="turbo-plan-marker turbo-plan-marker-${escapeHtml(turboMarker.phase)}" title="${escapeHtml(turboMarker.label)}" aria-label="Turbo stage: ${escapeHtml(turboMarker.label)}">${escapeHtml(turboMarker.label)}</span>` : ''}
             <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
           </span>
         </div>
-        <p class="task-prompt">${escapeHtml(task.prompt)}</p>
+        <h3 class="task-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</h3>
+        ${taskHasCustomName(task) ? `<p class="task-prompt">${escapeHtml(task.prompt)}</p>` : ''}
         ${turboFleetMarkup(task)}
         ${state.assigningTaskId === task.id ? `
           <div class="task-assignment-options" aria-label="Assign task ${task.id} to another CC Relay">
@@ -4012,7 +4228,9 @@ function renderTasks() {
   for (const card of elements.taskList.querySelectorAll('.task-card')) {
     const select = () => selectTask(Number(card.dataset.taskId));
     card.addEventListener('click', (event) => {
-      if (!event.target.closest('button, input')) {
+      // Mouseup after dragging across card text also emits a click. Do not turn that
+      // completed text selection into task activation and an immediate card rebuild.
+      if (!textSelectionGuard.isActive() && !event.target.closest('button, input')) {
         select();
       }
     });
@@ -4032,6 +4250,12 @@ function renderTasks() {
         moveQueuedTask(Number(card.dataset.taskId), button.dataset.move === 'up' ? -1 : 1);
       });
     }
+
+    card.querySelector('[data-rename-task]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const task = state.tasks.find((item) => item.id === Number(card.dataset.taskId));
+      if (task) openTaskEditor(task);
+    });
 
     card.querySelector('[data-show-assignment]')?.addEventListener('click', (event) => {
       event.stopPropagation();
@@ -4278,6 +4502,9 @@ async function runParallelBatch() {
 }
 
 function refreshTaskDurations() {
+  // Replacing even one text node inside the selected range can collapse the browser's
+  // selection. Durations catch up on the next one-second tick after the range is cleared.
+  if (textSelectionGuard.isActive()) return;
   const tasksById = new Map(state.tasks.map((task) => [task.id, task]));
   for (const element of elements.taskList.querySelectorAll('[data-task-duration]')) {
     const task = tasksById.get(Number(element.dataset.taskDuration));
@@ -4345,6 +4572,55 @@ function actionButton(label, action, className = '') {
   return button;
 }
 
+async function keepRunningTaskTerminalOpen(task) {
+  if (
+    !task
+    || task.status !== 'running'
+    || task.terminal_lifecycle !== 'disposable'
+    || task.keep_terminal_open === true
+    || state.terminalRetentionSavingTaskIds.has(task.id)
+  ) return;
+
+  state.terminalRetentionSavingTaskIds.add(task.id);
+  state.terminalRetentionFeedback.delete(task.id);
+  const button = elements.detailActions.querySelector('[data-terminal-retention]');
+  if (button) {
+    button.disabled = true;
+    button.dataset.state = 'pending';
+    button.textContent = 'Stopping auto-close...';
+  }
+  elements.terminalRetentionMessage.hidden = true;
+  try {
+    const body = await api(`/api/tasks/${task.id}/keep-terminal-open`, { method: 'POST' });
+    state.tasks = state.tasks.map((item) => item.id === task.id ? { ...item, ...body.task } : item);
+    state.runningTasks = state.runningTasks.map((item) => item.id === task.id ? { ...item, ...body.task } : item);
+    const target = ['plan', 'turbo'].includes(task.mode) ? 'terminals' : 'terminal';
+    state.terminalRetentionFeedback.set(task.id, {
+      kind: 'success',
+      message: `Auto-close stopped. This task's ${target} will stay open after the run.`,
+    });
+  } catch (error) {
+    state.terminalRetentionFeedback.set(task.id, {
+      kind: 'error',
+      message: error.message,
+    });
+  } finally {
+    state.terminalRetentionSavingTaskIds.delete(task.id);
+    await load({ fresh: true }).catch((error) => {
+      elements.queueSummary.textContent = error.message;
+    });
+  }
+}
+
+function openTaskDetailModal() {
+  if (!state.selectedTaskId || elements.taskDetail.hidden) return;
+  if (!elements.taskDetailModal.open) elements.taskDetailModal.showModal();
+}
+
+function closeTaskDetailModal() {
+  if (elements.taskDetailModal.open) elements.taskDetailModal.close();
+}
+
 function planStatusLabel(status, plan = null, task = null) {
   const author = providerLabel(plan?.author?.provider || task?.author_provider || 'claude');
   const reviewer = providerLabel(plan?.reviewer?.provider || task?.reviewer_provider || 'codex');
@@ -4362,26 +4638,36 @@ function planStatusLabel(status, plan = null, task = null) {
   return labels[status] || 'Preparing';
 }
 
-function setDetailCopyContent(content = {}) {
+function setDetailCopyContent(content = {}, { resetFeedback = false } = {}) {
   state.detailCopyContent = content;
+  if (resetFeedback) {
+    for (const timer of state.detailCopyTimers.values()) window.clearTimeout(timer);
+    state.detailCopyTimers.clear();
+  }
   for (const button of elements.contentCopyButtons) {
-    button.textContent = 'Copy';
+    if (resetFeedback) button.textContent = 'Copy';
     button.disabled = !String(content[button.dataset.copyContent] || '').trim();
   }
 }
 
 async function copyDetailContent(button) {
-  const text = state.detailCopyContent[button.dataset.copyContent];
+  const contentKey = button.dataset.copyContent;
+  const text = state.detailCopyContent[contentKey];
   if (!text) return;
+  const previousTimer = state.detailCopyTimers.get(contentKey);
+  if (previousTimer) window.clearTimeout(previousTimer);
   try {
     await navigator.clipboard.writeText(text);
     button.textContent = 'Copied';
   } catch {
     button.textContent = 'Copy failed';
   }
-  setTimeout(() => {
+  const timer = window.setTimeout(() => {
+    if (state.detailCopyTimers.get(contentKey) !== timer) return;
+    state.detailCopyTimers.delete(contentKey);
     button.textContent = 'Copy';
   }, 1200);
+  state.detailCopyTimers.set(contentKey, timer);
 }
 
 // Council stage files live next to the canonical plan.md in the project task folder. A
@@ -4587,19 +4873,62 @@ function renderTurboPreview(plan, task) {
 function renderSessionStrip(task, active) {
   elements.sessionStrip.hidden = !active;
   if (!active) {
+    elements.sessionCompleteButton.dataset.taskId = '';
     elements.sessionKillButton.dataset.taskId = '';
     elements.sessionKillButton.dataset.threadId = '';
     return;
   }
+  const manualSession = isManualSessionTask(task);
   const stateKey = sessionTaskState(task);
   const { label, hint } = sessionStateLabel(stateKey);
   elements.sessionStrip.dataset.state = stateKey;
+  elements.sessionStrip.dataset.completion = manualSession ? 'manual' : 'automatic';
+  elements.sessionStripTitle.textContent = manualSession
+    ? 'Terminal session workspace'
+    : 'Retained terminal session';
   elements.sessionStripContext.textContent = `${taskRelayLabel(task)} · ${providerLabel(task.provider)} · ${task.model || 'session model'}`;
+  elements.sessionModeBadge.hidden = !manualSession;
   elements.sessionStripState.dataset.state = stateKey;
   elements.sessionStripState.textContent = label;
+  const thread = taskContinuationSession(task);
+
+  const completeButton = elements.sessionCompleteButton;
+  const completing = state.completingSessionTaskId === task.id;
+  const completionSupported = state.status?.capabilities?.manualSessionTasks === true;
+  completeButton.dataset.taskId = String(task.id);
+  completeButton.hidden = !manualSession;
+  completeButton.dataset.state = task.status === 'complete'
+    ? 'complete'
+    : task.status === 'open'
+      ? completing ? 'pending' : 'ready'
+      : 'blocked';
+  completeButton.textContent = task.status === 'complete'
+    ? 'Session complete'
+    : completing
+      ? 'Completing session'
+      : task.status === 'running'
+        ? 'Turn in progress'
+        : task.status === 'open'
+          ? 'Complete session'
+          : 'Waiting to open';
+  completeButton.disabled = !completionSupported
+    || completing
+    || task.status !== 'open';
+  completeButton.title = !completionSupported
+    ? 'Restart CC Relay to complete terminal session tasks here.'
+    : task.status === 'complete'
+      ? thread
+        ? 'This task was completed manually. Closing its retained terminal is a separate action.'
+        : 'This task was completed manually. Its terminal is already closed.'
+      : task.status === 'running'
+        ? 'Wait for the current turn to finish before completing the session.'
+        : task.status === 'open'
+          ? thread
+            ? 'Mark this task complete. The retained terminal will remain open.'
+            : 'Mark this task complete. This does not relaunch its closed terminal.'
+          : 'The session can be completed after its first turn finishes.';
 
   const supported = state.status?.capabilities?.terminalControl === true;
-  const thread = taskContinuationSession(task);
   const control = thread?.terminalControl || null;
   const closing = state.killingSessionTaskId === task.id;
   const button = elements.sessionKillButton;
@@ -4611,24 +4940,24 @@ function renderSessionStrip(task, active) {
   button.textContent = closing ? 'Closing' : 'Close terminal';
   button.setAttribute('aria-label', `Close the retained terminal for task ${task.id}`);
 
-  let reason = '';
+  let closeReason = '';
   if (closing) {
     button.disabled = true;
-    reason = 'Closing this terminal.';
+    closeReason = 'Closing this terminal.';
   } else if (!supported) {
     button.disabled = true;
-    reason = 'Restart CC Relay to close terminals from here.';
+    closeReason = 'Restart CC Relay to close terminals from here.';
   } else if (!thread) {
     button.disabled = true;
-    reason = hint;
+    closeReason = hint;
   } else if (control?.canClose !== true) {
     button.disabled = true;
-    reason = control?.reason || 'CC Relay does not own this terminal window, so it cannot close it.';
+    closeReason = control?.reason || 'CC Relay does not own this terminal window, so it cannot close it.';
   } else {
     button.disabled = false;
-    reason = 'Closes the native terminal window and ends this session.';
+    closeReason = 'Closes the native terminal window and ends this session.';
   }
-  button.title = reason;
+  button.title = closeReason;
 
   const message = elements.sessionStripMessage;
   if (message.dataset.taskId !== String(task.id)) {
@@ -4644,12 +4973,67 @@ function renderSessionStrip(task, active) {
   if (message.dataset.kind === 'success' && thread && thread.id !== message.dataset.closedThreadId) {
     message.dataset.kind = 'hint';
   }
+  if (
+    message.dataset.kind === 'success'
+    && message.dataset.completionTaskId === String(task.id)
+    && task.status !== 'complete'
+  ) {
+    message.dataset.kind = 'hint';
+    message.dataset.completionTaskId = '';
+  }
+  const stripHint = manualSession
+    ? task.status === 'complete'
+      ? thread
+        ? 'This task is complete. Its terminal stays open until you close it.'
+        : 'This task is complete. Its terminal is already closed.'
+      : task.status === 'running'
+        ? 'The current turn is active. Complete the session after it finishes.'
+        : task.status === 'open'
+          ? thread
+            ? 'Ready for another message. Complete the session only when this workspace is finished.'
+            : 'The task is still open. Send a message to relaunch its saved conversation, or complete the session now.'
+          : 'The terminal workspace will stay open after its first turn.'
+    : closeReason;
   // A close outcome has to outlive the two-second refresh. Without this the success or
   // failure text would be replaced by the generic hint before it could be read. The
   // equality check matters just as much: this is a live region, and rewriting the same
   // sentence every two seconds would have a screen reader read it every two seconds.
-  if (!['error', 'success'].includes(message.dataset.kind) && message.textContent !== reason) {
-    message.textContent = reason;
+  if (!['error', 'success'].includes(message.dataset.kind) && message.textContent !== stripHint) {
+    message.textContent = stripHint;
+  }
+}
+
+async function completeTerminalSession() {
+  const button = elements.sessionCompleteButton;
+  const taskId = Number(button.dataset.taskId);
+  if (!Number.isInteger(taskId) || taskId <= 0 || state.completingSessionTaskId) return;
+  const task = state.tasks.find((item) => item.id === taskId) || state.selectedTaskForEvents;
+  if (!isManualSessionTask(task) || task.status !== 'open') return;
+  const terminalWasOpen = Boolean(taskContinuationSession(task));
+
+  const message = elements.sessionStripMessage;
+  state.completingSessionTaskId = taskId;
+  message.dataset.taskId = String(taskId);
+  message.dataset.kind = 'hint';
+  message.textContent = 'Completing this terminal session task.';
+  renderSessionStrip(task, true);
+  try {
+    const body = await api(`/api/tasks/${taskId}/complete-session`, { method: 'POST' });
+    state.tasks = state.tasks.map((item) => item.id === taskId ? { ...item, ...body.task } : item);
+    state.runningTasks = state.runningTasks.filter((item) => item.id !== taskId);
+    message.dataset.kind = 'success';
+    message.dataset.completionTaskId = String(taskId);
+    message.textContent = terminalWasOpen
+      ? 'Session completed. The retained terminal remains open until you close it.'
+      : 'Session completed. Its terminal was already closed.';
+  } catch (error) {
+    message.dataset.kind = 'error';
+    message.textContent = error.message;
+  } finally {
+    state.completingSessionTaskId = null;
+    await load({ fresh: true }).catch((error) => {
+      elements.queueSummary.textContent = error.message;
+    });
   }
 }
 
@@ -4735,7 +5119,7 @@ function restoreSessionDisclosures(taskId) {
 function sessionTurnContentHash(turns) {
   let hash = 5381;
   for (const turn of turns) {
-    const fields = `${turn.id} ${turn.prompt.created_at || ''} ${turn.prompt.text}`;
+    const fields = `${turn.id}\u0000${turn.prompt.created_at || ''}\u0000${turn.prompt.text}\u0001`;
     for (let index = 0; index < fields.length; index += 1) {
       // Shift form, not hash * 33: the multiply loses precision past 2^53 before the
       // xor coerces, while << and ^ both keep the fold inside int32.
@@ -4851,7 +5235,10 @@ async function selectTask(taskId) {
   const requestSequence = ++state.taskLoadSequence;
   const eventTaskChanged = state.eventTaskId !== taskId;
   state.selectedTaskId = taskId;
-  setDetailCopyContent();
+  // Polling refreshes the selected task every two seconds. Clearing clipboard state on
+  // every pass made the buttons visibly blink and briefly impossible to click. Only a
+  // real task change may invalidate the previous task's payload and feedback.
+  if (eventTaskChanged) setDetailCopyContent({}, { resetFeedback: true });
   renderTasks();
   if (eventTaskChanged) {
     elements.continuationForm.hidden = true;
@@ -4867,8 +5254,10 @@ async function selectTask(taskId) {
     plan = null,
     turboPlan = null,
   } = await api(`/api/tasks/${taskId}`);
+  await textSelectionGuard.waitForClear();
   if (requestSequence !== state.taskLoadSequence || state.selectedTaskId !== taskId) return;
   const sessionSurface = isDirectSessionTask(task);
+  const manualSessionSurface = isManualSessionTask(task);
   if (state.projectCompletionNotifications.acknowledge(task)) {
     renderProjects();
     renderTasks();
@@ -4876,14 +5265,26 @@ async function selectTask(taskId) {
   elements.emptyDetail.hidden = true;
   elements.taskDetail.hidden = false;
   applyTerminalHeight();
-  elements.detailTitle.textContent = `Task ${String(task.id).padStart(3, '0')}`;
-  elements.detailMeta.innerHTML = `
-    <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
+  const taskNumber = String(task.id).padStart(3, '0');
+  const taskTitle = `Task ${taskNumber}`;
+  const detailButtonLabel = task.mode === 'plan' ? 'Council details' : manualSessionSurface ? 'Session details' : 'Full details';
+  elements.taskDetail.dataset.sessionMode = String(manualSessionSurface);
+  elements.detailTitle.textContent = taskTitle;
+  elements.detailTaskName.textContent = compactText(taskDisplayName(task), 110);
+  elements.detailTaskName.title = taskDisplayName(task);
+  elements.detailExecutionProfile.innerHTML = `
     <span class="detail-agent">
       ${agentBadgeMarkup(task, 'detail-agent-icon')}
       ${escapeHtml(providerLabel(taskProvider(task)))}
     </span>
-    <span>${escapeHtml(executionLabel(task))}</span>
+    <strong>${escapeHtml(executionLabel(task))}</strong>
+  `;
+  elements.taskDetailModalTitle.textContent = taskTitle;
+  elements.taskDetailModalSubtitle.textContent = `${providerLabel(taskProvider(task))} · ${executionLabel(task)} · ${workspaceName(task.repo_path)} · ${task.status}`;
+  elements.taskDetailOpen.textContent = detailButtonLabel;
+  elements.taskDetailOpen.setAttribute('aria-label', `Open ${detailButtonLabel.toLowerCase()} for task ${taskNumber}`);
+  elements.detailMeta.innerHTML = `
+    <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
     <span>${escapeHtml(workspaceName(task.repo_path))}</span>
     <span class="detail-created-date"><small>Created</small><time datetime="${escapeHtml(task.created_at)}">${escapeHtml(formatTime(task.created_at))}</time></span>
     <span class="detail-lifecycle-dates">${taskLifecycleDatesMarkup(task, formatTime)}</span>
@@ -4916,7 +5317,7 @@ async function selectTask(taskId) {
     : task.error ? compactText(task.error, 96) : `${task.status} · response pending`;
   elements.detailResult.dataset.empty = task.result || task.error ? 'false' : 'true';
   setDetailCopyContent({
-    prompt: promptHistoryContent,
+    prompt: taskPromptCopyText(promptHistory),
     result: task.result || task.error || '',
     // Registered before the history render decides whether to rebuild the DOM: a skipped
     // rebuild must never leave the Copy conversation button disabled.
@@ -4948,21 +5349,68 @@ async function selectTask(taskId) {
   renderSessionStrip(task, sessionSurface);
   renderSessionHistory(task, sessionTurns, sessionSurface);
   elements.detailActions.replaceChildren();
+  const retentionFeedback = task.status === 'running'
+    ? state.terminalRetentionFeedback.get(task.id) || null
+    : null;
+  elements.terminalRetentionMessage.hidden = !retentionFeedback;
+  elements.terminalRetentionMessage.textContent = retentionFeedback?.message || '';
+  elements.terminalRetentionMessage.dataset.kind = retentionFeedback?.kind || '';
 
   if (task.status === 'queued' && task.mode !== 'breakdown') {
     const editButton = actionButton('Edit', () => openTaskEditor(task), 'quiet');
     const editingSupported = state.status?.capabilities?.queuedTaskEditing === true;
+    const namedTaskNeedsCurrentBackend = taskHasCustomName(task) && !taskNamingSupported();
     const preparing = state.status?.planningTaskIds?.includes(task.id);
-    editButton.disabled = !editingSupported || preparing;
+    editButton.disabled = !editingSupported || preparing || namedTaskNeedsCurrentBackend;
     editButton.title = !editingSupported
       ? 'Restart CC Relay to edit queued tasks.'
-      : preparing ? 'This task is already being prepared. Cancel it before editing.' : '';
+      : namedTaskNeedsCurrentBackend
+        ? 'Restart CC Relay to edit this named task without losing its name.'
+        : preparing ? 'This task is already being prepared. Cancel it before editing.' : '';
     elements.detailActions.append(editButton);
   }
+  if (task.status === 'running' && task.terminal_lifecycle === 'disposable') {
+    const retentionSupported = state.status?.capabilities?.liveTerminalRetention === true;
+    const retentionEnabled = task.keep_terminal_open === true;
+    const retentionPending = state.terminalRetentionSavingTaskIds.has(task.id);
+    const retentionTarget = ['plan', 'turbo'].includes(task.mode) ? 'terminals' : 'terminal';
+    const label = retentionEnabled
+      ? 'Auto-close stopped'
+      : retentionPending
+        ? 'Stopping auto-close...'
+        : retentionSupported
+          ? 'Stop auto-close'
+          : 'Restart to stop auto-close';
+    const retentionButton = actionButton(
+      label,
+      () => keepRunningTaskTerminalOpen(task),
+      'terminal-retention-button',
+    );
+    retentionButton.dataset.terminalRetention = String(task.id);
+    retentionButton.dataset.state = retentionEnabled
+      ? 'protected'
+      : retentionPending
+        ? 'pending'
+        : retentionSupported
+          ? 'available'
+          : 'unsupported';
+    retentionButton.setAttribute('aria-pressed', String(retentionEnabled));
+    retentionButton.disabled = retentionEnabled || retentionPending || !retentionSupported;
+    retentionButton.title = retentionEnabled
+      ? `Automatic close is stopped for this run. The task ${retentionTarget} will stay open.`
+      : retentionSupported
+        ? 'Keep every terminal launched for this task open after the run.'
+        : 'Restart CC Relay to stop terminal auto-close during a run.';
+    elements.detailActions.append(retentionButton);
+  }
   if (task.status === 'queued' || task.status === 'running') {
-    elements.detailActions.append(actionButton('Cancel', () => taskAction(task.id, 'cancel'), 'danger'));
+    const cancelLabel = manualSessionSurface && task.status === 'running' ? 'Stop turn' : 'Cancel';
+    elements.detailActions.append(actionButton(cancelLabel, () => taskAction(task.id, 'cancel'), 'danger'));
   }
   if (['failed', 'cancelled', 'interrupted'].includes(task.status) && !isFailedSessionFollowUp(task)) {
+    const configurableRetry = state.status?.capabilities?.retryTaskExecutionSettings === true
+      && task.mode === 'execute'
+      && task.terminal_lifecycle === 'disposable';
     const retryTarget = task.mode === 'plan' && task.terminal_lifecycle !== 'disposable'
       ? selectedPlanReviewThread(task)
       : null;
@@ -4970,6 +5418,7 @@ async function selectTask(taskId) {
     const retryButton = actionButton(
       retryLabel,
       () => {
+        if (configurableRetry) return openTaskRetryEditor(task);
         const currentTarget = task.mode === 'plan' && task.terminal_lifecycle !== 'disposable'
           ? selectedPlanReviewThread(task)
           : null;
@@ -4996,7 +5445,7 @@ async function selectTask(taskId) {
     executeButton.dataset.planExecutionShortcut = String(task.id);
     elements.detailActions.append(executeButton);
   }
-  if (task.status !== 'running') {
+  if (task.status !== 'running' && !(manualSessionSurface && task.status === 'open')) {
     elements.detailActions.append(actionButton('Delete', () => deleteTask(task.id), 'danger quiet'));
   }
   refreshPlanTaskActions(task);
@@ -5014,12 +5463,26 @@ async function loadSnapshot() {
     api(statusPath),
     api('/api/tasks'),
   ]);
+  // Browser selections reference concrete DOM nodes. Hold background rendering while a
+  // user is selecting or copying so the periodic snapshot cannot replace those nodes.
+  await textSelectionGuard.waitForClear();
   state.status = statusBody;
   reconcileProviderSelection();
   state.tasks = tasksBody.tasks;
-  state.projectCompletionNotifications.observe(state.tasks, {
+  const runningRetentionTaskIds = new Set(state.tasks
+    .filter((task) => task.status === 'running')
+    .map((task) => task.id));
+  for (const taskId of state.terminalRetentionFeedback.keys()) {
+    if (!runningRetentionTaskIds.has(taskId)) state.terminalRetentionFeedback.delete(taskId);
+  }
+  const completedTasks = state.projectCompletionNotifications.observe(state.tasks, {
     activeProjectPath: state.activeProjectPath,
     selectedTaskId: state.selectedTaskId,
+  });
+  completedTasks.forEach((task, index) => {
+    window.setTimeout(() => {
+      state.completionAlerts.notify(task, state.completionAlertPreferences);
+    }, index * 650);
   });
   state.runningTasks = statusBody.runningTasks
     || state.tasks.filter((task) => task.status === 'running');
@@ -5045,6 +5508,7 @@ async function loadSnapshot() {
   }
 
   if (!state.selectedTaskId) {
+    closeTaskDetailModal();
     elements.taskDetail.hidden = true;
     elements.emptyDetail.hidden = false;
   }
@@ -5231,16 +5695,29 @@ function renderAutomaticTerminalPool() {
   elements.maxCodexInstances.disabled = !project || state.poolLimitSaving;
   elements.maxClaudeInstances.disabled = !project || state.poolLimitSaving;
   const retentionSupported = state.status?.capabilities?.retainedTerminalSessions === true;
+  const manualSessionsSupported = state.status?.capabilities?.manualSessionTasks === true;
+  const directSessionMode = state.taskMode === 'execute' && !isExecuteCouncilEnabled();
   elements.keepTerminalOpen.checked = state.keepTerminalOpen;
   elements.keepTerminalOpen.disabled = !project
     || !retentionSupported
     || state.submitting
     || state.projectSettingsSaving;
+  elements.keepTerminalOpenOption.dataset.intent = directSessionMode ? 'session' : 'retention';
+  elements.keepTerminalOpenOption.dataset.active = String(state.keepTerminalOpen);
+  elements.keepTerminalOpenOption.querySelector('strong').textContent = directSessionMode
+    ? 'Terminal session mode'
+    : 'Keep workflow terminals open';
   elements.keepTerminalOpenHelp.textContent = retentionSupported
-    ? `Keeps ${project?.name || 'this project'} sessions connected after tasks and after CC Relay exits. This choice is not shared with other projects. Session tasks show terminal state, conversation history, and a Close terminal action in Task activity.`
+    ? directSessionMode
+      ? manualSessionsSupported
+        ? `Direct tasks in ${project?.name || 'this project'} stay open between turns and complete only when you press Complete session in Task activity. Their terminal stays open too. This setting is not shared with other projects.`
+        : 'Restart CC Relay to keep direct tasks open for manual completion. Terminal retention still works with this backend.'
+      : `This workflow completes automatically, but its terminals stay connected afterward and after CC Relay exits. This setting is not shared with other projects.`
     : 'Restart CC Relay to enable retained terminal sessions.';
   elements.terminalPoolControls.textContent = state.keepTerminalOpen
-    ? 'CC Relay opens a fresh terminal per task and keeps the final session open. Close its native window when done.'
+    ? directSessionMode && manualSessionsSupported
+      ? 'Session mode opens a dedicated terminal workspace. Send as many turns as needed, then finish the task manually.'
+      : 'CC Relay keeps the workflow terminals open after the automatic task outcome.'
     : 'CC Relay opens a fresh terminal per task and closes it when the task ends. Continue session relaunches the saved conversation.';
   setProjectTerminalSettingsDisabled(!project || state.projectSettingsSaving);
   if (providerIsMissing('codex')) elements.maxCodexInstances.disabled = true;
@@ -5255,7 +5732,9 @@ function renderAutomaticTerminalPool() {
   } else if (isExecuteCouncilEnabled()) {
     elements.sessionMessage.textContent = `Plan council will launch one Claude and one Codex terminal in ${project.name}.`;
   } else {
-    elements.sessionMessage.textContent = `New ${providerLabel(state.selectedProvider)} tasks launch disposable terminals in ${project.name}.`;
+    elements.sessionMessage.textContent = state.keepTerminalOpen && manualSessionsSupported
+      ? `New ${providerLabel(state.selectedProvider)} tasks open persistent terminal workspaces in ${project.name}.`
+      : `New ${providerLabel(state.selectedProvider)} tasks launch disposable terminals in ${project.name}.`;
   }
 
   renderProviderTabs();
@@ -5370,7 +5849,11 @@ function renderThreads() {
   );
   elements.launchCommand.textContent = isClaude
     ? state.connection?.claudeLaunchCommand || 'claude --dangerously-skip-permissions'
-    : state.connection?.launchCommand || 'codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769';
+    // Keep this fallback in step with CODEX_RELAY_COMMAND in src/project-launcher.mjs. It replaces the
+    // static index.html text on every render, so a flagless copy here would freeze the launched TUI on
+    // the Codex update prompt before it dials --remote.
+    : state.connection?.launchCommand
+      || 'codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false';
   elements.connectionHelpCopy.textContent = isClaude
     ? 'Starts Claude with all permission checks disabled. Use only in a project you fully trust.'
     : 'Starts Codex through CC Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
@@ -5527,6 +6010,7 @@ async function loadThreads({ silent = true, render = true } = {}) {
   }
   try {
     const { threads, connection, providers = [] } = await api('/api/threads');
+    if (render) await textSelectionGuard.waitForClear();
     if (requestSequence !== state.threadLoadSequence) {
       return;
     }
@@ -5627,12 +6111,13 @@ function planExecutionIssue(task, target = selectedPlanExecutionTarget(task)) {
 
 function revealPlanExecution() {
   if (elements.planExecutionPanel.hidden) return;
+  openTaskDetailModal();
   const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-  elements.planExecutionPanel.scrollIntoView({
-    block: 'nearest',
-    behavior: reducedMotion ? 'auto' : 'smooth',
-  });
   window.requestAnimationFrame(() => {
+    elements.planExecutionPanel.scrollIntoView({
+      block: 'nearest',
+      behavior: reducedMotion ? 'auto' : 'smooth',
+    });
     const focusTarget = elements.planExecutionButton.disabled
       ? elements.planExecutionPanel
       : elements.planExecutionButton;
@@ -5794,7 +6279,10 @@ async function submitTaskContinuation(event) {
       body: JSON.stringify(request.body),
       ...(sourceTask.provider === 'claude' && sourceTask.status === 'running'
         ? {
-            timeoutMs: 35_000,
+            // The terminal executor can spend up to 80 seconds recovering an exact held paste.
+            // Keep the browser attached beyond that backend bound so it receives the authoritative
+            // delivered or deliveryUncertain outcome instead of presenting an early retry trap.
+            timeoutMs: 120_000,
             timeoutMessage: (seconds) => `CC Relay did not confirm the Claude live update within ${seconds} seconds. It may already be queued in Claude, so check Task Activity before sending it again.`,
           }
         : {}),
@@ -5860,15 +6348,9 @@ async function deleteTask(taskId) {
   }
 }
 
-function openTaskEditor(task) {
-  if (state.status?.capabilities?.queuedTaskEditing !== true) {
-    window.alert('Restart CC Relay to edit queued tasks.');
-    return;
-  }
-  const executionEditable = state.status?.capabilities?.queuedTaskProviderSwitch === true
-    && task.mode === 'execute'
-    && task.terminal_lifecycle === 'disposable';
+function prepareTaskEditor(task, { mode, executionEditable }) {
   state.editingTaskId = task.id;
+  state.taskEditMode = mode;
   state.taskEditSubmitting = false;
   state.taskEditProvider = executionEditable ? task.provider : null;
   state.taskEditOriginalProvider = executionEditable ? task.provider : null;
@@ -5878,8 +6360,23 @@ function openTaskEditor(task) {
     claude: { model: '', effort: '' },
     [task.provider]: { model: task.model || '', effort: task.effort || '' },
   } : null;
+  elements.taskEditModal.dataset.mode = mode;
+  elements.taskEditTitle.textContent = mode === 'retry'
+    ? `Retry task ${String(task.id).padStart(3, '0')}`
+    : 'Edit queued task';
+  elements.taskEditSubtitle.textContent = mode === 'retry'
+    ? 'Choose the executor, model, and effort before this task returns to the queue.'
+    : 'The request can change only while this task is still waiting to start.';
+  elements.taskEditProviderLabel.textContent = mode === 'retry' ? 'Executor' : 'AI provider';
+  elements.taskEditSave.textContent = mode === 'retry' ? 'Retry task' : 'Save changes';
   elements.taskEditExecution.hidden = !executionEditable;
+  elements.taskEditName.value = taskDisplayName(task);
+  elements.taskEditName.disabled = mode === 'retry' || !taskNamingSupported();
+  elements.taskEditNameHint.textContent = taskNamingSupported()
+    ? 'Clear the name to regenerate it from the request.'
+    : 'Restart CC Relay to rename queued tasks.';
   elements.taskEditPrompt.value = task.prompt;
+  elements.taskEditPrompt.disabled = mode === 'retry';
   elements.taskEditMessage.textContent = '';
   elements.taskEditSave.disabled = false;
   elements.taskEditCancel.disabled = false;
@@ -5889,7 +6386,42 @@ function openTaskEditor(task) {
   elements.taskEditEffort.disabled = false;
   if (executionEditable) renderTaskEditExecution();
   elements.taskEditModal.showModal();
-  requestAnimationFrame(() => elements.taskEditPrompt.focus());
+  requestAnimationFrame(() => {
+    const focusTarget = mode === 'retry'
+      ? elements.taskEditProvider
+      : taskNamingSupported() ? elements.taskEditName : elements.taskEditPrompt;
+    focusTarget.focus();
+  });
+  if (executionEditable) {
+    Promise.all([loadModels('codex'), loadModels('claude')]).then(() => {
+      if (elements.taskEditModal.open && state.editingTaskId === task.id) renderTaskEditExecution();
+    });
+  }
+}
+
+function openTaskEditor(task) {
+  if (state.status?.capabilities?.queuedTaskEditing !== true) {
+    window.alert('Restart CC Relay to edit queued tasks.');
+    return;
+  }
+  if (taskHasCustomName(task) && !taskNamingSupported()) {
+    window.alert('Restart CC Relay to edit this named task without losing its name.');
+    return;
+  }
+  const executionEditable = state.status?.capabilities?.queuedTaskProviderSwitch === true
+    && task.mode === 'execute'
+    && task.terminal_lifecycle === 'disposable';
+  prepareTaskEditor(task, { mode: 'edit', executionEditable });
+}
+
+function openTaskRetryEditor(task) {
+  const supported = state.status?.capabilities?.retryTaskExecutionSettings === true;
+  const eligible = task.mode === 'execute' && task.terminal_lifecycle === 'disposable';
+  if (!supported || !eligible) {
+    taskAction(task.id, 'retry');
+    return;
+  }
+  prepareTaskEditor(task, { mode: 'retry', executionEditable: true });
 }
 
 function renderTaskEditExecution() {
@@ -5926,55 +6458,84 @@ function renderTaskEditExecution() {
   elements.taskEditEffort.value = settings.effort;
   elements.taskEditEffort.disabled = state.taskEditSubmitting || efforts.length === 0;
   const switching = provider !== state.taskEditOriginalProvider;
-  elements.taskEditExecutionHint.textContent = switching
-    ? `This task will switch to ${providerLabel(provider)} and start in a fresh conversation.`
-    : `Changing providers starts this task in a fresh conversation. ${effectiveModel?.description || ''}`.trim();
+  if (state.taskEditMode === 'retry') {
+    elements.taskEditExecutionHint.textContent = switching
+      ? `This retry will use ${providerLabel(provider)} in a fresh conversation.`
+      : `This retry will use ${providerLabel(provider)} with the selected effort and resume its saved conversation when available. ${effectiveModel?.description || ''}`.trim();
+  } else {
+    elements.taskEditExecutionHint.textContent = switching
+      ? `This task will switch to ${providerLabel(provider)} and start in a fresh conversation.`
+      : `Changing providers starts this task in a fresh conversation. ${effectiveModel?.description || ''}`.trim();
+  }
 }
 
-function closeTaskEditor() {
-  if (state.taskEditSubmitting) return;
+function clearTaskEditorState() {
   state.editingTaskId = null;
+  state.taskEditMode = null;
   state.taskEditProvider = null;
   state.taskEditOriginalProvider = null;
   state.taskEditExecutionDirty = false;
   state.taskEditSettings = null;
+  delete elements.taskEditModal.dataset.mode;
+}
+
+function closeTaskEditor() {
+  if (state.taskEditSubmitting) return;
+  clearTaskEditorState();
   elements.taskEditModal.close();
 }
 
 async function saveTaskEdit() {
   if (state.taskEditSubmitting || !state.editingTaskId) return;
+  const mode = state.taskEditMode;
+  const title = elements.taskEditName.value.trim();
   const prompt = elements.taskEditPrompt.value.trim();
-  if (!prompt) {
+  if (mode === 'edit' && !prompt) {
     elements.taskEditMessage.textContent = 'Task prompt is required.';
     return;
   }
+  const provider = state.taskEditProvider;
+  const selectedExecution = provider ? {
+    provider,
+    model: state.taskEditSettings?.[provider]?.model || null,
+    effort: state.taskEditSettings?.[provider]?.effort || null,
+  } : null;
+  if (mode === 'retry' && !selectedExecution) {
+    elements.taskEditMessage.textContent = 'Choose Codex or Claude as the retry executor.';
+    return;
+  }
   state.taskEditSubmitting = true;
-  elements.taskEditMessage.textContent = 'Saving changes.';
+  elements.taskEditMessage.textContent = mode === 'retry' ? 'Queuing retry.' : 'Saving changes.';
   elements.taskEditSave.disabled = true;
   elements.taskEditCancel.disabled = true;
   elements.taskEditClose.disabled = true;
+  elements.taskEditName.disabled = true;
+  elements.taskEditPrompt.disabled = true;
   elements.taskEditProvider.disabled = true;
   elements.taskEditModel.disabled = true;
   elements.taskEditEffort.disabled = true;
   try {
-    const execution = state.taskEditExecutionDirty && state.taskEditProvider
-      ? {
-        provider: state.taskEditProvider,
-        model: state.taskEditSettings?.[state.taskEditProvider]?.model || null,
-        effort: state.taskEditSettings?.[state.taskEditProvider]?.effort || null,
-      }
-      : {};
-    await api(`/api/tasks/${state.editingTaskId}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ prompt, ...execution }),
-    });
-    state.editingTaskId = null;
-    state.taskEditProvider = null;
-    state.taskEditOriginalProvider = null;
-    state.taskEditExecutionDirty = false;
-    state.taskEditSettings = null;
+    if (mode === 'retry') {
+      await api(`/api/tasks/${state.editingTaskId}/retry`, {
+        method: 'POST',
+        body: JSON.stringify(selectedExecution),
+      });
+    } else {
+      const execution = state.taskEditExecutionDirty && selectedExecution
+        ? selectedExecution
+        : {};
+      await api(`/api/tasks/${state.editingTaskId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          ...(taskNamingSupported() ? { title } : {}),
+          prompt,
+          ...execution,
+        }),
+      });
+    }
+    clearTaskEditorState();
     elements.taskEditModal.close();
-    await load();
+    await load({ fresh: true });
   } catch (error) {
     elements.taskEditMessage.textContent = error.message;
   } finally {
@@ -5982,6 +6543,8 @@ async function saveTaskEdit() {
     elements.taskEditSave.disabled = false;
     elements.taskEditCancel.disabled = false;
     elements.taskEditClose.disabled = false;
+    elements.taskEditName.disabled = state.taskEditMode === 'retry' || !taskNamingSupported();
+    elements.taskEditPrompt.disabled = state.taskEditMode === 'retry';
     elements.taskEditProvider.disabled = false;
     elements.taskEditModel.disabled = false;
     renderTaskEditExecution();
@@ -6099,6 +6662,7 @@ async function loadPlans() {
   state.planner.loading = true;
   try {
     const body = await api(`/api/plans?projectPath=${encodeURIComponent(state.activeProjectPath)}`);
+    await textSelectionGuard.waitForClear();
     state.planner.plans = Array.isArray(body.plans) ? body.plans : [];
     if (state.planner.selectedPlanId && !state.planner.plans.some((plan) => plan.id === state.planner.selectedPlanId)) {
       state.planner.selectedPlanId = null;
@@ -6817,6 +7381,7 @@ async function refreshPlannerFromServer() {
   if (!planId) { stopPlannerPoll(); return; }
   try {
     const body = await api(`/api/plans/${planId}`);
+    await textSelectionGuard.waitForClear();
     if (state.planner.selectedPlanId !== planId) return;
     const adoptProposals = shouldAdoptServerProposals({
       hasDirtyEdits: state.planner.dirtyProposalIds.size > 0,
@@ -7438,6 +8003,7 @@ elements.form.addEventListener('submit', async (event) => {
     threadId: automaticTerminals
       ? `automatic:${state.activeProjectPath || ''}`
       : state.selectedThreadId,
+    title: formData.get('title'),
     prompt: formData.get('prompt'),
     execution,
     planSettings: state.planSettings,
@@ -7546,6 +8112,9 @@ elements.form.addEventListener('submit', async (event) => {
             projectPath: state.activeProjectPath,
             terminalLifecycle: 'disposable',
             ...terminalRetentionRequest(retainTerminals),
+            ...(retainTerminals && state.status?.capabilities?.manualSessionTasks === true
+              ? { manualCompletion: true }
+              : {}),
             terminalLayout: terminalLayout(),
           }
           : { threadId: routedThreadId }),
@@ -7558,6 +8127,7 @@ elements.form.addEventListener('submit', async (event) => {
         // receives a field it does not know about. The server decides whether to honour it.
         ...(dispatchIdleRouting ? { preferIdleTerminal: state.preferIdleTerminal } : {}),
       };
+    if (taskNamingSupported()) requestBody.title = formData.get('title');
     requestBody.submissionId = submissionId;
     const body = await api('/api/tasks', {
       method: 'POST',
@@ -7629,6 +8199,7 @@ elements.form.addEventListener('submit', async (event) => {
   state.pendingSubmission = null;
   state.parallelTaskIds.clear();
   localStorage.setItem('relay.taskView', state.taskView);
+  elements.taskName.value = '';
   elements.prompt.value = '';
   if (councilRequested) {
     state.planSettings.enabled = false;
@@ -7717,9 +8288,9 @@ elements.standupDate.addEventListener('change', () => {
   void generateStandup();
 });
 elements.standupLength.addEventListener('change', () => {
-  state.standupLength = ['short', 'standard', 'detailed'].includes(elements.standupLength.value)
+  state.standupLength = ['all', 'short', 'standard', 'detailed'].includes(elements.standupLength.value)
     ? elements.standupLength.value
-    : 'standard';
+    : 'all';
   localStorage.setItem('relay.standupLength', state.standupLength);
   resetStandupCopyFeedback();
   resetStandupOutput();
@@ -7763,36 +8334,48 @@ elements.historyNext.addEventListener('click', () => {
   renderStatus();
   renderTasks();
 });
-function constrainPanelWidths(composer, detail) {
+function constrainPanelWidths(composer, queue) {
   const available = Math.max(elements.workspace.clientWidth - 64, 0);
-  const minimumQueue = 320;
-  const minimumComposer = 360;
+  const minimumQueue = 360;
+  const minimumComposer = 400;
   const minimumDetail = 420;
-  const maxComposer = Math.max(minimumComposer, available - detail - minimumQueue);
+  const maxComposer = Math.max(minimumComposer, available - minimumQueue - minimumDetail);
   const nextComposer = Math.min(Math.max(composer, minimumComposer), maxComposer);
-  const maxDetail = Math.max(minimumDetail, available - nextComposer - minimumQueue);
-  return { composer: nextComposer, detail: Math.min(Math.max(detail, minimumDetail), maxDetail) };
+  const maxQueue = Math.max(minimumQueue, available - nextComposer - minimumDetail);
+  return {
+    composer: nextComposer,
+    queue: Math.min(Math.max(queue, minimumQueue), maxQueue),
+    legacyDetail: null,
+  };
 }
 
 function applyPanelWidths({ persist = false } = {}) {
-  state.panelWidths = constrainPanelWidths(state.panelWidths.composer, state.panelWidths.detail);
+  if (!Number.isFinite(state.panelWidths.queue)) {
+    const available = Math.max(elements.workspace.clientWidth - 64, 0);
+    state.panelWidths.queue = Number.isFinite(state.panelWidths.legacyDetail)
+      ? available - state.panelWidths.composer - state.panelWidths.legacyDetail
+      : 500;
+  }
+  state.panelWidths = constrainPanelWidths(state.panelWidths.composer, state.panelWidths.queue);
   elements.workspace.style.setProperty('--composer-width', `${state.panelWidths.composer}px`);
-  elements.workspace.style.setProperty('--detail-width', `${state.panelWidths.detail}px`);
+  elements.workspace.style.setProperty('--queue-width', `${state.panelWidths.queue}px`);
   elements.composerQueueResizer.setAttribute('aria-valuenow', String(Math.round(state.panelWidths.composer)));
-  elements.queueDetailResizer.setAttribute('aria-valuenow', String(Math.round(state.panelWidths.detail)));
-  elements.composerQueueResizer.setAttribute('aria-valuemin', '360');
-  elements.composerQueueResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(360, elements.workspace.clientWidth - state.panelWidths.detail - 384))));
+  elements.queueDetailResizer.setAttribute('aria-valuenow', String(Math.round(state.panelWidths.queue)));
+  elements.composerQueueResizer.setAttribute('aria-valuemin', '400');
+  elements.composerQueueResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(400, elements.workspace.clientWidth - state.panelWidths.queue - 484))));
   elements.composerQueueResizer.setAttribute('aria-valuetext', `Prompt panel ${Math.round(state.panelWidths.composer)} pixels wide`);
-  elements.queueDetailResizer.setAttribute('aria-valuemin', '420');
-  elements.queueDetailResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(420, elements.workspace.clientWidth - state.panelWidths.composer - 384))));
-  elements.queueDetailResizer.setAttribute('aria-valuetext', `Activity panel ${Math.round(state.panelWidths.detail)} pixels wide`);
-  if (persist) localStorage.setItem('relay.panelWidths', JSON.stringify(state.panelWidths));
+  elements.queueDetailResizer.setAttribute('aria-valuemin', '360');
+  elements.queueDetailResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(360, elements.workspace.clientWidth - state.panelWidths.composer - 484))));
+  elements.queueDetailResizer.setAttribute('aria-valuetext', `Task queue ${Math.round(state.panelWidths.queue)} pixels wide`);
+  if (persist) {
+    queueUiPreferencesSave();
+  }
 }
 
 function attachWorkspaceResizer(handle, side) {
   const resizeBy = (delta) => {
     if (side === 'composer') state.panelWidths.composer += delta;
-    else state.panelWidths.detail -= delta;
+    else state.panelWidths.queue += delta;
     applyPanelWidths({ persist: true });
   };
   handle.addEventListener('pointerdown', (event) => {
@@ -7805,7 +8388,7 @@ function attachWorkspaceResizer(handle, side) {
       const delta = moveEvent.clientX - startX;
       state.panelWidths = side === 'composer'
         ? { ...startingWidths, composer: startingWidths.composer + delta }
-        : { ...startingWidths, detail: startingWidths.detail - delta };
+        : { ...startingWidths, queue: startingWidths.queue + delta };
       applyPanelWidths();
     };
     const finish = (finishEvent) => {
@@ -7830,23 +8413,39 @@ function attachWorkspaceResizer(handle, side) {
 }
 
 attachWorkspaceResizer(elements.composerQueueResizer, 'composer');
-attachWorkspaceResizer(elements.queueDetailResizer, 'detail');
+attachWorkspaceResizer(elements.queueDetailResizer, 'queue');
 applyPanelWidths();
 window.addEventListener('resize', () => applyPanelWidths());
 
+elements.taskDetailOpen.addEventListener('click', openTaskDetailModal);
+elements.taskDetailModalClose.addEventListener('click', closeTaskDetailModal);
+elements.taskDetailModal.addEventListener('click', (event) => {
+  if (event.target === elements.taskDetailModal) closeTaskDetailModal();
+});
+
+function updateTerminalHeightAccessibility(height, maximum) {
+  elements.terminalHeightResizer.setAttribute('aria-valuenow', String(Math.round(height)));
+  elements.terminalHeightResizer.setAttribute('aria-valuemin', '180');
+  elements.terminalHeightResizer.setAttribute('aria-valuemax', String(Math.round(maximum)));
+  elements.terminalHeightResizer.setAttribute('aria-valuetext', `Terminal ${Math.round(height)} pixels high`);
+}
+
 function applyTerminalHeight({ persist = false } = {}) {
-  if (!state.terminalHeight || !elements.taskDetail.clientHeight) {
+  if (!elements.taskDetail.clientHeight) {
     elements.taskDetail.style.removeProperty('--event-terminal-height');
     return;
   }
   const maximum = Math.max(180, elements.taskDetail.clientHeight - 150);
+  if (!state.terminalHeight) {
+    elements.taskDetail.style.removeProperty('--event-terminal-height');
+    const renderedHeight = elements.eventsSection.getBoundingClientRect().height;
+    updateTerminalHeightAccessibility(renderedHeight, maximum);
+    return;
+  }
   state.terminalHeight = Math.min(maximum, Math.max(180, state.terminalHeight));
   elements.taskDetail.style.setProperty('--event-terminal-height', `${state.terminalHeight}px`);
-  elements.terminalHeightResizer.setAttribute('aria-valuenow', String(Math.round(state.terminalHeight)));
-  elements.terminalHeightResizer.setAttribute('aria-valuemin', '180');
-  elements.terminalHeightResizer.setAttribute('aria-valuemax', String(Math.round(maximum)));
-  elements.terminalHeightResizer.setAttribute('aria-valuetext', `Terminal ${Math.round(state.terminalHeight)} pixels high`);
-  if (persist) localStorage.setItem('relay.terminalHeight', String(Math.round(state.terminalHeight)));
+  updateTerminalHeightAccessibility(state.terminalHeight, maximum);
+  if (persist) queueUiPreferencesSave();
 }
 
 elements.terminalHeightResizer.addEventListener('pointerdown', (event) => {
@@ -7873,7 +8472,8 @@ elements.terminalHeightResizer.addEventListener('pointerdown', (event) => {
 elements.terminalHeightResizer.addEventListener('keydown', (event) => {
   if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
   event.preventDefault();
-  state.terminalHeight = (state.terminalHeight || elements.taskDetail.clientHeight / 2) + (event.key === 'ArrowUp' ? 20 : -20);
+  const renderedHeight = elements.eventsSection.getBoundingClientRect().height;
+  state.terminalHeight = (state.terminalHeight || renderedHeight) + (event.key === 'ArrowUp' ? 20 : -20);
   applyTerminalHeight({ persist: true });
 });
 
@@ -8116,6 +8716,12 @@ document.addEventListener('click', (event) => {
   }
 });
 // Keep the submit gate in step with what the user has actually typed.
+elements.taskName.addEventListener('input', () => {
+  if (elements.composerAlert.dataset.kind === 'validation' && !composerValidationIssue()) {
+    setComposerAlert('');
+  }
+  updateSubmitState();
+});
 elements.prompt.addEventListener('input', () => {
   if (elements.composerAlert.dataset.kind === 'validation' && !composerValidationIssue()) {
     setComposerAlert('');
@@ -8212,6 +8818,35 @@ elements.terminalSettingsClose.addEventListener('click', () => {
 elements.terminalSettingsModal.addEventListener('click', (event) => {
   if (event.target === elements.terminalSettingsModal) elements.terminalSettingsModal.close();
 });
+elements.completionSound.addEventListener('change', () => {
+  setCompletionAlertPreferences({
+    ...state.completionAlertPreferences,
+    sound: elements.completionSound.value,
+  });
+  elements.completionAlertStatus.textContent = elements.completionSound.value === 'none'
+    ? 'Completion sound is off.'
+    : 'Completion sound saved.';
+});
+elements.completionSpeech.addEventListener('change', () => {
+  setCompletionAlertPreferences({
+    ...state.completionAlertPreferences,
+    speak: elements.completionSpeech.checked,
+  });
+  elements.completionAlertStatus.textContent = elements.completionSpeech.checked
+    ? 'Voice announcement enabled.'
+    : 'Voice announcement off.';
+});
+elements.completionAlertPreview.addEventListener('click', () => {
+  const task = state.tasks.find((item) => item.id === state.selectedTaskId) || {
+    repo_path: state.activeProjectPath || 'CC Relay',
+    title: elements.taskName.value || elements.prompt.value || 'Task',
+  };
+  state.completionAlerts.notify(task, state.completionAlertPreferences);
+  elements.completionAlertStatus.textContent = state.completionAlertPreferences.sound === 'none'
+    && !state.completionAlertPreferences.speak
+    ? 'Both completion alerts are off.'
+    : 'Preview played.';
+});
 elements.taskEditClose.addEventListener('click', closeTaskEditor);
 elements.taskEditCancel.addEventListener('click', closeTaskEditor);
 elements.taskEditSave.addEventListener('click', saveTaskEdit);
@@ -8247,16 +8882,16 @@ elements.taskEditEffort.addEventListener('change', () => {
 });
 elements.taskEditModal.addEventListener('cancel', (event) => {
   if (state.taskEditSubmitting) event.preventDefault();
-  else {
-    state.editingTaskId = null;
-    state.taskEditProvider = null;
-    state.taskEditOriginalProvider = null;
-    state.taskEditExecutionDirty = false;
-    state.taskEditSettings = null;
-  }
+  else clearTaskEditorState();
 });
 elements.taskEditModal.addEventListener('click', (event) => {
   if (event.target === elements.taskEditModal) closeTaskEditor();
+});
+elements.taskEditName.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' && !event.isComposing) {
+    event.preventDefault();
+    saveTaskEdit();
+  }
 });
 elements.taskEditPrompt.addEventListener('keydown', (event) => {
   if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
@@ -8315,6 +8950,7 @@ async function launchTerminalProvider(provider, button) {
 elements.launchCodexButton.addEventListener('click', () => launchTerminalProvider('codex', elements.launchCodexButton));
 elements.launchClaudeButton.addEventListener('click', () => launchTerminalProvider('claude', elements.launchClaudeButton));
 elements.closeTerminalButton.addEventListener('click', closeSelectedTerminal);
+elements.sessionCompleteButton.addEventListener('click', completeTerminalSession);
 elements.sessionKillButton.addEventListener('click', killSessionTerminal);
 elements.themeToggle.addEventListener('click', () => {
   setTheme(currentTheme() === 'dark' ? 'light' : 'dark');
@@ -8454,6 +9090,8 @@ elements.detailEvents.addEventListener('toggle', (event) => {
   else state.expandedEventDetails.delete(key);
 }, true);
 
+renderCompletionAlertSettings();
+const uiPreferencesReady = restoreUiPreferences();
 const events = new EventSource('/api/events');
 let refreshTimer = null;
 events.addEventListener('change', (event) => {
@@ -8463,7 +9101,7 @@ events.addEventListener('change', (event) => {
     try {
       change = JSON.parse(event.data);
     } catch {}
-    const operations = [load()];
+    const operations = [uiPreferencesReady.then(() => load())];
     if (change.threads) {
       operations.push(loadThreads());
     }
@@ -8482,7 +9120,7 @@ renderPlanControls();
 renderTurboControls();
 renderAttachmentComposer();
 updateSubmitState();
-Promise.all([load(), loadThreads({ silent: false }), loadModels('codex'), loadModels('claude'), loadTerminalDisplays()]).catch((error) => {
+Promise.all([uiPreferencesReady, uiPreferencesReady.then(() => load()), loadThreads({ silent: false }), loadModels('codex'), loadModels('claude'), loadTerminalDisplays()]).catch((error) => {
   elements.queueSummary.textContent = error.message;
 });
 

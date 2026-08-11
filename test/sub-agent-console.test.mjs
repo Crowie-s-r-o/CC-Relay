@@ -5,7 +5,9 @@ import test from 'node:test';
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 
-test('the console renders sub-agent runs as their own signal', () => {
+test('the console renders Claude and Codex sub-agent runs as their own signal', () => {
+  assert.match(app, /subAgentEntryDetails,/);
+  assert.match(app, /const details = subAgentEntryDetails\(entry\);/);
   assert.match(app, /return subAgentPresentation\(entry, item, common\);/);
   assert.match(app, /kind: 'agent',/);
   assert.match(app, /title: 'Sub-agent',/);
@@ -51,5 +53,5 @@ test('the copy log carries the sub-agent name, outcome, and brief', () => {
   assert.ok(copyBranch, 'the copy log handles sub-agent entries');
   assert.match(copyBranch, /presentation\.name/);
   assert.match(copyBranch, /summary/);
-  assert.match(copyBranch, /item\?\.arguments\?\.prompt/);
+  assert.match(copyBranch, /details\?\.prompt \|\| item\?\.arguments\?\.prompt/);
 });

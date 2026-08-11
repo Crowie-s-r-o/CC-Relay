@@ -33,7 +33,7 @@ function sessionPredicates() {
   const end = app.indexOf('function isFailedSessionFollowUp', start);
   assert.notEqual(end, -1, 'the predicate block should be bounded');
   const source = app.slice(start, end);
-  const build = new Function('taskContinuationSession', `${source}\nreturn { isSessionTask, isDirectSessionTask, sessionTaskState, sessionBadgeWord };`);
+  const build = new Function('taskContinuationSession', `${source}\nreturn { isSessionTask, isManualSessionTask, isDirectSessionTask, sessionTaskState, sessionBadgeWord };`);
   return (thread = null) => build(() => thread);
 }
 
@@ -56,7 +56,9 @@ test('task activity markup carries the session strip and the conversation', () =
   assert.match(html, /<section id="session-strip" class="session-strip"[^>]*hidden/);
   assert.match(html, /id="session-strip-context"/);
   assert.match(html, /id="session-strip-state"/);
+  assert.match(html, /id="session-mode-badge"[^>]*>Manual finish<\/span>/);
   assert.match(html, /<p id="session-strip-message"[^>]*role="status"/);
+  assert.match(html, /<button id="session-complete-button"[^>]*hidden>Complete session<\/button>/);
   assert.match(html, /<button id="session-kill-button"[^>]*type="button">Close terminal<\/button>/);
   assert.match(html, /<section id="session-history" class="detail-section session-history" hidden>/);
   assert.match(html, /id="session-history-count"/);
@@ -70,15 +72,15 @@ test('task activity markup carries the session strip and the conversation', () =
   assert.doesNotMatch(strip, /aria-live/);
 });
 
-test('the keep-open help explains where a session task surfaces', () => {
-  assert.match(html, /Session tasks show terminal state, conversation history, and a Close terminal action in Task activity\./);
-  // The static copy is rewritten on every project render, so the dynamic string has to
-  // carry the sentence or it would never be read.
-  assert.match(app, /keepTerminalOpenHelp\.textContent[\s\S]{0,400}Session tasks show terminal state, conversation history, and a Close terminal action in Task activity\./);
+test('the terminal setting explains manual sessions and automatic workflow retention', () => {
+  assert.match(html, /Direct tasks stay open between turns and finish only when you press Complete session in Task activity\./);
+  assert.match(app, /directSessionMode[\s\S]{0,600}complete only when you press Complete session in Task activity/);
+  assert.match(app, /This workflow completes automatically, but its terminals stay connected afterward/);
+  assert.match(app, /Keep workflow terminals open/);
 });
 
 test('the session predicates admit exactly the tasks that own one retained conversation', () => {
-  const { isSessionTask, isDirectSessionTask } = sessionPredicates()();
+  const { isSessionTask, isManualSessionTask, isDirectSessionTask } = sessionPredicates()();
   const session = { keep_terminal_open: true, terminal_lifecycle: 'disposable', mode: 'execute', provider: 'codex' };
 
   assert.equal(isSessionTask(session), true);
@@ -87,6 +89,10 @@ test('the session predicates admit exactly the tasks that own one retained conve
   assert.equal(isDirectSessionTask({ ...session, provider: 'claude' }), true);
   // mode defaults to execute for rows written before the column existed.
   assert.equal(isDirectSessionTask({ ...session, mode: undefined }), true);
+  assert.equal(isManualSessionTask({ ...session, manual_completion: true }), true);
+  assert.equal(isManualSessionTask({ ...session, manual_completion: false }), false);
+  assert.equal(isManualSessionTask({ ...session, manual_completion: true, mode: 'plan' }), false);
+  assert.equal(isManualSessionTask({ ...session, manual_completion: true, provider: 'council' }), false);
 
   // keep_terminal_open is an INTEGER column. normalizeTask in src/database.mjs coerces it
   // to a real boolean, so === true is right; this pins the contract from the UI side. If
@@ -129,9 +135,15 @@ test('queue cards mark a direct session task with a word, not only a colour', ()
   assert.match(app, /function isDirectSessionTask\(task\)/);
   assert.match(app, /keep_terminal_open === true/);
   assert.match(app, /data-session="true" data-session-state=/);
+  assert.match(app, /data-manual-completion="true"/);
+  assert.match(app, /class="task-session-modebar"/);
+  assert.match(app, /Terminal session<\/span>/);
+  assert.match(app, /<b>Manual finish<\/b>/);
   assert.match(app, /class="task-session-badge" data-session-state=/);
-  assert.match(app, /Session · \$\{escapeHtml\(sessionWord\)\}/);
-  assert.match(app, /retained session, terminal \$\{escapeHtml\(sessionWord\)\}/);
+  assert.match(app, /manualSessionCard \? 'Terminal' : 'Session'/);
+  assert.match(app, /· \$\{escapeHtml\(sessionWord\)\}/);
+  assert.match(app, /terminal session with manual completion/);
+  assert.match(app, /sessionCard \? ', retained session' : ''/);
 
   const badgeWords = functionBody(app, 'const SESSION_BADGE_WORDS = {');
   for (const word of ["'open'", "'busy'", "'pending'", "'closed'"]) {
@@ -212,12 +224,70 @@ test('closing a retained terminal confirms first and reports into the strip', ()
   assert.match(strip, /closing \? 'Closing' : 'Close terminal'/);
   // A close outcome has to outlive the next refresh that repaints the hint, and the
   // live region must not be rewritten with a sentence it already holds.
-  assert.match(strip, /!\['error', 'success'\]\.includes\(message\.dataset\.kind\) && message\.textContent !== reason/);
+  assert.match(strip, /!\['error', 'success'\]\.includes\(message\.dataset\.kind\) && message\.textContent !== stripHint/);
   // The state pill is not a live region, so it may be written on every refresh.
   assert.match(strip, /elements\.sessionStripState\.textContent = label;/);
 
   // Wired once at startup, resolving its target from the button dataset.
   assert.match(app, /elements\.sessionKillButton\.addEventListener\('click', killSessionTerminal\);/);
+});
+
+test('manual terminal sessions complete only through the dedicated task-detail control', () => {
+  const strip = functionBody(app, 'function renderSessionStrip(task, active)');
+  assert.match(strip, /const manualSession = isManualSessionTask\(task\)/);
+  assert.match(strip, /elements\.sessionStrip\.dataset\.completion = manualSession \? 'manual' : 'automatic'/);
+  assert.match(strip, /task\.status === 'open'/);
+  assert.match(strip, /'Complete session'/);
+  assert.match(strip, /completeButton\.disabled = !completionSupported/);
+  assert.match(strip, /The retained terminal will remain open/);
+
+  const complete = functionBody(app, 'async function completeTerminalSession()');
+  assert.match(complete, /task\.status !== 'open'/);
+  assert.match(complete, /api\(`\/api\/tasks\/\$\{taskId\}\/complete-session`, \{ method: 'POST' \}\)/);
+  assert.match(complete, /Session completed\. The retained terminal remains open until you close it\./);
+  assert.match(complete, /Session completed\. Its terminal was already closed\./);
+  assert.doesNotMatch(complete, /api\(`\/api\/terminals/);
+
+  assert.match(app, /elements\.sessionCompleteButton\.addEventListener\('click', completeTerminalSession\);/);
+  assert.match(app, /task\.status === 'open'[\s\S]{0,220}'Send command'/);
+  assert.match(app, /manualSessionComplete = manualSession && task\.status === 'complete'/);
+  assert.match(app, /continuationForm\.hidden = !direct \|\| manualSessionComplete/);
+});
+
+test('running automatic tasks expose a colorful latched auto-close control', () => {
+  assert.match(html, /id="terminal-retention-message"[^>]*role="status"/);
+  const retention = functionBody(app, 'async function keepRunningTaskTerminalOpen(task)');
+  assert.match(retention, /task\.status !== 'running'/);
+  assert.match(retention, /task\.terminal_lifecycle !== 'disposable'/);
+  assert.match(retention, /api\(`\/api\/tasks\/\$\{task\.id\}\/keep-terminal-open`, \{ method: 'POST' \}\)/);
+  assert.match(retention, /terminalRetentionSavingTaskIds\.has\(task\.id\)/);
+  assert.match(retention, /terminalRetentionFeedback/);
+  assert.doesNotMatch(retention, /window\.alert/);
+
+  assert.match(app, /terminalRetentionSavingTaskIds: new Set\(\)/);
+  assert.match(app, /terminalRetentionFeedback: new Map\(\)/);
+  assert.match(app, /capabilities\?\.liveTerminalRetention === true/);
+  assert.match(app, /'Stop auto-close'/);
+  assert.match(app, /'Auto-close stopped'/);
+  assert.match(app, /setAttribute\('aria-pressed', String\(retentionEnabled\)\)/);
+  assert.match(app, /retentionButton\.disabled = retentionEnabled \|\| retentionPending \|\| !retentionSupported/);
+
+  for (const stateName of ['available', 'pending', 'protected', 'unsupported']) {
+    assert.ok(style.includes(`.terminal-retention-button[data-state="${stateName}"]`));
+  }
+  assert.match(
+    style,
+    /\.detail-panel \.detail-actions \.terminal-retention-button \{[\s\S]*?border-radius: 8px;/,
+  );
+  const retentionIcon = style.slice(
+    style.indexOf('.terminal-retention-button::before {'),
+    style.indexOf('.terminal-retention-button[data-state="available"] {'),
+  );
+  assert.match(retentionIcon, /-webkit-mask: url\(/);
+  assert.doesNotMatch(retentionIcon, /border-radius: 50%/);
+  assert.match(style, /html\[data-theme="dark"\] \.terminal-retention-button\[data-state="protected"\]/);
+  const noPreference = mediaBlocks(style, 'no-preference');
+  assert.ok(noPreference.some((body) => body.includes('terminal-retention-pulse')));
 });
 
 test('session surfaces are styled in both themes with motion guarded', () => {
@@ -231,12 +301,16 @@ test('session surfaces are styled in both themes with motion guarded', () => {
     '.session-turn',
     '.session-turn-response',
     '.session-turn-pending',
+    '.task-session-modebar',
+    '.session-mode-badge',
+    '.session-complete-button',
   ]) {
     assert.ok(style.includes(`${selector} {`) || style.includes(`${selector}[`), `${selector} should be styled`);
     assert.ok(style.includes(`html[data-theme="dark"] ${selector}`), `${selector} should have a dark treatment`);
   }
 
   assert.match(style, /@keyframes session-turn-pulse/);
+  assert.match(style, /#task-detail:has\(\.session-strip\[data-completion="manual"\]:not\(\[hidden\]\)\)[^{]*\{\s*grid-template-rows: minmax\(15em, 1fr\)/);
   // Declaring the animation only inside the no-preference query is the guard: under a
   // reduced-motion preference the rule never applies. A matching reduce block would be
   // redundant, and planner-board.test.mjs reads the last reduce block in the file.

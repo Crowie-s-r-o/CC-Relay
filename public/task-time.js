@@ -29,6 +29,9 @@ export function taskDurationLabel(task, now = Date.now()) {
   if (task.status === 'running') {
     return `Running ${duration}`;
   }
+  if (task.status === 'open') {
+    return `Open ${duration}`;
+  }
   return `Took ${duration}`;
 }
 

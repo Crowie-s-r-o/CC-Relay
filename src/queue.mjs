@@ -2,9 +2,17 @@ import { EventEmitter } from 'node:events';
 import { now } from './database.mjs';
 
 const RETRYABLE_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
-const FOLLOW_UP_SOURCE_STATUSES = new Set(['complete', 'failed', 'cancelled', 'interrupted']);
+const FOLLOW_UP_SOURCE_STATUSES = new Set(['open', 'complete', 'failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_ERROR_PREFIX = 'Same-session follow-up';
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export function isManualSessionTask(task) {
+  return task?.manual_completion === true
+    && task?.keep_terminal_open === true
+    && task?.terminal_lifecycle === 'disposable'
+    && task?.mode === 'execute'
+    && ['codex', 'claude'].includes(task?.provider);
+}
 
 export class TaskQueue extends EventEmitter {
   constructor({
@@ -125,6 +133,9 @@ export class TaskQueue extends EventEmitter {
     if (sourceTask.mode !== 'execute' || !['codex', 'claude'].includes(sourceTask.provider)) {
       throw new Error('Only direct Codex or Claude tasks can continue in one terminal session.');
     }
+    if (isManualSessionTask(sourceTask) && sourceTask.status === 'complete') {
+      throw new Error('This terminal session task is complete and cannot accept more messages.');
+    }
     if (
       sourceTask.thread_id !== task.thread_id
       || sourceTask.provider !== task.provider
@@ -232,6 +243,7 @@ export class TaskQueue extends EventEmitter {
     const existing = this.database.getTaskBySubmissionId(submissionId);
     if (existing) {
       const sameSubmission = existing.prompt === taskInput.prompt
+        && existing.title === taskInput.title
         && existing.mode === (taskInput.mode || 'execute')
         && existing.provider === (taskInput.provider || 'codex');
       if (!sameSubmission) {
@@ -331,7 +343,72 @@ export class TaskQueue extends EventEmitter {
     this.changed(taskId);
   }
 
-  retry(taskId, { automatic = false, reuseRetainedTerminal = false } = {}) {
+  keepTerminalOpen(taskId) {
+    const task = this.database.getTask(taskId);
+    if (!task) {
+      throw new Error('Task not found.');
+    }
+    if (task.status !== 'running') {
+      throw new Error('Only a running task can stop terminal auto-close.');
+    }
+    if (!this.activeTasks.has(taskId)) {
+      throw new Error('That task is no longer active in this CC Relay process.');
+    }
+    if (task.terminal_lifecycle !== 'disposable') {
+      throw new Error('This task uses a persistent terminal, so automatic close does not apply.');
+    }
+    if (task.keep_terminal_open === true) return task;
+
+    const updated = this.database.updateTask(taskId, { keep_terminal_open: 1 });
+    const activeTask = this.activeTasks.get(taskId);
+    if (activeTask) {
+      this.activeTasks.set(taskId, { ...activeTask, keep_terminal_open: true });
+    }
+    const guard = this.dispatchGuards.get(taskId);
+    if (guard?.task) {
+      guard.task = { ...guard.task, keep_terminal_open: true };
+    }
+    const target = ['plan', 'turbo'].includes(task.mode) ? 'terminals' : 'terminal';
+    this.database.addEvent(
+      taskId,
+      'queue',
+      `Automatic close stopped. CC Relay will keep this task's ${target} open after the run.`,
+    );
+    this.changed(taskId);
+    return updated;
+  }
+
+  completeSession(taskId) {
+    const task = this.database.getTask(taskId);
+    if (!task) {
+      throw new Error('Task not found.');
+    }
+    if (!isManualSessionTask(task)) {
+      throw new Error('Only a terminal session task can be completed manually.');
+    }
+    if (task.status !== 'open' || this.activeTasks.has(taskId)) {
+      throw new Error('Wait for the current session turn to finish before completing this task.');
+    }
+    const updated = this.database.updateTask(taskId, {
+      status: 'complete',
+      finished_at: now(),
+      error: null,
+    });
+    if (task.result) this.artifacts.writeResult(taskId, task.result);
+    this.database.addEvent(
+      taskId,
+      'queue',
+      'Terminal session completed manually. This does not close any retained terminal.',
+    );
+    this.changed(taskId);
+    return updated;
+  }
+
+  retry(taskId, {
+    automatic = false,
+    reuseRetainedTerminal = false,
+    execution = null,
+  } = {}) {
     this.clearAutoRetry(taskId);
     if (!automatic) this.automaticRetryCounts.delete(taskId);
     const task = this.database.getTask(taskId);
@@ -344,11 +421,41 @@ export class TaskQueue extends EventEmitter {
     if (String(task.error || '').startsWith(FOLLOW_UP_ERROR_PREFIX)) {
       throw new Error('Use Continue session to send that follow-up again. It cannot be placed in the task queue.');
     }
-    if (this.disposableConversationConflict(task, { excludeTaskId: task.id })) {
+    const executionRequested = execution !== null && execution !== undefined;
+    if (executionRequested && automatic) {
+      throw new Error('Automatic retries cannot change executor or effort.');
+    }
+    if (
+      executionRequested
+      && (task.mode !== 'execute' || task.terminal_lifecycle !== 'disposable')
+    ) {
+      throw new Error('Only automatic Execute tasks can change executor or effort when retrying.');
+    }
+    const nextProvider = executionRequested
+      ? String(execution?.provider || '').trim()
+      : task.provider;
+    if (executionRequested && !['codex', 'claude'].includes(nextProvider)) {
+      throw new Error(`Unsupported AI provider: ${nextProvider}`);
+    }
+    const optionalSetting = (value, label) => {
+      if (value === null || value === undefined || value === '') return null;
+      if (typeof value !== 'string') throw new Error(`${label} must be text.`);
+      return value.trim() || null;
+    };
+    const nextModel = executionRequested ? optionalSetting(execution.model, 'Model') : task.model;
+    const nextEffort = executionRequested ? optionalSetting(execution.effort, 'Effort') : task.effort;
+    const providerChanged = nextProvider !== task.provider;
+    const executionChanged = executionRequested && (
+      providerChanged || nextModel !== task.model || nextEffort !== task.effort
+    );
+    if (!providerChanged && this.disposableConversationConflict(task, { excludeTaskId: task.id })) {
       throw new Error('This conversation already has queued or running work.');
     }
-    if (this.taskHasUnavailableThread(task)) {
+    if (!providerChanged && this.taskHasUnavailableThread(task)) {
       throw new Error('That terminal is closing. Retry after choosing another CC Relay.');
+    }
+    if (reuseRetainedTerminal && providerChanged) {
+      throw new Error('Changing executors requires a fresh terminal for this retry.');
     }
     if (
       reuseRetainedTerminal
@@ -363,7 +470,7 @@ export class TaskQueue extends EventEmitter {
 
     const tasks = this.database.listTasks().filter((item) => item.repo_path === task.repo_path);
     const maxPosition = tasks.reduce((maximum, item) => Math.max(maximum, item.position), 0);
-    const updated = this.database.updateTask(taskId, {
+    const updated = this.database.updateRetryableTask(taskId, {
       status: 'queued',
       position: maxPosition + 1,
       started_at: null,
@@ -372,11 +479,59 @@ export class TaskQueue extends EventEmitter {
       result: null,
       error: null,
       exit_code: null,
+      ...(executionRequested ? {
+        provider: nextProvider,
+        model: nextModel,
+        effort: nextEffort,
+      } : {}),
+      ...(providerChanged ? {
+        thread_id: null,
+        thread_name: null,
+        thread_source: null,
+        continued_from_task_id: null,
+      } : {}),
     });
+    if (executionChanged) {
+      try {
+        this.artifacts.initializeTask(updated);
+      } catch (error) {
+        this.database.updateTask(taskId, {
+          status: task.status,
+          position: task.position,
+          started_at: task.started_at,
+          finished_at: task.finished_at,
+          session_id: task.session_id,
+          result: task.result,
+          error: task.error,
+          exit_code: task.exit_code,
+          provider: task.provider,
+          model: task.model,
+          effort: task.effort,
+          thread_id: task.thread_id,
+          thread_name: task.thread_name,
+          thread_source: task.thread_source,
+          continued_from_task_id: task.continued_from_task_id,
+        });
+        throw error;
+      }
+    }
     this.artifacts.clearOutcome(taskId, {
       preservePlan: task.mode === 'plan',
       repoPath: task.repo_path,
     });
+    if (providerChanged) {
+      this.database.addEvent(
+        taskId,
+        'queue',
+        `Retry executor changed from ${task.provider === 'claude' ? 'Claude' : 'Codex'} to ${nextProvider === 'claude' ? 'Claude' : 'Codex'}. A fresh ${nextProvider === 'claude' ? 'Claude' : 'Codex'} conversation will be used.`,
+      );
+    } else if (executionChanged) {
+      this.database.addEvent(
+        taskId,
+        'queue',
+        `Retry execution settings changed to ${nextProvider === 'claude' ? 'Claude' : 'Codex'} / ${nextModel || 'model default'} / ${nextEffort || 'effort default'}.`,
+      );
+    }
     this.database.addEvent(taskId, 'queue', 'Task queued for retry.');
     this.changed(taskId);
     if (reuseRetainedTerminal) {
@@ -438,6 +593,13 @@ export class TaskQueue extends EventEmitter {
       throw new Error(`Unsupported AI provider: ${nextProvider}`);
     }
     const providerChanged = nextProvider !== task.provider;
+    const titleChanged = title !== task.title;
+    const promptChanged = prompt !== task.prompt;
+    const executionEditDescription = titleChanged && promptChanged
+      ? 'name, request, and execution settings'
+      : titleChanged
+        ? 'name and execution settings'
+        : promptChanged ? 'request and execution settings' : 'execution settings';
     const changes = {
       title,
       prompt,
@@ -481,8 +643,12 @@ export class TaskQueue extends EventEmitter {
       providerChanged
         ? `Queued task switched from ${task.provider === 'claude' ? 'Claude' : 'Codex'} to ${nextProvider === 'claude' ? 'Claude' : 'Codex'} before execution. A fresh ${nextProvider === 'claude' ? 'Claude' : 'Codex'} conversation will be used.`
         : executionChanged
-          ? 'Queued task request and execution settings edited before execution.'
-          : 'Queued task request edited before execution.',
+          ? `Queued task ${executionEditDescription} edited before execution.`
+          : titleChanged && promptChanged
+            ? 'Queued task name and request edited before execution.'
+            : titleChanged
+              ? `Queued task renamed from "${task.title}" to "${updated.title}" before execution.`
+              : 'Queued task request edited before execution.',
     );
     this.changed(taskId);
     this.schedule();
@@ -865,9 +1031,13 @@ export class TaskQueue extends EventEmitter {
 
   beginTask(task, { sessionFollowUp = false } = {}) {
     this.activeTasks.set(task.id, task);
+    const persisted = this.database.getTask(task.id);
+    const startedAt = isManualSessionTask(persisted) && persisted.started_at
+      ? persisted.started_at
+      : now();
     this.database.updateTask(task.id, {
       status: 'running',
-      started_at: now(),
+      started_at: startedAt,
       finished_at: null,
       error: null,
     });
@@ -1183,9 +1353,11 @@ export class TaskQueue extends EventEmitter {
         || (task.mode === 'plan'
           ? 'The plan council completed without a final text response.'
           : 'Codex completed without a final text response.');
+      const latestTask = this.database.getTask(task.id) || routed;
+      const manualSession = isManualSessionTask(latestTask);
       this.database.updateTask(task.id, {
-        status: 'complete',
-        finished_at: now(),
+        status: manualSession ? 'open' : 'complete',
+        finished_at: manualSession ? null : now(),
         session_id: outcome.sessionId,
         result,
         error: null,
@@ -1195,33 +1367,49 @@ export class TaskQueue extends EventEmitter {
         this.artifacts.writeResult(task.id, result);
       }
       this.automaticRetryCounts.delete(task.id);
-      this.database.addEvent(task.id, 'queue', sessionFollowUp ? 'Follow-up completed.' : 'Task completed.');
-      retainPreparedTerminal = routed.keep_terminal_open === true;
+      this.database.addEvent(
+        task.id,
+        'queue',
+        manualSession
+          ? 'Turn completed. The terminal session remains open for another message or manual completion.'
+          : sessionFollowUp ? 'Follow-up completed.' : 'Task completed.',
+      );
+      retainPreparedTerminal = latestTask.keep_terminal_open === true;
     } catch (error) {
-      const status = this.stopping ? 'interrupted' : error.cancelled ? 'cancelled' : 'failed';
+      const outcomeStatus = this.stopping ? 'interrupted' : error.cancelled ? 'cancelled' : 'failed';
       const message = this.stopping
         ? 'CC Relay stopped while this task was running.'
         : error.message;
       const storedError = sessionFollowUp
-        ? `${FOLLOW_UP_ERROR_PREFIX} ${status}: ${message}`
+        ? `${FOLLOW_UP_ERROR_PREFIX} ${outcomeStatus}: ${message}`
         : message;
+      const latestTask = this.database.getTask(task.id) || routed;
+      const manualSession = isManualSessionTask(latestTask);
+      const status = manualSession ? 'open' : outcomeStatus;
       this.database.updateTask(task.id, {
         status,
-        finished_at: now(),
+        finished_at: manualSession ? null : now(),
         error: storedError,
         exit_code: error.exitCode ?? null,
       });
       this.artifacts.writeError(task.id, storedError);
-      const retryEligible = !sessionFollowUp
-        && status === 'failed'
+      const retryEligible = !manualSession
+        && !sessionFollowUp
+        && outcomeStatus === 'failed'
         && task.mode !== 'plan'
         && error.retryable !== false;
       const willRetry = retryEligible && this.canAutomaticallyRetry(task.id);
-      retainPreparedTerminal = routed.keep_terminal_open === true && !willRetry;
+      retainPreparedTerminal = latestTask.keep_terminal_open === true && !willRetry;
       this.database.addEvent(
         task.id,
         'queue',
-        this.stopping
+        manualSession
+          ? outcomeStatus === 'cancelled'
+            ? 'The current turn was stopped. The terminal session remains open.'
+            : outcomeStatus === 'interrupted'
+              ? 'The current turn was interrupted. The terminal session remains open.'
+              : 'The current turn failed. The terminal session remains open for a corrected message or manual completion.'
+          : this.stopping
           ? 'Task interrupted because CC Relay stopped.'
           : error.cancelled
             ? sessionFollowUp ? 'Follow-up cancelled.' : 'Task cancelled.'
@@ -1281,7 +1469,7 @@ export class TaskQueue extends EventEmitter {
     }
     if (this.terminalPool && typeof this.terminalPool.retain === 'function') {
       for (const taskId of taskIds) {
-        const task = this.activeTasks.get(taskId);
+        const task = this.database.getTask(taskId) || this.activeTasks.get(taskId);
         const preparing = this.dispatchGuards.get(taskId)?.phase === 'preparing';
         if (
           task?.terminal_lifecycle === 'disposable'

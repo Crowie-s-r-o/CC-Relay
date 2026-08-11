@@ -1,6 +1,12 @@
 import { spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { createInterface } from 'node:readline';
+import {
+  providerCommandInvocation,
+  resolveExecutableOnPath,
+  terminateChildProcess,
+} from './claude-binary.mjs';
+import { CODEX_UPDATE_PROMPT_OVERRIDE } from './project-launcher.mjs';
 import { withRelayNonInteractiveInstruction } from './relay-prompt.mjs';
 import { RelayWebSocketProxy } from './websocket-proxy.mjs';
 
@@ -33,17 +39,21 @@ function sourceLabel(source) {
   return 'unknown';
 }
 
-function terminateProcessTree(child, signal = 'SIGTERM') {
+// POSIX gets a process-group kill because the app-server is spawned detached. Windows has no
+// process groups, and the spawned child may be cmd.exe wrapping the codex shim, so the whole
+// tree is killed there instead. Leaving the real app-server alive would keep the shared
+// WebSocket port bound and the next CC Relay start would talk to a stale server.
+function terminateProcessTree(child, signal = 'SIGTERM', platform = process.platform) {
   if (!child) {
     return false;
   }
-  if (process.platform !== 'win32' && Number.isInteger(child.pid)) {
+  if (platform !== 'win32' && Number.isInteger(child.pid)) {
     try {
       process.kill(-child.pid, signal);
       return true;
     } catch {}
   }
-  return child.kill(signal);
+  return terminateChildProcess(child, { signal, platform });
 }
 
 export function normalizeThread(thread) {
@@ -81,6 +91,21 @@ function itemMessage(item, phase) {
   }
   if (item.type === 'fileChange') {
     return `File change ${phase}.`;
+  }
+  if (item.type === 'subAgentActivity') {
+    const agent = String(item.agentPath || item.agentThreadId || 'sub-agent').split(/[\\/]/).filter(Boolean).at(-1);
+    if (item.kind === 'started') {
+      return `Codex started sub-agent "${agent}".`;
+    }
+    if (item.kind === 'interacted') {
+      return `Codex recorded activity for sub-agent "${agent}".`;
+    }
+    if (item.kind === 'interrupted') {
+      return `Sub-agent "${agent}" was interrupted.`;
+    }
+  }
+  if (item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent') {
+    return phase === 'started' ? 'Codex is starting a sub-agent.' : 'Codex started a sub-agent.';
   }
   return `${item.type || 'Codex item'} ${phase}.`;
 }
@@ -142,9 +167,13 @@ export class CodexAppServer extends EventEmitter {
     diagnostic = () => {},
     freshThreadRetryDelayMs = 100,
     terminateProcess = terminateProcessTree,
+    platform = process.platform,
+    resolveExecutable = resolveExecutableOnPath,
   } = {}) {
     super();
     this.command = command;
+    this.platform = platform;
+    this.resolveExecutable = resolveExecutable;
     this.endpoint = endpoint;
     this.publicEndpoint = publicEndpoint;
     this.spawnProcess = spawnProcess;
@@ -190,7 +219,10 @@ export class CodexAppServer extends EventEmitter {
     return {
       connected: this.connected,
       endpoint: this.publicEndpoint,
-      launchCommand: `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${this.publicEndpoint}`,
+      // The update-prompt override comes from project-launcher.mjs so this command cannot drift from
+      // CODEX_RELAY_COMMAND: a pending Codex release otherwise blocks the interactive TUI before it
+      // dials --remote.
+      launchCommand: `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${this.publicEndpoint} ${CODEX_UPDATE_PROMPT_OVERRIDE}`,
       userAgent: this.userAgent,
       codexHome: this.codexHome,
       error: this.lastError,
@@ -224,12 +256,22 @@ export class CodexAppServer extends EventEmitter {
   async startProcess() {
     this.diagnostic('appserver.start.requested', { endpoint: this.endpoint, publicEndpoint: this.publicEndpoint });
     const dynamicEndpoint = new URL(this.endpoint).port === '0';
-    const child = this.spawnProcess(
-      this.command,
+    // On Windows the bare `codex` name resolves to nothing: PATH search only appends `.com` and
+    // `.exe`, while a normal install leaves `codex.cmd`. Resolve it to a real file first, then
+    // shape the invocation so a shim runs through cmd.exe without flashing a console window.
+    const resolvedCommand = this.resolveExecutable(this.command, { platform: this.platform });
+    const invocation = providerCommandInvocation(
+      resolvedCommand,
       ['-c', 'allow_login_shell=false', 'app-server', '--listen', this.endpoint],
+      { platform: this.platform },
+    );
+    const child = this.spawnProcess(
+      invocation.command,
+      invocation.args,
       {
         stdio: ['ignore', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
+        detached: this.platform !== 'win32',
+        ...invocation.options,
       },
     );
     this.child = child;
@@ -598,7 +640,7 @@ export class CodexAppServer extends EventEmitter {
     this.proxy.stop();
     this.failOutstanding(message);
     if (this.child) {
-      this.terminateProcess(this.child);
+      this.terminateProcess(this.child, 'SIGTERM', this.platform);
     }
     this.emit('status', this.status());
   }
@@ -1081,7 +1123,7 @@ export class CodexAppServer extends EventEmitter {
     this.stdoutLines?.close();
     this.stderrLines?.close();
     if (this.child) {
-      this.terminateProcess(this.child);
+      this.terminateProcess(this.child, 'SIGTERM', this.platform);
     }
     this.proxy.stop();
     this.child = null;

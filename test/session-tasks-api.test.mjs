@@ -33,3 +33,27 @@ test('closing a retained terminal records a task event and refreshes task watche
   );
   assert.match(server, /\{ threads: true, tasks: true, taskId: closedTaskId \}/);
 });
+
+test('a running task can latch terminal retention through a capability-gated route', async () => {
+  const server = await readFile(new URL('src/server.mjs', root), 'utf8');
+
+  assert.match(server, /liveTerminalRetention: true/);
+  assert.match(server, /request\.method === 'POST' && \/\^\\\/api\\\/tasks\\\/\\d\+\\\/keep-terminal-open\$\//);
+  assert.match(server, /const task = queue\.keepTerminalOpen\(taskId\)/);
+  assert.match(server, /api\.task\.terminal_retention_enabled/);
+});
+
+test('manual terminal sessions are capability gated and finish through an explicit route', async () => {
+  const [server, queue] = await Promise.all([
+    readFile(new URL('src/server.mjs', root), 'utf8'),
+    readFile(new URL('src/queue.mjs', root), 'utf8'),
+  ]);
+
+  assert.match(server, /manualSessionTasks: true/);
+  assert.match(server, /const manualCompletion = disposable[\s\S]{0,180}mode === 'execute'[\s\S]{0,120}body\.manualCompletion === true/);
+  assert.match(server, /request\.method === 'POST' && \/\^\\\/api\\\/tasks\\\/\\d\+\\\/complete-session\$\//);
+  assert.match(server, /const task = queue\.completeSession\(taskId\)/);
+  assert.match(server, /isManualSessionTask\(sourceTask\) && sourceTask\.status === 'complete'/);
+  assert.match(queue, /status: manualSession \? 'open' : 'complete'/);
+  assert.match(queue, /Terminal session completed manually\. This does not close any retained terminal\./);
+});

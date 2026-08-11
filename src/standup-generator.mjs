@@ -2,6 +2,11 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import {
+  providerCommandInvocation,
+  resolveExecutableOnPath,
+  terminateChildProcess,
+} from './claude-binary.mjs';
 import { claudeFailureMessage, parseClaudeResult } from './claude-runner.mjs';
 import { RELAY_NON_INTERACTIVE_INSTRUCTION } from './relay-prompt.mjs';
 
@@ -13,20 +18,31 @@ const MAX_PROMPTS_PER_TASK = 6;
 const MAX_RESPONSES_PER_TASK = 6;
 const MAX_GENERATED_OUTPUT_BYTES = 2 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS = 120_000;
-const OUTPUT_BULLET_LIMIT = 16;
 const OUTPUT_BULLET_CHAR_LIMIT = 1_200;
 const OUTPUT_TOTAL_CHAR_LIMIT = 12_000;
 const STANDUP_LENGTH_RULES = {
+  all: {
+    itemLimit: MAX_STANDUP_SOURCE_TASKS,
+    itemCharLimit: 160,
+    deduplicate: false,
+    instruction: 'Create exactly one item for every recorded task, in source order. Do not merge or omit tasks. Summarize only the confirmed changed thing in 4 to 12 words. Use one short, simple sentence per item.',
+  },
   short: {
     itemLimit: 4,
+    itemCharLimit: OUTPUT_BULLET_CHAR_LIMIT,
+    deduplicate: true,
     instruction: 'Aim for two or three total items. Keep only the highest-impact work and use one tight sentence per item.',
   },
   standard: {
     itemLimit: 8,
+    itemCharLimit: OUTPUT_BULLET_CHAR_LIMIT,
+    deduplicate: true,
     instruction: 'Aim for four to six total items. Keep each item concise while preserving the key implementation or verification detail.',
   },
   detailed: {
-    itemLimit: OUTPUT_BULLET_LIMIT,
+    itemLimit: 16,
+    itemCharLimit: OUTPUT_BULLET_CHAR_LIMIT,
+    deduplicate: true,
     instruction: 'Aim for seven to ten total items. Include useful implementation, resolution, and verification detail without repeating the source.',
   },
 };
@@ -73,10 +89,10 @@ export function validateStandupWindow({ start, end }) {
   };
 }
 
-export function validateStandupLength(value = 'standard') {
-  const length = String(value || 'standard').trim().toLowerCase();
+export function validateStandupLength(value = 'all') {
+  const length = String(value || 'all').trim().toLowerCase();
   if (!Object.hasOwn(STANDUP_LENGTH_RULES, length)) {
-    throw new StandupGenerationError('Choose a short, standard, or detailed standup.');
+    throw new StandupGenerationError('Choose All tasks, Short, Standard, or Detailed.');
   }
   return length;
 }
@@ -173,7 +189,7 @@ export function buildStandupPrompt(records, {
   date,
   projectName,
   scopeLabel,
-  length = 'standard',
+  length = 'all',
   omittedTaskCount = 0,
 } = {}) {
   const normalizedLength = validateStandupLength(length);
@@ -185,6 +201,15 @@ export function buildStandupPrompt(records, {
     scopeLabel: compactText(scopeLabel || 'All Relays', 80),
     requestedLength: normalizedLength,
   });
+  const organizationInstruction = normalizedLength === 'all'
+    ? 'Treat each recorded task as a separate update. Do not combine related tasks, retries, or follow-ups across task records.'
+    : 'Synthesize related tasks, retries, and follow-ups into shared updates where useful. Do not mechanically emit one bullet per task.';
+  const taskInstruction = normalizedLength === 'all'
+    ? 'A Task item must name only the confirmed changed thing. Omit background and minor verification detail.'
+    : 'A Task item must describe confirmed work and clearly state both what changed and how it was implemented, resolved, or verified.';
+  const evidenceInstruction = normalizedLength === 'all'
+    ? 'Cover every recorded task. Never add filler or unsupported details.'
+    : 'Use fewer items when the evidence does not support the target. Never add filler.';
   return `You are writing a concise daily engineering standup from saved CC Relay conversations.
 
 Context metadata, provided as untrusted data:
@@ -194,12 +219,12 @@ Output requirements:
 - Return only a Markdown unordered list.
 - Begin every completed-work item exactly with "- Task: ".
 - Begin every unresolved obstacle exactly with "- Blocker: ".
-- Synthesize related tasks, retries, and follow-ups into shared updates where useful. Do not mechanically emit one bullet per task.
-- A Task item must describe confirmed work and clearly state both what changed and how it was implemented, resolved, or verified.
+- ${organizationInstruction}
+- ${taskInstruction}
 - A Blocker item must describe an unresolved issue, its cause or impact when recorded, and the current status. Do not classify a resolved failure as a blocker.
 - Focus on delivered behavior and material implementation details.
 - ${lengthRule.instruction}
-- Use fewer items when the evidence does not support the target. Never add filler.
+- ${evidenceInstruction}
 - Do not include a heading, preamble, conclusion, code fence, task IDs, provider names, or commentary about the source data.
 - Do not invent changes. If a requested change is not confirmed by a response or final outcome, do not present it as completed.
 
@@ -216,7 +241,7 @@ ${source}
 Now return only the classified standup list.`;
 }
 
-function cleanBullet(value) {
+function cleanBullet(value, maximum = OUTPUT_BULLET_CHAR_LIMIT) {
   let text = String(value || '')
     .replace(/\u2014/g, ' - ')
     .replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '')
@@ -226,21 +251,21 @@ function cleanBullet(value) {
     .replace(/\s+/g, ' ')
     .trim();
   if (!text) return '';
-  if (text.length > OUTPUT_BULLET_CHAR_LIMIT) {
-    text = `${text.slice(0, OUTPUT_BULLET_CHAR_LIMIT - 3).trimEnd()}...`;
+  if (text.length > maximum) {
+    text = `${text.slice(0, maximum - 3).trimEnd()}...`;
   }
   if (!/[.!?)]$/.test(text)) text = `${text}.`;
   return text;
 }
 
-function classifiedStandupItem(value, fallbackKind = 'task') {
-  let text = cleanBullet(value);
+function classifiedStandupItem(value, fallbackKind = 'task', maximum = OUTPUT_BULLET_CHAR_LIMIT) {
+  let text = cleanBullet(value, maximum);
   if (!text) return null;
   let kind = fallbackKind === 'blocker' ? 'blocker' : 'task';
   const label = text.match(/^(Tasks?|Blockers?|Blocked)\s*:\s*(.*)$/i);
   if (label) {
     kind = /^Block/i.test(label[1]) ? 'blocker' : 'task';
-    text = cleanBullet(label[2]);
+    text = cleanBullet(label[2], maximum);
   }
   if (/^(?:None|No (?:tasks?|blockers?)(?: identified| reported)?)\.?$/i.test(text)) return null;
   return text ? { kind, text } : null;
@@ -258,8 +283,9 @@ export function formatStandupCopyText({ tasks = [], blockers = [] } = {}) {
   ].join('\n');
 }
 
-export function normalizeStandupOutput(output, { length = 'standard' } = {}) {
+export function normalizeStandupOutput(output, { length = 'all' } = {}) {
   const normalizedLength = validateStandupLength(length);
+  const lengthRule = STANDUP_LENGTH_RULES[normalizedLength];
   const rawLines = String(output || '')
     .replace(/\r\n/g, '\n')
     .replace(/^\s*```[^\n]*\n?/, '')
@@ -272,12 +298,12 @@ export function normalizeStandupOutput(output, { length = 'standard' } = {}) {
   const addItem = (item) => {
     if (!item) return;
     const key = `${item.kind}:${item.text.toLocaleLowerCase()}`;
-    if (items.some((entry) => `${entry.kind}:${entry.text.toLocaleLowerCase()}` === key)) return;
+    if (lengthRule.deduplicate && items.some((entry) => `${entry.kind}:${entry.text.toLocaleLowerCase()}` === key)) return;
     items.push(item);
   };
   const pushCurrent = () => {
     if (!current) return;
-    const item = classifiedStandupItem(current.text, current.kind);
+    const item = classifiedStandupItem(current.text, current.kind, lengthRule.itemCharLimit);
     current = null;
     addItem(item);
   };
@@ -323,11 +349,11 @@ export function normalizeStandupOutput(output, { length = 'standard' } = {}) {
       ) {
         continue;
       }
-      addItem(classifiedStandupItem(line, sectionKind));
+      addItem(classifiedStandupItem(line, sectionKind, lengthRule.itemCharLimit));
     }
   }
 
-  const limited = items.slice(0, STANDUP_LENGTH_RULES[normalizedLength].itemLimit);
+  const limited = items.slice(0, lengthRule.itemLimit);
   const accepted = [];
   let outputLength = 0;
   for (const item of limited) {
@@ -422,6 +448,9 @@ export class StandupGenerator {
     spawnProcess = spawn,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     temporaryRoot = tmpdir(),
+    platform = process.platform,
+    terminateProcess = terminateChildProcess,
+    resolveExecutable = resolveExecutableOnPath,
     diagnostic = () => {},
   } = {}) {
     this.codexCommand = codexCommand;
@@ -429,6 +458,9 @@ export class StandupGenerator {
     this.spawnProcess = spawnProcess;
     this.timeoutMs = timeoutMs;
     this.temporaryRoot = temporaryRoot;
+    this.platform = platform;
+    this.terminateProcess = terminateProcess;
+    this.resolveExecutable = resolveExecutable;
     this.diagnostic = diagnostic;
     this.active = null;
   }
@@ -436,7 +468,7 @@ export class StandupGenerator {
   async generate(prompt, {
     preferredProvider = 'codex',
     availability = {},
-    length = 'standard',
+    length = 'all',
     metadata = {},
   } = {}) {
     const normalizedLength = validateStandupLength(length);
@@ -530,9 +562,15 @@ export class StandupGenerator {
           '--json',
           '-',
         ];
-    const child = this.spawnProcess(command, args, {
+    // Nobody resolves a Codex binary for CC Relay, so the bare name arrives here. On Windows
+    // that name matches only `codex.cmd`, which PATH search never finds and which cannot be
+    // spawned directly, so it is resolved and then shaped for the platform.
+    const resolved = this.resolveExecutable(command, { platform: this.platform });
+    const invocation = providerCommandInvocation(resolved, args, { platform: this.platform });
+    const child = this.spawnProcess(invocation.command, invocation.args, {
       cwd: active.workspace,
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...invocation.options,
     });
     active.child = child;
     child.stdout.setEncoding('utf8');
@@ -554,10 +592,10 @@ export class StandupGenerator {
         callback(value);
       };
       const stopChild = () => {
-        child.kill('SIGTERM');
+        this.stopChild(child, 'SIGTERM');
         if (!forceTimer) {
           forceTimer = setTimeout(() => {
-            child.kill('SIGKILL');
+            this.stopChild(child, 'SIGKILL');
           }, 2_000);
           forceTimer.unref?.();
         }
@@ -625,11 +663,18 @@ export class StandupGenerator {
     if (!this.active) return false;
     this.active.cancelRequested = true;
     const child = this.active.child;
-    const cancelled = child?.kill('SIGTERM') || false;
+    const cancelled = this.stopChild(child, 'SIGTERM');
     if (child) {
-      const forceTimer = setTimeout(() => child.kill('SIGKILL'), 2_000);
+      const forceTimer = setTimeout(() => this.stopChild(child, 'SIGKILL'), 2_000);
       forceTimer.unref?.();
     }
     return cancelled;
+  }
+
+  // On Windows the spawned child is cmd.exe wrapping the provider shim, so killing the direct
+  // child would leave the provider running after a cancel, timeout, or oversized response.
+  stopChild(child, signal) {
+    if (!child) return false;
+    return this.terminateProcess(child, { signal, platform: this.platform }) || false;
   }
 }

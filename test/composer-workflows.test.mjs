@@ -158,10 +158,12 @@ test('Launchpad configuration and active project are shared through the backend'
   assert.match(composerApp, /selectProject\(sharedActiveProject\.path, \{ persist: false \}\)/);
 });
 
-test('automatic terminals close sessions by default and apply project-only retention immediately', () => {
+test('automatic terminals default closed and apply the project terminal mode immediately', () => {
   assert.match(composer, /id="keep-terminal-open"[^>]*type="checkbox"[^>]*role="switch"/);
   assert.doesNotMatch(composer, /id="keep-terminal-open"[^>]*checked/);
-  assert.match(composer, /Keep task terminals open/);
+  assert.match(composer, /Terminal session mode/);
+  assert.match(composerApp, /Keep workflow terminals open/);
+  assert.match(composerApp, /manualCompletion: true/);
   assert.match(composerState, /keepTerminalOpen: false/);
   assert.match(composerApp, /api\(`\/api\/projects\/\$\{project\.id\}\/settings`/);
   assert.match(composerApp, /projectTerminalSettingsRecord\(settings\)/);
@@ -185,21 +187,36 @@ test('a Codex launch timeout explains a possible required update in the app', ()
   assert.match(composerApp, /Could not open a Codex CC Relay\. If Codex says an update is required in the terminal, update Codex, then try again\./);
 });
 
-test('waiting queue tasks expose a guarded prompt editor', () => {
+test('tasks can be named on creation and renamed while waiting in the queue', () => {
+  assert.match(composer, /id="task-name"[^>]*name="title"[^>]*maxlength="120"/);
   assert.match(composer, /id="task-edit-modal"[^>]*aria-labelledby="task-edit-title"/);
+  assert.match(composer, /id="task-edit-name"[^>]*maxlength="120"/);
   assert.match(composer, /id="task-edit-provider"/);
+  assert.match(composer, /id="task-edit-provider-label">AI provider/);
   assert.match(composer, /id="task-edit-model"/);
   assert.match(composer, /id="task-edit-effort"/);
   assert.match(composer, /id="task-edit-prompt"[^>]*maxlength="12000"/);
   assert.match(server, /queuedTaskEditing:\s*true/);
+  assert.match(server, /queuedTaskNaming:\s*true/);
   assert.match(server, /queuedTaskProviderSwitch:\s*true/);
+  assert.match(server, /retryTaskExecutionSettings:\s*true/);
+  assert.match(server, /taskTitleFromInput\(/);
   assert.match(server, /request\.method === 'PATCH'/);
   assert.match(server, /queue\.edit\(taskId/);
   assert.match(composerApp, /actionButton\('Edit', \(\) => openTaskEditor\(task\)/);
+  assert.match(composerApp, /data-rename-task/);
+  assert.match(composerApp, /taskDisplayName\(task\)/);
+  assert.match(composerApp, /taskHasCustomName\(task\) && !taskNamingSupported\(\)/);
+  assert.match(composerApp, /requestBody\.title = formData\.get\('title'\)/);
   assert.match(composerApp, /queuedTaskProviderSwitch === true/);
+  assert.match(composerApp, /retryTaskExecutionSettings === true/);
   assert.match(composerApp, /function renderTaskEditExecution\(\)/);
+  assert.match(composerApp, /function openTaskRetryEditor\(task\)/);
+  assert.match(composerApp, /api\(`\/api\/tasks\/\$\{state\.editingTaskId\}\/retry`/);
+  assert.match(composerApp, /body: JSON\.stringify\(selectedExecution\)/);
   assert.match(composerApp, /method: 'PATCH'/);
   assert.match(composerApp, /Restart CC Relay to edit queued tasks\./);
+  assert.match(composerState, /taskName:\s*''/);
 });
 
 test('busy queued Claude tasks can move to another same-workspace Claude CC Relay', () => {
@@ -726,7 +743,7 @@ test('Task Activity keeps every continuation in the selected task and conversati
   assert.match(composerApp, /continuationSubmission\(sourceTask, prompt/);
   assert.match(continuationSource, /const body = await api\(request\.path/);
   assert.match(continuationSource, /sourceTask\.provider === 'claude' && sourceTask\.status === 'running'/);
-  assert.match(continuationSource, /timeoutMs: 35_000/);
+  assert.match(continuationSource, /timeoutMs: 120_000/);
   assert.match(continuationSource, /may already be queued in Claude/);
   assert.match(continuationSource, /const runningSteeringAvailable = sourceTask\?\.status === 'running'/);
   assert.match(continuationSource, /!resumableSession && !runningSteeringAvailable/);

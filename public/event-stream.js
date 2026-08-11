@@ -12,6 +12,18 @@ const QUIET_ITEM_TYPES = new Set([
   'userMessage',
 ]);
 
+const CODEX_AGENT_RUNNING_STATES = new Set(['pendingInit', 'running']);
+
+const CODEX_AGENT_STATUS_LABELS = {
+  pendingInit: 'Starting',
+  running: 'Running',
+  completed: 'Finished',
+  interrupted: 'Interrupted',
+  errored: 'Failed',
+  shutdown: 'Closed',
+  notFound: 'Unavailable',
+};
+
 function isPairableItemEvent(event) {
   return event?.payload?.item?.id
     && ['item/started', 'item/updated', 'item/completed'].includes(event.payload.type);
@@ -24,16 +36,56 @@ function liveClaudeMessageId(event) {
     : '';
 }
 
-// A Claude sub-agent launch. Legacy stored events carry the same mcpToolCall envelope without
-// the marker, so they keep rendering as ordinary connected-tool signals.
-export function isSubAgentItem(item) {
+function isClaudeSubAgentItem(item) {
   return Boolean(item && item.type === 'mcpToolCall' && item.subAgent === true);
+}
+
+function isCodexSubAgentActivityItem(item) {
+  return Boolean(item && item.type === 'subAgentActivity' && item.agentThreadId);
+}
+
+function isCodexSubAgentSpawnItem(item) {
+  return Boolean(item && item.type === 'collabAgentToolCall' && item.tool === 'spawnAgent');
+}
+
+function isCodexCollabAgentItem(item) {
+  return Boolean(item && item.type === 'collabAgentToolCall');
+}
+
+function codexAgentIds(item) {
+  if (isCodexSubAgentActivityItem(item)) {
+    return [item.agentThreadId];
+  }
+  if (!isCodexCollabAgentItem(item)) {
+    return [];
+  }
+  return [...new Set([
+    ...(item.receiverThreadIds || []),
+    ...Object.keys(item.agentsStates || {}),
+  ].filter(Boolean))];
+}
+
+// Provider-neutral sub-agent signal. Claude marks Agent tool calls explicitly. Codex exposes
+// first-class collaboration activity and spawn items through the app-server protocol.
+export function isSubAgentItem(item) {
+  return isClaudeSubAgentItem(item)
+    || isCodexSubAgentActivityItem(item)
+    || isCodexSubAgentSpawnItem(item);
 }
 
 // Claude reports a finished sub-agent through a task notification, which CC Relay records as a
 // claude/agent-finished event carrying the tool use that launched (or last resumed) the agent.
 export function isAgentFinishedEvent(event) {
   return event?.payload?.type === 'claude/agent-finished';
+}
+
+function isNamedAgentFinishedEvent(event) {
+  if (!isAgentFinishedEvent(event)) {
+    return false;
+  }
+  const name = String(event.payload.agentName || '').trim();
+  const summary = String(event.payload.summary || '').trim();
+  return Boolean(name) || /^Agent\s+['"]/i.test(summary);
 }
 
 function agentFinishedToolUseId(event) {
@@ -45,13 +97,21 @@ export function groupEventEntries(events) {
   const entries = [];
   const entriesByItemId = new Map();
   const entriesByLiveMessageId = new Map();
+  const entriesByCodexAgentId = new Map();
+  const codexAgentIdsByItemId = new Map();
   // A backgrounded sub-agent's task notification can be written to the transcript before the
   // launch record it belongs to, so the fold targets are collected before grouping starts.
   const subAgentItemIds = new Set();
   for (const event of list) {
     const item = event?.payload?.item;
-    if (isSubAgentItem(item) && item.id) {
+    if (isClaudeSubAgentItem(item) && item.id) {
       subAgentItemIds.add(item.id);
+    }
+    const agentIds = codexAgentIds(item);
+    if (item?.id && agentIds.length) {
+      const knownIds = codexAgentIdsByItemId.get(item.id) || new Set();
+      for (const agentId of agentIds) knownIds.add(agentId);
+      codexAgentIdsByItemId.set(item.id, knownIds);
     }
   }
 
@@ -72,7 +132,56 @@ export function groupEventEntries(events) {
     return entry;
   };
 
+  const entryForCodexAgent = (agentThreadId) => {
+    let entry = entriesByCodexAgentId.get(agentThreadId);
+    if (!entry) {
+      entry = {
+        id: `codex-agent-${agentThreadId}`,
+        events: [],
+        startedEvent: null,
+        updatedEvent: null,
+        completedEvent: null,
+        agentFinishedEvent: null,
+        codexAgentThreadId: agentThreadId,
+        codexAgentEvents: [],
+      };
+      entriesByCodexAgentId.set(agentThreadId, entry);
+      entries.push(entry);
+    }
+    return entry;
+  };
+
   for (const event of list) {
+    const item = event?.payload?.item;
+    const groupedCodexAgentIds = item?.id && codexAgentIdsByItemId.has(item.id)
+      ? [...codexAgentIdsByItemId.get(item.id)]
+      : codexAgentIds(item);
+    if (groupedCodexAgentIds.length) {
+      for (const codexAgentId of groupedCodexAgentIds) {
+        const entry = entryForCodexAgent(codexAgentId);
+        entry.events.push(event);
+        entry.codexAgentEvents.push(event);
+        entry.startedEvent ||= event;
+        entry.updatedEvent = event;
+        if (item.type === 'subAgentActivity') {
+          if (item.kind === 'interrupted') {
+            entry.completedEvent = event;
+          } else if (item.kind === 'started') {
+            entry.completedEvent = null;
+          }
+        }
+        const codexState = isCodexCollabAgentItem(item)
+          ? item.agentsStates?.[codexAgentId]?.status
+          : null;
+        if (codexState && !CODEX_AGENT_RUNNING_STATES.has(codexState)) {
+          entry.completedEvent = event;
+        } else if (codexState && CODEX_AGENT_RUNNING_STATES.has(codexState)) {
+          entry.completedEvent = null;
+        }
+      }
+      continue;
+    }
+
     const messageId = liveClaudeMessageId(event);
     if (messageId) {
       let entry = entriesByLiveMessageId.get(messageId);
@@ -147,6 +256,9 @@ export function groupEventEntries(events) {
 }
 
 export function entryItem(entry) {
+  if (entry?.codexAgentEvents?.length) {
+    return entry.codexAgentEvents.at(-1)?.payload?.item || null;
+  }
   return entry?.completedEvent?.payload?.item
     || entry?.updatedEvent?.payload?.item
     || entry?.startedEvent?.payload?.item
@@ -155,14 +267,23 @@ export function entryItem(entry) {
 }
 
 export function entryLastEvent(entry) {
+  if (entry?.codexAgentEvents?.length) {
+    return entry.codexAgentEvents.at(-1) || null;
+  }
   return entry?.completedEvent || entry?.liveMessageEvent || entry?.events?.at(-1) || null;
 }
 
 export function entryFirstEvent(entry) {
+  if (entry?.codexAgentEvents?.length) {
+    return entry.codexAgentEvents[0] || null;
+  }
   return entry?.startedEvent || entry?.events?.[0] || null;
 }
 
 export function eventEntryCategory(entry) {
+  if (entry?.codexAgentThreadId || isSubAgentItem(entryItem(entry))) {
+    return 'commands';
+  }
   const item = entryItem(entry);
   if (COMMAND_ITEM_TYPES.has(item?.type)) {
     return 'commands';
@@ -206,13 +327,78 @@ export function filterEventEntries(entries, filter) {
 // True for a sub-agent launch signal and for a standalone finish notification that has no
 // launch signal in this stream (a resumed agent, or a notification read before its launch).
 export function isSubAgentEntry(entry) {
-  return isSubAgentItem(entryItem(entry)) || Boolean(entry?.agentFinishedEvent);
+  return Boolean(entry?.codexAgentThreadId)
+    || isSubAgentItem(entryItem(entry))
+    || isNamedAgentFinishedEvent(entry?.agentFinishedEvent);
+}
+
+function codexSubAgentDetails(entry) {
+  if (!entry?.codexAgentThreadId) {
+    return null;
+  }
+  const details = {
+    provider: 'codex',
+    name: '',
+    agentType: '',
+    prompt: '',
+    reportedStatus: 'running',
+    statusLabel: 'Running',
+    note: '',
+    failed: false,
+  };
+  let agentPath = '';
+  let model = '';
+  let reasoningEffort = '';
+
+  for (const event of entry.codexAgentEvents || []) {
+    const item = event?.payload?.item;
+    if (isCodexSubAgentActivityItem(item)) {
+      agentPath = String(item.agentPath || agentPath).trim();
+      if (item.kind === 'started') {
+        details.reportedStatus = 'running';
+      } else if (item.kind === 'interrupted') {
+        details.reportedStatus = 'interrupted';
+      }
+    }
+    if (isCodexCollabAgentItem(item)) {
+      if (isCodexSubAgentSpawnItem(item)) {
+        details.prompt = String(item.prompt || details.prompt).trim();
+        model = String(item.model || model).trim();
+        reasoningEffort = String(item.reasoningEffort || reasoningEffort).trim();
+      }
+      if (item.status === 'failed' && isCodexSubAgentSpawnItem(item)) {
+        details.reportedStatus = 'errored';
+      }
+      const state = item.agentsStates?.[entry.codexAgentThreadId];
+      if (state?.status) {
+        details.reportedStatus = state.status;
+      }
+      if (state?.message) {
+        details.note = String(state.message).trim();
+      }
+    }
+  }
+
+  const pathName = agentPath.split(/[\\/]/).filter(Boolean).at(-1) || '';
+  details.name = pathName || `agent ${entry.codexAgentThreadId.slice(0, 8)}`;
+  details.agentType = [model, reasoningEffort].filter(Boolean).join(' / ') || 'Codex';
+  details.statusLabel = CODEX_AGENT_STATUS_LABELS[details.reportedStatus] || 'Recorded';
+  details.failed = ['errored', 'interrupted', 'notFound'].includes(details.reportedStatus);
+  return details;
+}
+
+export function subAgentEntryDetails(entry) {
+  return codexSubAgentDetails(entry);
 }
 
 // running: the launch tool call is still open.
 // backgrounded: Claude launched the agent asynchronously and it is still working.
 // finished: its task notification arrived, or a synchronous run returned.
 export function subAgentEntryState(entry) {
+  const codex = codexSubAgentDetails(entry);
+  if (codex) {
+    return CODEX_AGENT_RUNNING_STATES.has(codex.reportedStatus) ? 'running' : 'finished';
+  }
   if (entry?.agentFinishedEvent) {
     return 'finished';
   }
@@ -239,7 +425,7 @@ export function activeSubAgentCount(entries, { turnEnded = false } = {}) {
   }
   let active = 0;
   for (const entry of entries || []) {
-    if (!isSubAgentItem(entryItem(entry))) {
+    if (!isSubAgentEntry(entry)) {
       continue;
     }
     if (['running', 'backgrounded'].includes(subAgentEntryState(entry))) {
@@ -265,7 +451,12 @@ export function eventStreamStats(entries, { turnEnded = false } = {}) {
     if (item?.type === 'commandExecution') stats.commands += 1;
     if (item?.type === 'fileChange') stats.files += 1;
     if (['agentMessage', 'userMessage'].includes(item?.type) || ['claude', 'result'].includes(last?.kind)) stats.messages += 1;
-    if (last?.kind === 'stderr' || last?.payload?.type === 'error' || item?.status === 'failed') stats.errors += 1;
+    if (
+      last?.kind === 'stderr'
+      || last?.payload?.type === 'error'
+      || item?.status === 'failed'
+      || subAgentEntryDetails(entry)?.failed
+    ) stats.errors += 1;
     if (entry.startedEvent && !entry.completedEvent) stats.running += 1;
     const reasoningTokens = Number(last?.payload?.tokenUsage?.last?.reasoningOutputTokens);
     if (Number.isFinite(reasoningTokens)) stats.thinkingTokens += reasoningTokens;

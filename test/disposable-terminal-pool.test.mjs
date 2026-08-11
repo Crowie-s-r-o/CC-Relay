@@ -11,6 +11,7 @@ import {
   inspectClaudeConversation,
   inspectCodexConversation,
 } from '../src/disposable-terminal-pool.mjs';
+import { ProjectLauncher } from '../src/project-launcher.mjs';
 
 function setup({
   claudeConversationState = () => 'present',
@@ -709,6 +710,93 @@ test('an unbound launch remains counted when exact cleanup fails', async () => {
     }), false);
   } finally {
     context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+// End-to-end proof over a real ProjectLauncher: a Windows terminal the user closed by hand must
+// still hand its project slot back, while any other native failure keeps the slot reserved.
+function windowsPoolSetup(taskkill) {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-disposable-windows-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'artifacts'));
+  database.addProject({ path: directory, name: 'Windows pool project' });
+  let processId = 6100;
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    run: async (file) => {
+      if (file === 'taskkill.exe') return taskkill();
+      processId += 1;
+      return { stdout: `${processId}\r\n` };
+    },
+  });
+  const coordinator = {
+    async launch(path, provider, layout, options) {
+      const launched = await launcher.launch(path, provider, layout, options);
+      const thread = {
+        id: `${provider}-conversation`,
+        provider,
+        cwd: path,
+        title: `${provider} terminal`,
+        source: 'CC Relay managed terminal',
+      };
+      launcher.bindOwnedTerminal(launched.launchId, thread);
+      return { ...launched, threadId: thread.id, thread };
+    },
+  };
+  const pool = new DisposableTerminalPool({ database, artifacts, coordinator, launcher });
+  return { directory, database, artifacts, launcher, pool };
+}
+
+test('a Windows terminal closed outside CC Relay releases its project pool slot', async () => {
+  const context = windowsPoolSetup(() => {
+    throw Object.assign(
+      new Error('Command failed: taskkill.exe\nERROR: The process "6101" not found.\r\n'),
+      { code: 128, stderr: 'ERROR: The process "6101" not found.\r\n' },
+    );
+  });
+  try {
+    const task = context.database.createTask({
+      title: 'Windows codex task',
+      prompt: 'Work',
+      repoPath: context.directory,
+      provider: 'codex',
+      terminalLifecycle: 'disposable',
+      terminalLayout: { enabled: false, background: true },
+    });
+    context.artifacts.initializeTask(task);
+
+    await context.pool.prepare(task);
+    assert.deepEqual(context.pool.usage(context.directory), { codex: 1, claude: 0 });
+    assert.deepEqual(await context.pool.release(task.id), { closed: 1, failed: 0 });
+    assert.deepEqual(context.pool.usage(context.directory), { codex: 0, claude: 0 });
+  } finally {
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Windows terminal CC Relay could not terminate keeps its project pool slot reserved', async () => {
+  const context = windowsPoolSetup(() => {
+    throw Object.assign(
+      new Error('Command failed: taskkill.exe\nERROR: The process "6101" could not be terminated.\r\nReason: Access is denied.\r\n'),
+      { code: 1, stderr: 'Reason: Access is denied.\r\n' },
+    );
+  });
+  try {
+    const task = context.database.createTask({
+      title: 'Windows codex task',
+      prompt: 'Work',
+      repoPath: context.directory,
+      provider: 'codex',
+      terminalLifecycle: 'disposable',
+      terminalLayout: { enabled: false, background: true },
+    });
+    context.artifacts.initializeTask(task);
+
+    await context.pool.prepare(task);
+    assert.deepEqual(await context.pool.release(task.id), { closed: 0, failed: 1 });
+    assert.deepEqual(context.pool.usage(context.directory), { codex: 1, claude: 0 });
+  } finally {
     rmSync(context.directory, { recursive: true, force: true });
   }
 });

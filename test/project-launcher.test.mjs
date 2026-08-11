@@ -9,6 +9,7 @@ import {
   ProjectLauncher,
   centeredWindowBounds,
   claudeRelayCommand,
+  cmdQuote,
   codexRelayCommand,
   firstAvailableGridSlot,
   gridBounds,
@@ -18,6 +19,7 @@ import {
   terminalCommand,
   terminalProcessIds,
   validateProjectPath,
+  windowsTerminalProcessMissing,
 } from '../src/project-launcher.mjs';
 import { TerminalRuntimeResolver } from '../src/terminal-runtime-resolver.mjs';
 
@@ -95,6 +97,10 @@ test('project launcher validates folders and builds fixed provider commands', ()
     const project = validateProjectPath(directory);
     assert.equal(project.name, directory.split('/').at(-1));
     assert.match(CODEX_RELAY_COMMAND, /--cd \./);
+    // Both interactive Codex forms must end with the update-prompt override, or the launched TUI
+    // stops on "Update available" before it dials --remote and the task never binds a session.
+    assert.match(CODEX_RELAY_COMMAND, /-c check_for_update_on_startup=false$/);
+    assert.match(codexRelayCommand(project.path), /-c check_for_update_on_startup=false$/);
     assert.equal(
       terminalCommand(project.path, 'codex'),
       `cd ${shellQuote(project.path)} && ${codexRelayCommand(project.path)}`,
@@ -123,7 +129,7 @@ test('project launcher validates folders and builds fixed provider commands', ()
     );
     assert.equal(
       terminalCommand(project.path, 'codex', { resumeThreadId: 'codex-conversation' }),
-      `cd ${shellQuote(project.path)} && codex resume 'codex-conversation' --dangerously-bypass-approvals-and-sandbox --cd ${shellQuote(project.path)} --remote ws://127.0.0.1:4769`,
+      `cd ${shellQuote(project.path)} && codex resume 'codex-conversation' --dangerously-bypass-approvals-and-sandbox --cd ${shellQuote(project.path)} --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false`,
     );
     assert.throws(() => terminalCommand(directory, 'custom'), /Unsupported AI provider/);
     assert.throws(() => validateProjectPath('relative'), /absolute/);
@@ -1788,4 +1794,243 @@ test('Windows shutdown force-kills only cmd process trees launched by CC Relay',
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('the Windows launch script stays parseable PowerShell and never uses WaitForInputIdle', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-windows-placement-'));
+  const calls = [];
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    run: async (...args) => {
+      calls.push(args);
+      if (String(args[1]?.at(-1)).includes('AllScreens')) {
+        return { stdout: '{"name":"D1","x":0,"y":0,"width":1920,"height":1040,"primary":true}\r\n' };
+      }
+      return { stdout: '4242\r\n' };
+    },
+  });
+  try {
+    const launched = await launcher.launch(directory, 'codex', {
+      enabled: true,
+      rows: 2,
+      columns: 2,
+      display: 0,
+      background: false,
+    });
+    assert.equal(launched.terminalProcessId, 4242);
+    const script = calls.at(-1)[1].at(-1);
+
+    // PowerShell has no backslash escape. A single \" anywhere would end the string that carries
+    // the C# source, so the placement statement would fail before MoveWindow could run.
+    assert.ok(!script.includes('\\"'), 'the launch script must contain no backslash-escaped quotes');
+    // cmd.exe is a console process, so WaitForInputIdle always throws against it.
+    assert.ok(!script.includes('WaitForInputIdle'));
+    // How the DllImport quote is produced is deliberately not asserted, so a later switch to
+    // backticks or -EncodedCommand stays free as long as the script keeps parsing.
+    assert.match(script, /Add-Type -TypeDefinition/);
+    assert.match(script, /user32\.dll/);
+    // Placement never fails a launch that already opened a terminal.
+    assert.match(script, /try \{ Add-Type[\s\S]*\} catch \{ \}/);
+    assert.match(script, /MoveWindow\(\$process\.MainWindowHandle, 0, 0, 960, 520, \$true\)/);
+    // No `; ` directly after an opening brace, which would rely on an empty PowerShell statement.
+    assert.ok(!/\{\s*;/.test(script), 'no statement list may start with a semicolon');
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a minimized Windows launch skips grid placement instead of moving an iconic window', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-windows-minimized-grid-'));
+  const calls = [];
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    run: async (...args) => {
+      calls.push(args);
+      if (String(args[1]?.at(-1)).includes('AllScreens')) {
+        return { stdout: '{"name":"D1","x":0,"y":0,"width":1920,"height":1040,"primary":true}\r\n' };
+      }
+      return { stdout: '4243\r\n' };
+    },
+  });
+  try {
+    await launcher.launch(directory, 'claude', {
+      enabled: true,
+      rows: 2,
+      columns: 2,
+      display: 0,
+      background: true,
+    });
+    const script = calls.at(-1)[1].at(-1);
+    assert.match(script, /-WindowStyle Minimized/);
+    assert.ok(!script.includes('MoveWindow'));
+    assert.ok(!script.includes('Add-Type'));
+    assert.match(script, /-PassThru; \$process\.Id$/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a quoted Windows provider command survives the cmd.exe /K quote-stripping rule', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-windows-cmd-quotes-'));
+  const calls = [];
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    claudeBinary: 'C:\\Users\\Test User\\AppData\\Roaming\\npm\\claude.cmd',
+    run: async (...args) => {
+      calls.push(args);
+      return { stdout: '4244\r\n' };
+    },
+  });
+  try {
+    const launched = await launcher.launch(directory, 'claude');
+    // The reported command stays the logical command. Only the cmd.exe argument is wrapped.
+    assert.ok(launched.command.startsWith('"C:\\Users\\Test User\\AppData\\Roaming\\npm\\claude.cmd" --dangerously-skip-permissions'));
+    assert.ok(!launched.command.startsWith('""'));
+    const script = calls.at(-1)[1].at(-1);
+    assert.ok(
+      script.includes(`-ArgumentList '/k', '"${launched.command}"'`),
+      'the cmd.exe command must carry one extra wrapping quote pair',
+    );
+    // cmd /K removes the first character and the last quote of the line, which restores the
+    // exact command including the quoted binary path.
+    const cmdLine = script.split("-ArgumentList '/k', '")[1].split("' -PassThru")[0];
+    const stripped = cmdLine.slice(1).replace(/"([^"]*)$/, '$1');
+    assert.equal(stripped, launched.command);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a Windows project path ending in a backslash cannot escape its own closing quote', () => {
+  assert.equal(cmdQuote('D:\\'), '"D:\\\\"');
+  assert.equal(cmdQuote('C:\\Users\\a b'), '"C:\\Users\\a b"');
+  assert.equal(cmdQuote('{"hooks":1}'), '"{""hooks"":1}"');
+});
+
+test('a Windows terminal the user already closed still releases its ownership', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-windows-missing-process-'));
+  const diagnostics = [];
+  // execFile puts stderr into the rejection message, so these mirror the real rejection shape.
+  // The first is a localized Windows install, where only the exit code identifies the outcome.
+  // The second keeps the English text under an exit code the numeric check would not catch.
+  const failures = [
+    Object.assign(
+      new Error('Command failed: taskkill.exe /PID 5001 /T /F\nFEHLER: Der Prozess "5001" wurde nicht gefunden.\r\n'),
+      { code: 128, stderr: 'FEHLER: Der Prozess "5001" wurde nicht gefunden.\r\n' },
+    ),
+    Object.assign(
+      new Error('Command failed: taskkill.exe /PID 5002 /T /F\nERROR: The process "5002" not found.\r\n'),
+      { code: 255, stderr: 'ERROR: The process "5002" not found.\r\n' },
+    ),
+  ];
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    run: async (file) => {
+      if (file === 'taskkill.exe') throw failures.shift();
+      return { stdout: '' };
+    },
+  });
+  try {
+    const path = validateProjectPath(directory).path;
+    for (const [index, processId] of [5001, 5002].entries()) {
+      const launchId = `gone-${processId}`;
+      const threadId = `gone-thread-${processId}`;
+      launcher.trackOwnedTerminal({
+        launchId,
+        provider: index === 0 ? 'codex' : 'claude',
+        path,
+        terminalProcessId: processId,
+      });
+      launcher.bindOwnedTerminal(launchId, {
+        id: threadId,
+        provider: index === 0 ? 'codex' : 'claude',
+        cwd: directory,
+      });
+      const closed = await launcher.closeOwnedTerminal(threadId);
+      assert.equal(closed.threadId, threadId);
+      assert.equal(launcher.terminalForThread(threadId), null);
+    }
+    assert.deepEqual(
+      diagnostics.filter((entry) => entry.event === 'terminal.close.already_exited')
+        .map((entry) => entry.details.terminalProcessId),
+      [5001, 5002],
+    );
+    assert.equal(
+      diagnostics.filter((entry) => entry.event === 'terminal.close.failed').length,
+      0,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('any other Windows taskkill failure still fails closed and keeps the launch owned', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-windows-taskkill-denied-'));
+  const diagnostics = [];
+  const launcher = new ProjectLauncher({
+    platform: 'win32',
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
+    run: async (file) => {
+      if (file === 'taskkill.exe') {
+        throw Object.assign(
+          new Error('Command failed: taskkill.exe /PID 5003 /T /F\nERROR: The process "5003" could not be terminated.\r\nReason: Access is denied.\r\n'),
+          {
+            code: 1,
+            stderr: 'ERROR: The process "5003" could not be terminated.\r\nReason: Access is denied.\r\n',
+          },
+        );
+      }
+      return { stdout: '' };
+    },
+  });
+  try {
+    const path = validateProjectPath(directory).path;
+    launcher.trackOwnedTerminal({
+      launchId: 'denied-launch',
+      provider: 'codex',
+      path,
+      terminalProcessId: 5003,
+    });
+    launcher.bindOwnedTerminal('denied-launch', {
+      id: 'denied-thread',
+      provider: 'codex',
+      cwd: directory,
+    });
+    await assert.rejects(
+      () => launcher.closeOwnedTerminal('denied-thread'),
+      /Access is denied/,
+    );
+    assert.equal(launcher.terminalForThread('denied-thread').launchId, 'denied-launch');
+    assert.equal(
+      diagnostics.filter((entry) => entry.event === 'terminal.close.failed').length,
+      1,
+    );
+    assert.equal(
+      diagnostics.filter((entry) => entry.event === 'terminal.close.already_exited').length,
+      0,
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('windowsTerminalProcessMissing accepts the exit code and the localized message only', () => {
+  assert.equal(windowsTerminalProcessMissing(null), false);
+  assert.equal(windowsTerminalProcessMissing(Object.assign(new Error('x'), { code: 128 })), true);
+  assert.equal(
+    windowsTerminalProcessMissing(Object.assign(new Error('x'), {
+      code: 255,
+      stderr: 'ERROR: The process "1" not found.',
+    })),
+    true,
+  );
+  assert.equal(
+    windowsTerminalProcessMissing(Object.assign(new Error('x'), {
+      code: 1,
+      stderr: 'ERROR: The process "1" could not be terminated.\nReason: Access is denied.',
+    })),
+    false,
+  );
+  assert.equal(windowsTerminalProcessMissing(Object.assign(new Error('ETIMEDOUT'), {})), false);
 });

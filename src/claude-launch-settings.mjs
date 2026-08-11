@@ -1,4 +1,5 @@
 import { dirname } from 'node:path';
+import { normalizeClaudeModel } from './model-catalog.mjs';
 
 // Claude Code applies model, effort, permission mode, tool allowlist, and extra readable
 // directories as PROCESS LAUNCH options. There is no supported way to change them inside a live
@@ -11,8 +12,8 @@ import { dirname } from 'node:path';
 // through the same function, otherwise "they match" would be an assumption instead of a fact.
 
 export function selectedClaudeTerminalModel(model) {
-  if (!model || model === 'default') return null;
-  return model === 'best' ? 'fable' : model;
+  const selected = normalizeClaudeModel(model);
+  return !selected || selected === 'default' ? null : selected;
 }
 
 // Absolute paths of the images CC Relay wrote for this task, in the order they are referenced in

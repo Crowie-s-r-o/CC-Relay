@@ -43,7 +43,7 @@ test('enabled council requires authenticated Claude and validates Codex-first ro
     authorModel: 'sol',
     authorEffort: 'high',
     reviewerProvider: 'claude',
-    reviewerModel: 'best',
+    reviewerModel: 'fable',
     reviewerEffort: 'high',
   });
 });

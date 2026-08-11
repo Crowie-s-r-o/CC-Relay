@@ -13,9 +13,9 @@ tags:
 # Project Terminal Settings
 
 > [!important]
-> Terminal behavior belongs to the exact pinned project. **Keep task terminals open**, legacy idle CC Relay routing, grid enablement, rows, columns, monitor, and background launch must never read a value from another project.
+> Terminal behavior belongs to the exact pinned project. Terminal session or workflow retention, legacy idle CC Relay routing, grid enablement, rows, columns, monitor, and background launch must never read a value from another project.
 
-**Keep task terminals open** defaults to disabled for every new project. Existing explicit project choices remain unchanged. Turning it on changes only the selected project. The renderer no longer reads or writes `relay.keepTerminalOpen`, `relay.preferIdleTerminal`, or `relay.terminalLayout`.
+The terminal retention choice defaults to disabled for every new project. Existing explicit project choices remain unchanged. Turning it on changes only the selected project. Direct Execute labels it **Terminal session mode** and snapshots manual completion; Plan council and Turbo label it **Keep workflow terminals open** and retain terminals without changing automatic completion. The renderer no longer reads or writes `relay.keepTerminalOpen`, `relay.preferIdleTerminal`, or `relay.terminalLayout`.
 
 ## Persistence contract
 
@@ -52,7 +52,7 @@ The terminal setting controls are disabled while their project write is active. 
 
 ## Task snapshot boundary
 
-Each submitted task still snapshots `keep_terminal_open`. Changing the project setting later cannot rewrite queued, running, or historical task intent. Direct Execute, breakdown, plan execution, Plan council, Turbo, Retry, and Continue session continue to carry the existing task-level retention contract from [[retained-terminal-sessions]].
+Each submitted task still snapshots `keep_terminal_open`. New direct Execute tasks also snapshot `manual_completion` when the backend supports [[manual-terminal-session-mode]]. Changing the project setting later cannot rewrite queued, running, open, or historical task intent. Breakdown, plan execution, Plan council, Turbo, Retry, and Continue session continue to carry the existing task-level retention contract from [[retained-terminal-sessions]].
 
 ## Validation
 

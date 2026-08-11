@@ -14,7 +14,12 @@ const TERMINAL_ATTENTION_TIMEOUT_MS = 10_000;
 const TERMINAL_SHELL_READY_POLL_COUNT = 200;
 const TERMINAL_SHELL_READY_POLL_MS = 50;
 const SHARED_CODEX_ENDPOINT = 'ws://127.0.0.1:4769';
-export const CODEX_RELAY_COMMAND = `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${SHARED_CODEX_ENDPOINT}`;
+// A pending Codex CLI release makes the interactive TUI stop on an "Update available" prompt
+// before it dials --remote, so a CC Relay-owned turn would wait forever for a session that never
+// binds. The override is interactive-only: `codex exec` never shows the prompt and keeps its
+// normal update check.
+export const CODEX_UPDATE_PROMPT_OVERRIDE = '-c check_for_update_on_startup=false';
+export const CODEX_RELAY_COMMAND = `codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ${SHARED_CODEX_ENDPOINT} ${CODEX_UPDATE_PROMPT_OVERRIDE}`;
 export const CLAUDE_RELAY_COMMAND = 'claude --dangerously-skip-permissions';
 
 export function shellQuote(value) {
@@ -26,7 +31,26 @@ export function powershellQuote(value) {
 }
 
 export function cmdQuote(value) {
-  return `"${String(value).replaceAll('"', '""')}"`;
+  const text = String(value).replaceAll('"', '""');
+  // Every Windows program splits its command line with the C runtime rules, where a backslash
+  // run immediately before the closing quote escapes that quote. A project pinned at a drive
+  // root canonicalizes to `D:\`, so the unescaped form would hand the provider CLI `D:` plus the
+  // rest of the command line as one argument. Doubling only the trailing run keeps every other
+  // backslash literal, which is what those same rules already do inside a quoted argument.
+  return `"${text.replace(/\\+$/, (run) => run.repeat(2))}"`;
+}
+
+// taskkill reports a non-zero exit when the exact process identifier no longer exists, which is
+// the normal outcome after a user closes the terminal window by hand. Both signals are accepted
+// because each has a hole on its own: the numeric code is undocumented in the CC Relay test
+// environment, and the message text is localized on non-English Windows installations.
+//
+// This never widens the close target. A REUSED identifier is found rather than missing, so it
+// still takes the destructive path, and every other failure still throws.
+export function windowsTerminalProcessMissing(error) {
+  if (!error) return false;
+  if (error.code === 128) return true;
+  return /not found/i.test(`${error.stdout || ''}\n${error.stderr || ''}\n${error.message || ''}`);
 }
 
 function terminalTtyName(value) {
@@ -75,7 +99,7 @@ export function codexRelayCommand(
   resumeThreadId = null,
 ) {
   const command = resumeThreadId ? `codex resume ${quote(resumeThreadId)}` : 'codex';
-  return `${command} --dangerously-bypass-approvals-and-sandbox --cd ${quote(path)} --remote ${endpoint}`;
+  return `${command} --dangerously-bypass-approvals-and-sandbox --cd ${quote(path)} --remote ${endpoint} ${CODEX_UPDATE_PROMPT_OVERRIDE}`;
 }
 
 export function claudeRelayCommand(
@@ -1056,16 +1080,33 @@ JSON.stringify(screens.map((screen, index) => {
       launchEffort: launchSettingsRecord?.effort || undefined,
     });
     if (this.platform === 'win32') {
-      const startProcess = `$process = Start-Process -FilePath 'cmd.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList '/k', ${powershellQuote(command)}${background ? " -WindowStyle Minimized" : ''} -PassThru`;
-      const placement = bounds ? [
-        'Add-Type -TypeDefinition \"using System; using System.Runtime.InteropServices; public class RelayWindow { [DllImport(\\\"user32.dll\\\")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hgt, bool repaint); }\"',
+      // cmd.exe /K strips the first character and the last quote of its command line whenever
+      // that line begins with a quote, which is exactly what a resolved `claude.cmd` path
+      // produces. One extra wrapping pair makes that rule consume the wrapper instead of a real
+      // argument quote, and it is lossless for a command that does not begin with a quote.
+      const startProcess = `$process = Start-Process -FilePath 'cmd.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList '/k', ${powershellQuote(`"${command}"`)}${background ? " -WindowStyle Minimized" : ''} -PassThru`;
+      // A minimized launch has no visible rectangle, so grid placement is skipped rather than
+      // moved on an iconic window. Windows keeps the grid for foreground launches only.
+      const placeWindow = Boolean(bounds) && !background;
+      // PowerShell has no backslash escape, so a literal double quote inside this script would
+      // terminate its enclosing string before the C# source reached the compiler. The whole
+      // script therefore stays free of double quotes and builds the one the DllImport attribute
+      // needs from [char]34.
+      const windowType = "Add-Type -TypeDefinition ('using System; using System.Runtime.InteropServices; public class RelayWindow { [DllImport(' + [char]34 + 'user32.dll' + [char]34 + ')] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hgt, bool repaint); }')";
+      // cmd.exe is a console process, so WaitForInputIdle always fails against it. Poll the
+      // cached window handle instead and leave the window where Windows put it when the console
+      // never reports one. Placement can never fail the launch or orphan the terminal.
+      const placement = placeWindow ? [
+        windowType,
+        `for ($poll = 0; $poll -lt 40 -and $process.MainWindowHandle -eq [IntPtr]::Zero; $poll++) { Start-Sleep -Milliseconds 50; $process.Refresh() }`,
+        `if ($process.MainWindowHandle -ne [IntPtr]::Zero) { $null = [RelayWindow]::MoveWindow($process.MainWindowHandle, ${bounds.left}, ${bounds.top}, ${bounds.right - bounds.left}, ${bounds.bottom - bounds.top}, $true) }`,
+      ].join('; ') : '';
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
         startProcess,
-        '$null = $process.WaitForInputIdle(5000)',
-        'Start-Sleep -Milliseconds 150',
-        `$null = [RelayWindow]::MoveWindow($process.MainWindowHandle, ${bounds.left}, ${bounds.top}, ${bounds.right - bounds.left}, ${bounds.bottom - bounds.top}, $true)`,
+        ...(placement ? [`try { ${placement} } catch { }`] : []),
         '$process.Id',
-      ].join('; ') : `${startProcess}; $process.Id`;
-      const script = placement;
+      ].join('; ');
       let terminalProcessId = null;
       try {
         const { stdout = '' } = await this.run('powershell.exe', ['-NoProfile', '-Command', script]);
@@ -1328,11 +1369,26 @@ JSON.stringify(screens.map((screen, index) => {
           terminalTty,
         });
       } else if (this.platform === 'win32' && terminal.terminalProcessId) {
-        await this.run(
-          'taskkill.exe',
-          ['/PID', String(terminal.terminalProcessId), '/T', '/F'],
-          { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
-        );
+        try {
+          await this.run(
+            'taskkill.exe',
+            ['/PID', String(terminal.terminalProcessId), '/T', '/F'],
+            { timeout: TERMINAL_CLOSE_TIMEOUT_MS },
+          );
+        } catch (error) {
+          // A window the user already closed by hand must still release its ownership and its
+          // project pool slot. macOS reaches the same outcome through `if exists window id ...`,
+          // so this is platform parity, not a weaker close. Every other taskkill failure keeps
+          // throwing and keeps the launch owned for a safe retry.
+          if (!windowsTerminalProcessMissing(error)) throw error;
+          this.diagnostic('terminal.close.already_exited', {
+            launchId: terminal.launchId,
+            threadId,
+            platform: this.platform,
+            terminalProcessId: terminal.terminalProcessId,
+            error: error.message,
+          });
+        }
       } else {
         throw new Error('The exact native terminal handle is unavailable.');
       }

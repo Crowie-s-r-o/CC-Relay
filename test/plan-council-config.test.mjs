@@ -14,7 +14,7 @@ const ready = {
   codexModels,
 };
 
-test('Execute Plan council keeps Claude-first as the compatible default', () => {
+test('Execute Plan council keeps Claude-first with Fable', () => {
   assert.deepEqual(validatePlanCouncilConfig({
     authorProvider: 'claude',
     authorModel: 'fable',

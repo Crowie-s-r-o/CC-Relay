@@ -10,10 +10,18 @@ tags: [relay, ui, header, monitoring, accessibility]
 The complete CC Relay monitor bar can be placed at the top or bottom of the application. The
 control is part of the bar and always describes the available move, **Bottom** or **Top**.
 
-The preference is stored in browser `localStorage` under `relay.headerPosition`. `public/index.html`
-restores `data-header-position` before the stylesheet loads so the bar does not jump after first
-paint. `public/app.js` keeps the button label, arrow, accessible name, and `aria-pressed` state in
-sync.
+The preference is stored durably in shared application configuration as part of
+`ui-layout-preferences`. Browser `localStorage` under `relay.headerPosition` remains a first-paint
+cache. `public/index.html` restores `data-header-position` from that cache before the stylesheet
+loads, while `public/app.js` reconciles it with the authoritative saved preference during startup.
+The renderer keeps the button label, arrow, accessible name, and `aria-pressed` state in sync.
+
+> [!important]
+> Electron starts its embedded HTTP server on a new operating-system-assigned port. Browser
+> storage is scoped to the complete origin, including that port, so `localStorage` alone cannot
+> preserve the bottom choice across desktop launches. The `/api/ui-preferences` route stores the
+> preference in `relay-config.sqlite`, which is stable across those origin changes. See
+> [[durable-ui-layout-preferences]].
 
 > [!important]
 > Bottom placement moves the complete `.app-header`, not only the running-task rail. Branding,
@@ -34,13 +42,13 @@ Files:
 - `public/app.js`
 - `public/style.css`
 - `test/header-position.test.mjs`
+- `src/ui-preferences.mjs`
+- `test/ui-preferences.test.mjs`
 
 ## Verification
 
-The focused header, layout, dark-mode, Planner, and hover suite passes 70 of 70 checks. The full
-suite passes 915 of 916 checks. Its remaining failure is outside this feature:
-`test/project-colors.test.mjs` expects exactly eight project accent definitions while the shared
-working stylesheet currently contains eight.
+The durable preference update passes all 1,106 repository tests. Focused layout, header, database,
+and preference coverage passes all 39 checks.
 
 > [!note]
 > No connected browser surface was available in the non-interactive implementation run. Rendered

@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import electronUpdater from 'electron-updater';
+import { desktopZoomFactorForInput } from './desktop-zoom.mjs';
 import { createDesktopUpdater } from './desktop-updater.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
 import { RELAY_APPLICATION_DIRECTORY } from './server-options.mjs';
@@ -168,13 +169,17 @@ async function createWindow() {
   desktopDiagnostic('desktop.window.load.requested', { url: endpoint.url });
   await mainWindow.loadURL(endpoint.url);
   desktopDiagnostic('desktop.window.load.completed', { url: endpoint.url });
-  await mainWindow.webContents.setVisualZoomLevelLimits(1, 1);
-  mainWindow.webContents.setZoomFactor(1);
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    const zoomShortcut = (input.meta || input.control) && ['+', '=', '-', '0'].includes(input.key);
-    if (!zoomShortcut) return;
+    const currentFactor = mainWindow.webContents.getZoomFactor();
+    const nextFactor = desktopZoomFactorForInput(input, currentFactor);
+    if (nextFactor == null) return;
     event.preventDefault();
-    mainWindow.webContents.setZoomFactor(1);
+    if (nextFactor === currentFactor) return;
+    mainWindow.webContents.setZoomFactor(nextFactor);
+    desktopDiagnostic('desktop.window.zoom.changed', {
+      factor: nextFactor,
+      percent: Math.round(nextFactor * 100),
+    });
   });
   desktopUpdater.start();
   desktopDiagnostic('desktop.updater.started');

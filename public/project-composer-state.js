@@ -1,3 +1,5 @@
+import { normalizeClaudeModelSelection } from './claude-model-selection.js';
+
 function cloneValue(value) {
   if (Array.isArray(value)) return value.map(cloneValue);
   if (value && typeof value === 'object') {
@@ -67,6 +69,7 @@ export function normalizeProjectTerminalSettings(project, fallback = freshProjec
 
 export function freshProjectComposerState() {
   return {
+    taskName: '',
     prompt: '',
     attachments: [],
     selectedTaskId: null,
@@ -100,7 +103,7 @@ export function freshProjectComposerState() {
       workerCount: 3,
       councilEnabled: false,
       councilOrder: ['codex', 'claude'],
-      councilClaudeModel: 'best',
+      councilClaudeModel: 'fable',
       councilClaudeEffort: 'high',
     },
   };
@@ -146,7 +149,9 @@ function hydrateExecutionTarget(target, task) {
   if (target.source === 'user') return;
   if (target.source === 'task' && Number(target.taskId) >= Number(task.id)) return;
   Object.assign(target, {
-    model: task.model || target.model,
+    model: task.provider === 'claude'
+      ? normalizeClaudeModelSelection(task.model) || target.model
+      : task.model || target.model,
     effort: task.effort || target.effort,
     source: 'task',
     taskId: task.id,

@@ -1,6 +1,6 @@
 ---
 name: relay-queue
-description: Manage the local CC Relay sequential Codex task queue. Use when the user asks to list, add, pause, resume, retry, cancel, or inspect queued Codex tasks. Do not use for directly implementing the queued task in the current thread.
+description: Manage the local CC Relay sequential Codex task queue. Use when the user asks to list, add, name, rename, pause, resume, retry, cancel, or inspect queued Codex tasks. Do not use for directly implementing the queued task in the current thread.
 ---
 
 # CC Relay Queue
@@ -18,7 +18,8 @@ node <plugin-root>/scripts/relayctl.mjs status
 node <plugin-root>/scripts/relayctl.mjs connect
 node <plugin-root>/scripts/relayctl.mjs list
 node <plugin-root>/scripts/relayctl.mjs threads
-node <plugin-root>/scripts/relayctl.mjs add --thread <thread-id> --prompt "Complete task prompt"
+node <plugin-root>/scripts/relayctl.mjs add --thread <thread-id> --name "Short task name" --prompt "Complete task prompt"
+node <plugin-root>/scripts/relayctl.mjs rename <task-id> --name "New task name"
 node <plugin-root>/scripts/relayctl.mjs pause
 node <plugin-root>/scripts/relayctl.mjs resume
 node <plugin-root>/scripts/relayctl.mjs retry <task-id>
@@ -28,11 +29,12 @@ node <plugin-root>/scripts/relayctl.mjs cancel <task-id>
 ## Workflow
 
 1. Run `status` before changing the queue.
-2. If CC Relay is not running, tell the user to run `npm start` in `/Users/patrikkelemen/WebstormProjects/relay`.
+2. If CC Relay is not running, tell the user to run `npm start` from their CC Relay checkout.
 3. Run `connect` if the user needs the command for opening a CC Relay-connected Codex terminal.
 4. Run `threads` before `add` and use a thread ID returned by CC Relay. CC Relay lists only terminals connected through its shared app-server.
-5. For `add`, require a complete standalone prompt. CC Relay derives the display label from the prompt.
-6. Confirm the returned task ID and queue state.
-7. CC Relay runs tasks sequentially. Do not start another Codex process yourself.
+5. For `add`, require a complete standalone prompt. `--name` is optional; CC Relay derives the display name from the prompt when it is omitted.
+6. `rename` is allowed only while the task is still queued and preserves its prompt, routing, and position.
+7. Confirm the returned task ID, name, and queue state.
+8. CC Relay runs tasks sequentially. Do not start another Codex process yourself.
 
 Do not read or modify Codex authentication files. CC Relay uses the existing official CLI login.

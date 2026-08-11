@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { randomUUID } from 'node:crypto';
+
 const BASE_URL = 'http://127.0.0.1:4768';
 
 async function request(path, options = {}) {
@@ -73,12 +75,32 @@ async function main() {
   if (command === 'add') {
     const threadId = option(args, '--thread');
     const prompt = option(args, '--prompt');
+    const name = option(args, '--name');
     if (!threadId || !prompt) {
-      throw new Error('Usage: add --thread <thread-id> --prompt "Prompt"');
+      throw new Error('Usage: add --thread <thread-id> [--name "Task name"] --prompt "Prompt"');
     }
     const { task } = await request('/api/tasks', {
       method: 'POST',
-      body: JSON.stringify({ threadId, prompt }),
+      body: JSON.stringify({
+        threadId,
+        ...(name ? { title: name } : {}),
+        prompt,
+        submissionId: randomUUID(),
+      }),
+    });
+    printTask(task);
+    return;
+  }
+
+  if (command === 'rename') {
+    const taskId = Number(args[1]);
+    const name = option(args, '--name');
+    if (!Number.isInteger(taskId) || taskId < 1 || !name?.trim()) {
+      throw new Error('Usage: rename <task-id> --name "New task name"');
+    }
+    const { task } = await request(`/api/tasks/${taskId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title: name }),
     });
     printTask(task);
     return;

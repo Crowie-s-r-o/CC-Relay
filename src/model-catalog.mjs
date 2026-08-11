@@ -10,6 +10,13 @@ function effortOptions(entries) {
   return entries.map(([reasoningEffort, description]) => ({ reasoningEffort, description }));
 }
 
+const CLAUDE_LEGACY_MODEL_ALIASES = Object.freeze(['best']);
+
+export function normalizeClaudeModel(model) {
+  const requested = typeof model === 'string' ? model.trim() : '';
+  return CLAUDE_LEGACY_MODEL_ALIASES.includes(requested) ? 'fable' : requested;
+}
+
 export const CLAUDE_MODELS = [
   {
     model: 'default',
@@ -20,9 +27,9 @@ export const CLAUDE_MODELS = [
     supportedReasoningEfforts: effortOptions(CLAUDE_FULL_EFFORTS),
   },
   {
-    model: 'best',
-    displayName: 'Best available',
-    description: 'Use Fable when available, otherwise the latest Opus model.',
+    model: 'opus',
+    displayName: 'Opus',
+    description: 'The latest Opus model for complex reasoning and implementation.',
     isDefault: false,
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: effortOptions(CLAUDE_FULL_EFFORTS),
@@ -30,18 +37,11 @@ export const CLAUDE_MODELS = [
   {
     model: 'fable',
     displayName: 'Fable',
-    description: 'Claude model for the hardest and longest-running tasks.',
+    description: 'Fable 5 for the hardest and longest-running tasks.',
     isDefault: false,
     defaultReasoningEffort: 'high',
     supportedReasoningEfforts: effortOptions(CLAUDE_FULL_EFFORTS),
-  },
-  {
-    model: 'opus',
-    displayName: 'Opus',
-    description: 'The latest Opus model for complex reasoning and implementation.',
-    isDefault: false,
-    defaultReasoningEffort: 'high',
-    supportedReasoningEfforts: effortOptions(CLAUDE_FULL_EFFORTS),
+    legacyModelAliases: CLAUDE_LEGACY_MODEL_ALIASES,
   },
   {
     model: 'sonnet',
@@ -70,6 +70,7 @@ export function validateExecutionSettings({ model, effort, models }) {
 
   const selectedModel = requestedModel
     ? models.find((item) => item.model === requestedModel)
+      || models.find((item) => item.legacyModelAliases?.includes(requestedModel))
     : models.find((item) => item.isDefault) || models[0];
   if (!selectedModel) {
     throw new Error(requestedModel
@@ -86,7 +87,7 @@ export function validateExecutionSettings({ model, effort, models }) {
   }
 
   return {
-    model: requestedModel || null,
+    model: requestedModel ? selectedModel.model : null,
     effort: requestedEffort || null,
   };
 }

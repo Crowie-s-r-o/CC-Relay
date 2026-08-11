@@ -84,4 +84,37 @@ graphite palette and contrast tokens.
 
 See [[interface-layout]], [[project-workspaces]], and [[semantic-palette-review]].
 
+## Compact queue cards and panel priority
+
+The wide-screen workspace treats Task queue as a compact index and Task activity as the primary working surface. The default columns are a 580px Composer, a 500px Task queue, and a flexible Task activity panel that receives all remaining width. Composer clamps to a 400px minimum, including for older saved layouts. The right separator now resizes the queue directly. Older saved Composer and Activity widths migrate by deriving the equivalent queue width on first load.
+
+Queue cards use 11px by 12px padding and an 8px list gap. Names remain two lines. A distinct prompt preview is capped at two lines, while an automatically prompt-derived name suppresses the repeated preview. The footer keeps owner, runtime, start, and completion evidence in a tighter grid. Manual terminal-session cards use the same geometry with their mode bar aligned to the reduced padding.
+
+> [!note]
+> Do not make the queue the flexible desktop column again. Its job is fast scanning around 500px; the terminal needs the surplus width for command output, diffs, and live responses.
+
+## Compact queue action controls
+
+Queued task operations use a 26px instrument scale. **Rename** is a raised secondary control with
+a 10px pencil mask. The up and down operations share one segmented shell with 26px square targets,
+a single internal divider, and 12px chevrons. The status badge remains outside that control group so
+task state is not mistaken for an action.
+
+Dark mode must give `.task-rename-button`, `.task-assign-button`, `.queue-reorder`, and their child
+buttons explicit graphite surfaces from [[dark-mode]]. Generic button rules do not cover these
+queue-only classes. Without those late dark selectors, their hardcoded light backgrounds punch white
+holes through a dark task card. Interaction blue is reserved for hover and focus; idle chrome stays
+neutral. Disabled directions remain present but quiet so the pair does not change width at the top or
+bottom of the queue.
+
+> [!note]
+> The visual chevrons and pencil are CSS masks. Keep the existing button text and `aria-label`
+> contracts in `public/app.js`; the masks improve shape without replacing accessible names. See
+> [[task-naming]] and [[live-terminal-retention]].
+
+`test/project-layout.test.mjs` protects the 26px geometry, segmented shell, mask icons, and explicit
+dark surfaces. An isolated browser preview at the real 500px queue width rendered 457px cards in
+both themes with no wrapping and no console warnings or errors. The complete suite passes 1,184
+tests.
+
 #relay #ui #layout #density #color

@@ -123,6 +123,48 @@ test('Claude session registry does not retry when the re-resolved binary is unch
   assert.equal(registry.lastError, 'Command failed');
 });
 
+test('Claude session discovery runs the Windows shim through cmd.exe without flashing a console', async () => {
+  const calls = [];
+  const registry = new ClaudeSessionRegistry({
+    platform: 'win32',
+    resolveCommand: async () => 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd',
+    runCommand: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return JSON.stringify([]);
+    },
+  });
+
+  await registry.listSessions();
+  assert.equal(calls.length, 1);
+  // A direct .cmd spawn fails on Windows, which used to make every discovery poll fail.
+  assert.equal(calls[0].command, 'cmd.exe');
+  assert.deepEqual(calls[0].args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.ok(calls[0].args[3].includes('claude.cmd'));
+  assert.ok(calls[0].args[3].includes('agents'));
+  assert.equal(calls[0].options.windowsVerbatimArguments, true);
+  // This poll repeats every few seconds, so an unhidden console would flash that often.
+  assert.equal(calls[0].options.windowsHide, true);
+});
+
+test('Claude session discovery keeps the POSIX invocation byte-identical', async () => {
+  const calls = [];
+  const registry = new ClaudeSessionRegistry({
+    platform: 'darwin',
+    resolveCommand: async () => '/Users/tester/.local/bin/claude',
+    runCommand: async (command, args, options) => {
+      calls.push({ command, args, options });
+      return JSON.stringify([]);
+    },
+  });
+
+  await registry.listSessions();
+  assert.deepEqual(calls, [{
+    command: '/Users/tester/.local/bin/claude',
+    args: ['agents', '--json'],
+    options: {},
+  }]);
+});
+
 test('Claude session discovery deduplicates one session ID and keeps the interactive terminal', () => {
   const sessions = normalizeClaudeSessions([
     {

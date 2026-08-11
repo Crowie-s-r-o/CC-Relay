@@ -20,7 +20,7 @@ function task(id, status, repoPath = '/work/alpha') {
 
 test('first observation treats historical completed tasks as an acknowledged baseline', () => {
   const notifications = new ProjectCompletionNotifications(memoryStorage());
-  notifications.observe([
+  const completed = notifications.observe([
     task(1, 'complete'),
     task(2, 'running'),
     task(3, 'complete', '/work/beta'),
@@ -28,12 +28,13 @@ test('first observation treats historical completed tasks as an acknowledged bas
 
   assert.equal(notifications.count('/work/alpha'), 0);
   assert.equal(notifications.count('/work/beta'), 0);
+  assert.deepEqual(completed, []);
 });
 
 test('a task completing outside the open Task Activity becomes a project notification', () => {
   const notifications = new ProjectCompletionNotifications(memoryStorage());
   notifications.observe([task(4, 'running'), task(8, 'queued', '/work/beta')]);
-  notifications.observe([
+  const completed = notifications.observe([
     task(4, 'complete'),
     task(8, 'complete', '/work/beta'),
   ], {
@@ -44,17 +45,19 @@ test('a task completing outside the open Task Activity becomes a project notific
   assert.equal(notifications.count('/work/alpha'), 1);
   assert.equal(notifications.latestTaskId('/work/alpha'), 4);
   assert.equal(notifications.count('/work/beta'), 1);
+  assert.deepEqual(completed.map(({ id }) => id), [4, 8]);
 });
 
 test('the task currently open in Task Activity is already checked when it completes', () => {
   const notifications = new ProjectCompletionNotifications(memoryStorage());
   notifications.observe([task(5, 'running')]);
-  notifications.observe([task(5, 'complete')], {
+  const completed = notifications.observe([task(5, 'complete')], {
     activeProjectPath: '/work/alpha/',
     selectedTaskId: 5,
   });
 
   assert.equal(notifications.count('/work/alpha'), 0);
+  assert.deepEqual(completed.map(({ id }) => id), [5]);
 });
 
 test('opening a completed task acknowledges only that notification', () => {

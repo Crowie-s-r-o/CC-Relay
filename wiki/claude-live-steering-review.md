@@ -83,4 +83,17 @@ The earlier [[continuation-input-review]] conclusion that running Claude lacked 
 
 See [[same-task-session-continuation]], [[claude-terminal-input]], [[claude-terminal-live-output]], [[claude-terminal-submit-review]], and [[task-history]].
 
+## August 5 task 129 held-paste addendum
+
+Task 129 disproved the one-action assumption for live steering. Its first text-only update was
+confirmed, but a second update with one image remained as image and collapsed-paste chips after the
+appended Return and the single guarded action were both swallowed. A third update was correctly
+blocked by the nonempty-composer guard.
+
+Live steering now receives the bounded multi-attempt policy documented in
+[[claude-live-steer-held-paste-recovery]]. Every action still requires the exact terminal and exact
+held paste, an empty or foreign composer receives nothing, and the renderer timeout exceeds the
+backend recovery bound. This supersedes this review's one-guarded-Return and 25-second performance
+statements without changing its exact-evidence or no-queue contract.
+
 #relay #review #claude #continuation #steering #terminal #no-queue

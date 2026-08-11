@@ -44,7 +44,7 @@ test('Task Activity renders Result as a larger Markdown document', async () => {
   assert.match(app, /elements\.detailResult\.innerHTML = renderMarkdown\(resultContent\)/);
   assert.match(app, /compactText\(markdownPreviewText\(task\.result\), 96\)/);
   assert.match(page, /<div id="detail-result" class="markdown-document result-markdown"><\/div>/);
-  assert.match(style, /\.detail-panel \.detail-copy-disclosure > \.result-markdown \{[^}]*max-height: 320px;[^}]*font-size: 12\.5px;/s);
+  assert.match(style, /\.detail-panel \.detail-copy-disclosure > \.result-markdown \{[^}]*max-height: 320px;[^}]*font-size: 15px;/s);
   assert.match(style, /\.detail-section > pre \{[^}]*background: #fafbfc;/s);
   assert.match(style, /\.markdown-document pre \{[^}]*background: #182720;/s);
   assert.match(style, /\.markdown-document pre code \{[^}]*color: #e7f0ed;/s);

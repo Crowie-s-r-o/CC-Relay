@@ -1,10 +1,15 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import {
+  backgroundWorkSummary,
+  CLAUDE_PRINT_BACKGROUND_WAIT_ENV,
   ClaudeExecutionRunner,
+  claudePrintEnv,
   consumeClaudeStreamMessage,
+  liveSubAgents,
   parseAgentTaskNotification,
 } from '../src/claude-execution-runner.mjs';
 import { RELAY_NON_INTERACTIVE_INSTRUCTION } from '../src/relay-prompt.mjs';
@@ -61,6 +66,13 @@ const TASK_NOTIFICATION = '<task-notification>\n'
   + '<usage><subagent_tokens>29359</subagent_tokens><tool_uses>0</tool_uses><duration_ms>2632</duration_ms></usage>\n'
   + '</task-notification>';
 
+// Sanitized `turn_duration` record shaped from the August 3 incident. Claude print mode emitted
+// this event after terminating four still-running agents and then exited successfully.
+const TURN_DURATION_PENDING = JSON.parse(readFileSync(
+  new URL('./fixtures/claude-turn-duration-pending.json', import.meta.url),
+  'utf8',
+));
+
 function turnContext() {
   return { cwd: '/tmp/repo', tools: new Map(), finalResponse: '', sessionId: 'one', error: null };
 }
@@ -89,6 +101,126 @@ test('Claude sub-agent launches carry agent metadata on the mcpToolCall envelope
   assert.equal(completed.event.item.backgrounded, true);
   assert.equal(completed.event.item.agentId, 'a21d93d8cd05ec4fb');
   assert.match(completed.message, /working in the background/i);
+  assert.deepEqual(liveSubAgents(context), [{
+    toolUseId: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+    agentId: 'a21d93d8cd05ec4fb',
+    label: '"dev-2: standby core developer"',
+  }]);
+});
+
+test('turn duration parsing uses the captured record and tolerant nested fallbacks', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage(TURN_DURATION_PENDING, context);
+  assert.equal(context.pendingBackgroundAgentCount, 4);
+
+  consumeClaudeStreamMessage({
+    type: 'system',
+    subtype: 'turn_duration',
+    pendingBackgroundAgentCount: 2,
+    payload: { pendingBackgroundAgentCount: 9 },
+  }, context);
+  assert.equal(context.pendingBackgroundAgentCount, 2);
+
+  consumeClaudeStreamMessage({
+    type: 'system',
+    subtype: 'turn_duration',
+    payload: { result: { pendingBackgroundAgentCount: 1 } },
+  }, context);
+  assert.equal(context.pendingBackgroundAgentCount, 1);
+
+  consumeClaudeStreamMessage({ type: 'system', subtype: 'turn_duration', payload: {} }, context);
+  assert.equal(context.pendingBackgroundAgentCount, null);
+});
+
+test('the live sub-agent ledger removes finishes by tool use id or agent id', () => {
+  const byToolUse = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, byToolUse);
+  consumeClaudeStreamMessage(AGENT_LAUNCHED, byToolUse);
+  consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'enqueue', content: TASK_NOTIFICATION,
+  }, byToolUse);
+  assert.deepEqual(liveSubAgents(byToolUse), []);
+
+  const byAgentId = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, byAgentId);
+  consumeClaudeStreamMessage(AGENT_LAUNCHED, byAgentId);
+  consumeClaudeStreamMessage({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    content: TASK_NOTIFICATION.replace(
+      '<tool-use-id>toolu_012M2JjykSAMBUw7JewJMYeX</tool-use-id>',
+      '<tool-use-id>unknown-tool-use</tool-use-id>',
+    ),
+  }, byAgentId);
+  assert.deepEqual(liveSubAgents(byAgentId), []);
+});
+
+test('unknown notifications are harmless and an out-of-order finish prevents a stale ledger entry', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, context);
+  consumeClaudeStreamMessage(AGENT_LAUNCHED, context);
+  consumeClaudeStreamMessage({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    content: TASK_NOTIFICATION
+      .replaceAll('a21d93d8cd05ec4fb', 'another-agent')
+      .replaceAll('toolu_012M2JjykSAMBUw7JewJMYeX', 'another-tool'),
+  }, context);
+  assert.equal(liveSubAgents(context).length, 1);
+
+  const outOfOrder = turnContext();
+  consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'enqueue', content: TASK_NOTIFICATION,
+  }, outOfOrder);
+  consumeClaudeStreamMessage(AGENT_LAUNCH, outOfOrder);
+  consumeClaudeStreamMessage(AGENT_LAUNCHED, outOfOrder);
+  assert.deepEqual(liveSubAgents(outOfOrder), []);
+});
+
+test('inline and failed sub-agent launches never enter the live ledger', () => {
+  const inline = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, inline);
+  consumeClaudeStreamMessage({
+    type: 'user',
+    message: {
+      content: [{
+        tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+        type: 'tool_result',
+        content: 'Finished inline.',
+      }],
+    },
+  }, inline);
+  assert.deepEqual(liveSubAgents(inline), []);
+
+  const failed = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, failed);
+  consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: { isAsync: true, status: 'async_launched' },
+    message: {
+      content: [{
+        tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+        type: 'tool_result',
+        is_error: true,
+        content: 'Launch failed.',
+      }],
+    },
+  }, failed);
+  assert.deepEqual(liveSubAgents(failed), []);
+});
+
+test('background work summaries prefer capped agent names, then authoritative counts', () => {
+  assert.equal(backgroundWorkSummary({
+    entries: [
+      { label: '"dev-1"' },
+      { label: '"dev-2"' },
+      { label: '"dev-3"' },
+      { label: '"dev-4"' },
+    ],
+    pendingCount: 9,
+  }), '4 background sub-agents ("dev-1", "dev-2", "dev-3", and 1 more)');
+  assert.equal(backgroundWorkSummary({ pendingCount: 4 }), '4 pending background agents');
+  assert.equal(backgroundWorkSummary({ sessionCrons: [{}] }), '1 session cron');
 });
 
 test('a backgrounded sub-agent is recognized from the tool result text alone', () => {
@@ -302,6 +434,286 @@ function controlledClaudeProcess(sessionId) {
   return child;
 }
 
+test('headless Claude launches the Windows shim through cmd.exe and cancels its whole tree', async () => {
+  let invocation = null;
+  let child = null;
+  const terminations = [];
+  const runner = new ClaudeExecutionRunner({
+    command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd',
+    platform: 'win32',
+    spawnProcess: (command, args, options) => {
+      invocation = { command, args, options };
+      child = controlledClaudeProcess('claude-windows');
+      child.pid = 3131;
+      return child;
+    },
+    sessions: { readConnectedSession: async () => ({ rawStatus: 'idle' }) },
+    terminateProcess: (target, options) => {
+      terminations.push({ pid: target.pid, ...options });
+      return true;
+    },
+  });
+  const execution = runner.run({
+    id: 300,
+    thread_id: 'claude-windows',
+    thread_name: 'windows-session',
+    repo_path: 'C:\\work\\app',
+    prompt: 'Implement everything.',
+    provider: 'claude',
+    attachments: [],
+  }, { onEvent: () => {}, onStderr: () => {} });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  // A direct .cmd spawn is refused by Windows and the bare name is never found on PATH.
+  assert.equal(invocation.command, 'cmd.exe');
+  assert.deepEqual(invocation.args.slice(0, 3), ['/d', '/s', '/c']);
+  assert.ok(invocation.args[3].includes('claude.cmd'));
+  assert.ok(invocation.args[3].includes('stream-json'));
+  assert.ok(invocation.args[3].includes('claude-windows'));
+  assert.equal(invocation.options.windowsVerbatimArguments, true);
+  assert.equal(invocation.options.windowsHide, true);
+  assert.equal(invocation.options.cwd, 'C:\\work\\app');
+
+  // Killing cmd.exe would leave Claude editing the workspace after a cancel.
+  assert.equal(runner.cancel(300), true);
+  assert.deepEqual(terminations, [{ pid: 3131, signal: 'SIGTERM', platform: 'win32' }]);
+  assert.equal(child.killedWith, null);
+  child.emit('close', null, 'SIGTERM');
+  await assert.rejects(execution, (error) => error.cancelled === true);
+});
+
+test('headless Claude keeps the POSIX invocation and cancel signal byte-identical', async () => {
+  let invocation = null;
+  let child = null;
+  const runner = new ClaudeExecutionRunner({
+    command: '/Users/tester/.local/bin/claude',
+    platform: 'darwin',
+    spawnProcess: (command, args, options) => {
+      invocation = { command, args, options };
+      child = controlledClaudeProcess('claude-posix');
+      return child;
+    },
+    sessions: { readConnectedSession: async () => ({ rawStatus: 'idle' }) },
+  });
+  const execution = runner.run({
+    id: 301,
+    thread_id: 'claude-posix',
+    thread_name: 'posix-session',
+    repo_path: '/tmp/repo',
+    prompt: 'Implement everything.',
+    provider: 'claude',
+    attachments: [],
+  }, { onEvent: () => {}, onStderr: () => {} });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(invocation.command, '/Users/tester/.local/bin/claude');
+  assert.equal(invocation.args[0], '-p');
+  assert.equal(invocation.options.windowsHide, undefined);
+  assert.equal(invocation.options.windowsVerbatimArguments, undefined);
+
+  assert.equal(runner.cancel(301), true);
+  assert.equal(child.killedWith, 'SIGTERM');
+  await assert.rejects(execution, (error) => error.cancelled === true);
+});
+
+test('a Windows terminal workspace matches its task regardless of drive letter case', async () => {
+  const runner = new ClaudeExecutionRunner({ platform: 'win32' });
+  const task = { thread_id: 'session-win', repo_path: 'C:\\Work\\App' };
+  // `claude agents --json` reports whatever case the shell recorded, and Windows paths are
+  // case-insensitive, so a verbatim comparison rejected a legitimate terminal.
+  assert.doesNotThrow(() => runner.validateFreshSession(task, { cancelRequested: false }, {
+    id: 'session-win',
+    source: 'Claude interactive',
+    cwd: 'c:\\work\\app',
+  }));
+  assert.throws(() => runner.validateFreshSession(task, { cancelRequested: false }, {
+    id: 'session-win',
+    source: 'Claude interactive',
+    cwd: 'C:\\Work\\Other',
+  }), /different workspace/);
+
+  const posixRunner = new ClaudeExecutionRunner({ platform: 'darwin' });
+  assert.throws(() => posixRunner.validateFreshSession({
+    thread_id: 'session-posix',
+    repo_path: '/Users/dev/App',
+  }, { cancelRequested: false }, {
+    id: 'session-posix',
+    source: 'Claude interactive',
+    cwd: '/users/dev/app',
+  }), /different workspace/);
+});
+
+test('Claude print environment defaults the background wait to unlimited and preserves PATH', () => {
+  const env = claudePrintEnv({ PATH: '/usr/local/bin', [CLAUDE_PRINT_BACKGROUND_WAIT_ENV]: '   ' });
+  assert.equal(env.PATH, '/usr/local/bin');
+  assert.equal(env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV], '0');
+});
+
+test('Claude print environment honors an operator supplied wait ceiling', () => {
+  const previous = process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV];
+  try {
+    process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV] = '725000';
+    assert.equal(claudePrintEnv()[CLAUDE_PRINT_BACKGROUND_WAIT_ENV], '725000');
+  } finally {
+    if (previous === undefined) {
+      delete process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV];
+    } else {
+      process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV] = previous;
+    }
+  }
+});
+
+test('headless Claude fails honestly when stderr reports that background agents were terminated', async () => {
+  let child = null;
+  const events = [];
+  const runner = new ClaudeExecutionRunner({
+    spawnProcess: () => {
+      child = controlledClaudeProcess('claude-background-warning');
+      return child;
+    },
+    sessions: { readConnectedSession: async () => ({ rawStatus: 'idle' }) },
+  });
+  const execution = runner.run({
+    id: 90,
+    thread_id: 'claude-background-warning',
+    thread_name: 'warning-session',
+    repo_path: '/tmp/repo',
+    prompt: 'Implement everything.',
+    provider: 'claude',
+    attachments: [],
+  }, {
+    onEvent: (event) => events.push(event),
+    onStderr: () => {},
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify(AGENT_LAUNCH)}\n`);
+  child.stdout.write(`${JSON.stringify(AGENT_LAUNCHED)}\n`);
+  child.stderr.write('Background tasks still running after 600s; terminating. Set CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS=0 to wait indefinitely.\n');
+  child.complete('Interim response.');
+
+  await assert.rejects(execution, (error) => {
+    assert.equal(error.retryable, false);
+    assert.equal(error.exitCode, 0);
+    assert.match(error.message, /dev-2: standby core developer/);
+    assert.match(error.message, /Continue session/);
+    return true;
+  });
+  assert.equal(events.some((entry) => entry.event.type === 'claude/completed'), false);
+});
+
+test('headless Claude fails honestly on a positive authoritative pending-agent count', async () => {
+  let child = null;
+  const events = [];
+  const runner = new ClaudeExecutionRunner({
+    spawnProcess: () => {
+      child = controlledClaudeProcess('claude-background-count');
+      return child;
+    },
+    sessions: { readConnectedSession: async () => ({ rawStatus: 'idle' }) },
+  });
+  const execution = runner.run({
+    id: 91,
+    thread_id: 'claude-background-count',
+    thread_name: 'count-session',
+    repo_path: '/tmp/repo',
+    prompt: 'Implement everything.',
+    provider: 'claude',
+    attachments: [],
+  }, {
+    onEvent: (event) => events.push(event),
+    onStderr: () => {},
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify(TURN_DURATION_PENDING)}\n`);
+  child.complete('Interim response.');
+
+  await assert.rejects(execution, (error) => {
+    assert.equal(error.retryable, false);
+    assert.match(error.message, /4 pending background agents/);
+    assert.match(error.message, /Continue session/);
+    return true;
+  });
+  assert.equal(events.some((entry) => entry.event.type === 'claude/completed'), false);
+});
+
+test('headless Claude succeeds after its tracked agent finishes and the authoritative count clears', async () => {
+  let child = null;
+  const runner = new ClaudeExecutionRunner({
+    spawnProcess: () => {
+      child = controlledClaudeProcess('claude-background-clean');
+      return child;
+    },
+    sessions: { readConnectedSession: async () => ({ rawStatus: 'idle' }) },
+  });
+  const events = [];
+  const execution = runner.run({
+    id: 92,
+    thread_id: 'claude-background-clean',
+    thread_name: 'clean-session',
+    repo_path: '/tmp/repo',
+    prompt: 'Implement everything.',
+    provider: 'claude',
+    attachments: [],
+  }, {
+    onEvent: (event) => events.push(event),
+    onStderr: () => {},
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  child.stdout.write(`${JSON.stringify(AGENT_LAUNCH)}\n`);
+  child.stdout.write(`${JSON.stringify(AGENT_LAUNCHED)}\n`);
+  child.stdout.write(`${JSON.stringify({
+    type: 'queue-operation', operation: 'enqueue', content: TASK_NOTIFICATION,
+  })}\n`);
+  child.stdout.write(`${JSON.stringify({
+    type: 'system', subtype: 'turn_duration', pendingBackgroundAgentCount: 0,
+  })}\n`);
+  child.complete('Consolidated response.');
+
+  const outcome = await execution;
+  assert.equal(outcome.finalResponse, 'Consolidated response.');
+  assert.equal(events.some((entry) => entry.event.type === 'claude/completed'), true);
+});
+
+test('headless spawn receives the approved unlimited background wait environment', async () => {
+  const previous = process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV];
+  let options = null;
+  let child = null;
+  try {
+    process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV] = ' ';
+    const runner = new ClaudeExecutionRunner({
+      spawnProcess: (command, args, spawnOptions) => {
+        options = spawnOptions;
+        child = controlledClaudeProcess('claude-print-env');
+        return child;
+      },
+      sessions: { readConnectedSession: async () => ({ rawStatus: 'idle' }) },
+    });
+    const execution = runner.run({
+      id: 93,
+      thread_id: 'claude-print-env',
+      repo_path: '/tmp/repo',
+      prompt: 'Work.',
+      provider: 'claude',
+      attachments: [],
+    }, { onEvent: () => {}, onStderr: () => {} });
+    await new Promise((resolve) => setImmediate(resolve));
+    child.complete('Done.');
+    await execution;
+
+    assert.equal(options.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV], '0');
+    assert.equal(options.env.PATH, process.env.PATH);
+  } finally {
+    if (previous === undefined) {
+      delete process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV];
+    } else {
+      process.env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV] = previous;
+    }
+  }
+});
+
 test('Claude execution runs different terminal sessions concurrently and cancels only the requested task', async () => {
   const children = new Map();
   const runner = new ClaudeExecutionRunner({
@@ -451,7 +863,7 @@ test('Claude execution resumes a live session through the subscription CLI', asy
     repo_path: '/tmp/repo',
     prompt: 'Fix checkout.',
     provider: 'claude',
-    model: 'opus',
+    model: 'fable',
     effort: 'max',
     attachments: [{ name: 'bug.png', path: '/tmp/images/bug.png' }],
   }, {
@@ -468,6 +880,10 @@ test('Claude execution resumes a live session through the subscription CLI', asy
   assert.deepEqual(
     invocation.args.slice(invocation.args.indexOf('--permission-mode'), invocation.args.indexOf('--permission-mode') + 2),
     ['--permission-mode', 'auto'],
+  );
+  assert.deepEqual(
+    invocation.args.slice(invocation.args.indexOf('--model'), invocation.args.indexOf('--model') + 2),
+    ['--model', 'fable'],
   );
   assert.equal(invocation.args.includes('--no-session-persistence'), false);
   assert.deepEqual(

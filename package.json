@@ -5,9 +5,17 @@
   "private": true,
   "type": "module",
   "main": "src/electron-main.mjs",
-  "description": "CC Relay, a local sequential task queue for connected subscription-authenticated Codex and Claude Code sessions.",
+  "description": "Local task orchestration for subscription-authenticated Codex and Claude Code sessions.",
   "author": "Patrik Kelemen",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Crowie-s-r-o/CC-Relay.git"
+  },
+  "homepage": "https://github.com/Crowie-s-r-o/CC-Relay#readme",
+  "bugs": {
+    "url": "https://github.com/Crowie-s-r-o/CC-Relay/issues"
+  },
   "engines": {
     "node": ">=24.0.0"
   },
@@ -17,14 +25,17 @@
     "desktop:build:mac": "electron-builder --mac --publish never",
     "desktop:build:win": "electron-builder --win --publish never",
     "test": "node --test",
+    "release": "node scripts/release.mjs",
+    "release:check": "node scripts/release-check.mjs",
+    "release:notes": "node scripts/release-notes.mjs",
     "plugin:install": "node scripts/install-plugin.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.9",
-    "ws": "^8.21.1"
+    "ws": "^8.21.3"
   },
   "devDependencies": {
-    "electron": "^43.1.1",
+    "electron": "^43.4.0",
     "electron-builder": "^26.15.3"
   }
 }

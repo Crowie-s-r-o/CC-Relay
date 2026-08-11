@@ -1,64 +1,21 @@
-CC Relay Source-Available View-Only License 1.0
+MIT License
 
-Copyright (c) 2026 Patrik Kelemen. All rights reserved.
+Copyright (c) 2026 Patrik Kelemen
 
-1. Purpose
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
 
-The source code and accompanying materials for CC Relay are made publicly visible
-solely so that people may inspect and read the code for security, privacy, and
-trust evaluation.
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
 
-2. Limited permission
-
-You may view the source code as displayed through a repository or other service
-authorized by the copyright holder.
-
-3. No other rights granted
-
-Except for the limited permission in Section 2, no license or permission is
-granted. Without prior written permission from the copyright holder, you may
-not:
-
-- use, run, execute, or deploy the software or any part of it;
-- copy, download, reproduce, or archive the software or any part of it;
-- modify, adapt, translate, or create derivative works from it;
-- distribute, publish, sublicense, sell, rent, lease, or otherwise provide it
-  to another person;
-- incorporate the software or any part of it into another project, product,
-  service, dataset, model, or codebase;
-- use the software or any part of it to develop, improve, benchmark, or train a
-  competing or substantially similar project, product, or service; or
-- remove or alter copyright, license, attribution, or proprietary notices.
-
-4. No patent or trademark license
-
-No patent, trademark, trade name, logo, or branding rights are granted under
-this license.
-
-5. Contributions
-
-No right to submit or incorporate contributions is granted by this license.
-Any contribution accepted by the copyright holder is subject to a separate
-written agreement or contribution terms provided by the copyright holder.
-
-6. Termination
-
-The limited permission in Section 2 terminates automatically if you breach this
-license. Upon termination, you must cease all access and use permitted by this
-license.
-
-7. Disclaimer
-
-THE SOFTWARE AND SOURCE CODE ARE PROVIDED "AS IS," WITHOUT WARRANTY OF ANY KIND,
-EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT. TO THE MAXIMUM
-EXTENT PERMITTED BY LAW, THE COPYRIGHT HOLDER SHALL NOT BE LIABLE FOR ANY CLAIM,
-DAMAGES, OR OTHER LIABILITY ARISING FROM OR RELATED TO THE SOFTWARE, SOURCE CODE,
-OR THIS LICENSE.
-
-8. Separate permission
-
-For permission to use, evaluate, modify, distribute, integrate, or license
-CC Relay, contact the copyright holder and obtain a separate written license.
-
-This license is source-available and view-only. It is not an open-source license.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
+import { providerCommandInvocation, terminateChildProcess } from './claude-binary.mjs';
 import { ClaudeTerminalExecutor } from './claude-terminal-executor.mjs';
 import { injectionPromptIssue } from './claude-transcript-tail.mjs';
+import { normalizeClaudeModel } from './model-catalog.mjs';
 import { withRelayNonInteractiveInstruction } from './relay-prompt.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -30,6 +32,35 @@ export class ClaudeExecutionError extends Error {
 
 const MISSING_CONVERSATION = /No conversation found with session ID:\s*([^\s]+)/i;
 const SESSION_ID_IN_USE = /Session ID\s+([^\s]+)\s+is already in use/i;
+const CLAUDE_BACKGROUND_TERMINATION_PATTERN = /background tasks? still running[^\n]*terminating/i;
+
+export const CLAUDE_PRINT_BACKGROUND_WAIT_ENV = 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS';
+
+// The August 3, 2026 incident proved that Claude print mode otherwise exits successfully after
+// terminating background agents at its default wait ceiling. Zero tells Claude to wait without a
+// ceiling. Keep an operator-supplied nonblank value so CC Relay never overrides an explicit limit.
+export function claudePrintEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  if (
+    typeof env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV] !== 'string'
+    || !env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV].trim()
+  ) {
+    env[CLAUDE_PRINT_BACKGROUND_WAIT_ENV] = '0';
+  }
+  return env;
+}
+
+// Windows file paths are case-insensitive, and `claude agents --json` reports whatever case the
+// shell recorded, so a session started in `c:\work\app` must still match a task stored as
+// `C:\work\app`. Comparing the resolved strings verbatim there rejects a legitimate terminal as
+// a different workspace. POSIX keeps the exact byte comparison, where case is significant.
+export function sameWorkspacePath(left, right, platform = process.platform) {
+  const first = resolve(left);
+  const second = resolve(right);
+  return platform === 'win32'
+    ? first.toLowerCase() === second.toLowerCase()
+    : first === second;
+}
 
 function missingConversationSessionId(value) {
   return String(value || '').match(MISSING_CONVERSATION)?.[1]?.trim() || null;
@@ -238,10 +269,105 @@ function firstNotificationSighting(context, notification, content) {
   return true;
 }
 
+function pendingBackgroundAgentCount(message) {
+  if (Number.isFinite(message?.pendingBackgroundAgentCount)) {
+    return message.pendingBackgroundAgentCount;
+  }
+  const pending = [];
+  const seen = new Set([message]);
+  for (const value of Object.values(message || {})) {
+    if (value && typeof value === 'object') pending.push(value);
+  }
+  while (pending.length > 0) {
+    const container = pending.shift();
+    if (!container || typeof container !== 'object' || seen.has(container)) continue;
+    seen.add(container);
+    if (Number.isFinite(container.pendingBackgroundAgentCount)) {
+      return container.pendingBackgroundAgentCount;
+    }
+    for (const value of Object.values(container)) {
+      if (value && typeof value === 'object') pending.push(value);
+    }
+  }
+  return null;
+}
+
+function liveSubAgentMap(context) {
+  if (!(context.liveSubAgents instanceof Map)) {
+    context.liveSubAgents = new Map();
+  }
+  return context.liveSubAgents;
+}
+
+function finishedSubAgentToolUseIds(context) {
+  if (!(context.finishedSubAgentToolUseIds instanceof Set)) {
+    context.finishedSubAgentToolUseIds = new Set();
+  }
+  return context.finishedSubAgentToolUseIds;
+}
+
+export function liveSubAgents(context) {
+  return context?.liveSubAgents instanceof Map
+    ? [...context.liveSubAgents.values()]
+    : [];
+}
+
+export function backgroundWorkSummary({
+  entries = [],
+  pendingCount = null,
+  backgroundTasks = [],
+  sessionCrons = [],
+} = {}) {
+  const agents = Array.isArray(entries) ? entries : [];
+  if (agents.length > 0) {
+    const labels = agents
+      .map((entry) => trimmedString(entry?.label))
+      .filter(Boolean);
+    const shown = labels.slice(0, 3);
+    const remaining = Math.max(0, agents.length - shown.length);
+    const names = shown.length > 0
+      ? ` (${shown.join(', ')}${remaining > 0 ? `, and ${remaining} more` : ''})`
+      : '';
+    return `${agents.length} background sub-agent${agents.length === 1 ? '' : 's'}${names}`;
+  }
+  if (Number.isFinite(pendingCount) && pendingCount > 0) {
+    return `${pendingCount} pending background agent${pendingCount === 1 ? '' : 's'}`;
+  }
+  const taskCount = Array.isArray(backgroundTasks) ? backgroundTasks.length : 0;
+  const cronCount = Array.isArray(sessionCrons) ? sessionCrons.length : 0;
+  const parts = [];
+  if (taskCount > 0) {
+    parts.push(`${taskCount} background task${taskCount === 1 ? '' : 's'}`);
+  }
+  if (cronCount > 0) {
+    parts.push(`${cronCount} session cron${cronCount === 1 ? '' : 's'}`);
+  }
+  return parts.join(' and ');
+}
+
 export function consumeClaudeStreamMessage(message, context) {
   const emitted = [];
+  if (message.type === 'system' && message.subtype === 'turn_duration') {
+    context.pendingBackgroundAgentCount = pendingBackgroundAgentCount(message);
+  }
   if (message.type === 'queue-operation') {
     const notification = parseAgentTaskNotification(message.content);
+    if (notification) {
+      if (notification.toolUseId) {
+        finishedSubAgentToolUseIds(context).add(notification.toolUseId);
+      }
+      const agents = context.liveSubAgents instanceof Map ? context.liveSubAgents : null;
+      if (agents) {
+        if (!notification.toolUseId || !agents.delete(notification.toolUseId)) {
+          for (const [toolUseId, entry] of agents) {
+            if (notification.agentId && entry.agentId === notification.agentId) {
+              agents.delete(toolUseId);
+              break;
+            }
+          }
+        }
+      }
+    }
     if (notification && firstNotificationSighting(context, notification, message.content)) {
       emitted.push({
         event: {
@@ -293,6 +419,18 @@ export function consumeClaudeStreamMessage(message, context) {
       }
       const completedItem = completedToolItem(item, block, message);
       context.tools.delete(block.tool_use_id);
+      if (
+        completedItem.subAgent
+        && completedItem.status !== 'failed'
+        && completedItem.backgrounded
+        && !finishedSubAgentToolUseIds(context).has(completedItem.toolUseId)
+      ) {
+        liveSubAgentMap(context).set(completedItem.toolUseId, {
+          toolUseId: completedItem.toolUseId,
+          agentId: completedItem.agentId || '',
+          label: subAgentLabel(completedItem),
+        });
+      }
       emitted.push({
         event: { type: 'item/completed', provider: 'claude', item: completedItem },
         message: subAgentCompletionMessage(completedItem)
@@ -326,10 +464,11 @@ export function taskPrompt(task) {
 }
 
 function selectedModel(model) {
-  if (!model || model === 'default') {
+  const selected = normalizeClaudeModel(model);
+  if (!selected || selected === 'default') {
     return null;
   }
-  return model === 'best' ? 'fable' : model;
+  return selected;
 }
 
 export class ClaudeExecutionRunner {
@@ -345,10 +484,12 @@ export class ClaudeExecutionRunner {
     requestAttention = null,
     hookBridge = null,
     terminalExecutor = null,
+    terminateProcess = terminateChildProcess,
     diagnostic = () => {},
   } = {}) {
     this.command = command;
     this.spawnProcess = spawnProcess;
+    this.terminateProcess = terminateProcess;
     this.sessions = sessions;
     this.wait = wait;
     this.now = now;
@@ -442,7 +583,7 @@ export class ClaudeExecutionRunner {
       || !session.cwd.trim()
       || typeof task.repo_path !== 'string'
       || !task.repo_path.trim()
-      || resolve(session.cwd) !== resolve(task.repo_path)
+      || !sameWorkspacePath(session.cwd, task.repo_path, this.platform)
     ) {
       throw new ClaudeExecutionError(
         'The selected Claude terminal belongs to a different workspace. Choose a Claude terminal opened for this project and retry.',
@@ -463,9 +604,12 @@ export class ClaudeExecutionRunner {
       suppressSessionInUseStderr = false,
     },
   ) {
-    const child = this.spawnProcess(this.command, args, {
+    const invocation = providerCommandInvocation(this.command, args, { platform: this.platform });
+    const child = this.spawnProcess(invocation.command, invocation.args, {
       cwd: task.repo_path,
       stdio: ['pipe', 'pipe', 'pipe'],
+      env: claudePrintEnv(),
+      ...invocation.options,
     });
     active.child = child;
     const context = {
@@ -475,6 +619,7 @@ export class ClaudeExecutionRunner {
       sessionId: task.thread_id,
       reportedSessionId: null,
       error: null,
+      pendingBackgroundAgentCount: null,
     };
     let stdoutBuffer = '';
     let stderrBuffer = '';
@@ -562,6 +707,22 @@ export class ClaudeExecutionRunner {
             sessionInUseSessionId: inUseSessionId,
             retryable: !missingSessionId && !inUseSessionId,
           }));
+          return;
+        }
+        const terminatedPending = CLAUDE_BACKGROUND_TERMINATION_PATTERN.test(stderrMessage)
+          || (
+            Number.isFinite(context.pendingBackgroundAgentCount)
+            && context.pendingBackgroundAgentCount > 0
+          );
+        if (terminatedPending) {
+          const detail = backgroundWorkSummary({
+            entries: liveSubAgents(context),
+            pendingCount: context.pendingBackgroundAgentCount,
+          }) || 'background tasks the CLI reported still running';
+          reject(new ClaudeExecutionError(
+            `Claude ended this run while ${detail} still working, and that work was terminated with it. Parts of the task may already be applied in the workspace, and Retry would re-send the original prompt on top of them, so CC Relay will not retry automatically. Review the workspace, then use Continue session with a follow-up telling Claude what to audit and finish.`,
+            { exitCode: code, retryable: false },
+          ));
           return;
         }
         if (!context.finalResponse) {
@@ -805,6 +966,15 @@ export class ClaudeExecutionRunner {
         taskId,
         threadId: active.sessionId,
         deliveryUncertain: error.deliveryUncertain === true,
+        // Together they say how many guarded Returns were sent and what the composer looked like on
+        // every recovery pass that ran. Both are present for any failure raised inside
+        // deliverActiveSteer, not only a post-injection one: a PRE-injection failure carries 0 and
+        // [], which is the meaningful reading that nothing was typed and that no recovery pass ever
+        // classified the composer. They are null only when the error carries neither field, for
+        // example a live update rejected before deliverActiveSteer runs because the turn had
+        // already closed.
+        submitAttempts: Number.isInteger(error.submitAttempts) ? error.submitAttempts : null,
+        composerStates: Array.isArray(error.composerStates) ? error.composerStates : null,
         error: error.message,
       });
       throw error;
@@ -816,14 +986,21 @@ export class ClaudeExecutionRunner {
       const active = this.activeByTask.get(taskId) || this.activeBySession.get(taskId);
       if (!active) return false;
       active.cancelRequested = true;
-      active.child?.kill('SIGTERM');
+      this.stopChild(active);
       return true;
     }
     const activeTasks = [...new Set(this.activeByTask.values())];
     for (const active of activeTasks) {
       active.cancelRequested = true;
-      active.child?.kill('SIGTERM');
+      this.stopChild(active);
     }
     return activeTasks.length > 0;
+  }
+
+  // On Windows the spawned child is cmd.exe wrapping the claude shim, so killing the direct
+  // child would leave Claude running against the user's workspace after a cancel.
+  stopChild(active) {
+    if (!active.child) return false;
+    return this.terminateProcess(active.child, { signal: 'SIGTERM', platform: this.platform });
   }
 }

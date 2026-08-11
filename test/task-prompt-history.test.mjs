@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   normalizeTaskPrompts,
+  taskPromptCopyText,
   taskPromptHistoryPreview,
   taskPromptHistoryText,
 } from '../public/task-prompt-history.js';
@@ -49,10 +50,17 @@ test('prompt history keeps the original request first and renders every follow-u
     'Second follow-up',
   ].join('\n'));
   assert.equal(taskPromptHistoryPreview(prompts), '3 prompts · Second follow-up');
+  assert.equal(taskPromptCopyText(prompts), [
+    'Original request',
+    'First follow-up',
+    'Second follow-up',
+  ].join('\n\n'));
+  assert.doesNotMatch(taskPromptCopyText(prompts), /^01 \u00b7 Original request$/m);
 });
 
 test('prompt history falls back to the task prompt for an older backend', () => {
   const prompts = normalizeTaskPrompts({ id: 7, prompt: 'Only request' });
   assert.equal(taskPromptHistoryText(prompts), '01 · Original request\nOnly request');
+  assert.equal(taskPromptCopyText(prompts), 'Only request');
   assert.equal(taskPromptHistoryPreview(prompts), '1 prompt · Only request');
 });

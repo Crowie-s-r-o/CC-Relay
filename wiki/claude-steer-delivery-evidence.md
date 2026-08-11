@@ -385,4 +385,15 @@ holding unsubmitted text, submit or clear it") is actively harmful for a prompt 
 See [[claude-image-prompt-correlation]], [[continuation-input-review]],
 [[claude-live-steering-review]], [[claude-terminal-visibility]], and [[hot]].
 
+## August 5 task 129 scope note
+
+The 25 second timing conclusion above remains correct for Task 85's queued messages: their exact
+enqueue records arrived inside 8.3 seconds, so a larger evidence budget would not have fixed that
+incident. Task 129 exposed a different state. Its image-bearing update produced no enqueue or user
+record and remained visibly held in the composer after the one guarded action was swallowed.
+
+Live steering now uses an 80 second bound solely to contain the same multi-attempt held-paste
+schedule opening prompts already use. Exact enqueue evidence still resolves immediately and sends
+no recovery action. See [[claude-live-steer-held-paste-recovery]].
+
 #relay #claude #terminal #steering

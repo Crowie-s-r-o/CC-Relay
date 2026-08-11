@@ -1,6 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { validateExecutionSettings } from '../src/model-catalog.mjs';
+import {
+  CLAUDE_MODELS,
+  normalizeClaudeModel,
+  validateExecutionSettings,
+} from '../src/model-catalog.mjs';
+import { supportedClaudeModelCatalog } from '../public/claude-model-selection.js';
+import {
+  claudeFirstLaunchSettings,
+  claudeTerminalExecutionSettings,
+  selectedClaudeTerminalModel,
+} from '../src/claude-launch-settings.mjs';
 
 const models = [{
   model: 'gpt-test',
@@ -30,4 +40,46 @@ test('execution settings reject unknown models and unsupported effort', () => {
     () => validateExecutionSettings({ model: 'gpt-test', effort: 'low', models }),
     /does not support low effort/,
   );
+});
+
+test('Claude catalog exposes Fable and canonicalizes the legacy best alias to Fable', () => {
+  assert.deepEqual(CLAUDE_MODELS.map((model) => model.model), [
+    'default',
+    'opus',
+    'fable',
+    'sonnet',
+    'haiku',
+  ]);
+  assert.equal(normalizeClaudeModel('best'), 'fable');
+  assert.equal(normalizeClaudeModel('fable'), 'fable');
+  assert.equal(normalizeClaudeModel('sonnet'), 'sonnet');
+  assert.deepEqual(validateExecutionSettings({
+    model: 'fable',
+    effort: 'max',
+    models: CLAUDE_MODELS,
+  }), { model: 'fable', effort: 'max' });
+  assert.deepEqual(supportedClaudeModelCatalog([
+    { model: 'best' },
+    { model: 'fable' },
+    { model: 'opus' },
+    { model: 'sonnet' },
+  ]).map((model) => model.model), ['fable', 'opus', 'sonnet']);
+  assert.deepEqual(supportedClaudeModelCatalog([
+    { model: 'best', displayName: 'Best available' },
+    { model: 'opus', displayName: 'Opus' },
+  ]).map((model) => [model.model, model.displayName]), [
+    ['fable', 'Fable'],
+    ['opus', 'Opus'],
+  ]);
+});
+
+test('terminal launch settings pass Fable through and map best to Fable', () => {
+  assert.equal(selectedClaudeTerminalModel('best'), 'fable');
+  assert.equal(selectedClaudeTerminalModel('fable'), 'fable');
+  assert.equal(selectedClaudeTerminalModel('default'), null);
+  assert.deepEqual(claudeFirstLaunchSettings({ model: 'fable', effort: 'max' }), {
+    model: 'fable',
+    effort: 'max',
+  });
+  assert.equal(claudeTerminalExecutionSettings({ model: 'best' }).model, 'fable');
 });

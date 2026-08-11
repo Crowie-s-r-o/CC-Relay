@@ -7,6 +7,87 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 12: the repository is ready for its MIT open-source publication at `Crowie-s-r-o/CC-Relay`.** The README leads with the honest macOS-only validation status and the selected overview screenshot. One local release command now owns deterministic SemVer, isolated Codex-to-Claude AI changelog generation, metadata checks, all tests, dependency auditing, the release commit, annotated tag, and atomic GitHub push. The GitHub release body is extracted from the same changelog entry. The audit also removed tracked IDE files and a stale `undefined/asar-src` package snapshot, made plugin installation portable, sanitized the real incident fixture, replaced literal source control bytes, and cleared all five dependency advisories. See [[open-source-releases]], [[licensing]], and [[desktop-updates]].
+
+> [!note]
+> **August 12: queue and terminal-retention actions now match the dark operator shell.** Rename has
+> a compact pencil treatment, queue movement is one segmented chevron control, and every queue-only
+> action now receives an explicit graphite dark surface instead of retaining a white light-theme
+> fill. Stop auto-close uses a pin instead of a radio-like ring, preserving its one-way latch
+> semantics while keeping explicit text and `aria-pressed`. Isolated light and dark browser checks
+> passed at the real 500px queue width with no wrapping or console issues, and all 1,184 tests pass.
+> Rebuild or restart CC Relay to load the updated renderer CSS. See [[compact-interface-density]],
+> [[dark-mode]], and [[live-terminal-retention]].
+
+> [!important]
+> **August 11: completed tasks now have selectable sound and voice alerts.** Settings offers
+> Silent, Gentle chime, Bright bell, and Digital pulse, with a Test action and an independent
+> option that speaks the project folder plus the first task word, such as `relay. Add.`. Alerts
+> use real unfinished-to-complete transitions, including a task already open in Task Activity,
+> while the first historical snapshot remains quiet. Choices persist across desktop port changes
+> and restore before task polling begins. Live Chrome QA verified preview and reload persistence
+> with no console issues, and all 1,130 tests pass. Restart or rebuild CC Relay. See
+> [[task-completion-alerts]].
+
+> [!important]
+> **August 10: text selection is protected for the complete drag gesture everywhere in Relay.** The task, project, terminal, planner, and duration refresh paths now wait from pointerdown through pointerup, closing the Task Detail race before the browser has established a nonempty range. A document-level click gate prevents a finished drag from toggling disclosures, activating cards, following links, or triggering other selected controls; normal pointer clicks and keyboard activation remain unchanged. Live Chrome checks held Task Detail body, disclosure-summary, terminal, and task-card ranges through multiple polls, and the disclosure no longer toggled after its text was selected. All 1,125 tests pass. Rebuild and restart CC Relay. See [[stable-text-selection]].
+
+> [!important]
+> **August 10: Standup now defaults to a terse All tasks mode.** It keeps every included task as a separate, source-ordered update, asks for 4 to 12 words, preserves repeated entries, and caps each line at 160 characters. Short, Standard, and Detailed remain available for grouped synthesis. A new capability gate protects mixed renderer and backend versions. All 1,117 tests pass. See [[daily-standup]].
+
+> [!important]
+> **August 10: Task Activity copy controls are stable during polling, and direct retries are configurable.** The two-second task refresh no longer clears clipboard payloads or resets feedback for the same selected task, so Copy remains continuously clickable. Prompt Copy now emits only user-authored text without the generated `01 · Original request` heading. Retrying a failed, cancelled, or interrupted automatic Execute task opens Executor, Model, and Effort choices. Keeping the provider preserves its conversation; switching between Codex and Claude starts fresh. Workflow-owned and automatic retries remain unchanged. All 1,115 tests pass. Rebuild and restart CC Relay. See [[configurable-task-retry]], [[interface-layout]], and [[task-history]].
+
+> [!important]
+> **August 10 correction: Fable 5 is current and is restored in Relay.** Claude Code `2.1.226` runs Fable from `~/.claude/settings.json` and lists it in the live `/model` picker. The earlier inference that Fable was retired confused an unrelated `SessionStart:startup hook error` with model availability. Relay now exposes `default`, `opus`, `fable`, `sonnet`, and `haiku`; preserves Fable through browser state, backend validation, native launches, and headless runners; and maps only the old Relay `best` value to Fable. Plan council and Turbo prefer Fable again. All 1,115 tests pass. Signed arm64 DMG and ZIP artifacts are rebuilt and verified. Reinstall and restart CC Relay. See [[claude-current-model-routing]] and [[claude-current-model-routing-review]].
+
+> [!important]
+> **August 8: interface layout now survives desktop restarts.** Electron uses a new embedded HTTP
+> port on each launch, so origin-scoped `localStorage` could not remember panel widths, Task
+> Activity terminal height, or a monitor bar moved to the bottom. These choices now persist in
+> shared `relay-config.sqlite` through `/api/ui-preferences`, while local storage remains the fast
+> first-paint cache. All 1,106 tests pass. See [[durable-ui-layout-preferences]],
+> [[header-position]], and [[interface-layout]].
+
+> [!note]
+> **August 8: the Composer receives more reliable desktop space and queue cards stop repeating prompt-derived names.** Its default is 580px and its usable minimum is 400px, so older saved 360px layouts are widened too. Queue cards show the prompt preview only when an explicit task name differs from the request. A 2048 by 1152 browser check measured 400px Composer, 753px Task queue, and 839px Task activity, with zero duplicate previews and zero console errors. All 1,103 tests pass. See [[interface-layout]] and [[compact-interface-density]].
+
+> [!important]
+> **August 7: a pending Codex CLI release froze every queued Codex task, and the fix needs a restart.** The interactive TUI stops on `Update available! 0.146.1 -> 0.147.0 ... Press enter to continue` before it dials `--remote`, so no provider session ever bound and the task ran forever with no output. It looked intermittent only because Codex throttles the check through `~/.codex/version.json`. Every interactive launch command CC Relay builds now ends with `-c check_for_update_on_startup=false`: the connection-helper constant, the fresh and `codex resume` forms shared by Launchpad and the disposable pool, and the app-server `launchCommand`. `codex exec` never shows the prompt and was left alone. All 1,100 tests pass. Restart CC Relay and rebuild the desktop bundle. See [[codex-update-prompt-freeze]].
+
+> [!important]
+> **August 7: a TEXT-ONLY live update to a running Claude session was typed into the composer and then never submitted, and the installed desktop app is three defects behind.** A single-line follow-up is a three line paste once the non-interactive notice is appended, three lines never collapse, so Claude renders the text literally and word-wraps it over four or more rows. That pushed the caret past the one-row `CLAUDE_COMPOSER_MAX_TAIL_DEPTH`, every guarded recovery pass read `'unreadable'`, and an unreadable composer receives no action by design. Measured on a Claude Code 2.1.224 pty capture: `held` at 100 columns, `unreadable` at 80, which is Terminal.app's default and why the operator saw it "often". The composer scan is now bounded by the small stable chrome BELOW the closing rule instead of by caret depth, inconclusive reads no longer consume the action schedule, and `composerStates` reports every pass in diagnostics. Every fail-closed negative is unchanged and mutation checked. All 1,098 tests pass. **The running app is the Aug 5 18:49 build with the old 25 second one-action steer path, so rebuild and relaunch before validating anything.** See [[claude-steer-text-hold-reliability]].
+
+> [!important]
+> **August 5: image-bearing live updates to a running Claude session now recover from a swallowed Return instead of remaining as blocking composer chips.** Task 129 proved the first text update succeeded, the second update with one image never produced a user or queue record, and its `[Image #2][Pasted text #3 +3 lines]` stayed held after Relay's single guarded action. Live steering now uses up to four spaced actions, re-proves the exact session and exact held paste before each one, stops if the composer clears or differs, and can cross the earlier response's busy-to-idle boundary. The browser waits 120 seconds for the backend's 80 second bound. All 1,089 tests pass. Rebuild and relaunch CC Relay before validation. See [[claude-live-steer-held-paste-recovery]].
+
+> [!important]
+> **August 5: tasks can now receive an optional name at submission and can be renamed while they are still queued.** The canonical name appears on queue cards, the running-task rail, Task Activity, artifacts, standups, and the bundled queue helper. Rename uses the existing atomic queued-status guard and preserves task ID, prompt, position, routing, workflow state, and images. Blank names fall back to prompt-derived titles, names are part of idempotent submission identity, and older backends are protected by `capabilities.queuedTaskNaming`. All 1,087 tests pass, and an isolated backend accepted a named queued task through the real API. Restart CC Relay and rebuild the desktop bundle to activate the backend and renderer together. See [[task-naming]] and [[task-history]].
+
+> [!important]
+> **August 4: Task Activity now visualizes named Claude and Codex sub-agents through one live worker ledger.** Claude launch and finish notifications fold by tool use ID; Codex spawn, activity, and multi-worker state updates fold by agent thread ID. Worker rows show role or model, brief, and running, background, finished, interrupted, or failed state. Codex `interacted` activity preserves lifecycle instead of falsely finishing a worker, and Claude background command notifications no longer appear as unnamed agents. The earlier Claude premature-close defect remains protected by the unlimited headless background wait, interactive pending-work gates, and fresh-consolidation requirement. All 1,081 tests pass, and an isolated live UI rendered both providers as separate named workers. Restart CC Relay and rebuild the desktop bundle after active tasks finish. See [[provider-sub-agent-visibility]] and [[claude-background-sub-agent-completion]].
+
+> [!important]
+> **August 4: Terminal session mode now keeps both the direct task and its terminal workspace open across as many turns as the operator needs.** Every successful, failed, stopped, or restart-interrupted turn returns the same task to `open`; it never retries automatically and it completes only through **Complete session** in Task Activity. Completion does not close the retained native terminal, and **Close terminal** does not complete the task. Manual session cards have a dedicated terminal rail, Launchpad reports **Session open**, the continuation dock says **Send command**, and the completed task cannot silently reopen. Plan council, Turbo, and the running-task **Stop auto-close** latch keep automatic completion. A temporary live backend verified the actual completion route at desktop and 600 pixel layouts in light and dark themes with zero console errors. Restart CC Relay and rebuild the desktop bundle to activate the schema, route, and renderer. See [[manual-terminal-session-mode]].
+
+> [!important]
+> **August 4: a running automatic task now has a bright, task-level Stop auto-close safety latch in Task Activity.** Pressing it persists retention for only that task, changes the control to **Auto-close stopped**, and keeps the exact prepared terminal or workflow fleet open at the final outcome. Completion re-reads the task row instead of the dispatch snapshot, automatic retries still close intermediate attempts, and shutdown promotes a prepared latched launch before cancelling the turn. Older backends show a disabled restart state. The complete suite passes 1,067 tests; isolated light, dark, 1180, 720, and 420 pixel checks produced no overflow or console errors. Restart CC Relay and rebuild the desktop bundle to activate the route and renderer. See [[live-terminal-retention]].
+
+> [!important]
+> **August 4: Task Activity now gives the terminal 84 percent by default and opens full task or Plan council detail in a modal.** Retained-session tasks keep a 72 percent terminal default so the session controls remain usable. The desktop app now supports Command or Control plus, minus, and zero whole-page zoom from 50 through 200 percent instead of forcing 100 percent. The complete suite passes 1,063 tests, and an isolated live dark-theme check confirmed the modal contrast and zero console warnings. Rebuild and relaunch the desktop app to activate the renderer and Electron changes. See [[task-detail-modal-and-app-zoom]].
+
+> [!important]
+> **August 3: Claude tasks can no longer complete while tracked background work is still live.**
+> Headless print mode now receives the explicitly approved unlimited background wait setting, and
+> an exit-zero run still fails non-retryably if stderr or `turn_duration` reports terminated work.
+> Interactive turns hold the exact terminal across sub-agent launches, Stop-hook background tasks,
+> session crons, and authoritative pending counts, then require a fresh consolidated response after
+> everything finishes. The queue never replays partial work automatically. All 1,057 tests pass,
+> the real-child queue shim covers failed and clean outcomes, and signed arm64 DMG and ZIP artifacts
+> are rebuilt and verified. Install and restart only after active tasks finish. See
+> [[claude-background-sub-agent-completion]].
+
+> [!important]
 > **August 3, latest: keep-terminal-open tasks now have a full session surface. Restart CC Relay (and rebuild the desktop bundle) to serve the new per-turn `responses` field and the retained-close task event; the refreshed renderer degrades cleanly until then.** Direct session tasks show a Session badge with live terminal state (open, busy, pending, closed) on their queue cards, and Task Activity swaps the flat Prompts and Result disclosures for a session strip plus a paired prompt-and-response conversation history. The strip's **Close terminal** kill action reuses the existing `DELETE /api/terminals/:threadId` ownership path, so a running follow-up blocks the close and a successful close records a queue event on the retained task. The two-second poll cannot rebuild the transcript under the reader: a content signature (including a djb2 prompt-text hash and provider, added after the reviewer proved a queued edit rendered stale) gates the DOM write, and per-turn disclosure state is remembered. Adversarial verdict Ship at 1039 of 1039 tests. See [[session-tasks]].
 
 > [!important]
@@ -190,7 +271,7 @@ type: hot
 > Execute Plan Council now has the same provider-order choice as Turbo Council: **Claude first** or **Codex first**. The first provider drafts and performs the final revision; the other provider reviews. Each provider keeps its own model and effort selection across order changes. `capabilities.planCouncilProviderOrder` protects mixed-version use, and the legacy database invariant remains `thread_id` for Codex plus `author_thread_id` for Claude regardless of role. See [[plan-council]] and [[execute-plan-council-provider-order-review]].
 
 > [!important]
-> The complete product display name is now **CC Relay**. Native bundle names, the macOS application and About menus, browser title, in-app brand, update prompts, generated notices, user-facing strings, documentation, and numbered terminal labels use that name. The npm package is `cc-relay`. Compatibility identifiers remain unchanged: `com.relay.queue`, the `patrikkelemen/relay` repository, command-line flags, code symbols, and the `dual-agent-orchestrator` application-data directory. Release files use `CC-Relay-...` because electron-builder normalizes update-feed URLs to hyphens. See [[product-naming]] and [[desktop-updates]].
+> The complete product display name is now **CC Relay**. Native bundle names, the macOS application and About menus, browser title, in-app brand, update prompts, generated notices, user-facing strings, documentation, and numbered terminal labels use that name. The npm package is `cc-relay`. Compatibility identifiers remain unchanged: `com.relay.queue`, command-line flags, code symbols, and the `dual-agent-orchestrator` application-data directory. The public repository and updater publisher are `Crowie-s-r-o/CC-Relay`. Release files use `CC-Relay-...` because electron-builder normalizes update-feed URLs to hyphens. See [[product-naming]] and [[desktop-updates]].
 
 > [!important]
 > Forward-planning Turbo now keeps its **Planning route** visible when Plan council is off. The collapsed route exposes one selectable Codex planning model and effort; enabling council expands the same route to two numbered provider stages. `#turbo-council-route` must remain rendered in the disabled state because `data-enabled="false"` hides only Claude and the connector. See [[turbo-execution]] and [[turbo-plan-council]].
@@ -298,7 +379,7 @@ type: hot
 > Terminal cleanup hazard, learned the hard way (July 24, 2026): macOS recycles tty names, so a tty captured earlier can point at a different session later. Never kill, close, or send to a terminal by a stale tty name; verify live session identity (session id, pid, and cwd) at action time. A spike cleanup that violated this killed an unrelated Claude session. See [[claude-terminal-visibility]].
 
 > [!note]
-> CC Relay uses a custom source-available, view-only license. Public users may inspect the source but receive no permission to run, copy, modify, redistribute, incorporate, or derive another project from it. Do not call this open source. See [[licensing]].
+> **August 12: CC Relay is now open source under the MIT License.** Package metadata, public documentation, contribution guidance, and the release process all use the same MIT contract. The earlier view-only license is superseded for the public release state. See [[licensing]] and [[open-source-releases]].
 
 > [!note]
 > The Planner is a per-project saved plan library reached from the composer heading. Its AI breakdown enqueues an ordinary `mode: 'breakdown'` queue task on a chosen live session, parses the structured output tolerantly, and stores review-before-queue proposals on the plan. `breakdownUpdateForTask` is a reconciler (self-heals `failed -> running -> complete`, never clobbers user edits). Backend advertises `capabilities.planner`; an older running backend shows **Restart CC Relay to use the Planner**. See [[planner]].

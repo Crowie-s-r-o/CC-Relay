@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process';
-import { isUnknownOptionError } from './claude-binary.mjs';
+import { isUnknownOptionError, providerCommandInvocation } from './claude-binary.mjs';
 
-function execute(command, args) {
+function execute(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     execFile(command, args, {
       encoding: 'utf8',
       maxBuffer: 2 * 1024 * 1024,
       timeout: 10_000,
+      ...options,
     }, (error, stdout, stderr) => {
       if (error) {
         error.stderr = stderr;
@@ -56,10 +57,16 @@ export function normalizeClaudeSessions(value) {
 }
 
 export class ClaudeSessionRegistry {
-  constructor({ runCommand = execute, cacheMs = 750, resolveCommand = async () => 'claude' } = {}) {
+  constructor({
+    runCommand = execute,
+    cacheMs = 750,
+    resolveCommand = async () => 'claude',
+    platform = process.platform,
+  } = {}) {
     this.runCommand = runCommand;
     this.cacheMs = cacheMs;
     this.resolveCommand = resolveCommand;
+    this.platform = platform;
     this.cachedAt = 0;
     this.cachedSessions = [];
     this.pending = null;
@@ -111,15 +118,24 @@ export class ClaudeSessionRegistry {
   // Runs `claude agents --json` against the resolved binary. If the invocation
   // fails with an unknown-option error (an outdated binary that predates the
   // `--json` flag), re-resolve to a newer binary once and retry.
+  //
+  // The invocation is shaped per platform first. On Windows the resolved binary is usually the
+  // `claude.cmd` shim, which cannot be spawned directly, and this poll runs every few seconds,
+  // so an unhidden console window would flash that often.
+  discoverWith(command) {
+    const invocation = providerCommandInvocation(command, ['agents', '--json'], { platform: this.platform });
+    return this.runCommand(invocation.command, invocation.args, invocation.options);
+  }
+
   async discover() {
     const command = await this.resolveCommand();
     try {
-      return await this.runCommand(command, ['agents', '--json']);
+      return await this.discoverWith(command);
     } catch (error) {
       if (isUnknownOptionError(error)) {
         const refreshed = await this.resolveCommand({ refresh: true });
         if (refreshed !== command) {
-          return this.runCommand(refreshed, ['agents', '--json']);
+          return this.discoverWith(refreshed);
         }
       }
       throw error;

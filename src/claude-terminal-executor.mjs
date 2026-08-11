@@ -2,8 +2,10 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import {
+  backgroundWorkSummary,
   ClaudeExecutionError,
   consumeClaudeStreamMessage,
+  liveSubAgents,
   taskPrompt,
 } from './claude-execution-runner.mjs';
 import {
@@ -180,7 +182,9 @@ const taskAttachmentPaths = claudeTaskAttachmentPaths;
 
 function inactivityLimitLabel(milliseconds) {
   const minutes = Math.round(milliseconds / 60_000);
-  if (minutes >= 1) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  // Keep sub-two-minute recovery bounds exact. Rounding an 80 second live-steer window down to
+  // "1 minute" makes the operator-facing failure account materially wrong.
+  if (milliseconds >= 2 * 60_000) return `${minutes} minute${minutes === 1 ? '' : 's'}`;
   const seconds = Math.max(1, Math.round(milliseconds / 1_000));
   return `${seconds} second${seconds === 1 ? '' : 's'}`;
 }
@@ -371,10 +375,44 @@ export const CLAUDE_PASTE_COLLAPSE_MIN_LINES = 4;
 // Attachment chips render before the placeholder. Task 39's composer held exactly
 // `[Image #3] [Image #4][Pasted text #5 +201 lines]`.
 export const CLAUDE_IMAGE_CHIP_PATTERN = /\[Image #\d+\]/;
-// How far above the bottom of the tail the composer caret may sit. Measured on every captured
-// frame the caret is the fourth non-empty line from the end. This bound is what stops a replayed
-// `❯ user message` that happens to sit above a dialog's rule from reading as a composer box.
+// How far above the bottom of the tail the composer caret may sit WHEN THE BOX HAS NO CLOSING
+// RULE. Measured on every captured frame of a one-row composer the caret is the fourth non-empty
+// line from the end. This bound is what stops a replayed `❯ user message` that happens to sit
+// above a dialog's rule from reading as a composer box.
+//
+// It is deliberately NOT the bound for a boxed composer. A paste of one to three lines never
+// collapses (see CLAUDE_PASTE_COLLAPSE_MIN_LINES) and renders its text literally, word-wrapped
+// across as many rows as it needs, so the caret sits arbitrarily far above the bottom. Every live
+// steer is exactly that shape: taskPrompt() appends the 272 character non-interactive notice after
+// a blank line, so a single-line follow-up message is a THREE line paste that always renders
+// literally over four or more rows. Captured on Claude Code 2.1.224 through a private pty:
+//
+//   ──────────────────────────────────────  <- opening rule
+//   ❯ also fix the spacing in the header    <- caret, depth 9 at 80 columns
+//     CC Relay orchestrator notice: this is a non-interactive run and no answers
+//     can be provided. Do not ask questions, request approval, or wait for user
+//     input. Make reasonable assumptions and proceed autonomously. If progress is
+//     impossible, report the blocker and end the run.
+//   ──────────────────────────────────────  <- closing rule
+//     user@host:/path
+//     ⏵⏵ bypass permissions on (shift+tab to cycle)
+//                                      /rc
+//
+// At depth 9 the old bound rejected that caret, `claudeComposerContent` returned found:false, and
+// every text-only live steer classified as 'unreadable', which sends no guarded submit action at
+// all. The invariant that actually holds is the other way round: the body above the closing rule
+// grows with the content, while the chrome BELOW the closing rule is small and stable.
 export const CLAUDE_COMPOSER_MAX_TAIL_DEPTH = 8;
+// Non-empty lines allowed between the composer's closing rule and the bottom of the screen. The
+// captured 2.1.224 frames draw three (working directory, status row, and the right-aligned hint),
+// and four when Claude adds a warning row. Six leaves margin for one more chrome row without
+// letting a rule buried in the transcript read as a composer edge.
+export const CLAUDE_COMPOSER_MAX_CHROME_LINES = 6;
+// How many trailing non-empty lines the COMPOSER scan considers. Dialog classification keeps the
+// tighter CLAUDE_SCREEN_TAIL_LINES window so quoted option rows deep in a transcript still cannot
+// match; only composer extraction needs to reach past a tall literal paste. Forty covers a
+// composer that fills a full 40 row terminal, and a taller one still fails closed as 'unreadable'.
+export const CLAUDE_COMPOSER_TAIL_LINES = 40;
 // Placeholder text an empty composer can draw, treated as empty rather than as unsubmitted junk.
 // VERIFIED EMPTY, not merely unfilled: captured 2.1.220 frames at 100x40, 60x30, and 44x30 all
 // render an empty composer as the bare caret with nothing after it, and so does a live
@@ -388,6 +426,10 @@ export const CLAUDE_COMPOSER_EMPTY_PLACEHOLDER_PATTERNS = [];
 // How much of the prompt's first line has to be visible for the composer to count as holding this
 // turn's paste. Long enough to be specific, short enough to survive the composer wrapping the line.
 export const CLAUDE_COMPOSER_ANCHOR_CHARS = 40;
+// Floor for the whitespace-stripped anchor comparison that covers a hard-wrapped long token. An
+// anchor made almost entirely of whitespace would strip down towards the empty string, and every
+// composer contains that, so the weaker comparison is refused below this length.
+export const CLAUDE_COMPOSER_MIN_STRIPPED_ANCHOR_CHARS = 24;
 
 // Terminal contents() is already plain text, so the escape-sequence strip is defensive only.
 // Both patterns are anchored on real control bytes, never on a bare bracket, because
@@ -447,24 +489,24 @@ export function isClaudeTrustDialogScreen(lines) {
 
 // The text currently sitting in the composer, or found:false when the composer box is not visible.
 // found:false is never treated as evidence of anything: the caller keeps its pre-change behavior.
-export function claudeComposerContent(text) {
-  const lines = claudeScreenTailLines(text);
+function composerFromLines(lines, { requireOpeningRule }) {
   for (let index = lines.length - 1; index >= 0; index -= 1) {
     const line = lines[index];
     if (!CLAUDE_COMPOSER_CARET_PATTERN.test(line)) continue;
     // `❯ 1. Resume from summary (recommended)` is a highlighted dialog row, not the composer.
     if (CLAUDE_DIALOG_OPTION_PATTERN.test(line)) continue;
-    // The caret also prefixes replayed user messages higher up the transcript. The composer box
-    // always sits at the bottom with only its closing rule and two or three chrome lines below it.
-    if (lines.length - index > CLAUDE_COMPOSER_MAX_TAIL_DEPTH) continue;
-    const next = lines[index + 1];
-    const closedByRule = typeof next === 'string' && CLAUDE_SCREEN_RULE_PATTERN.test(next);
-    const followedByChrome = lines
-      .slice(index + 1)
-      .some((value) => CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(value)));
-    // The composer is a caret line inside its own box. A bare caret line with neither the closing
-    // rule nor the status row under it is some other rendering, so it stays unrecognized.
-    if (!closedByRule && !followedByChrome) continue;
+    // The caret pattern also matches a plain `>`, which a literal multi-row paste can put at the
+    // start of a wrapped row: a quoted error, a markdown blockquote, a diff marker. The bottom-up
+    // scan would take that row as the caret and extract only the TAIL of the paste, whose text no
+    // longer contains the prompt's first line, so this turn's own held paste would classify as a
+    // foreign draft. On the opening-prompt path that answer clears the composer. Claude Code draws
+    // the composer's OPENING RULE directly above the caret on every captured 2.1.224 frame, so the
+    // first pass requires it. A rendering without any rule is still reachable through the second
+    // pass, which keeps every pre-existing frame working.
+    if (requireOpeningRule) {
+      const above = lines[index - 1];
+      if (typeof above !== 'string' || !CLAUDE_SCREEN_RULE_PATTERN.test(above)) continue;
+    }
     // The composer ends at its CLOSING rule, which is the last rule line below the caret, not the
     // first one. A multi-line prompt is allowed to contain its own separator line: stopping at the
     // first rule would silently truncate the text this file then classifies. Status chrome never
@@ -476,6 +518,35 @@ export function claudeComposerContent(text) {
         break;
       }
     }
+    // The caret also prefixes replayed user messages higher up the transcript. What separates the
+    // real composer from those is not how far the caret sits above the bottom, because a literal
+    // paste makes the body arbitrarily tall, but that its closing rule is right above the small
+    // stable block of chrome at the bottom of the screen. A replayed caret higher in the
+    // transcript has content, not chrome, under the next rule below it. The scan runs bottom-up,
+    // so the lowest qualifying caret, which is the live composer, always wins.
+    const boxed = closing > index;
+    if (boxed) {
+      if (lines.length - 1 - closing > CLAUDE_COMPOSER_MAX_CHROME_LINES) continue;
+    } else if (lines.length - index > CLAUDE_COMPOSER_MAX_TAIL_DEPTH) {
+      // Unboxed rendering keeps the original conservative depth bound.
+      continue;
+    }
+    const followedByChrome = lines
+      .slice(index + 1)
+      .some((value) => CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(value)));
+    // The composer is a caret line inside its own box, and the box edges alone are NOT proof of it.
+    // A scrolled-up transcript can end on exactly the box shape: a rule, a row that starts with a
+    // plain `>` because it quotes an error or a diff marker, prose, another rule, and few enough
+    // lines under that rule to clear the chrome bound. Every structural feature of a real composer
+    // is present there. Reading it as a composer holding foreign text answers 'junk', and on the
+    // opening-prompt path 'junk' sends the clearing Ctrl+C, which lands in the REAL composer
+    // further down the screen and destroys this turn's own held paste, turning a recoverable turn
+    // into a failed one. The bottom status row is the one feature the transcript shape does not
+    // have and every captured real frame does, so both the boxed and the unboxed acceptance
+    // require it. Verified against the pre-change code: that transcript shape used to be rejected,
+    // because the old scan demanded the closing rule DIRECTLY below the caret or this same status
+    // row, so requiring it here restores the property the widened box scan dropped.
+    if (!followedByChrome) continue;
     const body = [line.replace(CLAUDE_COMPOSER_CARET_PATTERN, '')];
     const end = closing > index ? closing : lines.length;
     for (let cursor = index + 1; cursor < end; cursor += 1) {
@@ -486,7 +557,14 @@ export function claudeComposerContent(text) {
     }
     return { found: true, text: body.join('\n').trim() };
   }
-  return { found: false, text: '' };
+  return null;
+}
+
+export function claudeComposerContent(text) {
+  const lines = claudeScreenTailLines(text, CLAUDE_COMPOSER_TAIL_LINES);
+  return composerFromLines(lines, { requireOpeningRule: true })
+    || composerFromLines(lines, { requireOpeningRule: false })
+    || { found: false, text: '' };
 }
 
 // 'composer' means CC Relay positively saw the input prompt and may type. 'resume-picker' and
@@ -500,8 +578,13 @@ export function classifyClaudeScreen(text) {
   // caret, so composer detection cannot be allowed to see them.
   if (isClaudeResumePickerScreen(lines)) return 'resume-picker';
   if (isClaudeTrustDialogScreen(lines)) return 'trust-dialog';
-  // Positive composer evidence: the bottom status row family, or the composer box itself. Either
-  // alone is enough, because the status row disappears in states the box survives and vice versa.
+  // Positive composer evidence: the bottom status row family, or the composer box itself. Read the
+  // disjunction as narrow, not wide. Since the box scan gained its status-row corroboration, the
+  // second term buys nothing for a BOXED composer: the chrome bound keeps the status row inside
+  // this tail too, so a box with no status row anywhere is 'unknown' on both terms. The term is
+  // retained for the unboxed rendering and for its shorter tail window. The narrowing is deliberate
+  // and fails closed, because the transcript shapes that imitate the box are exactly the ones with
+  // no status row.
   const statusRow = lines
     .some((line) => CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(line)));
   return statusRow || claudeComposerContent(text).found ? 'composer' : 'unknown';
@@ -513,6 +596,10 @@ export function classifyClaudeScreen(text) {
 // sanitizeInjectedPrompt only removes ESC bytes in place and can never add or drop a line.
 export function expectedPastePlaceholderLines(prompt) {
   return Math.max(0, String(prompt ?? '').split(/\r?\n/).length - 1);
+}
+
+function stripWhitespace(value) {
+  return String(value ?? '').replace(/\s+/g, '');
 }
 
 function promptComposerAnchor(prompt) {
@@ -553,6 +640,23 @@ export function claudeComposerState(screenText, prompt) {
   // chips render before it and are tolerated because the check is a containment test.
   const anchor = promptComposerAnchor(prompt);
   if (anchor && normalized.includes(anchor)) return 'held';
+  // Claude Code word-wraps the literal rendering, so joining the rows reproduces the original
+  // spacing and the containment test above normally succeeds. A single unbroken token longer than
+  // the composer width is the exception: it is hard-wrapped at the column boundary with no space,
+  // and rejoining the rows inserts one that the prompt never had. Comparing with all whitespace
+  // removed is the same forty character agreement against the same prompt, so it cannot admit a
+  // foreign draft, and it removes the false 'junk' that would otherwise clear a held paste.
+  // The stripped anchor must stay long enough to be distinctive on its own: an anchor that is
+  // mostly whitespace would otherwise degenerate towards the empty string, which every composer
+  // contains. Only a long unbroken token can reach this branch, and such an anchor is always the
+  // full forty characters.
+  const strippedAnchor = stripWhitespace(anchor);
+  if (
+    strippedAnchor.length >= CLAUDE_COMPOSER_MIN_STRIPPED_ANCHOR_CHARS
+    && stripWhitespace(normalized).includes(strippedAnchor)
+  ) {
+    return 'held';
+  }
   if (CLAUDE_COMPOSER_EMPTY_PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return 'empty';
   }
@@ -683,10 +787,18 @@ export class ClaudeTerminalExecutor {
     inactivityCeilingMs = turnCeilingMs,
     maxPromptBytes = 100_000,
     // A live update is acknowledged only by its exact UserPromptSubmit hook or transcript
-    // record. The first pause gives Claude's multiline paste widget time to settle before one
-    // guarded Return; the outer bound keeps an ambiguous terminal delivery from hanging HTTP.
+    // record. The first pause gives Claude's multiline paste widget time to settle. A held
+    // update then reuses the bounded submit schedule above, because task 129 proved that one
+    // guarded Return can be swallowed for an image-bearing update just as it can for an opening
+    // prompt. The outer bound keeps an ambiguous terminal delivery from hanging HTTP.
     steerSubmitNudgeMs = 6_000,
-    steerAcceptanceTimeoutMs = 25_000,
+    steerAcceptanceTimeoutMs = submissionTimeoutMs,
+    // A composer read that proves nothing, because osascript failed or the frame was caught
+    // mid-redraw, is retried on this short gap instead of the full action backoff, so a transient
+    // read can never retire the recovery window for a paste that is held the whole time. Bounded
+    // by steerRecheckLimit, which keeps the loop finite independently of the acceptance deadline.
+    steerRecheckMs = 1_500,
+    steerRecheckLimit = 8,
     statRetryAttempts = 3,
     statRetryDelayMs = 100,
   } = {}) {
@@ -730,7 +842,13 @@ export class ClaudeTerminalExecutor {
     this.inactivityCeilingMs = inactivityCeilingMs;
     this.maxPromptBytes = maxPromptBytes;
     this.steerSubmitNudgeMs = steerSubmitNudgeMs;
+    this.steerRecheckMs = steerRecheckMs;
+    this.steerRecheckLimit = steerRecheckLimit;
     this.steerAcceptanceTimeoutMs = steerAcceptanceTimeoutMs;
+    this.steerSubmitConfirmMs = Math.min(
+      submitConfirmMs,
+      Math.max(1, Math.floor(steerAcceptanceTimeoutMs / 5)),
+    );
     this.statRetryAttempts = statRetryAttempts;
     this.statRetryDelayMs = statRetryDelayMs;
   }
@@ -1595,13 +1713,21 @@ export class ClaudeTerminalExecutor {
 
   async deliverActiveSteer(task, active, terminal, request) {
     const sessionName = task.thread_name || task.thread_id;
-    const fail = (message, { uncertain = false } = {}) => new ClaudeExecutionError(
-      message,
-      {
-        deliveryUncertain: uncertain,
-        retryable: false,
-      },
-    );
+    const fail = (message, { uncertain = false } = {}) => {
+      const error = new ClaudeExecutionError(
+        message,
+        {
+          deliveryUncertain: uncertain,
+          retryable: false,
+        },
+      );
+      // Additive diagnostic detail only. Nothing branches on these; they exist so a live update
+      // that was never confirmed can be explained from relay-diagnostics.jsonl without the
+      // terminal, which is what made the text-only held-paste defect expensive to find.
+      error.submitAttempts = request.submitAttempts;
+      error.composerStates = [...request.composerStates];
+      return error;
+    };
     const waitForAcknowledgement = async (milliseconds) => {
       if (request.acknowledged || request.closedError) return;
       await Promise.race([
@@ -1612,6 +1738,17 @@ export class ClaudeTerminalExecutor {
     const accepted = () => {
       if (request.closedError) throw request.closedError;
       return request.acknowledged;
+    };
+    let acceptanceDeadlineAt = null;
+    const acceptanceRemainingMs = () => (
+      acceptanceDeadlineAt === null
+        ? this.steerAcceptanceTimeoutMs
+        : Math.max(0, acceptanceDeadlineAt - this.now())
+    );
+    const waitWithinAcceptance = async (milliseconds) => {
+      const remaining = acceptanceRemainingMs();
+      if (remaining <= 0) return;
+      await waitForAcknowledgement(Math.min(Math.max(0, milliseconds), remaining));
     };
 
     if (active.cancelRequested) {
@@ -1669,54 +1806,119 @@ export class ClaudeTerminalExecutor {
         { uncertain: true },
       );
     }
+    acceptanceDeadlineAt = this.now() + this.steerAcceptanceTimeoutMs;
 
-    await waitForAcknowledgement(this.steerSubmitNudgeMs);
+    await waitWithinAcceptance(this.steerSubmitNudgeMs);
     if (accepted()) return request.result();
 
-    // Claude collapses every normal Relay message into a multiline paste widget. If the
-    // appended Return was swallowed, send one separate Return only after fresh process,
-    // busy-state, screen, and exact-held-paste checks.
-    try {
-      verified = await this.verifyTerminalIdentity(task, active, activeTerminal);
-    } catch (error) {
-      await waitForAcknowledgement(this.steerAcceptanceTimeoutMs - this.steerSubmitNudgeMs);
-      if (accepted()) return request.result();
-      throw fail(
-        `CC Relay typed the live update into the ${sessionName} terminal but could not re-verify that terminal before submitting it. The message may have been delivered, so it was not sent again. ${error.message}`,
-        { uncertain: true },
-      );
-    }
-    if (
-      verified?.session
-      && verified?.terminal
-      && verified.session.rawStatus === 'busy'
-      && !active.cancelRequested
+    // Claude collapses every normal Relay message into a multiline paste widget. Task 129 left
+    // an image chip and a collapsed paste in the composer after the single guarded Return was
+    // swallowed. Re-check the exact terminal and exact held paste before every bounded attempt.
+    // If any earlier Return landed, either exact delivery evidence resolves this request or the
+    // next screen is no longer held, so another Return is never sent blindly.
+    let recoveryCheck = 0;
+    let rechecks = 0;
+    let lastComposerState = 'unreadable';
+    while (
+      acceptanceRemainingMs() > 0
+      && request.submitAttempts < this.maxSubmitAttempts
     ) {
+      try {
+        verified = await this.verifyTerminalIdentity(task, active, activeTerminal);
+      } catch (error) {
+        await waitWithinAcceptance(acceptanceRemainingMs());
+        if (accepted()) return request.result();
+        throw fail(
+          `CC Relay typed the live update into the ${sessionName} terminal but could not re-verify that terminal before submitting it. The message may have been delivered, so it was not sent again. ${error.message}`,
+          { uncertain: true },
+        );
+      }
+      if (accepted()) return request.result();
+      // The response that was active at injection can finish before a later recovery attempt.
+      // The pending request keeps this watcher from finalizing, and the exact held-paste check
+      // below proves what Return would submit, so an idle status is safe after injection. Requiring
+      // busy here would strand the update at precisely that response boundary.
+      if (
+        !verified?.session
+        || !verified?.terminal
+        || !['busy', 'idle'].includes(verified.session.rawStatus)
+        || active.cancelRequested
+      ) {
+        break;
+      }
+
       activeTerminal = verified.terminal;
       const heldScreen = await this.inspectTerminalScreen(activeTerminal.terminalWindowId);
-      if (
-        heldScreen.ok
-        && heldScreen.classification === 'composer'
-        && claudeComposerState(heldScreen.text, request.deliveredPrompt) === 'held'
-      ) {
+      if (accepted()) return request.result();
+      if (active.cancelRequested) break;
+      lastComposerState = heldScreen.ok && heldScreen.classification === 'composer'
+        ? claudeComposerState(heldScreen.text, request.deliveredPrompt)
+        : 'unreadable';
+      // Every classification the schedule acted on, in order, so the next incident is diagnosable
+      // from relay-diagnostics.jsonl alone without reading the terminal.
+      request.composerStates.push(lastComposerState);
+      if (lastComposerState === 'held') {
+        // Keep a real confirmation window after every action. Short deterministic tests scale
+        // this margin with their shortened outer bound; production retains the full 15 seconds.
+        if (acceptanceRemainingMs() < this.steerSubmitConfirmMs) break;
+        request.submitAttempts += 1;
+        request.submitAttempted = true;
         try {
           await this.submit(activeTerminal.terminalWindowId);
-          request.submitAttempted = true;
         } catch (error) {
-          await waitForAcknowledgement(this.steerAcceptanceTimeoutMs - this.steerSubmitNudgeMs);
+          await waitWithinAcceptance(acceptanceRemainingMs());
           if (accepted()) return request.result();
           throw fail(
             `CC Relay typed the live update into the ${sessionName} terminal but could not confirm its guarded submit action: ${error.message}. The message may have been delivered, so it was not sent again.`,
             { uncertain: true },
           );
         }
+      } else if (lastComposerState === 'junk') {
+        // The operator or Claude replaced the held paste with different text. Never submit it.
+        break;
       }
+
+      recoveryCheck += 1;
+      if (
+        request.submitAttempts >= this.maxSubmitAttempts
+        || acceptanceRemainingMs() <= 0
+      ) {
+        break;
+      }
+      // An inconclusive read proves nothing and sends nothing, so it must not consume a slot of
+      // the action schedule. A transient osascript failure or a frame caught mid-redraw used to
+      // grow the gap to the next real attempt exactly as if a Return had been sent, which could
+      // retire the whole window without ever acting on a paste that was held the entire time.
+      // Re-read quickly instead, bounded by steerRecheckLimit so it can never spin, and keep the
+      // backoff itself driven by actions actually sent.
+      const inconclusive = lastComposerState === 'unreadable';
+      if (inconclusive && rechecks < this.steerRecheckLimit) {
+        rechecks += 1;
+        await waitWithinAcceptance(this.steerRecheckMs);
+        if (accepted()) return request.result();
+        continue;
+      }
+      const retryDelay = Math.max(
+        1,
+        this.submitRetryMs
+          + this.submitRetryBackoffMs * Math.max(0, request.submitAttempts - 1),
+      );
+      await waitWithinAcceptance(retryDelay);
+      if (accepted()) return request.result();
     }
 
-    await waitForAcknowledgement(this.steerAcceptanceTimeoutMs - this.steerSubmitNudgeMs);
+    await waitWithinAcceptance(acceptanceRemainingMs());
     if (accepted()) return request.result();
+    const attempts = request.submitAttempts === 1
+      ? ' after 1 guarded submit action'
+      : (request.submitAttempts > 1
+        ? ` after ${request.submitAttempts} guarded submit actions`
+        : '');
+    const held = lastComposerState === 'held'
+      ? ' The exact update may still be held in Claude\'s composer.'
+      : '';
     throw fail(
-      `CC Relay typed the live update into the ${sessionName} terminal but did not receive exact delivery evidence within ${inactivityLimitLabel(this.steerAcceptanceTimeoutMs)}. The message may still be queued in Claude, so it was not sent again.`,
+      `CC Relay typed the live update into the ${sessionName} terminal but did not receive exact delivery evidence${attempts} within ${inactivityLimitLabel(this.steerAcceptanceTimeoutMs)}.${held} The message may still be queued in Claude, so it was not sent again.`,
       { uncertain: true },
     );
   }
@@ -1750,6 +1952,7 @@ export class ClaudeTerminalExecutor {
       sessionId,
       reportedSessionId: null,
       error: null,
+      pendingBackgroundAgentCount: null,
     };
     // A turn starts only after the exact injected prompt appears in UserPromptSubmit or in a
     // top-level transcript user record. Task 15 showed why transcript bytes alone are unsafe:
@@ -1831,6 +2034,12 @@ export class ClaudeTerminalExecutor {
     let current = null;
     let busy = false;
     let sessionMissing = false;
+    let hookBackgroundTasks = [];
+    let hookSessionCrons = [];
+    let backgroundReplyObserved = false;
+    let freshFinalRequired = false;
+    let backgroundWorkPendingAnnounced = false;
+    let backgroundWorkFinishedAnnounced = false;
     const hookItemEvents = new Set();
     const hookMessages = new Map();
     const hookFinalMessageTexts = [];
@@ -1842,6 +2051,119 @@ export class ClaudeTerminalExecutor {
     let steeringClosed = false;
     let steeringSequence = 0;
     let steeringTail = Promise.resolve();
+
+    const backgroundWorkState = () => {
+      const entries = liveSubAgents(context);
+      const pendingCount = context.pendingBackgroundAgentCount;
+      return {
+        entries,
+        pendingCount,
+        backgroundTasks: hookBackgroundTasks,
+        sessionCrons: hookSessionCrons,
+        pending: (
+          (Number.isFinite(pendingCount) && pendingCount > 0)
+          || entries.length > 0
+          || hookBackgroundTasks.length > 0
+          || hookSessionCrons.length > 0
+        ),
+      };
+    };
+    const backgroundWorkPending = () => backgroundWorkState().pending;
+    const backgroundWorkCount = (state = backgroundWorkState()) => {
+      if (Number.isFinite(state.pendingCount) && state.pendingCount > 0) {
+        return state.pendingCount;
+      }
+      const hookCount = state.backgroundTasks.length + state.sessionCrons.length;
+      return Math.max(hookCount, state.entries.length);
+    };
+    const backgroundWorkDetail = (state = backgroundWorkState()) => (
+      backgroundWorkSummary(state) || 'tracked background work'
+    );
+    const invalidateFinality = ({ replyObserved = false } = {}) => {
+      if (sawFinal || replyObserved) {
+        freshFinalRequired = true;
+        backgroundReplyObserved = true;
+      }
+      sawFinal = false;
+      finalPromptId = null;
+      finalText = '';
+      lastText = '';
+      idleObservations = 0;
+    };
+    const emitBackgroundWorkFinished = () => {
+      if (!backgroundWorkPendingAnnounced || backgroundWorkFinishedAnnounced) return;
+      backgroundWorkFinishedAnnounced = true;
+      onEvent({
+        event: {
+          type: 'claude/progress',
+          provider: 'claude',
+          sessionId,
+          deliveryState: 'background-work-finished',
+          backgroundWorkCount: 0,
+        },
+        message: `All tracked background work in ${task.thread_name || sessionId} finished. CC Relay is waiting for Claude's consolidated final response.`,
+      });
+    };
+    const reconcileBackgroundWork = (before) => {
+      const after = backgroundWorkState();
+      const discoveredPending = !before.pending && after.pending;
+      const trackedFinish = after.entries.length < before.entries.length;
+      const countCleared = Number.isFinite(before.pendingCount)
+        && before.pendingCount > 0
+        && !(Number.isFinite(after.pendingCount) && after.pendingCount > 0);
+      const hookWorkCleared = (
+        before.backgroundTasks.length > 0 && after.backgroundTasks.length === 0
+      ) || (
+        before.sessionCrons.length > 0 && after.sessionCrons.length === 0
+      );
+      if (
+        (discoveredPending || trackedFinish || countCleared || hookWorkCleared)
+        && (sawFinal || freshFinalRequired)
+      ) {
+        invalidateFinality({ replyObserved: sawFinal || backgroundReplyObserved });
+      }
+      if (before.pending && !after.pending) emitBackgroundWorkFinished();
+      return after;
+    };
+    const consumeWithBackgroundTracking = (message) => {
+      const before = backgroundWorkState();
+      const emitted = consumeClaudeStreamMessage(message, context);
+      reconcileBackgroundWork(before);
+      return emitted;
+    };
+    const recordFinalSignal = (text, promptId = null) => {
+      if (backgroundWorkPending()) {
+        sawFinal = false;
+        finalPromptId = null;
+        freshFinalRequired = true;
+        backgroundReplyObserved = true;
+        idleObservations = 0;
+        if (text) finalText = text;
+        return;
+      }
+      sawFinal = true;
+      finalPromptId = promptId;
+      freshFinalRequired = false;
+      backgroundReplyObserved = false;
+      if (text) finalText = text;
+    };
+    const emitBackgroundWorkPending = (state = backgroundWorkState()) => {
+      if (backgroundWorkPendingAnnounced) return;
+      backgroundWorkPendingAnnounced = true;
+      onEvent({
+        event: {
+          type: 'claude/progress',
+          provider: 'claude',
+          sessionId,
+          deliveryState: 'background-work-pending',
+          backgroundWorkCount: backgroundWorkCount(state),
+          pendingBackgroundAgentCount: Number.isFinite(state.pendingCount)
+            ? state.pendingCount
+            : null,
+        },
+        message: `Claude finished a reply in ${task.thread_name || sessionId} but ${backgroundWorkDetail(state)} still running. CC Relay is keeping this task running and the terminal open until that work finishes and Claude sends a final consolidated response.`,
+      });
+    };
 
     const closeSteering = () => {
       if (steeringClosed) return;
@@ -1980,6 +2302,10 @@ export class ClaudeTerminalExecutor {
         evidence: null,
         injectionStarted: false,
         submitAttempted: false,
+        submitAttempts: 0,
+        // Ordered composer classification for every recovery pass that ran, so a held update that
+        // is never confirmed can be diagnosed from the diagnostic log alone.
+        composerStates: [],
         transcriptAnchored: false,
         closedError: null,
         result: () => ({
@@ -1989,6 +2315,8 @@ export class ClaudeTerminalExecutor {
           clientUserMessageId,
           promptSubmissionEvidence: request.evidence,
           submitAttempted: request.submitAttempted,
+          submitAttempts: request.submitAttempts,
+          composerStates: [...request.composerStates],
         }),
       };
       pendingSteers.add(request);
@@ -2132,7 +2460,7 @@ export class ClaudeTerminalExecutor {
     };
 
     const emitHookStreamMessage = (message) => {
-      for (const emitted of consumeClaudeStreamMessage(message, context)) {
+      for (const emitted of consumeWithBackgroundTracking(message)) {
         const key = itemEventKey(emitted);
         if (key) {
           if (hookItemEvents.has(key)) continue;
@@ -2344,6 +2672,14 @@ export class ClaudeTerminalExecutor {
       }
 
       if (eventName === 'Stop') {
+        const beforeBackgroundWork = backgroundWorkState();
+        hookBackgroundTasks = Array.isArray(payload.background_tasks)
+          ? payload.background_tasks
+          : [];
+        hookSessionCrons = Array.isArray(payload.session_crons)
+          ? payload.session_crons
+          : [];
+        reconcileBackgroundWork(beforeBackgroundWork);
         const text = typeof payload.last_assistant_message === 'string'
           ? payload.last_assistant_message.trim()
           : '';
@@ -2368,17 +2704,7 @@ export class ClaudeTerminalExecutor {
           }
           rememberFinalHookText(text);
         }
-        const backgroundTasks = Array.isArray(payload.background_tasks)
-          ? payload.background_tasks
-          : [];
-        const sessionCrons = Array.isArray(payload.session_crons)
-          ? payload.session_crons
-          : [];
-        if (backgroundTasks.length === 0 && sessionCrons.length === 0) {
-          sawFinal = true;
-          finalPromptId = payloadPromptId || hookPromptId;
-          if (text) finalText = text;
-        }
+        recordFinalSignal(text, payloadPromptId || hookPromptId);
       }
     };
 
@@ -2539,7 +2865,7 @@ export class ClaudeTerminalExecutor {
           if (pendingInputRequests.size === 0) emitInputResumed();
         }
 
-        for (const emitted of consumeClaudeStreamMessage(record, context)) {
+        for (const emitted of consumeWithBackgroundTracking(record)) {
           const key = itemEventKey(emitted);
           if (key && hookItemEvents.has(key)) continue;
           if (emitted?.event?.type === 'claude/message') {
@@ -2559,9 +2885,7 @@ export class ClaudeTerminalExecutor {
             isTurnFinalAssistantRecord(record)
             && unanchoredSteers.size === 0
           ) {
-            sawFinal = true;
-            finalPromptId = null;
-            if (text) finalText = text;
+            recordFinalSignal(text);
           }
         }
       }
@@ -2622,8 +2946,12 @@ export class ClaudeTerminalExecutor {
         // exactly like a dead one, so an abandoned question still releases the task and session
         // within the same bound. Failures at or after injection are never auto-retried: the
         // prompt already ran.
+        const backgroundState = backgroundWorkState();
+        const pendingNote = backgroundState.pending
+          ? ` ${backgroundWorkDetail(backgroundState)} never reported finishing. Closing this terminal stops that work; check the terminal and the workspace, and prefer Continue session over Retry because Retry re-sends the original prompt.`
+          : '';
         throw new ClaudeExecutionError(
-          `The Claude terminal turn in ${task.thread_name || sessionId} showed no activity for ${inactivityLimitLabel(this.inactivityCeilingMs)}, so CC Relay stopped watching it. Check the terminal; retry manually if needed.`,
+          `The Claude terminal turn in ${task.thread_name || sessionId} showed no activity for ${inactivityLimitLabel(this.inactivityCeilingMs)}, so CC Relay stopped watching it. Check the terminal; retry manually if needed.${pendingNote}`,
           { retryable: false },
         );
       }
@@ -2688,11 +3016,15 @@ export class ClaudeTerminalExecutor {
           missing += 1;
           if (missing >= this.sessionMissingGrace) {
             drain();
-            if (sawFinal) {
+            if (sawFinal && !backgroundWorkPending()) {
               return this.finalize(task, finalText || lastText);
             }
+            const backgroundState = backgroundWorkState();
+            const pendingNote = backgroundState.pending
+              ? ` ${backgroundWorkDetail(backgroundState)} had not finished when the terminal closed.`
+              : '';
             throw new ClaudeExecutionError(
-              `The Claude terminal for ${task.thread_name || sessionId} closed before the turn produced a final response. The task may be incomplete; retry manually if needed.`,
+              `The Claude terminal for ${task.thread_name || sessionId} closed before the turn produced a final response.${pendingNote} The task may be incomplete; retry manually if needed.`,
               { retryable: false },
             );
           }
@@ -3159,7 +3491,7 @@ export class ClaudeTerminalExecutor {
         if (promptSubmitted && !busy) {
           idleObservations += 1;
           if (
-            sawFinal
+            (sawFinal || (backgroundReplyObserved && backgroundWorkPending()))
             && pendingSteers.size === 0
             && idleObservations >= this.finalIdleObservations
           ) {
@@ -3167,7 +3499,12 @@ export class ClaudeTerminalExecutor {
             // thinking-only record can carry a terminal stop reason before the text record
             // flushes, so give the final text a chance to arrive before recording the result.
             drain();
-            return this.finalize(task, finalText || lastText);
+            const backgroundState = backgroundWorkState();
+            if (backgroundState.pending) {
+              emitBackgroundWorkPending(backgroundState);
+            } else if (sawFinal && pendingSteers.size === 0) {
+              return this.finalize(task, finalText || lastText);
+            }
           }
           if (
             !awaitingInput
@@ -3200,6 +3537,7 @@ export class ClaudeTerminalExecutor {
             }
           } else if (
             pendingInputRequests.size === 0
+            && !freshFinalRequired
             && !unverifiedIdleAnnounced
             && idleObservations >= this.idleGraceObservations
           ) {

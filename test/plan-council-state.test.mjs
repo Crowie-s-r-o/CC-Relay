@@ -20,7 +20,7 @@ const catalogs = {
   }],
 };
 
-test('Execute Plan council preserves provider settings while switching the author order', () => {
+test('Execute Plan council preserves Fable while switching the author order', () => {
   const claudeFirst = normalizePlanCouncilSettings({
     enabled: true,
     claudeModel: 'fable',

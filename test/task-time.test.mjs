@@ -15,6 +15,7 @@ test('task duration formats live and completed execution time', () => {
 test('task duration labels distinguish running, finished, and waiting tasks', () => {
   const now = new Date('2026-07-16T10:00:12.000Z').getTime();
   assert.equal(taskDurationLabel({ status: 'running', started_at: '2026-07-16T10:00:00.000Z' }, now), 'Running 12s');
+  assert.equal(taskDurationLabel({ status: 'open', started_at: '2026-07-16T10:00:00.000Z' }, now), 'Open 12s');
   assert.equal(taskDurationLabel({
     status: 'complete',
     started_at: '2026-07-16T10:00:00.000Z',

@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { dirname } from 'node:path';
+import { providerCommandInvocation, terminateChildProcess } from './claude-binary.mjs';
+import { normalizeClaudeModel } from './model-catalog.mjs';
 import { withRelayNonInteractiveInstruction } from './relay-prompt.mjs';
 
 export class ClaudeRunnerError extends Error {
@@ -66,9 +68,16 @@ export function parseClaudeResult(output) {
 }
 
 export class ClaudeRunner {
-  constructor({ command = 'claude', spawnProcess = spawn } = {}) {
+  constructor({
+    command = 'claude',
+    spawnProcess = spawn,
+    platform = process.platform,
+    terminateProcess = terminateChildProcess,
+  } = {}) {
     this.command = command;
     this.spawnProcess = spawnProcess;
+    this.platform = platform;
+    this.terminateProcess = terminateProcess;
     // Stages are tracked per owner, not in one global slot. A single slot meant two
     // concurrent stages could not coexist (queue.planAhead starts one forward-planning
     // preparation per project, so two projects with Plan council enabled collided), and
@@ -99,6 +108,7 @@ export class ClaudeRunner {
       throw new ClaudeRunnerError('Claude already has an active CC Relay plan stage for this task.');
     }
     const attachmentDirectories = [...new Set(attachmentPaths.map((path) => dirname(path)))];
+    const selectedModel = normalizeClaudeModel(model);
     const args = [
       '--print',
       '--safe-mode',
@@ -110,15 +120,17 @@ export class ClaudeRunner {
       'Read,Glob,Grep',
       ...attachmentDirectories.flatMap((directory) => ['--add-dir', directory]),
       '--model',
-      model,
+      selectedModel,
       '--effort',
       effort,
       '--output-format',
       'json',
     ];
-    const child = this.spawnProcess(this.command, args, {
+    const invocation = providerCommandInvocation(this.command, args, { platform: this.platform });
+    const child = this.spawnProcess(invocation.command, invocation.args, {
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...invocation.options,
     });
     let stdout = '';
     let stderrBuffer = '';
@@ -126,8 +138,8 @@ export class ClaudeRunner {
     const active = { child, cancelRequested: false, owner: ownerKey };
     this.stages.set(ownerKey, active);
     onEvent({
-      event: { type: 'claude/started', model, effort },
-      message: `Claude started with ${model} at ${effort} effort.`,
+      event: { type: 'claude/started', model: selectedModel, effort },
+      message: `Claude started with ${selectedModel} at ${effort} effort.`,
     });
 
     child.stdout.setEncoding('utf8');
@@ -176,8 +188,8 @@ export class ClaudeRunner {
         try {
           const result = parseClaudeResult(stdout);
           onEvent({
-            event: { type: 'claude/completed', model: result.model || model, effort },
-            message: `Claude completed with ${result.model || model}.`,
+            event: { type: 'claude/completed', model: result.model || selectedModel, effort },
+            message: `Claude completed with ${result.model || selectedModel}.`,
           });
           resolve(result);
         } catch (error) {
@@ -196,7 +208,7 @@ export class ClaudeRunner {
       let cancelled = false;
       for (const stage of [...this.stages.values()]) {
         stage.cancelRequested = true;
-        stage.child.kill('SIGTERM');
+        this.stopStage(stage);
         cancelled = true;
       }
       return cancelled;
@@ -204,7 +216,13 @@ export class ClaudeRunner {
     const stage = this.stages.get(String(owner));
     if (!stage) return false;
     stage.cancelRequested = true;
-    stage.child.kill('SIGTERM');
+    this.stopStage(stage);
     return true;
+  }
+
+  // On Windows the spawned child is cmd.exe wrapping the claude shim, so killing the direct
+  // child would leave Claude running against the user's workspace after a cancel.
+  stopStage(stage) {
+    return this.terminateProcess(stage.child, { signal: 'SIGTERM', platform: this.platform });
   }
 }

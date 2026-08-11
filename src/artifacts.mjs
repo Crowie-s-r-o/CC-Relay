@@ -8,7 +8,30 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import path, { dirname, join, resolve } from 'node:path';
+
+/**
+ * True when `candidate` is a real descendant of `root`.
+ *
+ * Containment guards must never be written as `candidate.startsWith(`${root}/`)`. A resolved
+ * path uses the platform separator, so on Windows every such guard compares a `\` path against
+ * a `/` prefix and rejects everything: the whole UI 404s and no task image can be served.
+ * `path.relative` is separator-correct on both platforms, and because `resolve` has already
+ * folded `..` and both separator forms before the comparison, an escaping candidate always
+ * surfaces here as a leading `..` segment or as an absolute path on another Windows drive.
+ *
+ * `root` itself is deliberately not inside itself, matching the guard this replaces.
+ * A sibling directory whose name merely starts with the root's name (`public` and
+ * `publicfoo`) is rejected, while a legitimate child whose own name starts with dots
+ * (`..foo`) is kept, which a naive `startsWith('..')` test would lose.
+ *
+ * `pathModule` is injectable so the win32 semantics can be proven from any host platform.
+ */
+export function isPathInside(root, candidate, pathModule = path) {
+  const relativePath = pathModule.relative(root, candidate);
+  if (!relativePath || pathModule.isAbsolute(relativePath)) return false;
+  return relativePath !== '..' && !relativePath.startsWith(`..${pathModule.sep}`);
+}
 
 function writeFileAtomically(filePath, content) {
   const temporaryPath = `${filePath}.${randomUUID()}.tmp`;
@@ -69,7 +92,7 @@ export class ArtifactStore {
       ? `Mode: plan council\n\nRoute: ${task.author_provider} → ${task.reviewer_provider} → ${task.author_provider}\n\nAuthor: ${task.author_provider} / ${task.author_model} / ${task.author_effort}\n\nClaude terminal: \`${task.author_thread_id || 'unassigned'}\` / ${task.author_thread_name || 'unassigned'}\n\nReviewer: ${task.reviewer_provider} / ${task.reviewer_model} / ${task.reviewer_effort}`
       : task.mode === 'turbo'
         ? `Mode: forward-planning turbo\n\nPlanner: ${task.turbo?.plannerModel} / ${task.turbo?.plannerEffort}\n\nWorkers: ${task.turbo?.workerCount} / ${task.turbo?.workerModel} / ${task.turbo?.workerEffort}${(task.turbo?.council?.enabled || task.turbo?.councilEnabled) ? `\n\nCouncil: ${(task.turbo?.council?.order || ['codex', 'claude']).map((provider) => provider === 'claude' ? 'Claude' : 'Codex').join(' → ')}\nAuthor: ${task.turbo?.council?.authorModel || 'configured model'} / ${task.turbo?.council?.authorEffort || 'model default'}\nReviewer: ${task.turbo?.council?.reviewerModel || 'configured model'} / ${task.turbo?.council?.reviewerEffort || 'model default'}\nCouncil status: pending` : ''}`
-      : `Mode: execute\n\nProvider: ${task.provider || 'codex'}\n\nModel: ${task.model || 'session default'}\n\nEffort: ${task.effort || 'model default'}\n\nContext: ${task.terminal_lifecycle === 'disposable'
+      : `Mode: execute\n\nProvider: ${task.provider || 'codex'}\n\nModel: ${task.model || 'session default'}\n\nEffort: ${task.effort || 'model default'}\n\nCompletion: ${task.manual_completion ? 'manual terminal session' : 'automatic'}\n\nContext: ${task.terminal_lifecycle === 'disposable'
         ? task.continued_from_task_id ? 'launch disposable terminal and resume saved conversation' : 'launch fresh disposable terminal'
         : 'resume selected session'}`;
     const attachments = Array.isArray(task.attachments) ? task.attachments : [];

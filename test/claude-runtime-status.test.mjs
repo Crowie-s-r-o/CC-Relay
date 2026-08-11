@@ -51,6 +51,34 @@ test('Claude status probes the resolved absolute binary path', () => {
   assert.deepEqual(commands, ['/Users/tester/.local/bin/claude', '/Users/tester/.local/bin/claude']);
 });
 
+test('Claude status probes the Windows shim through cmd.exe instead of reporting it missing', () => {
+  const invocations = [];
+  const status = readClaudeRuntimeStatus({
+    platform: 'win32',
+    command: 'C:\\Users\\dev\\AppData\\Roaming\\npm\\claude.cmd',
+    run: (command, args, options) => {
+      invocations.push({ command, args, options });
+      return args[3].includes('--version')
+        ? '2.1.218 (Claude Code)\n'
+        : JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', subscriptionType: 'max' });
+    },
+  });
+
+  // A direct .cmd probe fails on Windows, which reported an installed Claude as unavailable
+  // and blocked every readiness gate in the interface.
+  assert.equal(status.available, true);
+  assert.equal(status.authenticated, true);
+  assert.equal(invocations.length, 2);
+  for (const invocation of invocations) {
+    assert.equal(invocation.command, 'cmd.exe');
+    assert.ok(invocation.args[3].includes('claude.cmd'));
+    assert.equal(invocation.options.windowsVerbatimArguments, true);
+    assert.equal(invocation.options.windowsHide, true);
+  }
+  // The auth probe keeps its own stdio override alongside the platform options.
+  assert.deepEqual(invocations[1].options.stdio, ['ignore', 'pipe', 'pipe']);
+});
+
 test('Claude status distinguishes a missing executable from a transient probe failure', () => {
   const missing = readClaudeRuntimeStatus({
     run: () => {

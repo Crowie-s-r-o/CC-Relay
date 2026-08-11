@@ -63,6 +63,71 @@ test('continuation rejects multi-provider tasks and mismatched sessions', () => 
   }), /different workspace/i);
 });
 
+test('continuation accepts a Windows case-variant workspace and still rejects a different one', () => {
+  const windowsTask = { ...sourceTask, repo_path: 'C:\\Repo\\Project' };
+  const windowsThread = { ...thread, cwd: 'c:\\repo\\project' };
+
+  // The exact shape of the guard this replaces. `claude agents --json` and the Codex app-server
+  // report whatever case the shell recorded, so the verbatim comparison rejects the very
+  // terminal the task is bound to.
+  assert.notEqual(windowsThread.cwd, windowsTask.repo_path);
+  const continuation = buildSessionFollowUp({
+    sourceTask: windowsTask,
+    prompt: 'Continue',
+    thread: windowsThread,
+    execution: { model: 'sol', effort: 'high' },
+    platform: 'win32',
+  });
+  assert.equal(continuation.sessionFollowUp, true);
+  assert.equal(continuation.repo_path, 'C:\\Repo\\Project');
+
+  // Case folding must not turn a genuinely different workspace into a match on Windows.
+  assert.throws(() => buildSessionFollowUp({
+    sourceTask: windowsTask,
+    prompt: 'Continue',
+    thread: { ...thread, cwd: 'c:\\repo\\other' },
+    execution: {},
+    platform: 'win32',
+  }), /different workspace/i);
+  // A missing cwd stays a workspace mismatch on Windows, not a resolve() TypeError.
+  assert.throws(() => buildSessionFollowUp({
+    sourceTask: windowsTask,
+    prompt: 'Continue',
+    thread: { ...thread, cwd: undefined },
+    execution: {},
+    platform: 'win32',
+  }), /different workspace/i);
+});
+
+test('continuation keeps the exact posix comparison, where case is significant', () => {
+  // Same two paths the win32 case accepts, decided on posix: still a mismatch.
+  assert.throws(() => buildSessionFollowUp({
+    sourceTask: { ...sourceTask, repo_path: '/repo/Project' },
+    prompt: 'Continue',
+    thread: { ...thread, cwd: '/repo/project' },
+    execution: {},
+    platform: 'darwin',
+  }), /different workspace/i);
+  assert.throws(() => buildSessionFollowUp({
+    sourceTask: { ...sourceTask, repo_path: '/repo/project' },
+    prompt: 'Continue',
+    thread: { ...thread, cwd: '/repo/PROJECT' },
+    execution: {},
+    platform: 'linux',
+  }), /different workspace/i);
+  // And an exact posix match is still accepted.
+  assert.equal(
+    buildSessionFollowUp({
+      sourceTask,
+      prompt: 'Continue',
+      thread,
+      execution: { model: 'sol', effort: 'high' },
+      platform: 'darwin',
+    }).sessionFollowUp,
+    true,
+  );
+});
+
 test('continuation carries only the decoded images for the new turn', () => {
   const attachments = [{
     name: 'follow-up.png',

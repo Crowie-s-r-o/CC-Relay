@@ -1,5 +1,6 @@
 import { execFile as execFileCallback, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
+import { providerCommandInvocation } from './claude-binary.mjs';
 
 const execFile = promisify(execFileCallback);
 
@@ -71,18 +72,27 @@ function fromAuth(auth, version) {
   };
 }
 
-export function readClaudeRuntimeStatus({ run = execFileSync, command = 'claude' } = {}) {
+export function readClaudeRuntimeStatus({
+  run = execFileSync,
+  command = 'claude',
+  platform = process.platform,
+} = {}) {
+  // The resolved Windows binary is normally the `claude.cmd` shim, which cannot be executed
+  // directly. Probing it that way reports Claude as not installed no matter what is installed.
+  const invoke = (args, options) => {
+    const invocation = providerCommandInvocation(command, args, { platform });
+    return run(invocation.command, invocation.args, { ...options, ...invocation.options });
+  };
   let version;
   try {
-    version = text(run(command, ['--version'], PROBE_OPTIONS)).trim();
+    version = text(invoke(['--version'], PROBE_OPTIONS)).trim();
   } catch (error) {
     return unavailable(error);
   }
 
   let auth;
   try {
-    auth = parseAuthOutput(run(
-      command,
+    auth = parseAuthOutput(invoke(
       ['auth', 'status', '--json'],
       { ...PROBE_OPTIONS, stdio: ['ignore', 'pipe', 'pipe'] },
     ));
@@ -104,18 +114,23 @@ export async function readClaudeRuntimeStatusAsync({
   run = execFile,
   command = 'claude',
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  platform = process.platform,
 } = {}) {
   const options = { encoding: 'utf8', timeout: timeoutMs };
+  const invoke = (args) => {
+    const invocation = providerCommandInvocation(command, args, { platform });
+    return run(invocation.command, invocation.args, { ...options, ...invocation.options });
+  };
   let version;
   try {
-    version = text((await run(command, ['--version'], options)).stdout).trim();
+    version = text((await invoke(['--version'])).stdout).trim();
   } catch (error) {
     return unavailable(error);
   }
 
   let auth;
   try {
-    auth = parseAuthOutput((await run(command, ['auth', 'status', '--json'], options)).stdout);
+    auth = parseAuthOutput((await invoke(['auth', 'status', '--json'])).stdout);
   } catch (error) {
     try {
       auth = parseAuthOutput(error.stdout);

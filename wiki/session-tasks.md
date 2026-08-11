@@ -14,6 +14,8 @@ tags:
 
 A session task is a task row carrying `keep_terminal_open = true` with `terminal_lifecycle = 'disposable'`. Its retained native terminal survives the task outcome, and **Continue session** runs later turns in the same task row and saved conversation. The August 3, 2026 session-surface work makes these tasks visibly different and operable from CC Relay, aimed at long-running research sessions. Only direct single-session work gets the full surface: `mode` execute or breakdown with provider codex or claude. Plan council and Turbo keep-open fleets keep their previous presentation everywhere.
 
+Direct Execute tasks created with the project's **Terminal session mode** also carry `manual_completion = true`. They alternate between `running` and `open`, accept unlimited same-task turns, and finish only through **Complete session**. Their stronger queue-card rail, manual badge, project activity state, completion control, recovery rules, and final continuation boundary are documented in [[manual-terminal-session-mode]]. Existing retained tasks without that flag still complete automatically and keep the original continuation behavior described on this page.
+
 ## Queue cards
 
 - `isDirectSessionTask()` in `public/app.js` gates a `data-session="true"` article attribute, a `data-session-state` attribute, and a `task-session-badge` chip after the task number.
@@ -22,7 +24,7 @@ A session task is a task row carrying `keep_terminal_open = true` with `terminal
 
 ## Task Activity session surface
 
-- `#session-strip` sits between the detail header and the plan preview: provider, relay, and model context, a state pill, a **Close terminal** kill button, and `#session-strip-message` (`role="status"`) for outcomes. Status writes are inequality-guarded so the live region is not re-announced by the two-second poll.
+- `#session-strip` sits between the detail header and the plan preview: provider, relay, and model context, a state pill, the optional **Complete session** button, a **Close terminal** kill button, and `#session-strip-message` (`role="status"`) for outcomes. Status writes are inequality-guarded so the live region is not re-announced by the two-second poll.
 - Kill reuses the existing `DELETE /api/terminals/:threadId` and the per-thread `terminalControl` ownership state from `/api/threads`. The button is enabled only when `capabilities.terminalControl` is present, the session thread is listed, and `terminalControl.canClose === true`; a queued, running, or retrying task on the terminal blocks the close upstream in `terminalControlState`. `window.confirm` precedes the destructive call, and errors land in the strip message, never the composer.
 - After a successful close, the server records a queue event on the retained task (`The retained terminal window was closed from CC Relay.`) selected by `retainedSessionTaskForThread()` in `src/terminal-control.mjs` (strict `keep_terminal_open === true` plus disposable lifecycle, highest task id wins, status-agnostic because the coordinator already refused active terminals). The event write is wrapped so it can never fail the close, and the route broadcasts `{ threads: true, tasks: true, taskId }`. Non-retained closes keep the original `{ threads: true }` payload.
 - `#session-history` replaces the flat Prompts and Result disclosures for direct session tasks (both are hidden while their copy keys stay populated). Ordinary, plan, and turbo tasks render exactly as before; `promptSection.hidden` and `resultSection.hidden` are now assigned on every path.
