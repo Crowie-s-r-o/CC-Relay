@@ -5167,7 +5167,6 @@ body {
 
 /* Launchpad action buttons (card styling now lives in the consolidated base block). */
 .project-dock-actions .button { min-height: 26px; padding: 4px 7px; border-radius: 7px; font-size: 9px; }
-#add-launch-project-button { color: #3f50dc; border-color: #dfe4ff; background: #e9edff; }
 
 .workspace {
   height: calc(100vh - 102px); min-height: 0; padding: 12px 14px;
@@ -5217,7 +5216,7 @@ body[data-resizing-panels="true"] {
 .section-heading p { color: #8b93a1; }
 
 .mode-selector, .agent-selector, .terminal-fieldset, .attachment-composer { border-color: var(--line); border-radius: 14px; background: #fff; }
-.mode-selector { margin-bottom: 9px; padding: 0 0 9px; border: 0; border-bottom: 1px solid var(--line); }
+.mode-selector { margin-bottom: 9px; padding: 10px; border: 0; border-bottom: 1px solid var(--line); }
 .agent-selector { margin-bottom: 6px; }
 .mode-selector-heading, .agent-selector-heading { margin-bottom: 6px; }
 .mode-tabs, .agent-tabs { gap: 6px; }
@@ -10945,12 +10944,6 @@ html[data-theme="dark"] .header-actions .button.secondary:hover:not(:disabled) {
   background: #202c44;
 }
 
-html[data-theme="dark"] #add-launch-project-button {
-  border-color: #40518b;
-  color: #ccd0d7;
-  background: #202b50;
-}
-
 html[data-theme="dark"] .connection-pill {
   border-color: #28584e;
   color: #94dbc6;
@@ -11373,16 +11366,14 @@ html[data-theme="dark"] .project-launch-claude:hover:not(:disabled) {
   background: color-mix(in srgb, var(--app-blue) 10%, var(--app-control));
 }
 
-html[data-theme="dark"] .button.primary,
-html[data-theme="dark"] #add-launch-project-button {
+html[data-theme="dark"] .button.primary {
   border-color: var(--app-blue);
   color: #071021;
   background: var(--app-blue);
   box-shadow: 0 10px 24px -15px rgb(122 162 247 / 72%);
 }
 
-html[data-theme="dark"] .button.primary:hover:not(:disabled),
-html[data-theme="dark"] #add-launch-project-button:hover:not(:disabled) {
+html[data-theme="dark"] .button.primary:hover:not(:disabled) {
   border-color: #9abaff;
   color: #071021;
   background: #9abaff;

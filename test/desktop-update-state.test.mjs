@@ -21,6 +21,7 @@ test('hides desktop update status until a trusted newer version is known', () =>
 test('shows an available release with its trusted GitHub URL', () => {
   const result = desktopUpdatePresentation({
     supported: true,
+    automaticUpdate: true,
     status: 'available',
     latestVersion: '1.2.0',
     releaseUrl: `${DESKTOP_RELEASES_URL}/tag/v1.2.0`,
@@ -32,7 +33,25 @@ test('shows an available release with its trusted GitHub URL', () => {
   assert.equal(result.modalTitle, 'A new Relay is ready');
   assert.equal(result.statusLabel, 'Update available');
   assert.equal(result.releaseLabel, 'View v1.2.0 release');
+  assert.equal(result.automaticUpdate, true);
   assert.equal(result.progress, null);
+});
+
+test('presents manual macOS discovery as an official release download', () => {
+  const result = desktopUpdatePresentation({
+    supported: true,
+    automaticUpdate: false,
+    status: 'available',
+    currentVersion: '1.0.0',
+    latestVersion: '1.2.0',
+    releaseUrl: `${DESKTOP_RELEASES_URL}/tag/v1.2.0`,
+  });
+  assert.equal(result.hidden, false);
+  assert.equal(result.label, 'Update v1.2.0');
+  assert.equal(result.releaseLabel, 'Download v1.2.0');
+  assert.equal(result.automaticUpdate, false);
+  assert.match(result.modalMessage, /download and install it manually/i);
+  assert.doesNotMatch(result.modalMessage, /desktop prompt/i);
 });
 
 test('formats download progress and ready state compactly', () => {

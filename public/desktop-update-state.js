@@ -39,6 +39,7 @@ export function desktopUpdatePresentation(update) {
       modalTitle: '',
       modalMessage: '',
       releaseLabel: 'View latest release',
+      automaticUpdate: false,
       progress: null,
     };
   }
@@ -56,7 +57,10 @@ export function desktopUpdatePresentation(update) {
     href: releaseUrl(update.releaseUrl),
     currentVersion,
     latestVersion: version,
-    releaseLabel: `View v${version} release`,
+    releaseLabel: update?.automaticUpdate === true
+      ? `View v${version} release`
+      : `Download v${version}`,
+    automaticUpdate: update?.automaticUpdate === true,
     progress: status === 'downloaded' ? 100 : boundedProgress,
   };
   if (status === 'downloading') {
@@ -90,6 +94,8 @@ export function desktopUpdatePresentation(update) {
     modalTitle: status === 'error' ? 'The update needs a hand' : 'A new Relay is ready',
     modalMessage: status === 'error'
       ? `Automatic updating could not continue for CC Relay v${version}. Open the official release to review or install it manually.`
-      : `CC Relay v${version} is available. The desktop prompt can download it, and you can review the release before deciding.`,
+      : update?.automaticUpdate === true
+        ? `CC Relay v${version} is available. The desktop prompt can download it, and you can review the release before deciding.`
+        : `CC Relay v${version} is available. Open the official release to download and install it manually.`,
   };
 }

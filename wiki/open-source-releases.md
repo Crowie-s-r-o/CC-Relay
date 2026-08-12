@@ -95,6 +95,9 @@ Pushing `vX.Y.Z` starts `.github/workflows/build-desktop.yml`. The Ubuntu releas
 
 The native jobs transfer only DMG, EXE, blockmap, and Windows `latest.yml` deliverables. Unpacked application trees, macOS ZIP packages, the unusable DMG-only `latest-mac.yml`, and builder diagnostics are excluded. NSIS and portable Windows targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. GitHub still adds its generated source-code ZIP and tarball to every release.
 
+> [!note]
+> Packaged macOS and Windows portable builds discover a newer stable version through GitHub's latest-release API, then link to the exact release for manual installation. This discovery is deliberately independent of electron-builder feed metadata. Only installed Windows NSIS builds consume `latest.yml` for automatic download and restart installation. See [[desktop-updates]].
+
 `electron-builder.yml` now publishes to owner `Crowie-s-r-o`, repository `CC-Relay`. Installed Windows builds produced before this move still contain the old publisher and need one manual installation to enter the new update lineage. See [[desktop-updates]] and [[product-naming]].
 
 ## Readiness audit

@@ -31,8 +31,12 @@ Each desktop `.project-chip` is `176px` by `30px`. Only the folder name and curr
 
 - Composer and queue panel padding is `18px`.
 - The composer heading, workflow tabs, provider tabs, Plan council shell, terminal lifecycle note, retention switch, model controls, and prompt spacing use the compact scale.
+- The workflow selector keeps `10px` of internal padding around its heading and two workflow cards. This inset is required in dark mode, where the selector's contrasting well makes the section read as a card.
 - Provider pool steppers remain siblings of the provider tab buttons. See [[interface-layout]].
 - Lifecycle copy is deliberately short so it does not create unnecessary wrapped lines.
+
+> [!note]
+> Do not remove the workflow selector's horizontal padding while compacting the composer. Without it, both workflow cards sit directly against the visible dark-mode well edge.
 
 ## Color system
 

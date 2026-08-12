@@ -6,23 +6,25 @@ type: architecture
 
 # Desktop Updates
 
-CC Relay uses `electron-updater` with the GitHub publisher configured for `Crowie-s-r-o/CC-Relay`. Download and installation remain Electron-main-process concerns. A sanitized, read-only update state crosses the embedded loopback status API so the renderer can show a compact release indicator; the renderer has no update control or privileged Electron surface.
+CC Relay checks for public `Crowie-s-r-o/CC-Relay` GitHub releases from packaged macOS and Windows builds. macOS DMG and Windows portable builds use the fixed latest-release API for manual discovery, while installed Windows NSIS builds use `electron-updater` for discovery, download, and installation. A sanitized, read-only update state crosses the embedded loopback status API so the renderer can show a compact release indicator; the renderer has no update control or privileged Electron surface.
 
 ## Runtime contract
 
-The coordinator in `src/desktop-updater.mjs` is dependency-injected and has no direct Electron imports. `src/electron-main.mjs` supplies the real `autoUpdater`, Electron `dialog`, the current app version, the main-window getter, and a graceful restart callback.
+The coordinator in `src/desktop-updater.mjs` is dependency-injected and has no direct Electron imports. `src/electron-main.mjs` supplies the GitHub release checker, the real `autoUpdater`, Electron `dialog`, the current app version, the main-window getter, and a graceful restart callback.
 
 > [!important]
-> Update checks run only when `app.isPackaged` is true and the runtime is an installed Windows NSIS build. Development launches through `npm run desktop`, macOS DMG installations, and Windows portable executables update manually from GitHub Releases.
+> Release discovery runs only when `app.isPackaged` is true and the platform is macOS or Windows. macOS DMG installations and Windows portable executables discover new versions but update manually from GitHub Releases. Only an installed Windows NSIS build starts `electron-updater` and offers in-app download and restart installation. Development launches through `npm run desktop` do not check.
 
 > [!important]
 > `electron-updater` 6.8.9 is CommonJS and defines `autoUpdater` through a runtime property getter. Electron's ESM loader does not expose that getter as a named export. `src/electron-main.mjs` must default-import the package and destructure `autoUpdater` from that default object. A named import passes a source syntax check but crashes the packaged app before startup.
 
-The lifecycle starts once, after `BrowserWindow.loadURL()` succeeds. It schedules one delayed `checkForUpdates()` call and a recurring check every five minutes. The recurring timer is unreferenced so it cannot keep a test or process alive by itself, and an injected interval is capped at five minutes so callers cannot silently weaken the cadence. Checks remain overlap-safe and pause while a download is active or installation is ready.
+The lifecycle starts once, after `BrowserWindow.loadURL()` succeeds. It schedules one delayed check and a recurring check every five minutes. The recurring timer is unreferenced so it cannot keep a test or process alive by itself, and an injected interval is capped at five minutes so callers cannot silently weaken the cadence. Checks remain overlap-safe and pause while a Windows download is active or installation is ready.
 
-Automatic download and automatic installation on quit are disabled. An available update displays a window-modal **Download** or **Later** choice. A downloaded update displays **Restart and install** or **Later**. Recurring discovery remembers the version already offered, so choosing **Later** does not reopen the same native prompt every five minutes; a genuinely newer version can prompt once. No-update results, check failures, and download failures never show background error dialogs.
+`src/desktop-release-discovery.mjs` requests GitHub's fixed latest stable release endpoint with a ten-second timeout, validates the tag as three-part SemVer, rejects drafts and prereleases, and constructs the trusted release URL locally. Numeric version comparison prevents equal or older releases from producing an indicator. This path does not depend on `latest-mac.yml`, a ZIP payload, or renderer networking.
 
-`createDesktopUpdater` publishes `unsupported`, `checking`, `current`, `available`, `downloading`, `downloaded`, `installing`, and `error` snapshots. Electron forwards those snapshots through `setDesktopUpdateState`; `/api/status.desktopUpdate` returns only normalized versions, bounded progress, and a URL restricted to this repository's GitHub Releases path. The header stays hidden unless a valid newer version is known. It then becomes a compact status button that shows download progress or marks the update ready. Activating it opens an in-app details dialog with the installed-to-latest version route, bounded progress, the five-minute cadence, and the trusted release link. Native dialogs continue to own download and restart consent; the renderer remains read-only.
+Automatic download and automatic installation on quit are disabled. On installed Windows, an available update displays a window-modal **Download** or **Later** choice, and a downloaded update displays **Restart and install** or **Later**. Recurring discovery remembers the version already offered, so choosing **Later** does not reopen the same native prompt every five minutes; a genuinely newer version can prompt once. On macOS and Windows portable, discovery publishes the header indicator without starting `electron-updater` or showing a misleading native download prompt. No-update results, check failures, and download failures never show background error dialogs.
+
+`createDesktopUpdater` publishes `unsupported`, `checking`, `current`, `available`, `downloading`, `downloaded`, `installing`, and `error` snapshots plus an `automaticUpdate` capability flag. Electron forwards those snapshots through `setDesktopUpdateState`; `/api/status.desktopUpdate` returns only normalized versions, the capability flag, bounded progress, and a URL restricted to this repository's GitHub Releases path. The header stays hidden unless a valid newer version is known. It then becomes a compact status button that shows download progress or marks the update ready. Activating it opens an in-app details dialog with the installed-to-latest version route, bounded progress, the five-minute cadence, and the trusted release link. Manual platforms say **Download vX.Y.Z** and explain DMG or portable installation; Windows NSIS keeps user-confirmed native download and restart prompts. The renderer remains read-only.
 
 > [!note]
 > The version route is the update dialog's visual signature: two compact release stations connected by one relay arrow. Light and dark themes share the same hierarchy, the dialog fits a 500 pixel viewport without page overflow, keyboard focus stays native to `<dialog>`, and progress motion is removed under `prefers-reduced-motion`.
@@ -45,6 +47,9 @@ The shared `relayShutdown` path also closes every native terminal launched by th
 
 > [!note]
 > macOS releases are DMG-only and update through a manual DMG download. `electron-updater` requires a ZIP payload for Squirrel.Mac, so removing the ZIP also means macOS must not start the automatic updater and fail against a feed with no compatible ZIP payload. Electron-builder 26.15.3 still writes a DMG-only `latest-mac.yml`, but the workflow deliberately does not publish that unusable feed.
+
+> [!important]
+> Version 0.2.3 exposed an eligibility split incorrectly. The coordinator's default rule had removed macOS from `electron-updater`, but `src/electron-main.mjs` supplied an explicit `isEligible` callback that still included Darwin and overrode the default. The live packaged app therefore requested the deliberately unpublished `latest-mac.yml`, entered `error` with `latestVersion: null`, and the header correctly hid a failure that knew no newer version. Keep release discovery eligibility separate from automatic-update eligibility. A DMG-only release must use the GitHub API path, never Squirrel.Mac.
 
 ## Release contract
 
@@ -94,6 +99,7 @@ Signing credentials are not stored in the repository. Production macOS releases 
 ## Files involved
 
 - `src/desktop-updater.mjs`: Electron-independent lifecycle coordinator and manual prompt policy.
+- `src/desktop-release-discovery.mjs`: fixed GitHub latest-release request, stable version validation, and numeric version comparison.
 - `src/desktop-update-status.mjs`: pure normalization for versions, progress, states, and trusted release URLs.
 - `src/electron-main.mjs`: packaged-build eligibility, delayed startup, and graceful install handoff.
 - `src/server-options.mjs`: fixed standalone defaults plus validated desktop port flags.
@@ -116,9 +122,9 @@ No renderer IPC, preload permission, writable update route, or environment varia
 ## Troubleshooting
 
 - **No check during development:** expected. Use a packaged build; `npm run desktop` is intentionally ineligible.
-- **No header indicator:** expected on macOS, in development, in a Windows portable build, while the installed Windows app is current, or while its check is still running. A valid newer version is required before the link appears.
+- **No header indicator:** expected in development, while the packaged app is current, while its check is still running, or when GitHub release discovery is unavailable. A valid newer version is required before the link appears on macOS, Windows NSIS, and Windows portable builds.
 - **Portable Windows build does not update:** expected. Download the latest portable artifact manually or install the NSIS build for automatic updates.
-- **No update after a tag:** confirm the tag is `vX.Y.Z`, the package version is `X.Y.Z`, and the GitHub release contains the platform's `latest-*.yml`, blockmaps, and installers.
+- **No update after a tag:** confirm the tag is `vX.Y.Z`, the package version is `X.Y.Z`, and a stable GitHub Release exists. Windows automatic installation additionally requires `latest.yml`, its blockmap, and the NSIS installer. macOS discovery does not require `latest-mac.yml`.
 - **The tag is pushed but the Releases page is empty:** the desktop build workflow failed, so `needs: build` skipped the release job. Open the run that deploy names in its failure message. A tag whose run already failed cannot be recovered by re-running the workflow, because the dispatch uses the workflow file at that ref; release the fix under the next version instead of retagging.
 - **macOS needs an update:** download the latest DMG from GitHub Releases and replace the installed application manually.
 - **Packaged startup reports that the `autoUpdater` named export is missing:** inspect `src/electron-main.mjs` and keep the CommonJS default-import interop described above.

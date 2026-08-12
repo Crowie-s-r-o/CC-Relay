@@ -68,7 +68,12 @@ explicitly presents:
 
 The dialog has full light and dark treatments, stacks at compact widths, stays horizontally bounded,
 and scrolls vertically when its content exceeds the available height. Electron's native About panel
-also receives the company, founder, copyright, version, website, and author metadata.
+uses one centered founder credit beneath the version, without the in-app company's descriptive
+tagline, and also receives copyright, version, website, and author metadata.
+
+> [!note]
+> Keep the native `credits` value to one line. macOS centers that single credit in the standard
+> About panel; adding a newline produces the visually left-aligned block used by the earlier design.
 
 ## Files
 

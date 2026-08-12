@@ -62,6 +62,8 @@ function harness(options = {}) {
     dialog,
     currentVersion: options.currentVersion || '1.0.0',
     eligible: options.eligible ?? true,
+    automaticUpdate: options.automaticUpdate ?? true,
+    checkLatestRelease: options.checkLatestRelease,
     getMainWindow: () => options.window === undefined ? window : options.window,
     restartAndInstall: async () => restartCalls.push(true),
     releasesUrl: 'https://github.com/Crowie-s-r-o/CC-Relay/releases/latest',
@@ -101,10 +103,20 @@ test('skips unpackaged or otherwise ineligible builds', async () => {
   assert.equal(updater.checkCalls, 0);
 });
 
-test('derives eligibility for installed Windows builds only', () => {
+test('derives release discovery for packaged builds and automatic installation for NSIS only', () => {
+  const checkLatestRelease = async () => ({ version: '1.2.0' });
   const mac = harness({ eligible: undefined });
-  mac.coordinator = createDesktopUpdater({ updater: mac.updater, packaged: true, platform: 'darwin', timer: () => {} });
-  assert.equal(mac.coordinator.start(), false);
+  mac.coordinator = createDesktopUpdater({
+    updater: mac.updater,
+    packaged: true,
+    platform: 'darwin',
+    checkLatestRelease,
+    timer: () => {},
+    intervalTimer: () => {},
+  });
+  assert.equal(mac.coordinator.start(), true);
+  assert.equal(mac.coordinator.status().automaticUpdate, false);
+  assert.equal(mac.updater.autoDownload, 'unset');
   const installed = harness({ eligible: undefined });
   installed.coordinator = createDesktopUpdater({
     updater: installed.updater,
@@ -115,9 +127,20 @@ test('derives eligibility for installed Windows builds only', () => {
     intervalTimer: () => {},
   });
   assert.equal(installed.coordinator.start(), true);
+  assert.equal(installed.coordinator.status().automaticUpdate, true);
   const portable = harness({ eligible: undefined });
-  portable.coordinator = createDesktopUpdater({ updater: portable.updater, packaged: true, platform: 'win32', portable: true, timer: () => {} });
-  assert.equal(portable.coordinator.start(), false);
+  portable.coordinator = createDesktopUpdater({
+    updater: portable.updater,
+    packaged: true,
+    platform: 'win32',
+    portable: true,
+    checkLatestRelease,
+    timer: () => {},
+    intervalTimer: () => {},
+  });
+  assert.equal(portable.coordinator.start(), true);
+  assert.equal(portable.coordinator.status().automaticUpdate, false);
+  assert.equal(portable.updater.autoDownload, 'unset');
 });
 
 test('start is idempotent, configures manual update flow, and checks every five minutes', async () => {
@@ -154,12 +177,67 @@ test('runs a check without prompting when no update is available', async () => {
   assert.equal(states.at(-1).status, 'current');
 });
 
+test('discovers a manual macOS release without starting the automatic updater', async () => {
+  const { updater, coordinator, dialogs, states } = harness({
+    automaticUpdate: false,
+    checkLatestRelease: async () => ({ version: '1.2.0' }),
+    runTimer: true,
+  });
+  coordinator.start();
+  await flush();
+  assert.equal(updater.checkCalls, 0);
+  assert.equal(updater.autoDownload, 'unset');
+  assert.equal(dialogs.length, 0);
+  assert.equal(states.at(-1).supported, true);
+  assert.equal(states.at(-1).automaticUpdate, false);
+  assert.equal(states.at(-1).status, 'available');
+  assert.equal(states.at(-1).latestVersion, '1.2.0');
+  assert.equal(
+    states.at(-1).releaseUrl,
+    'https://github.com/Crowie-s-r-o/CC-Relay/releases/tag/v1.2.0',
+  );
+});
+
+test('manual release discovery stays current for equal or older versions', async () => {
+  for (const version of ['1.0.0', '0.9.9']) {
+    const { coordinator, states } = harness({
+      automaticUpdate: false,
+      checkLatestRelease: async () => ({ version }),
+      runTimer: true,
+    });
+    coordinator.start();
+    await flush();
+    assert.equal(states.at(-1).status, 'current');
+    assert.equal(states.at(-1).latestVersion, null);
+  }
+});
+
+test('manual discovery keeps a known update visible after a later refresh failure', async () => {
+  let fail = false;
+  const { coordinator, intervals, states } = harness({
+    automaticUpdate: false,
+    checkLatestRelease: async () => {
+      if (fail) throw new Error('GitHub unavailable');
+      return { version: '1.2.0' };
+    },
+    runTimer: true,
+  });
+  coordinator.start();
+  await flush();
+  fail = true;
+  intervals[0].callback();
+  await flush();
+  assert.equal(states.at(-1).status, 'available');
+  assert.equal(states.at(-1).latestVersion, '1.2.0');
+});
+
 test('publishes a safe, queryable update lifecycle for the desktop UI', async () => {
   const { updater, coordinator, states } = harness({ choices: [1, 1] });
   assert.equal(coordinator.status().status, 'unsupported');
   coordinator.start();
   assert.deepEqual(coordinator.status(), states.at(-1));
   assert.equal(states.at(-1).supported, true);
+  assert.equal(states.at(-1).automaticUpdate, true);
   assert.equal(states.at(-1).status, 'checking');
 
   updater.emit('update-available', { version: '1.2.0' });

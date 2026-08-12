@@ -19,6 +19,16 @@ test('desktop Launchpad uses one compact horizontal card row without vertical cl
   assert.doesNotMatch(selectedStyle, /0 0 0/);
 });
 
+test('Launchpad exposes one add-project action without launching a terminal', () => {
+  assert.match(
+    markup,
+    /<div class="project-dock-actions">\s*<button id="add-project-button" class="button primary compact" type="button">\+ Add project<\/button>\s*<\/div>/,
+  );
+  assert.doesNotMatch(markup, /add-launch-project-button|Pin folder|Add and launch/);
+  assert.match(app, /elements\.addProjectButton\.addEventListener\('click', \(\) => chooseProject\(false\)\);/);
+  assert.doesNotMatch(app, /addLaunchProjectButton/);
+});
+
 test('project cards show activity without per-provider launch buttons', () => {
   const renderStart = app.indexOf('function renderProjects()');
   const activityStart = app.indexOf('function projectActivity(', renderStart);

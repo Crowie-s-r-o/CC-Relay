@@ -137,7 +137,7 @@ CC Relay stores task records in local SQLite and writes readable artifacts for p
 
 ### Desktop updates
 
-Installed Windows NSIS builds check the public `Crowie-s-r-o/CC-Relay` GitHub Releases feed after launch and every five minutes while running. When a newer version is available, the global header shows its version and opens a release-details modal with installed and latest versions, progress, and the trusted release link. Downloads and restarts remain user-confirmed. macOS DMG installations and Windows portable builds update manually, and Linux desktop packages are not currently produced.
+Packaged macOS and Windows builds check the public `Crowie-s-r-o/CC-Relay` latest-release metadata after launch and every five minutes while running. When a newer version is available, the global header shows its version and opens a release-details modal with installed and latest versions plus the trusted release link. macOS DMG installations and Windows portable builds link to the manual download. Installed Windows NSIS builds additionally support user-confirmed download progress and restart installation. Linux desktop packages are not currently produced.
 
 ## Choosing a workflow
 

@@ -8,6 +8,7 @@ import {
 test('normalizes trusted desktop update state for the status API', () => {
   assert.deepEqual(normalizeDesktopUpdateState({
     supported: true,
+    automaticUpdate: true,
     status: 'downloading',
     currentVersion: 'v1.0.0',
     latestVersion: '1.2.0',
@@ -15,6 +16,7 @@ test('normalizes trusted desktop update state for the status API', () => {
     downloadPercent: 47.25,
   }), {
     supported: true,
+    automaticUpdate: true,
     status: 'downloading',
     currentVersion: '1.0.0',
     latestVersion: '1.2.0',
@@ -41,6 +43,7 @@ test('rejects malformed versions, states, and external release URLs', () => {
   });
   assert.deepEqual(state, {
     supported: false,
+    automaticUpdate: false,
     status: 'error',
     currentVersion: null,
     latestVersion: null,

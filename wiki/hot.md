@@ -6,6 +6,9 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 12: Launchpad now has one project-add action.** The separate **Pin folder** and **Add and launch** buttons were consolidated into one **Add project** button. It pins and selects the chosen folder without opening an interactive terminal; manual launches remain in the terminal panel. See [[project-workspaces]] and [[interface-layout]].
+
 > [!important]
 > **August 12: the terminal settings dialog dropped its launch command row and was redesigned.** The `codex ...` string and its **Copy** button are gone; automatic pools open their own terminals and the manual path keeps **Launch Codex** and **Launch Claude** in the terminal panel. The dialog is now two sections with one rhythm, shared pill switches, and a single `renderTerminalSettingsHeader()` that always names the project being edited. `state.connection.launchCommand` is unchanged on the backend. Light and dark verified at 900, 620, and 420 pixels with no horizontal overflow. See [[project-terminal-settings]].
 
@@ -19,7 +22,10 @@ type: hot
 > **August 12: the header now shows provider subscription runway instead of a queue pause button.** Four compact bars report Claude's five-hour session, all-model weekly, and Fable weekly usage plus Codex weekly usage. They refresh every five minutes, expose reset details, preserve last-known values across temporary failures, and use green below 50 percent, yellow from 50 through 74, orange from 75 through 89, and red from 90. The strip sits immediately after the **Top** or **Bottom** position control, before the theme control, and the redundant **CC Relay online** pill is removed. Codex weekly usage now works because null JSON-RPC params survive request diagnostics and reach `account/rateLimits/read`; an isolated authenticated probe returned a normalized weekly value. Provider credentials remain inside the installed CLIs. The backend pause contract remains available to queue integrations. See [[provider-usage-monitor]] and [[interface-layout]].
 
 > [!important]
-> **August 12: macOS releases are DMG-only.** The macOS builder no longer creates an application ZIP, and the GitHub workflow no longer uploads or publishes ZIP desktop artifacts. Because Squirrel.Mac requires that ZIP payload, macOS automatic updates are disabled instead of being left pointed at a missing feed; operators update manually with the latest DMG. Installed Windows NSIS builds retain automatic updates, and Windows portable builds remain manual. GitHub's generated source-code ZIP and tarball still appear on every release. See [[desktop-updates]] and [[open-source-releases]].
+> **August 12: packaged macOS now detects new versions without pretending a DMG can auto-install.** Version 0.2.3 accidentally started `electron-updater` on Darwin because the Electron entry point overrode the coordinator's Windows-only eligibility rule. The DMG-only release deliberately has no `latest-mac.yml`, so the running app entered `error` with no latest version and the header had nothing safe to display. Packaged macOS and Windows portable builds now query GitHub's stable latest-release metadata every five minutes, show the existing version indicator, and link to the exact manual download. Only installed Windows NSIS builds start `electron-updater`. See [[desktop-updates]] and [[open-source-releases]].
+
+> [!important]
+> **August 12: macOS releases remain DMG-only.** The macOS builder does not create an application ZIP, and the GitHub workflow does not upload or publish ZIP desktop artifacts. Squirrel.Mac automatic installation stays disabled because it requires that ZIP payload. GitHub's generated source-code ZIP and tarball still appear on every release, but they are not desktop packages. See [[desktop-updates]] and [[open-source-releases]].
 
 > [!note]
 > **August 12: desktop startup and About now carry the Crowie company identity.** A dedicated
@@ -494,7 +500,7 @@ type: hot
 > Project queue isolation is backend behavior and cannot hot-reload with renderer assets. The current backend advertises `capabilities.projectQueueIsolation`; when it is absent, a waiting project blocked by work elsewhere says **Restart CC Relay for separate project queues**. Task 184 on July 20, 2026 exposed a July 17 backend still running the former global barrier. See [[project-queue-isolation-review]].
 
 > [!note]
-> Packaged macOS and installed Windows NSIS builds check for GitHub releases after startup, prompt before download and restart, and shut down CC Relay gracefully before installation. Development and Windows portable builds remain manual-update paths. See [[desktop-updates]].
+> Packaged macOS and Windows builds check GitHub's stable latest release after startup and every five minutes. macOS DMG and Windows portable builds show the exact release as a manual download. Only installed Windows NSIS builds prompt before updater download and restart, then shut down CC Relay gracefully before installation. Development remains ineligible. See [[desktop-updates]].
 
 > [!important]
 > `electron-updater` 6.8.9 must be default-imported from the ESM Electron entry point because its CommonJS `autoUpdater` export is a runtime getter that Electron cannot discover as a named export. Also run only one electron-builder process per checkout: overlapping builds mutate the same `dist/mac-arm64` bundle and can fail with `ENOTEMPTY` or a missing app during signing. See [[desktop-updates]] and [[desktop-packaging-review]].

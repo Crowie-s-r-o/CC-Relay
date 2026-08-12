@@ -49,6 +49,7 @@ test('the header opens a branded About dialog with company and founder details',
 test('native About metadata carries the Crowie company identity', () => {
   assert.match(main, /app\.setAboutPanelOptions\(\{/);
   assert.match(main, /copyright: 'Copyright © 2026 Crowie s\.r\.o\.'/);
-  assert.match(main, /credits: 'Software Development company\\nFounded and engineered by Ing\. Patrik Kelemen'/);
+  assert.match(main, /credits: 'Founded and engineered by Ing\. Patrik Kelemen'/);
+  assert.doesNotMatch(main, /credits: 'Software Development company/);
   assert.match(main, /authors: \['Ing\. Patrik Kelemen'\]/);
 });

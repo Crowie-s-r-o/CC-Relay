@@ -68,6 +68,9 @@ Both boolean settings use the shared `.terminal-settings-switch` pill. **Arrange
 > [!important]
 > `.terminal-layout-settings`, `.completion-alert-settings`, `.terminal-layout-heading`, `.completion-alert-heading`, `.terminal-background-toggle`, and `.completion-speech-toggle` kept their class names through the redesign. Dark-theme parity for this dialog is spread across six blocks in `public/style.css`, and `test/dark-mode.test.mjs` asserts several of those selectors by name. Any new class in this dialog needs its own `html[data-theme="dark"]` rule in the end-of-cascade repair block, or it will show a white surface in the midnight shell.
 
+> [!important]
+> The minimized-window explanation now lives in the **Open new terminals minimized** switch row, so `resetTerminalLayoutStatus()` writes only "Grid launches use the next available cell." That reset runs on every dialog open. Any copy moved out of `#terminal-layout-status` into static markup must be removed from that function in the same change, or the dialog repeats itself the moment it is opened.
+
 The compact rule set collapses the layout grid to two columns, moves the monitor field to its own row, wraps section heads instead of stacking them, and drops the completion alert section to a single column. Verified with no horizontal overflow in light and dark at 900, 620, and 420 pixels.
 
 > [!note]

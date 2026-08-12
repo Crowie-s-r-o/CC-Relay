@@ -739,7 +739,6 @@ const elements = {
   projectColorCancel: document.querySelector('#project-color-cancel'),
   projectColorSave: document.querySelector('#project-color-save'),
   addProjectButton: document.querySelector('#add-project-button'),
-  addLaunchProjectButton: document.querySelector('#add-launch-project-button'),
   workspace: document.querySelector('.workspace'),
   composerQueueResizer: document.querySelector('#composer-queue-resizer'),
   queueDetailResizer: document.querySelector('#queue-detail-resizer'),
@@ -1330,13 +1329,12 @@ function renderProjects() {
   renderComposerProjectIdentity();
   const supported = state.status?.capabilities?.projectLauncher === true;
   elements.addProjectButton.disabled = !supported;
-  elements.addLaunchProjectButton.disabled = !supported;
   if (!supported) {
     elements.projectList.innerHTML = '<span class="project-empty">Restart CC Relay to enable project launching</span>';
     return;
   }
   if (!state.projects.length) {
-    elements.projectList.innerHTML = '<span class="project-empty">Pin a folder for one-click terminal launch</span>';
+    elements.projectList.innerHTML = '<span class="project-empty">Add a project to start queueing work</span>';
     return;
   }
   const colorClasses = projectColorClasses(state.projects.map((project) => project.path));
@@ -1501,7 +1499,6 @@ async function loadProjects() {
 async function chooseProject(launch, provider = projectProvider()) {
   const previousIds = new Set(state.threads.map((thread) => thread.id));
   elements.addProjectButton.disabled = true;
-  elements.addLaunchProjectButton.disabled = true;
   try {
     const body = await api('/api/projects/choose', {
       method: 'POST',
@@ -9086,7 +9083,6 @@ for (const input of [elements.maxCodexInstances, elements.maxClaudeInstances]) {
 elements.maxCodexInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.maxClaudeInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.addProjectButton.addEventListener('click', () => chooseProject(false));
-elements.addLaunchProjectButton.addEventListener('click', () => chooseProject(true));
 elements.projectList.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-project-action]');
   const chip = event.target.closest('[data-project-id]');

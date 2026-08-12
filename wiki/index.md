@@ -87,6 +87,7 @@ type: index
 - [[product-naming]]
 - [[core-product-story]]
 - [[desktop-updates]]
+- [[desktop-update-discovery-review]]
 - [[windows-compatibility]]
 - [[open-source-releases|source-available releases]]
 - [[source-release-readiness-review]]

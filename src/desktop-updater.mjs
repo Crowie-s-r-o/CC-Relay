@@ -1,3 +1,5 @@
+import { isNewerDesktopRelease } from './desktop-release-discovery.mjs';
+
 const DEFAULT_DELAY = 5_000;
 export const DESKTOP_UPDATE_CHECK_INTERVAL = 5 * 60 * 1_000;
 
@@ -29,6 +31,25 @@ function resolveEligibility(options) {
   if (typeof options.isEligible === 'boolean') return options.isEligible;
   if (typeof options.eligible === 'function') return Boolean(options.eligible());
   if (typeof options.eligible === 'boolean') return options.eligible;
+
+  const packaged = options.packaged ?? options.isPackaged;
+  const platform = options.platform;
+  const portable = options.portable ?? options.isPortable;
+  if (packaged === undefined && platform === undefined && portable === undefined) {
+    return true;
+  }
+  if (!packaged) return false;
+  return platform === 'darwin' || platform === 'win32';
+}
+
+function resolveAutomaticUpdateEligibility(options) {
+  if (typeof options.isAutomaticUpdateEligible === 'function') {
+    return Boolean(options.isAutomaticUpdateEligible());
+  }
+  if (typeof options.isAutomaticUpdateEligible === 'boolean') {
+    return options.isAutomaticUpdateEligible;
+  }
+  if (typeof options.automaticUpdate === 'boolean') return options.automaticUpdate;
 
   const packaged = options.packaged ?? options.isPackaged;
   const platform = options.platform;
@@ -134,8 +155,10 @@ export function createDesktopUpdater(options = {}) {
     ? Math.min(DESKTOP_UPDATE_CHECK_INTERVAL, Math.max(1, options.interval))
     : DESKTOP_UPDATE_CHECK_INTERVAL;
   const onStateChange = options.onStateChange;
+  const checkLatestRelease = options.checkLatestRelease;
 
   let started = false;
+  let automaticUpdate = false;
   let checkInFlight = false;
   let downloadInFlight = false;
   let availablePromptInFlight = false;
@@ -143,6 +166,7 @@ export function createDesktopUpdater(options = {}) {
   let lastAvailablePromptVersion = null;
   let state = {
     supported: false,
+    automaticUpdate: false,
     status: 'unsupported',
     currentVersion: currentVersion(options),
     latestVersion: null,
@@ -180,9 +204,22 @@ export function createDesktopUpdater(options = {}) {
     if (!state.latestVersion) publish('checking', { downloadPercent: null });
     safeLogger(logger, 'info', 'Checking for desktop updates.');
     try {
-      await updater.checkForUpdates();
+      if (automaticUpdate) {
+        await updater.checkForUpdates();
+      } else {
+        const info = await checkLatestRelease();
+        if (isNewerDesktopRelease(availableVersion(info), currentVersion(options))) {
+          publishUpdate('available', info, { downloadPercent: null });
+        } else {
+          publish('current', {
+            latestVersion: null,
+            releaseUrl: String(options.releasesUrl || ''),
+            downloadPercent: null,
+          });
+        }
+      }
     } catch (error) {
-      publish('error');
+      publish(!automaticUpdate && state.latestVersion ? 'available' : 'error');
       safeLogger(logger, 'error', 'Desktop update check failed.', error);
     } finally {
       checkInFlight = false;
@@ -264,31 +301,36 @@ export function createDesktopUpdater(options = {}) {
   function start() {
     if (started) return false;
     started = true;
-    if (!updater || !resolveEligibility(options)) {
-      publish('unsupported', { supported: false });
+    const eligible = resolveEligibility(options);
+    automaticUpdate = eligible && Boolean(updater) && resolveAutomaticUpdateEligibility(options);
+    const manualDiscovery = eligible && typeof checkLatestRelease === 'function';
+    if (!eligible || (!automaticUpdate && !manualDiscovery)) {
+      publish('unsupported', { supported: false, automaticUpdate: false });
       return false;
     }
 
-    publish('checking', { supported: true });
-    configureUpdater();
-    eventOn(updater, 'update-available', handleAvailable);
-    eventOn(updater, 'update-not-available', () => {
-      publish('current', {
-        latestVersion: null,
-        releaseUrl: String(options.releasesUrl || ''),
-        downloadPercent: null,
+    publish('checking', { supported: true, automaticUpdate });
+    if (automaticUpdate) {
+      configureUpdater();
+      eventOn(updater, 'update-available', handleAvailable);
+      eventOn(updater, 'update-not-available', () => {
+        publish('current', {
+          latestVersion: null,
+          releaseUrl: String(options.releasesUrl || ''),
+          downloadPercent: null,
+        });
       });
-    });
-    eventOn(updater, 'download-progress', (progress) => {
-      publish('downloading', {
-        downloadPercent: Number.isFinite(progress?.percent) ? progress.percent : null,
+      eventOn(updater, 'download-progress', (progress) => {
+        publish('downloading', {
+          downloadPercent: Number.isFinite(progress?.percent) ? progress.percent : null,
+        });
       });
-    });
-    eventOn(updater, 'update-downloaded', handleDownloaded);
-    eventOn(updater, 'error', (error) => {
-      publish('error');
-      safeLogger(logger, 'error', 'Desktop updater reported an error.', error);
-    });
+      eventOn(updater, 'update-downloaded', handleDownloaded);
+      eventOn(updater, 'error', (error) => {
+        publish('error');
+        safeLogger(logger, 'error', 'Desktop updater reported an error.', error);
+      });
+    }
 
     schedule(() => {
       void checkForUpdates();

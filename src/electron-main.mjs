@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import electronUpdater from 'electron-updater';
 import { desktopMenuRequired, desktopMenuTemplate } from './desktop-menu.mjs';
+import { createGitHubReleaseChecker } from './desktop-release-discovery.mjs';
 import { desktopZoomDirectionForInput, nextDesktopZoomFactor } from './desktop-zoom.mjs';
 import { createDesktopUpdater } from './desktop-updater.mjs';
 import { DESKTOP_RELEASES_URL } from './desktop-update-status.mjs';
@@ -82,8 +83,12 @@ const desktopUpdater = createDesktopUpdater({
   getCurrentVersion: () => app.getVersion(),
   isEligible: () => app.isPackaged && (
     process.platform === 'darwin'
-    || (process.platform === 'win32' && !process.env.PORTABLE_EXECUTABLE_FILE)
+    || process.platform === 'win32'
   ),
+  isAutomaticUpdateEligible: () => app.isPackaged
+    && process.platform === 'win32'
+    && !process.env.PORTABLE_EXECUTABLE_FILE,
+  checkLatestRelease: createGitHubReleaseChecker(),
   getMainWindow: () => mainWindow,
   releasesUrl: `${DESKTOP_RELEASES_URL}/latest`,
   releaseUrlForVersion: (version) => `${DESKTOP_RELEASES_URL}/tag/v${version}`,
@@ -160,7 +165,7 @@ async function createWindow() {
     applicationName: PRODUCT_NAME,
     applicationVersion: app.getVersion(),
     copyright: 'Copyright © 2026 Crowie s.r.o.',
-    credits: 'Software Development company\nFounded and engineered by Ing. Patrik Kelemen',
+    credits: 'Founded and engineered by Ing. Patrik Kelemen',
     authors: ['Ing. Patrik Kelemen'],
     website: 'https://github.com/Crowie-s-r-o/CC-Relay',
   });

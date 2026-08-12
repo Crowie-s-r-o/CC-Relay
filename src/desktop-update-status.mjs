@@ -39,6 +39,7 @@ export function normalizeDesktopUpdateState(value = {}) {
     : Number(rawPercent);
   return {
     supported: source.supported === true,
+    automaticUpdate: source.automaticUpdate === true,
     status: DESKTOP_UPDATE_STATUSES.has(source.status) ? source.status : 'error',
     currentVersion: cleanVersion(source.currentVersion),
     latestVersion: cleanVersion(source.latestVersion),

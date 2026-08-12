@@ -28,6 +28,13 @@ test('composer exposes Execute and Forward-planning Turbo as its only workflow t
   assert.doesNotMatch(composer, /id="mode-plan"/);
 });
 
+test('workflow selector keeps compact padding around its heading and cards', () => {
+  assert.match(
+    style,
+    /\.mode-selector \{ margin-bottom: 9px; padding: 10px; border: 0; border-bottom: 1px solid var\(--line\); \}/,
+  );
+});
+
 test('Plan council is optional inside Execute and Forward-planning Turbo', () => {
   const executeStart = composer.indexOf('id="execute-config"');
   const executeCouncil = composer.indexOf('id="plan-council-enabled"');
