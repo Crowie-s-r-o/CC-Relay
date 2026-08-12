@@ -2,6 +2,21 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.2] - 2026-08-12
+
+### Added
+
+- Provider plans and goals are now visible in the app.
+
+### Changed
+
+- Desktop release handling is improved.
+
+### Fixed
+
+- Claude recovery is safer.
+- Assistant-generated contributor attribution is blocked from commits.
+
 ## [0.2.1] - 2026-08-12
 
 ### Added
