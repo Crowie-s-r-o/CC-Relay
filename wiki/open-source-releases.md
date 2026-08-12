@@ -146,6 +146,9 @@ Because it answers `no-cache`, a cache-busting query string, a hard reload, and 
 
 Orphaned pre-rewrite commits also stay reachable on GitHub by SHA. They are invisible to the contributor computation but they are not deleted, and only GitHub Support can garbage collect them.
 
+> [!important]
+> GitHub Support ticket [#4656799](https://support.github.com/ticket/personal/0/4656799) was opened under `Crowie s.r.o.` after a repeat audit showed the sidebar still wrong. At submission time the REST contributors API returned only `pkelemen`, the recomputed contributor graph returned only `pkelemen` with 20 commits, the only branch and both tags were clean, and all five closed pull request refs were clean. The ticket asks GitHub to purge or recalculate the sidebar record and, if possible, garbage collect orphaned commit `844fdb999532e43ba9d12ebb12d585bd11346673`. GitHub's guided Support analysis stated that there is no self-service purge and that contributor displays can take about 24 hours to refresh after a history rewrite. The ticket is open pending GitHub action.
+
 ### Rewriting released history moves the tag too
 
 `releaseTags()` in `scripts/deploy.mjs` selects candidates with `git tag --merged HEAD`. A rewritten `main` orphans any tag that still points at the pre-rewrite commit, so the newest release tag stops being an ancestor, `latestTag` falls back to the previous version, and the next `npm run deploy` dies on `Latest tag vX does not match package version vY`. Leaving the tag behind is not a cosmetic choice; it breaks the release command.
