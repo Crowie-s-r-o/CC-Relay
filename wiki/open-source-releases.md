@@ -111,6 +111,20 @@ GitHub builds the repository's **Contributors** list from commits on the default
 
 `v0.2.1` was the one affected commit pair. `git filter-branch --msg-filter` over `HEAD~2..HEAD` stripped both trailer lines while preserving author and committer identity and timestamps, and `main` plus the tag were force pushed atomically.
 
+### The sidebar keeps its own contributor record
+
+Removing the trailer from git does not immediately clear the **Contributors** box, and reloading is not a test of anything. GitHub keeps three separate views of the same fact and they update at different speeds:
+
+| Source | Behavior after a history rewrite |
+| --- | --- |
+| `gh api repos/OWNER/REPO/contributors` | Correct within minutes. |
+| `https://github.com/OWNER/REPO/graphs/contributors-data` | Returns `202` while it recomputes, then `200` with the corrected set. Polling it forces the recompute. |
+| Repository overview sidebar | Server rendered from a persisted per-repository contributor association. Survives the rewrite and lags well behind the other two. |
+
+The sidebar entry is embedded in the overview HTML, not fetched from a JSON endpoint, so a cache-busting query string, a hard reload, and a private window all still show it. That association row is created when a co-authored commit is first pushed and is cleared by a background recount, not by the push that removed the commit. Pushes to the default branch are what schedule the recount, so the practical sequence is: rewrite, push, then let it settle. If the box still shows a removed identity after a day, GitHub Support is the only remaining lever, because no public API purges the association.
+
+Orphaned pre-rewrite commits also stay reachable on GitHub by SHA. They are invisible to the contributor computation but they are not deleted, and only GitHub Support can garbage collect them.
+
 ### Rewriting released history moves the tag too
 
 `releaseTags()` in `scripts/deploy.mjs` selects candidates with `git tag --merged HEAD`. A rewritten `main` orphans any tag that still points at the pre-rewrite commit, so the newest release tag stops being an ancestor, `latestTag` falls back to the previous version, and the next `npm run deploy` dies on `Latest tag vX does not match package version vY`. Leaving the tag behind is not a cosmetic choice; it breaks the release command.
