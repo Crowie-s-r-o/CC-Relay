@@ -11,6 +11,7 @@ test('task queue exposes one date-driven, CHANGELOG-style AI standup dialog', as
     readFile(new URL('public/style.css', root), 'utf8'),
     readFile(new URL('src/server.mjs', root), 'utf8'),
   ]);
+  const standupRoute = server.match(/if \(request\.method === 'POST' && pathname === '\/api\/standup\/generate'\) \{[\s\S]*?\n    \}\n\n    if \(request\.method === 'GET' && pathname === '\/api\/diagnostics'\)/)?.[0] || '';
 
   assert.match(html, /id="standup-button"[^>]+aria-controls="standup-modal"/);
   assert.match(html, /<dialog id="standup-modal"[^>]+aria-labelledby="standup-title"/);
@@ -25,7 +26,7 @@ test('task queue exposes one date-driven, CHANGELOG-style AI standup dialog', as
 
   assert.match(app, /api\('\/api\/standup\/generate'/);
   assert.match(app, /tasksForStandupDay\(projectTasks\(\), anchor\)/);
-  assert.doesNotMatch(app, /buildStandupSummary|standupItem/);
+  assert.doesNotMatch(app, /buildStandupSummary/);
   assert.match(app, /elements\.standupDate\.addEventListener\('change'/);
   const openStandup = app.match(/function openStandup\(\) \{([\s\S]*?)\n\}\n\nfunction closeStandup/)?.[1] || '';
   assert.doesNotMatch(openStandup, /generateStandup/);
@@ -42,10 +43,10 @@ test('task queue exposes one date-driven, CHANGELOG-style AI standup dialog', as
   assert.match(app, /capabilities\?\.aiStandupChangelog === true/);
   assert.doesNotMatch(app, /aiStandupConfiguration|aiStandupAllTasks/);
 
-  assert.match(server, /pathname === '\/api\/standup\/generate'/);
+  assert.match(standupRoute, /pathname === '\/api\/standup\/generate'/);
   assert.match(server, /database\.listTaskPrompts\(task\.id\)/);
   assert.match(server, /database\.listTaskResponses\(task\.id\)/);
-  assert.doesNotMatch(server, /validateStandupLength|body\.length/);
+  assert.doesNotMatch(standupRoute, /validateStandupLength|body\.length/);
   assert.match(server, /aiStandupGeneration: true/);
   assert.match(server, /aiStandupChangelog: true/);
 

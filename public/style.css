@@ -1743,6 +1743,7 @@ summary:focus-visible,
 }
 
 .terminal-settings-header h2 { margin: 0; color: #1f2937; font-size: 15px; }
+.terminal-settings-section:first-child { border-top: 0; }
 .terminal-settings-header p { margin: 5px 0 0; color: var(--slate); font-size: 11px; line-height: 1.45; }
 .terminal-settings-close { padding: 0; border: 0; color: var(--muted); background: transparent; font-size: 24px; line-height: 1; cursor: pointer; }
 
@@ -2081,107 +2082,170 @@ summary:focus-visible,
   font-size: 11px;
 }
 
-.command-row {
+/* ---------------------------------------------------------------------------
+   Terminal settings dialog
+
+   One rhythm for every section: a title row with its own control on the right,
+   the fields, then the quiet status line. The launch-command row is gone, so
+   this dialog is purely about window layout and completion alerts.
+   --------------------------------------------------------------------------- */
+
+.terminal-settings-body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
-  padding: 0 12px 12px;
+  max-height: min(70vh, 560px);
+  overflow-y: auto;
 }
 
-.command-row code {
-  min-width: 0;
-  overflow: hidden;
-  padding: 8px 9px;
-  border: 1px solid #cad6d2;
+.terminal-settings-section {
+  display: grid;
+  gap: 12px;
+  padding: 16px 20px 18px;
+  border-top: 1px solid var(--line);
+}
+
+.terminal-settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 26px;
+}
+
+.terminal-settings-section-head > span:first-child {
   color: #24463d;
-  background: #ffffff;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .01em;
+}
+
+.terminal-settings-section-head .button {
+  flex: 0 0 auto;
+  min-height: 26px;
+}
+
+.terminal-settings-switch {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  color: #40544d;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.terminal-settings-switch input {
+  position: relative;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 16px;
+  margin: 0;
+  appearance: none;
+  border: 1px solid #aebcb7;
+  border-radius: 999px;
+  background: #dde4e2;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.terminal-settings-switch input::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgb(29 44 39 / 24%);
+  content: '';
+  transition: transform 120ms ease;
+}
+
+.terminal-settings-switch input:checked {
+  border-color: var(--blue);
+  background: var(--blue);
+}
+
+.terminal-settings-switch input:checked::after { transform: translateX(12px); }
+
+.terminal-settings-switch input:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.terminal-settings-switch input:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+.terminal-settings-switch-row {
+  align-items: flex-start;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfdfc;
+}
+
+.terminal-settings-switch-row input { margin-top: 1px; }
+.terminal-settings-switch-row span { display: grid; gap: 2px; min-width: 0; }
+.terminal-settings-switch-row strong { font-size: 11px; font-weight: 700; line-height: 1.3; }
+
+.terminal-settings-switch-row small {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.45;
 }
 
 .terminal-layout-settings {
   display: grid;
-  grid-template-columns: 76px 76px minmax(0, 1fr);
+  grid-template-columns: 84px 84px minmax(0, 1fr);
   gap: 10px;
   align-items: end;
-  margin-top: 0;
-  padding: 12px;
-  border-top: 1px solid var(--line);
-  background: #f8faf9;
 }
 
-.terminal-layout-heading {
-  display: flex;
-  grid-column: 1 / -1;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding-bottom: 1px;
-  color: #315047;
-  font-size: 11px;
-  font-weight: 800;
-}
-
-.terminal-background-toggle {
-  display: flex !important;
-  grid-column: 1 / -1;
-  gap: 7px !important;
-  align-items: center;
-  color: #40544d !important;
-  font-size: 11px !important;
-  font-weight: 700 !important;
-  text-transform: none !important;
-}
-
-.terminal-layout-settings label:not(.terminal-layout-toggle) {
+.terminal-layout-settings label {
   display: grid;
-  gap: 4px;
+  gap: 5px;
   color: var(--muted);
   font-size: 9px;
   font-weight: 800;
+  letter-spacing: .04em;
   text-transform: uppercase;
 }
 
 .terminal-layout-settings input[type="number"],
-.terminal-layout-settings select {
+.terminal-layout-settings select,
+.completion-alert-settings select {
   width: 100%;
   min-width: 0;
-  min-height: 32px;
-  padding: 0 9px;
+  min-height: 34px;
+  padding: 0 10px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: 8px;
+  color: var(--graphite);
   background: #fff;
-  font: 11px var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
 }
 
-.terminal-layout-toggle {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  min-height: auto;
-  color: #40544d;
-  font-size: 11px;
-  font-weight: 700;
-  white-space: nowrap;
-  text-transform: none;
+.terminal-layout-settings input[type="number"]:focus-visible,
+.terminal-layout-settings select:focus-visible,
+.completion-alert-settings select:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
 }
 
 .terminal-layout-footer {
   display: flex;
-  grid-column: 1 / -1;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 1px;
 }
 
 .terminal-layout-footer small {
   color: var(--muted);
   font-size: 9px;
-  line-height: 1.4;
+  line-height: 1.45;
 }
 
 .terminal-layout-footer .button {
@@ -2189,66 +2253,40 @@ summary:focus-visible,
   min-height: 28px;
 }
 
+/* Sound and the spoken-word switch are one decision, so they share a row on wide dialogs. */
 .completion-alert-settings {
-  display: grid;
-  grid-template-columns: minmax(0, 180px) minmax(0, 1fr);
-  gap: 10px 16px;
+  grid-template-columns: minmax(0, 200px) minmax(0, 1fr);
   align-items: center;
-  padding: 12px;
-  border-top: 1px solid var(--line);
-  background: #f8faf9;
 }
 
-.completion-alert-heading {
-  display: flex;
-  grid-column: 1 / -1;
-  align-items: center;
-  justify-content: space-between;
-  color: #315047;
-  font-size: 11px;
-  font-weight: 800;
-}
+.completion-alert-settings > .terminal-settings-section-head,
+.completion-alert-settings > small { grid-column: 1 / -1; }
 
-.completion-alert-settings > label:not(.completion-speech-toggle) {
+.completion-alert-settings > label:not(.terminal-settings-switch) {
   display: grid;
-  gap: 4px;
+  gap: 5px;
+  max-width: 220px;
   color: var(--muted);
   font-size: 9px;
   font-weight: 800;
+  letter-spacing: .04em;
   text-transform: uppercase;
 }
 
-.completion-alert-settings select {
-  width: 100%;
-  min-height: 32px;
-  padding: 0 9px;
-  border: 1px solid var(--line);
-  border-radius: 7px;
-  background: #fff;
-  font: 11px var(--font-mono);
+.completion-alert-settings > small {
+  color: var(--muted);
+  font-size: 9px;
+  line-height: 1.45;
 }
-
-.completion-speech-toggle {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  color: #40544d;
-  font-size: 11px;
-}
-
-.completion-speech-toggle span { display: grid; gap: 2px; }
-.completion-speech-toggle strong { font-size: 11px; }
-.completion-speech-toggle small,
-.completion-alert-settings > small { color: var(--muted); font-size: 9px; line-height: 1.4; }
-.completion-alert-settings > small { grid-column: 1 / -1; }
 
 @media (max-width: 760px) {
   .terminal-layout-settings { grid-template-columns: 1fr 1fr; }
-  .terminal-layout-heading, .terminal-layout-display { grid-column: 1 / -1; }
+  .terminal-layout-display { grid-column: 1 / -1; }
+  .terminal-settings-section-head { flex-wrap: wrap; row-gap: 8px; }
   .terminal-layout-footer { align-items: stretch; flex-direction: column; }
   .terminal-layout-footer .button { width: 100%; }
-  .completion-alert-settings { grid-template-columns: 1fr; }
-  .completion-alert-heading, .completion-alert-settings > small { grid-column: 1; }
+  .completion-alert-settings { grid-template-columns: minmax(0, 1fr); }
+  .completion-alert-settings > label:not(.terminal-settings-switch) { max-width: none; }
 }
 
 .prompt-field {
@@ -4939,14 +4977,6 @@ button.term-seg { border: 0; cursor: pointer; font: inherit; letter-spacing: inh
     justify-content: flex-start;
   }
 
-  .command-row {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .command-row .button {
-    width: 100%;
-  }
-
   .event-toolbar {
     align-items: stretch;
     flex-direction: column;
@@ -5237,7 +5267,6 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
 .terminal-preview { margin: 2px 0 0; font-size: 10px; }
 .terminal-meta { margin-top: 2px; font-size: 8px; }
 .connection-help { border-radius: 0; }
-.command-row { grid-template-columns: minmax(0, 1fr) auto; padding: 14px 20px; }
 .prompt-field { margin-top: 12px; }
 #task-prompt { min-height: 120px; padding: 12px; line-height: 1.5; resize: vertical; }
 .attachment-composer { padding: 10px; background: #f8faff; }
@@ -11147,9 +11176,6 @@ html[data-theme="dark"] .terminal-settings-close {
   color: #a4aab4;
 }
 
-html[data-theme="dark"] .command-row,
-html[data-theme="dark"] .terminal-layout-settings,
-html[data-theme="dark"] .completion-alert-settings,
 html[data-theme="dark"] .task-edit-body,
 html[data-theme="dark"] .standup-controls,
 html[data-theme="dark"] .standup-body {
@@ -11407,8 +11433,6 @@ html[data-theme="dark"] .council-config,
 html[data-theme="dark"] .turbo-config,
 html[data-theme="dark"] .planner-sidebar,
 html[data-theme="dark"] .planner-wave,
-html[data-theme="dark"] .command-row,
-html[data-theme="dark"] .terminal-layout-settings,
 html[data-theme="dark"] .task-edit-body,
 html[data-theme="dark"] .standup-controls,
 html[data-theme="dark"] .standup-body {
@@ -12860,7 +12884,6 @@ html[data-theme="dark"] .task-unread-marker {
    white surfaces back into the midnight shell.
    --------------------------------------------------------------------------- */
 
-html[data-theme="dark"] .command-row code,
 html[data-theme="dark"] .terminal-layout-settings input[type="number"],
 html[data-theme="dark"] .terminal-layout-settings select,
 html[data-theme="dark"] .completion-alert-settings select {
@@ -12880,6 +12903,51 @@ html[data-theme="dark"] .terminal-background-toggle {
 html[data-theme="dark"] .completion-alert-heading,
 html[data-theme="dark"] .completion-speech-toggle {
   color: var(--app-text-body) !important;
+}
+
+html[data-theme="dark"] .terminal-settings-body,
+html[data-theme="dark"] .terminal-settings-section {
+  border-color: var(--app-border);
+  background: var(--app-panel);
+}
+
+html[data-theme="dark"] .terminal-settings-section-head > span:first-child {
+  color: var(--app-text-body);
+}
+
+html[data-theme="dark"] .terminal-settings-switch {
+  color: var(--app-text-body);
+}
+
+html[data-theme="dark"] .terminal-settings-switch input {
+  border-color: var(--app-border);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .terminal-settings-switch input:checked {
+  border-color: var(--app-blue);
+  background: var(--app-blue);
+}
+
+html[data-theme="dark"] .terminal-settings-switch input::after {
+  background: var(--app-text-body);
+}
+
+html[data-theme="dark"] .terminal-settings-switch input:checked::after {
+  background: var(--app-panel);
+}
+
+html[data-theme="dark"] .terminal-settings-switch-row {
+  border-color: var(--app-border);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .terminal-settings-switch-row small,
+html[data-theme="dark"] .terminal-layout-footer small,
+html[data-theme="dark"] .terminal-layout-settings label,
+html[data-theme="dark"] .completion-alert-settings > label,
+html[data-theme="dark"] .completion-alert-settings > small {
+  color: var(--app-text-muted);
 }
 
 html[data-theme="dark"] .attachment-card {

@@ -392,7 +392,13 @@ test('direct effort slider submits its exact mapped value', () => {
   assert.match(composerApp, /state\.selectedThreadId = threadId;\s+renderExecutionControls\(\)/);
   assert.match(submitSource, /rememberThreadExecution\(state, submissionProvider, routedThreadId, execution\)/);
   assert.match(submitSource, /rememberThreadExecution\(state, createdTask\.provider \|\| submissionProvider, acceptedThreadId/);
-  assert.match(composerApp, /<i class="\$\{index === effortIndex \? 'active' : ''\}" title="\$\{escapeHtml\(effort\)\}"><\/i>/);
+  /*
+   * The markers carry no inline active class. renderEffortSelection owns the active
+   * marker, and the marker list itself is rebuilt only when the effort values change, so
+   * a refresh tick cannot replace the slider under the pointer. See stable-select.test.mjs.
+   */
+  assert.match(composerApp, /<i title="\$\{escapeHtml\(effort\)\}"><\/i>/);
+  assert.match(composerApp, /marker\.classList\.toggle\('active', index === effortIndex\)/);
   const effortInputStart = composerApp.indexOf("elements.effortSelect.addEventListener('input'");
   const effortInputEnd = composerApp.indexOf("elements.attachmentInput.addEventListener('change'", effortInputStart);
   const effortInputSource = composerApp.slice(effortInputStart, effortInputEnd);

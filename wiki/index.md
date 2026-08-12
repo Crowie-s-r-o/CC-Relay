@@ -41,6 +41,7 @@ type: index
 - [[header-position]]
 - [[durable-ui-layout-preferences]]
 - [[stable-text-selection]]
+- [[stable-composer-selects]]
 - [[hover-stability]]
 - [[dark-mode]]
 - [[diagnostics]]

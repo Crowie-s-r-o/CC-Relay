@@ -1,6 +1,6 @@
 ---
 name: Daily Standup Review
-description: Adversarial safety review of the date-gated, length-configurable, classified AI standup feature.
+description: Historical adversarial review of the retired length-configurable Tasks and Blockers standup.
 type: review
 tags:
   - relay
@@ -11,8 +11,8 @@ tags:
 
 # Daily Standup Review
 
-> [!note]
-> This review records the original three-mode implementation. The current default is the terse **All tasks** mode documented in [[daily-standup]].
+> [!warning]
+> This is a historical review of the retired length-configurable Tasks and Blockers implementation. The current Standup has one schema-validated changelog format with Added, Changed, Fixed, and Security sections. Use [[daily-standup]] as the current contract.
 
 ## Executive Summary
 

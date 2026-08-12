@@ -57,6 +57,7 @@ import {
 } from './queue-reorder.js';
 import { turboPlanMarker, turboWaitingCopy } from './turbo-state.js';
 import { turboControlsSignature } from './turbo-controls-signature.js';
+import { setControlDisabled, setControlValue, setSelectOptions } from './stable-select.js';
 import {
   graphProgressPresentation,
   normalizeTurboPackage,
@@ -532,15 +533,11 @@ const elements = {
   sessionMessage: document.querySelector('#session-message'),
   preferIdleTerminal: document.querySelector('#prefer-idle-terminal'),
   idleTerminalRoute: document.querySelector('#idle-terminal-route'),
-  connectionHelp: document.querySelector('#connection-help'),
   connectionHelpTitle: document.querySelector('#connection-help-title'),
   connectionHelpCopy: document.querySelector('#connection-help-copy'),
-  connectionCommandRow: document.querySelector('#connection-command-row'),
   terminalSettingsButton: document.querySelector('#terminal-settings-button'),
   terminalSettingsModal: document.querySelector('#terminal-settings-modal'),
   terminalSettingsClose: document.querySelector('#terminal-settings-close'),
-  launchCommand: document.querySelector('#launch-command'),
-  copyCommandButton: document.querySelector('#copy-command-button'),
   launchCodexButton: document.querySelector('#launch-codex-button'),
   launchClaudeButton: document.querySelector('#launch-claude-button'),
   terminalCloseRow: document.querySelector('#terminal-close-row'),
@@ -3631,11 +3628,12 @@ function renderExecutionControls() {
     settings.model = requestedModel;
   }
 
-  elements.modelSelect.innerHTML = models.map((item) => `
-    <option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>
-  `).join('');
-  elements.modelSelect.value = settings.model;
-  elements.modelSelect.disabled = models.length === 0;
+  setSelectOptions(elements.modelSelect, models.map((item) => ({
+    value: item.model,
+    label: `${item.displayName}${item.isDefault ? ' · default' : ''}`,
+  })));
+  setControlValue(elements.modelSelect, settings.model);
+  setControlDisabled(elements.modelSelect, models.length === 0);
   elements.modelHint.textContent = model?.description || `No ${providerLabel(state.selectedProvider)} models available.`;
 
   const efforts = model?.supportedReasoningEfforts || [];
@@ -3650,12 +3648,24 @@ function renderExecutionControls() {
   elements.effortSelect.min = '0';
   elements.effortSelect.max = String(Math.max(0, effortValues.length - 1));
   elements.effortSelect.step = '1';
-  elements.effortSelect.value = String(effortIndex);
-  elements.effortSelect.disabled = efforts.length === 0;
-  elements.effortSelect.dataset.values = JSON.stringify(effortValues);
-  elements.effortSliderSteps.innerHTML = effortValues.map((effort, index) => `
-    <i class="${index === effortIndex ? 'active' : ''}" title="${escapeHtml(effort)}"></i>
-  `).join('');
+  setControlValue(elements.effortSelect, String(effortIndex));
+  setControlDisabled(elements.effortSelect, efforts.length === 0);
+  const effortValuesJson = JSON.stringify(effortValues);
+  if (elements.effortSelect.dataset.values !== effortValuesJson) {
+    elements.effortSelect.dataset.values = effortValuesJson;
+  }
+  /*
+   * Only the marker list is rebuilt here, and only when the efforts themselves change.
+   * renderEffortSelection below owns the active marker, so repainting these nodes on
+   * every refresh tick would replace the slider under the pointer for nothing.
+   */
+  const renderedSteps = [...elements.effortSliderSteps.children].map((marker) => marker.title);
+  if (renderedSteps.length !== effortValues.length
+    || renderedSteps.some((title, index) => title !== effortValues[index])) {
+    elements.effortSliderSteps.innerHTML = effortValues
+      .map((effort) => `<i title="${escapeHtml(effort)}"></i>`)
+      .join('');
+  }
   renderEffortSelection(efforts, settings.effort);
   elements.executionControls.hidden = state.taskMode !== 'execute' || isExecuteCouncilEnabled();
 }
@@ -3769,12 +3779,15 @@ function planCouncilEffortOptions(select, model, requested) {
       : values.includes(model?.defaultReasoningEffort)
         ? model.defaultReasoningEffort
         : values[0] || '';
-  select.innerHTML = [
-    `<option value="">Model default${model?.defaultReasoningEffort ? ` · ${escapeHtml(model.defaultReasoningEffort)}` : ''}</option>`,
-    ...values.map((effort) => `<option value="${escapeHtml(effort)}">${escapeHtml(effort)}</option>`),
-  ].join('');
-  select.value = value;
-  select.disabled = values.length === 0;
+  setSelectOptions(select, [
+    {
+      value: '',
+      label: `Model default${model?.defaultReasoningEffort ? ` · ${model.defaultReasoningEffort}` : ''}`,
+    },
+    ...values.map((effort) => ({ value: effort, label: effort })),
+  ]);
+  setControlValue(select, value);
+  setControlDisabled(select, values.length === 0);
   return value;
 }
 
@@ -3798,26 +3811,28 @@ function renderPlanControls() {
   elements.planAuthorTerminalField.hidden = !terminalExecution;
   if (terminalExecution) {
     const unavailableSelection = settings.authorThreadId && !selectedAuthor
-      ? `<option value="${escapeHtml(settings.authorThreadId)}">Selected terminal unavailable</option>`
-      : '';
-    const empty = authorThreads.length === 0 && !unavailableSelection
-      ? '<option value="">Launch a Claude CC Relay first</option>'
-      : '';
-    elements.planAuthorTerminal.innerHTML = [
-      unavailableSelection,
-      empty,
-      ...authorThreads.map((thread) => (
-        `<option value="${escapeHtml(thread.id)}">${escapeHtml(thread.title)} · ${escapeHtml(thread.status === 'idle' ? 'idle' : thread.status)}</option>`
-      )),
-    ].join('');
-    elements.planAuthorTerminal.value = settings.authorThreadId || '';
-    elements.planAuthorTerminal.disabled = authorThreads.length === 0;
+      ? [{ value: settings.authorThreadId, label: 'Selected terminal unavailable' }]
+      : [];
+    const empty = authorThreads.length === 0 && unavailableSelection.length === 0
+      ? [{ value: '', label: 'Launch a Claude CC Relay first' }]
+      : [];
+    setSelectOptions(elements.planAuthorTerminal, [
+      ...unavailableSelection,
+      ...empty,
+      ...authorThreads.map((thread) => ({
+        value: thread.id,
+        label: `${thread.title} · ${thread.status === 'idle' ? 'idle' : thread.status}`,
+      })),
+    ]);
+    setControlValue(elements.planAuthorTerminal, settings.authorThreadId || '');
+    setControlDisabled(elements.planAuthorTerminal, authorThreads.length === 0);
   }
-  elements.planAuthorModel.innerHTML = claudeModels.map((item) => `
-    <option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>
-  `).join('');
-  elements.planAuthorModel.value = settings.claudeModel;
-  elements.planAuthorModel.disabled = claudeModels.length === 0;
+  setSelectOptions(elements.planAuthorModel, claudeModels.map((item) => ({
+    value: item.model,
+    label: `${item.displayName}${item.isDefault ? ' · default' : ''}`,
+  })));
+  setControlValue(elements.planAuthorModel, settings.claudeModel);
+  setControlDisabled(elements.planAuthorModel, claudeModels.length === 0);
   settings.claudeEffort = planCouncilEffortOptions(
     elements.planAuthorEffort,
     claudeModel,
@@ -3825,16 +3840,17 @@ function renderPlanControls() {
   );
   if (!planCouncilOrderEnabled()) {
     settings.claudeEffort = 'max';
-    elements.planAuthorEffort.innerHTML = '<option value="max">max</option>';
-    elements.planAuthorEffort.value = 'max';
-    elements.planAuthorEffort.disabled = true;
+    setSelectOptions(elements.planAuthorEffort, [{ value: 'max', label: 'max' }]);
+    setControlValue(elements.planAuthorEffort, 'max');
+    setControlDisabled(elements.planAuthorEffort, true);
   }
 
-  elements.planReviewerModel.innerHTML = codexModels.map((item) => `
-    <option value="${escapeHtml(item.model)}">${escapeHtml(item.displayName)}${item.isDefault ? ' · default' : ''}</option>
-  `).join('');
-  elements.planReviewerModel.value = settings.codexModel;
-  elements.planReviewerModel.disabled = codexModels.length === 0;
+  setSelectOptions(elements.planReviewerModel, codexModels.map((item) => ({
+    value: item.model,
+    label: `${item.displayName}${item.isDefault ? ' · default' : ''}`,
+  })));
+  setControlValue(elements.planReviewerModel, settings.codexModel);
+  setControlDisabled(elements.planReviewerModel, codexModels.length === 0);
   settings.codexEffort = planCouncilEffortOptions(
     elements.planReviewerEffort,
     codexModel,
@@ -6231,6 +6247,18 @@ function selectProvider(provider, { focus = false } = {}) {
   }
 }
 
+// The terminal settings dialog no longer shows a launch command, so its header always describes the
+// project whose window layout and completion alerts are being edited.
+function renderTerminalSettingsHeader() {
+  const project = activeProject();
+  elements.connectionHelpTitle.textContent = project
+    ? `${project.name} terminal settings`
+    : 'Project terminal settings';
+  elements.connectionHelpCopy.textContent = project
+    ? `Window layout and completion alerts are saved for ${project.name}. You can copy the layout to every pinned project.`
+    : 'Choose a pinned project before changing terminal settings.';
+}
+
 function renderAutomaticTerminalPool() {
   const project = activeProject();
   const limits = projectInstanceLimits(project);
@@ -6245,13 +6273,7 @@ function renderAutomaticTerminalPool() {
   elements.legacyTerminalControls.hidden = true;
   elements.legacyTerminalLaunchButtons.hidden = true;
   elements.terminalLegend.textContent = 'Automatic terminals';
-  elements.connectionCommandRow.hidden = false;
-  elements.connectionHelpTitle.textContent = project
-    ? `${project.name} terminal settings`
-    : 'Project terminal settings';
-  elements.connectionHelpCopy.textContent = project
-    ? `Window settings are saved for ${project.name}. You can copy them to every pinned project below.`
-    : 'Choose a pinned project before changing terminal settings.';
+  renderTerminalSettingsHeader();
   if (!state.submitting) state.selectedThreadId = null;
   elements.threadInput.value = '';
 
@@ -6416,16 +6438,7 @@ function renderThreads() {
           : 'Codex council Relays and Execute-only Claude sessions'
         : 'Connected Codex terminals',
   );
-  elements.launchCommand.textContent = isClaude
-    ? state.connection?.claudeLaunchCommand || 'claude --dangerously-skip-permissions'
-    // Keep this fallback in step with CODEX_RELAY_COMMAND in src/project-launcher.mjs. It replaces the
-    // static index.html text on every render, so a flagless copy here would freeze the launched TUI on
-    // the Codex update prompt before it dials --remote.
-    : state.connection?.launchCommand
-      || 'codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false';
-  elements.connectionHelpCopy.textContent = isClaude
-    ? 'Starts Claude with all permission checks disabled. Use only in a project you fully trust.'
-    : 'Starts Codex through CC Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
+  renderTerminalSettingsHeader();
   const availableIds = new Set(selectableThreads.map((thread) => thread.id));
   const previouslySelectedThreadId = state.selectedThreadId;
   if (!selectionLocked && !availableIds.has(state.selectedThreadId)) {
@@ -6452,7 +6465,7 @@ function renderThreads() {
         <span class="agent-icon ${isClaude ? 'agent-icon-claude' : 'agent-icon-codex'}" aria-hidden="true">${isClaude ? '✳' : '&gt;_'}</span>
         <div>
           <strong>${isClaude ? directClaudeEnabled ? 'No live Claude Code session' : 'Claude connection update is ready' : 'No Codex terminal connected'}${state.activeProjectPath ? ` in ${escapeHtml(workspaceName(state.activeProjectPath))}` : ''}</strong>
-          <p>${isClaude ? directClaudeEnabled ? 'Open Claude in a project, then CC Relay will discover it automatically.' : 'Restart CC Relay after the running queue finishes to activate the new backend adapter.' : 'Open the connection instructions below. CC Relay will discover the terminal automatically.'}</p>
+          <p>${isClaude ? directClaudeEnabled ? 'Open Claude in a project, then CC Relay will discover it automatically.' : 'Restart CC Relay after the running queue finishes to activate the new backend adapter.' : 'Launch Codex from this panel. CC Relay will discover the terminal automatically.'}</p>
         </div>
       </div>
     `;
@@ -6463,14 +6476,7 @@ function renderThreads() {
         : 'Claude discovery will activate on the next normal CC Relay restart.'
       : 'CC Relay is online and waiting for a Codex terminal.') + claudeDiscoveryNote();
     updateSubmitState();
-    elements.connectionHelp.open = true;
-    elements.connectionHelpTitle.textContent = isClaude ? 'Open a Claude Code session' : 'Connect another Codex terminal';
-    elements.connectionHelpCopy.textContent = isClaude
-      ? directClaudeEnabled
-        ? 'Runs Claude with all permission checks disabled. Use only in a project you fully trust. CC Relay then discovers the live session.'
-        : 'The source update is complete. Keep the current queue running and restart CC Relay normally when it becomes idle.'
-      : 'Runs Codex through CC Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
-    elements.connectionCommandRow.hidden = false;
+    renderTerminalSettingsHeader();
     renderProviderTabs();
     renderStatus();
     renderPlanControls();
@@ -6555,13 +6561,7 @@ function renderThreads() {
       ? `${visibleThreads.length} live Codex terminals. Choose the ${state.turboSettings.councilEnabled && state.turboSettings.councilOrder?.[0] === 'claude' ? 'Codex reviewer' : 'planner'}; CC Relay uses other terminals in this workspace as workers.`
     : `${visibleThreads.length} live CC Relay session${visibleThreads.length === 1 ? '' : 's'}. Select one to choose its provider, model, and effort.`) + claudeDiscoveryNote();
   updateSubmitState();
-  elements.connectionHelpTitle.textContent = isClaude
-    ? 'Open another Claude Code session'
-    : 'Connect another Codex terminal';
-  elements.connectionHelpCopy.textContent = isClaude
-    ? 'Runs Claude with all permission checks disabled. Use only in a project you fully trust.'
-    : 'Runs Codex through CC Relay with approvals and sandboxing disabled. Use only in a project you fully trust.';
-  elements.connectionCommandRow.hidden = false;
+  renderTerminalSettingsHeader();
   renderProviderTabs();
   renderStatus();
   renderTasks();
@@ -9398,17 +9398,6 @@ for (const tab of elements.modeTabs) {
     selectMode(elements.modeTabs[nextIndex].dataset.mode, { focus: true });
   });
 }
-elements.copyCommandButton.addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(elements.launchCommand.textContent);
-    elements.copyCommandButton.textContent = 'Copied';
-  } catch {
-    elements.copyCommandButton.textContent = 'Copy failed';
-  }
-  setTimeout(() => {
-    elements.copyCommandButton.textContent = 'Copy';
-  }, 1200);
-});
 elements.terminalSettingsButton.addEventListener('click', () => {
   resetTerminalLayoutStatus();
   elements.terminalSettingsModal.showModal();

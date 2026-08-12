@@ -85,6 +85,8 @@ Release notes require AI on every release, but no API key or project environment
 - Deterministic code rejects unknown sections, non-text values, control characters, links, HTML, overlong items, empty results, duplicate facts, and more than eight bullets.
 - Provider failure stops the release without a deterministic fake changelog.
 
+`src/changelog-notes.mjs` owns the shared schema, normalization, section ordering, and Markdown formatting for deploy and [[daily-standup]]. Changes to those constraints must keep release and in-app output aligned.
+
 This invocation follows the official Codex non-interactive pattern and reuses the user's saved CLI authentication. See [[daily-standup]] for the similar isolated provider pattern used inside the application.
 
 ## GitHub release handoff

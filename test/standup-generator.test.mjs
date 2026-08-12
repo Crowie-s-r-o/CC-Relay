@@ -31,6 +31,10 @@ function fakeChild() {
   return child;
 }
 
+function categorizedNotes({ added = [], changed = [], fixed = [], security = [] } = {}) {
+  return JSON.stringify({ added, changed, fixed, security });
+}
+
 test('standup window accepts local-day DST lengths and rejects arbitrary ranges', () => {
   const spring = validateStandupWindow({
     start: '2026-03-29T00:00:00.000Z',
@@ -137,57 +141,61 @@ test('standup prompt bounds large days and reports omitted source tasks', () => 
   assert.ok(prompt.length < 130_000);
 });
 
-test('generated output is split into tasks and blockers with prefix-free copy text', () => {
-  const output = normalizeStandupOutput(`
-# Standup
-
-- **Queue:** Added AI standup generation
-  using an isolated provider run.
-- Blocked: Signing was unavailable
-Summary complete.
-`);
+test('generated output is normalized into deploy-style changelog Markdown', () => {
+  const output = normalizeStandupOutput({
+    added: ['- Added AI standup generation'],
+    changed: ['Grouped saved work into deploy-style categories'],
+    fixed: ['Fixed local-day boundary handling.'],
+    security: [],
+  });
 
   assert.deepEqual(output, {
-    standup: '- Task: Queue: Added AI standup generation using an isolated provider run.\n- Blocker: Signing was unavailable.',
-    copyText: 'Tasks\nQueue: Added AI standup generation using an isolated provider run.\n\nBlockers\nSigning was unavailable.',
-    tasks: ['Queue: Added AI standup generation using an isolated provider run.'],
-    blockers: ['Signing was unavailable.'],
+    standup: '### Added\n\n- Added AI standup generation.\n\n### Changed\n\n- Grouped saved work into deploy-style categories.\n\n### Fixed\n\n- Fixed local-day boundary handling.',
+    copyText: '### Added\n\n- Added AI standup generation.\n\n### Changed\n\n- Grouped saved work into deploy-style categories.\n\n### Fixed\n\n- Fixed local-day boundary handling.',
+    added: ['Added AI standup generation.'],
+    changed: ['Grouped saved work into deploy-style categories.'],
+    fixed: ['Fixed local-day boundary handling.'],
+    security: [],
   });
-  assert.doesNotMatch(output.copyText, /^-\s/m);
+  assert.match(output.copyText, /^-\s/m);
   assert.equal(
-    normalizeStandupMarkdown('- Task: Shipped the change.\n- Blocker: Review is pending.'),
-    '- Task: Shipped the change.\n- Blocker: Review is pending.',
+    normalizeStandupMarkdown(JSON.stringify({
+      added: [],
+      changed: ['Improved the changelog output.'],
+      fixed: [],
+      security: [],
+    })),
+    '### Changed\n\n- Improved the changelog output.',
   );
-  const sectioned = normalizeStandupOutput(`
-## Tasks
-Shipped the date-gated modal.
-## Blockers
-No blockers identified.
-`);
-  assert.deepEqual(sectioned.tasks, ['Shipped the date-gated modal.']);
-  assert.deepEqual(sectioned.blockers, []);
 });
 
-test('standup length is validated and bounds normalized items', () => {
-  const generated = Array.from({ length: 45 }, (_, index) => `- Task: Update ${index + 1}.`).join('\n');
-  assert.equal(validateStandupLength(), 'all');
-  assert.equal(normalizeStandupOutput(generated, { length: 'all' }).tasks.length, MAX_STANDUP_SOURCE_TASKS);
-  assert.equal(normalizeStandupOutput(generated, { length: 'short' }).tasks.length, 4);
-  assert.equal(normalizeStandupOutput(generated, { length: 'standard' }).tasks.length, 8);
-  assert.equal(normalizeStandupOutput(generated, { length: 'detailed' }).tasks.length, 16);
-  assert.throws(() => validateStandupLength('unbounded'), /All tasks, Short, Standard, or Detailed/);
-});
-
-test('all tasks output keeps repeated task entries and caps every item to a short line', () => {
-  const output = normalizeStandupOutput([
-    '- Task: Rebuilt the desktop app.',
-    '- Task: Rebuilt the desktop app.',
-    `- Task: ${'A very long changed thing '.repeat(20)}`,
-  ].join('\n'), { length: 'all' });
-
-  assert.equal(output.tasks.length, 3);
-  assert.equal(output.tasks[0], output.tasks[1]);
-  assert.ok(output.tasks[2].length <= 160);
+test('standup notes share deploy limits and deduplicate facts across categories', () => {
+  const output = normalizeStandupOutput({
+    added: ['Added categorized notes.', 'Added categorized notes.'],
+    changed: ['Added categorized notes.', 'Improved the copy format.'],
+    fixed: [],
+    security: [],
+  });
+  assert.deepEqual(output.added, ['Added categorized notes.']);
+  assert.deepEqual(output.changed, ['Improved the copy format.']);
+  assert.throws(() => normalizeStandupOutput({
+    added: Array.from({ length: 5 }, (_, index) => `Added item ${index}.`),
+    changed: [],
+    fixed: [],
+    security: [],
+  }), /too many added items/);
+  assert.throws(() => normalizeStandupOutput({
+    added: ['A1', 'A2', 'A3'],
+    changed: ['C1', 'C2'],
+    fixed: ['F1', 'F2'],
+    security: ['S1', 'S2'],
+  }), /8-item limit/);
+  assert.throws(() => normalizeStandupOutput({
+    added: ['x'.repeat(180)],
+    changed: [],
+    fixed: [],
+    security: [],
+  }), /exceeds 180 characters/);
 });
 
 test('Codex JSONL extracts the final agent message', () => {
@@ -195,13 +203,32 @@ test('Codex JSONL extracts the final agent message', () => {
     JSON.stringify({ type: 'thread.started', thread_id: 'thread-one' }),
     JSON.stringify({
       type: 'item.completed',
-      item: { id: 'message-one', type: 'agent_message', text: '- First draft.' },
+      item: { id: 'message-one', type: 'agent_message', text: '{"added":[],"changed":["First draft"],"fixed":[],"security":[]}' },
     }),
     JSON.stringify({
       type: 'item.completed',
-      item: { id: 'message-two', type: 'agent_message', text: '- Final update.' },
+      item: { id: 'message-two', type: 'agent_message', text: '{"added":["Final update"],"changed":[],"fixed":[],"security":[]}' },
     }),
-  ].join('\n')), '- Final update.');
+  ].join('\n')), '{"added":["Final update"],"changed":[],"fixed":[],"security":[]}');
+});
+
+test('Claude structured output returns categorized notes', () => {
+  assert.deepEqual(parseClaudeStandupResult(JSON.stringify({
+    type: 'result',
+    subtype: 'success',
+    is_error: false,
+    structured_output: {
+      added: ['Added categorized standups.'],
+      changed: [],
+      fixed: [],
+      security: [],
+    },
+  })), {
+    added: ['Added categorized standups.'],
+    changed: [],
+    fixed: [],
+    security: [],
+  });
 });
 
 test('standup generator resolves and wraps the Windows Claude shim without losing empty arguments', async () => {
@@ -220,7 +247,7 @@ test('standup generator resolves and wraps the Windows Claude shim without losin
             type: 'result',
             subtype: 'success',
             is_error: false,
-            result: '- Shipped the Windows launch path.',
+            result: categorizedNotes({ changed: ['Improved the Windows launch path.'] }),
           }));
           child.emit('close', 0, null);
         });
@@ -243,6 +270,8 @@ test('standup generator resolves and wraps the Windows Claude shim without losin
     assert.ok(line.includes('--setting-sources'));
     assert.ok(line.includes('--tools'));
     assert.ok(line.includes('mcpServers'));
+    assert.ok(line.includes('--json-schema'));
+    assert.ok(line.includes('security'));
     const emptyArgument = '^^^"^^^"';
     assert.equal(line.split(emptyArgument).length - 1, 2, 'both empty arguments must survive');
   } finally {
@@ -268,7 +297,11 @@ test('standup generator resolves the Windows Codex shim that PATH search cannot 
         queueMicrotask(() => {
           child.stdout.end(JSON.stringify({
             type: 'item.completed',
-            item: { id: 'message-one', type: 'agent_message', text: '- Shipped it.' },
+            item: {
+              id: 'message-one',
+              type: 'agent_message',
+              text: categorizedNotes({ changed: ['Improved the Windows launch path.'] }),
+            },
           }));
           child.emit('close', 0, null);
         });
@@ -284,6 +317,7 @@ test('standup generator resolves the Windows Codex shim that PATH search cannot 
     assert.equal(invocation.command, 'cmd.exe');
     assert.ok(invocation.args[3].includes('codex.cmd'));
     assert.ok(invocation.args[3].includes('--ephemeral'));
+    assert.ok(invocation.args[3].includes('--output-schema'));
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }
@@ -364,7 +398,7 @@ test('standup generator uses an ephemeral isolated Codex run', async () => {
             item: {
               id: 'message-one',
               type: 'agent_message',
-              text: '- Added AI synthesis by passing saved conversations to a one-shot run.',
+              text: categorizedNotes({ added: ['Added AI synthesis from saved conversations.'] }),
             },
           }));
           child.emit('close', 0, null);
@@ -389,14 +423,20 @@ test('standup generator uses an ephemeral isolated Codex run', async () => {
       invocation.args.slice(invocation.args.indexOf('--sandbox'), invocation.args.indexOf('--sandbox') + 2),
       ['--sandbox', 'read-only'],
     );
+    assert.deepEqual(
+      invocation.args.slice(invocation.args.indexOf('--output-schema'), invocation.args.indexOf('--output-schema') + 2),
+      ['--output-schema', join(invocation.options.cwd, 'standup-notes.schema.json')],
+    );
     assert.match(invocation.options.cwd, /cc-relay-standup-/);
     assert.match(input, new RegExp(RELAY_NON_INTERACTIVE_INSTRUCTION.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.equal(input.endsWith(RELAY_NON_INTERACTIVE_INSTRUCTION), true);
     assert.deepEqual(result, {
-      standup: '- Task: Added AI synthesis by passing saved conversations to a one-shot run.',
-      copyText: 'Tasks\nAdded AI synthesis by passing saved conversations to a one-shot run.\n\nBlockers\nNone',
-      tasks: ['Added AI synthesis by passing saved conversations to a one-shot run.'],
-      blockers: [],
+      standup: '### Added\n\n- Added AI synthesis from saved conversations.',
+      copyText: '### Added\n\n- Added AI synthesis from saved conversations.',
+      added: ['Added AI synthesis from saved conversations.'],
+      changed: [],
+      fixed: [],
+      security: [],
       provider: 'codex',
     });
   } finally {
@@ -418,7 +458,12 @@ test('standup generator disables Claude tools and does not persist a session', a
             type: 'result',
             subtype: 'success',
             is_error: false,
-            result: '- Synthesized related queue work into one concise update.',
+            structured_output: {
+              added: [],
+              changed: ['Synthesized related queue work into one concise update.'],
+              fixed: [],
+              security: [],
+            },
           }));
           child.emit('close', 0, null);
         });
@@ -443,6 +488,8 @@ test('standup generator disables Claude tools and does not persist a session', a
       invocation.args.slice(invocation.args.indexOf('--tools'), invocation.args.indexOf('--tools') + 2),
       ['--tools', ''],
     );
+    assert.equal(invocation.args.includes('--json-schema'), true);
+    assert.match(invocation.args[invocation.args.indexOf('--json-schema') + 1], /"added"/);
     assert.equal(result.provider, 'claude');
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
@@ -479,10 +526,13 @@ test('standup generator allows only one isolated generation at a time', async ()
     );
     child.stdout.end(JSON.stringify({
       type: 'item.completed',
-      item: { type: 'agent_message', text: '- Generated the first standup.' },
+      item: {
+        type: 'agent_message',
+        text: categorizedNotes({ changed: ['Generated the first categorized standup.'] }),
+      },
     }));
     child.emit('close', 0, null);
-    assert.equal((await first).standup, '- Task: Generated the first standup.');
+    assert.equal((await first).standup, '### Changed\n\n- Generated the first categorized standup.');
   } finally {
     rmSync(temporaryRoot, { recursive: true, force: true });
   }

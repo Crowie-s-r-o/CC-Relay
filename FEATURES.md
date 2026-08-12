@@ -21,7 +21,7 @@ CC Relay is designed to make AI development work easier to control:
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
 - Monitor Claude session, Claude weekly, Fable weekly, and Codex weekly subscription usage in the global header.
 - Persist prompts, events, results, plans, errors, and attachments locally.
-- Generate a date-selected, length-configurable daily standup from saved prompts and AI responses.
+- Generate a date-selected daily changelog from saved prompts and AI responses.
 - Reorder, prioritize, reassign, cancel, retry, and delete tasks.
 
 ## Core workflows
@@ -127,9 +127,9 @@ The monitor uses each installed, authenticated provider CLI. It does not add API
 
 ### AI daily standup
 
-The Task queue includes a **Standup** action. Opening it does not run AI. **All tasks** is the default and produces one very short changed-thing item per recorded task. Short, Standard, and Detailed remain available for grouped summaries. Select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved prompts, assistant responses, final results, and failures for that project and Relay scope. It never uses a task terminal.
+The Task queue includes a **Standup** action. Opening it does not run AI. Select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved prompts, assistant responses, and final results from completed work in that project. It never uses a task terminal.
 
-All tasks keeps each recorded task separate. The other modes group related work and explain what changed and how. Every mode separates completed Tasks from unresolved Blockers. The modal lets you regenerate or copy plain sectioned text with no Markdown hyphen prefixes. Standup generation does not create a queue task, resume an existing task conversation, or add itself to history.
+Standup has one output type: the same concise changelog structure used by deploy. Related work is synthesized into short Added, Changed, Fixed, and Security sentences. Empty categories are omitted, facts are deduplicated, and the result copies as ready-to-paste Markdown headings and bullet points. Standup generation does not create a queue task, resume an existing task conversation, or add itself to history.
 
 ### Local persistence
 
