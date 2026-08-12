@@ -1,6 +1,6 @@
 # Changelog
 
-All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted release command.
+All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
 ## [0.1.0] - 2026-08-12
 

@@ -105,7 +105,9 @@ Forward-planning can optionally add a two-provider graph council. The user selec
 
 The Turbo council toggle is off by default. When enabled, `turbo_json.council` persists the selected `order` plus author and reviewer provider, model, and effort settings. A queued graph is reusable only when the completed council configuration matches the task. The lifecycle is `planning` for the author stage, `reviewing` for the second provider, `ready` only after the corrected graph validates, then `executing`, `complete`, or `failed`. Disabled council tasks keep the original Codex planning path and never require Claude availability. Execute retains the existing Claude-author, Codex-review, and Claude-revision plan route behind its optional checkbox.
 
-The composer reuses the Execute Plan council visual language without making council the only way to choose a planner. Its **Planning route** is always visible. With council off, it shows one unnumbered Codex planner node with selectable planning model and effort, while the Claude node, connector, and provider-order control stay hidden. Enabling council expands the same route to two bordered provider nodes with numbered author and reviewer roles. A compact **Codex first / Claude first** control swaps both node order and runtime role. The selected Codex planning settings are preserved across both states. Worker model, effort, and count remain separate execution settings. The question-mark disclosure explains the latency and Claude sign-in requirement. Requests carry the single planner settings in every Turbo submission and add the selected order plus generic author and reviewer settings only when council is enabled.
+The composer reuses the Execute Plan council visual language without making council the only way to choose a planner. The planning route is always rendered. With council off, it shows one unnumbered Codex planner node with selectable planning model and effort, while the Claude node, connector, and provider-order control stay hidden. Enabling council expands the same route to two bordered provider nodes with numbered author and reviewer roles. A compact **Codex first / Claude first** control swaps both node order and runtime role. The selected Codex planning settings are preserved across both states. Worker model, effort, and count remain separate execution settings. The question-mark disclosure explains the latency and Claude sign-in requirement.
+
+Every Turbo submission carries the single planner settings, and it also carries the selected order plus the generic author and reviewer settings unconditionally: `turboCouncilRequest` is spread into the request body whether or not the switch is on, so a disabled council posts `councilEnabled: false` beside populated role fields. The server does not treat that as a contradiction, because `validateTurboCouncilConfig` in `src/turbo-council-config.mjs` returns `{ enabled: false, order }` before it reads a single role field. Do not add a client-side branch that strips those fields; the server ignoring them is the contract.
 
 > [!important]
 > Do not hide `#turbo-council-route` when council is disabled. Its `data-enabled="false"` state is the single-planner presentation and intentionally hides only the second provider and review connector. Hiding the whole route removes the only visible Turbo planner model selector even though the non-council runtime already accepts and persists `plannerModel` and `plannerEffort`.
@@ -115,6 +117,35 @@ Cancellation is parent scoped. A queued review rejects immediately with `cancell
 TurboRunner records council configuration and compact author and reviewer audit metadata in `turbo-plan.json`. It does not copy the provider event stream into the artifact. For Codex-first, the planner CC Relay is released while serialized Claude review runs. For Claude-first, the Codex planner remains free during Claude authoring and becomes reserved only for the Codex review stage. Council-enabled `task.md` files identify the selected route and both role settings.
 
 Queue preparation entries separate `plannerBusy` from `councilStage`. `plannerBusy` follows the provider that owns the current stage rather than the complete preparation lifetime. This lets Codex-first release its CC Relay during Claude review and Claude-first leave the CC Relay free until Codex review begins. Non-council preparations retain the original same-thread exclusion.
+
+## Compact composer panel, August 12, 2026
+
+The Turbo panel used to stack four layers before the first worker control: a panel header, a second eyebrow-plus-title council header, a two-line bordered council switch, and a tall provider card carrying an icon tile, a display-size provider name, a description paragraph, and two stacked selects. Roughly 450px of chrome sat above **Worker model**.
+
+The panel top is now three rows:
+
+1. One header row: the **Planner and workers** title, the planning-count chip that reads `1 planner` or `2 providers`, and the readiness chip.
+2. One single-line council switch beside its question-mark disclosure.
+3. One planner node: identity on the first line, **Model** and **Effort** side by side on the second.
+
+Three descriptions of the old top are therefore retired. The Turbo supporting sentence now lives inside the question-mark disclosure and no longer prints under the switch. The Turbo council eyebrow-plus-title header is gone, while Execute keeps its own **Optional review / Plan council** header. The former **Planner and worker fleet** and **Planning route** titles merged into the single header above.
+
+> [!important]
+> `.turbo-council-config` keeps the shared `.council-config` class so the panel still owns the Plan council component and its `--council-*` tokens, but it must paint no frame of its own inside `.turbo-config`. The light rule that removes the frame is a single class, so both painting `html[data-theme="dark"] .council-config` blocks outrank it; the dark theme restates the removal after the later one. Without that guard the panel is flat only by the coincidence that both surfaces are painted the same color.
+
+> [!warning]
+> Execute's provider-order control carries the Turbo class: `class="turbo-council-order plan-council-order"`. Compact Turbo rules for that control must be scoped under `.turbo-config`, or they silently reshape a control in the other workflow. Execute's control keeps the 10px margin, 4px padding, and 28px buttons of the earlier layers.
+
+## Composer panel behavior fixes, August 12, 2026
+
+- **Return no longer queues from the worker count.** `#turbo-worker-count` is a number field inside the task form, and the form has a submit button, so an unguarded Return committed a fleet size by queueing a multi-terminal Turbo task. The field now prevents the default and blurs, which commits the value once through its `change` listener. This mirrors the existing guard on the per-project instance steppers.
+- **Automatic pools cap the fleet at seven workers.** Pool Turbo reserves `workerCount + 1` Codex slots, and `validateInstanceLimit` caps a project at eight instances per provider, so eight workers could never be dispatched. In pool mode the field advertises `max="7"` and the renderer clamps state to it. Legacy live-terminal Turbo keeps eight workers, and the server keeps its `1..8` validation, because those workers are terminals the user opened rather than pool slots.
+- **Capacity advice stays honest at the boundary.** Below the ceiling the readiness chip and the submit alert still advise raising the project maximum. Above it they advise reducing the worker terminals, because no reachable setting satisfies the request. Queueing more work than the currently free capacity remains allowed; the task simply waits.
+- **Refresh ticks no longer fight the panel.** `renderTurboControls` rewrites six selects through `innerHTML` and is re-run by the two-second snapshot refresh and the four-second thread poll, which snapped open dropdowns shut. It now folds every datum the markup is drawn from into one token through `public/turbo-controls-signature.js` and skips the rebuild when the token is unchanged. The fold is recorded after the render body so it describes the settled, normalized panel. Mode and project switches, and a committed worker count that clamps back to the stored value, pass `force: true`.
+- **The worker count is clamped on commit, not on every keystroke.** Clamping in the `input` handler made a two-digit count impossible to type. The clamp moved to `change`, the render never overwrites the value of the focused field, and a `blur` listener resyncs an abandoned edit.
+- **Copy follows the runtime.** The attachment line states that a Turbo prompt sends its images to the planner turn and to every worker turn, and names both Plan council planners when council is on, because `{ ...task }` reaches the planner and each worker turn and `attachmentPaths` reaches the council stages. The fleet sentence follows the **Keep workflow terminals open** toggle: with retention active it ends by saying the terminals stay connected instead of promising that every terminal closes.
+
+`test/turbo-composer-panel.test.mjs` protects these contracts, including a signature test that changes each input datum in turn and asserts the fold moves. See [[interface-layout]] and [[live-terminal-retention]].
 
 ## Files
 
@@ -129,8 +160,10 @@ Queue preparation entries separate `plannerBusy` from `councilStage`. `plannerBu
 - `public/style.css`
 - `public/turbo-state.js`
 - `public/turbo-council-state.js`
+- `public/turbo-controls-signature.js`
 - `test/turbo-runner.test.mjs`
 - `test/turbo-state.test.mjs`
+- `test/turbo-composer-panel.test.mjs`
 - `test/turbo-graph-integration.test.mjs`
 
 #relay #turbo #codex #parallel #dag #scheduler

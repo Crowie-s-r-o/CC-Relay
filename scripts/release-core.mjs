@@ -9,6 +9,7 @@ const SECTION_ORDER = [
 ];
 const MAX_NOTE_LENGTH = 180;
 const MAX_NOTES = 8;
+const MAX_RELEASE_COMMITS = 100;
 
 export const releaseNotesSchema = {
   type: 'object',
@@ -103,13 +104,17 @@ export function buildReleasePrompt({
   commits = [],
   changes = '',
 } = {}) {
+  const commitList = Array.isArray(commits) ? commits : [];
+  const selectedCommits = commitList.slice(-MAX_RELEASE_COMMITS);
   const source = JSON.stringify({
     previousTag,
     nextTag,
-    commits: commits.map((commit) => ({
+    commitCount: commitList.length,
+    omittedOldestCommits: Math.max(0, commitList.length - selectedCommits.length),
+    commits: selectedCommits.map((commit) => ({
       hash: boundedText(commit?.hash, 80),
-      subject: boundedText(commit?.subject, 500),
-      body: boundedText(commit?.body, 4_000),
+      subject: boundedText(commit?.subject, 300),
+      body: boundedText(commit?.body, 1_200),
     })),
     changedFiles: boundedText(changes, 70_000),
   }, null, 2);
@@ -144,16 +149,27 @@ function extractJsonObject(output) {
 }
 
 function cleanNote(value) {
-  let text = String(value || '')
+  const source = String(value || '');
+  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(source)) {
+    throw new Error('AI release notes must not contain control characters.');
+  }
+  let text = source
     .replace(/\u2014/g, ' - ')
     .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (!text) return '';
+  if (
+    /(?:https?:\/\/|www\.)/i.test(text)
+    || /!?\[[^\]]*\]\([^)]*\)/.test(text)
+    || /<\/?[a-z!][^>]*>/i.test(text)
+  ) {
+    throw new Error('AI release notes must be plain text without links or HTML.');
+  }
+  if (!/[.!?)]$/.test(text)) text = `${text}.`;
   if (text.length > MAX_NOTE_LENGTH) {
     throw new Error(`AI release note exceeds ${MAX_NOTE_LENGTH} characters.`);
   }
-  if (!/[.!?)]$/.test(text)) text = `${text}.`;
   return text;
 }
 

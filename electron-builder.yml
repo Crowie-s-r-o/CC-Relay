@@ -6,6 +6,8 @@ files:
   - src/**/*
   - public/**/*
   - package.json
+  - LICENSE
+  - THIRD_PARTY_NOTICES.md
 mac:
   category: public.app-category.developer-tools
   icon: icon.png
@@ -37,6 +39,9 @@ dmg:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  artifactName: CC-Relay-${version}-${os}-${arch}-Setup.${ext}
+portable:
+  artifactName: CC-Relay-${version}-${os}-${arch}-Portable.${ext}
 artifactName: CC-Relay-${version}-${os}-${arch}.${ext}
 publish:
   provider: github

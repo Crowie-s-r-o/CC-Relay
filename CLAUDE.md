@@ -51,4 +51,4 @@ The Obsidian-style `wiki/` is the project's living engineering memory. Update th
 
 ## Releases
 
-Do not edit versions or `CHANGELOG.md` in an ordinary feature change. Maintainers use `npm run release -- auto` from a clean `main` branch. The command owns package version updates, AI-generated release notes, verification, the release commit, the annotated tag, and the atomic GitHub push.
+Do not edit versions or `CHANGELOG.md` in an ordinary feature change. Maintainers use `npm run deploy` from a clean `main` branch. The command owns package version updates, AI-generated release notes, verification, the release commit, the annotated tag, and the atomic GitHub push.

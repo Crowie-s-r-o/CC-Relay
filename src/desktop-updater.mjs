@@ -94,6 +94,26 @@ function selectedDialogButton(result) {
   return typeof result === 'number' ? result : result?.response;
 }
 
+function stateReleaseUrl(options, info) {
+  try {
+    if (typeof options.releaseUrlForVersion === 'function') {
+      return String(options.releaseUrlForVersion(availableVersion(info)) || '');
+    }
+    return String(options.releasesUrl || '');
+  } catch {
+    return String(options.releasesUrl || '');
+  }
+}
+
+function notifyState(listener, state) {
+  if (typeof listener !== 'function') return;
+  try {
+    listener({ ...state });
+  } catch {
+    // Rendering update state must never interfere with the updater lifecycle.
+  }
+}
+
 /**
  * Coordinates the safe, user-driven desktop update lifecycle.
  *
@@ -109,12 +129,34 @@ export function createDesktopUpdater(options = {}) {
   const logger = options.logger || console;
   const schedule = options.timer || options.setTimeout || globalThis.setTimeout;
   const delay = Number.isFinite(options.delay) ? Math.max(0, options.delay) : DEFAULT_DELAY;
+  const onStateChange = options.onStateChange;
 
   let started = false;
   let checkInFlight = false;
   let downloadInFlight = false;
   let availablePromptInFlight = false;
   let downloadedPromptInFlight = false;
+  let state = {
+    supported: false,
+    status: 'unsupported',
+    currentVersion: currentVersion(options),
+    latestVersion: null,
+    releaseUrl: String(options.releasesUrl || ''),
+    downloadPercent: null,
+  };
+
+  function publish(status, changes = {}) {
+    state = { ...state, ...changes, status };
+    notifyState(onStateChange, state);
+  }
+
+  function publishUpdate(status, info, changes = {}) {
+    publish(status, {
+      latestVersion: availableVersion(info),
+      releaseUrl: stateReleaseUrl(options, info),
+      ...changes,
+    });
+  }
 
   function configureUpdater() {
     if (!updater) return;
@@ -125,10 +167,12 @@ export function createDesktopUpdater(options = {}) {
   async function checkForUpdates() {
     if (checkInFlight) return;
     checkInFlight = true;
+    publish('checking', { downloadPercent: null });
     safeLogger(logger, 'info', 'Checking for desktop updates.');
     try {
       await updater.checkForUpdates();
     } catch (error) {
+      publish('error');
       safeLogger(logger, 'error', 'Desktop update check failed.', error);
     } finally {
       checkInFlight = false;
@@ -137,6 +181,7 @@ export function createDesktopUpdater(options = {}) {
 
   async function handleAvailable(info) {
     if (availablePromptInFlight || downloadInFlight) return;
+    publishUpdate('available', info, { downloadPercent: null });
     const window = dialogWindow(getMainWindow);
     if (!window) {
       safeLogger(logger, 'info', 'Desktop update available, but no live window can show the prompt.');
@@ -156,10 +201,12 @@ export function createDesktopUpdater(options = {}) {
       if (selectedDialogButton(response) !== 0) return;
       if (downloadInFlight) return;
       downloadInFlight = true;
+      publishUpdate('downloading', info, { downloadPercent: null });
       safeLogger(logger, 'info', `Downloading CC Relay ${availableVersion(info)}.`);
       try {
         await updater.downloadUpdate();
       } catch (error) {
+        publishUpdate('error', info);
         safeLogger(logger, 'error', 'Desktop update download failed.', error);
       } finally {
         downloadInFlight = false;
@@ -173,6 +220,7 @@ export function createDesktopUpdater(options = {}) {
 
   async function handleDownloaded(info) {
     if (downloadedPromptInFlight) return;
+    publishUpdate('downloaded', info, { downloadPercent: 100 });
     const window = dialogWindow(getMainWindow);
     if (!window) {
       safeLogger(logger, 'info', 'Desktop update downloaded, but no live window can show the prompt.');
@@ -190,8 +238,10 @@ export function createDesktopUpdater(options = {}) {
         ),
       );
       if (selectedDialogButton(response) !== 0) return;
+      publishUpdate('installing', info, { downloadPercent: 100 });
       await restartAndInstall();
     } catch (error) {
+      publishUpdate('downloaded', info, { downloadPercent: 100 });
       safeLogger(logger, 'error', 'Desktop update installation handoff failed.', error);
     } finally {
       downloadedPromptInFlight = false;
@@ -201,12 +251,29 @@ export function createDesktopUpdater(options = {}) {
   function start() {
     if (started) return false;
     started = true;
-    if (!updater || !resolveEligibility(options)) return false;
+    if (!updater || !resolveEligibility(options)) {
+      publish('unsupported', { supported: false });
+      return false;
+    }
 
+    publish('checking', { supported: true });
     configureUpdater();
     eventOn(updater, 'update-available', handleAvailable);
+    eventOn(updater, 'update-not-available', () => {
+      publish('current', {
+        latestVersion: null,
+        releaseUrl: String(options.releasesUrl || ''),
+        downloadPercent: null,
+      });
+    });
+    eventOn(updater, 'download-progress', (progress) => {
+      publish('downloading', {
+        downloadPercent: Number.isFinite(progress?.percent) ? progress.percent : null,
+      });
+    });
     eventOn(updater, 'update-downloaded', handleDownloaded);
     eventOn(updater, 'error', (error) => {
+      publish('error');
       safeLogger(logger, 'error', 'Desktop updater reported an error.', error);
     });
 
@@ -216,7 +283,10 @@ export function createDesktopUpdater(options = {}) {
     return true;
   }
 
-  return { start };
+  return {
+    start,
+    status: () => ({ ...state }),
+  };
 }
 
 export default createDesktopUpdater;

@@ -6,7 +6,7 @@ type: architecture
 
 # Desktop Updates
 
-CC Relay uses `electron-updater` with the GitHub publisher configured for `Crowie-s-r-o/CC-Relay`. The updater is deliberately an Electron-main-process concern. The localhost server, renderer, preload surface, and task API do not expose update controls or update state.
+CC Relay uses `electron-updater` with the GitHub publisher configured for `Crowie-s-r-o/CC-Relay`. Download and installation remain Electron-main-process concerns. A sanitized, read-only update state crosses the embedded loopback status API so the renderer can show a compact release indicator; the renderer has no update control or privileged Electron surface.
 
 ## Runtime contract
 
@@ -19,6 +19,8 @@ The coordinator in `src/desktop-updater.mjs` is dependency-injected and has no d
 > `electron-updater` 6.8.9 is CommonJS and defines `autoUpdater` through a runtime property getter. Electron's ESM loader does not expose that getter as a named export. `src/electron-main.mjs` must default-import the package and destructure `autoUpdater` from that default object. A named import passes a source syntax check but crashes the packaged app before startup.
 
 The lifecycle starts once, after `BrowserWindow.loadURL()` succeeds, and schedules one delayed `checkForUpdates()` call. Automatic download and automatic installation on quit are disabled. An available update displays a window-modal **Download** or **Later** choice. A downloaded update displays **Restart and install** or **Later**. No-update results, check failures, and download failures never show background error dialogs.
+
+`createDesktopUpdater` publishes `unsupported`, `checking`, `current`, `available`, `downloading`, `downloaded`, `installing`, and `error` snapshots. Electron forwards those snapshots through `setDesktopUpdateState`; `/api/status.desktopUpdate` returns only normalized versions, bounded progress, and a URL restricted to this repository's GitHub Releases path. The header stays hidden unless a valid newer version is known. It then links to the exact release, shows download progress, or marks the update ready while native dialogs continue to own consent.
 
 The coordinator ignores overlapping checks, downloads, and prompts. It also skips prompts when the main window is absent or destroyed. This keeps updater events safe during startup and shutdown.
 
@@ -44,7 +46,7 @@ The shared `relayShutdown` path also closes every native terminal launched by th
 The build configuration lives in [[../electron-builder.yml|electron-builder.yml]], the package metadata lives in [[../package.json|package.json]], and the native matrix plus GitHub release job live in [[../.github/workflows/build-desktop.yml|build-desktop.yml]]. The publisher is GitHub with owner `Crowie-s-r-o`, repository `CC-Relay`, and release type `release`.
 
 > [!important]
-> The product display name is `CC Relay`, but release artifact files use the hyphenated `CC-Relay-${version}-${os}-${arch}.${ext}` form. A space in `artifactName` produces files with spaces while `latest-mac.yml` normalizes its URLs to hyphens, leaving the update feed pointed at missing files. Keep the artifact name hyphenated and the bundle, DMG volume, menu, About item, and UI name spaced. See [[product-naming]].
+> The product display name is `CC Relay`, but release artifact files stay hyphenated. macOS uses `CC-Relay-${version}-${os}-${arch}.${ext}`. Windows adds `-Setup` for NSIS and `-Portable` for the manual executable so two `.exe` targets cannot overwrite each other. A space in `artifactName` produces files with spaces while update metadata normalizes URLs to hyphens, leaving the feed pointed at missing files. Keep artifact names hyphenated and the bundle, DMG volume, menu, About item, and UI name spaced. See [[product-naming]].
 
 > [!important]
 > The native Crowie application icon comes from `build/icon.png`. Both `mac.icon` and `win.icon` point to that build resource, which electron-builder converts for the macOS bundle and Windows executables. `public/favicon.svg` controls only the renderer tab icon and cannot replace the Electron logo in the Dock, Finder, taskbar, or installed application.
@@ -55,17 +57,17 @@ The build configuration lives in [[../electron-builder.yml|electron-builder.yml]
 Create a release from a clean `main` branch with:
 
 ```bash
-npm run release -- auto
+npm run deploy
 ```
 
-The local release command infers or accepts the Semantic Versioning bump, requires an isolated Codex or Claude CLI to generate compact notes, updates both package manifests and `CHANGELOG.md`, runs metadata checks, all tests, and the dependency audit, creates an annotated tag, then atomically pushes `main` and the tag. The resulting version contract remains:
+The local deploy command infers or accepts the Semantic Versioning bump, requires an isolated Codex or Claude CLI to generate compact notes, updates both package manifests and `CHANGELOG.md`, runs metadata checks, all tests, and the dependency audit, creates an annotated tag, then atomically pushes `main` and the tag. The resulting version contract remains:
 
 ```text
 package.json version: 0.2.0
 git tag:             v0.2.0
 ```
 
-The release job rejects any tag, package, lockfile, changelog, or publisher mismatch before downloading or publishing artifacts. It extracts the matching AI-written changelog entry as the GitHub Release body. Each native build uploads its complete `dist/` directory, and the release job attaches those files to the tag release. The expected feed metadata and artifacts are:
+The release job rejects any tag, package, lockfile, changelog, publisher, or Windows target-name mismatch before downloading or publishing artifacts. It extracts the matching AI-written changelog entry as the GitHub Release body. Native builds upload only packaged deliverables from `dist/`; unpacked application directories and builder diagnostics never become release assets. The expected feed metadata and artifacts are:
 
 | Platform | Update metadata | Installable artifacts |
 | --- | --- | --- |
@@ -81,25 +83,27 @@ Signing credentials are not stored in the repository. Production macOS releases 
 ## Files involved
 
 - `src/desktop-updater.mjs`: Electron-independent lifecycle coordinator and manual prompt policy.
+- `src/desktop-update-status.mjs`: pure normalization for versions, progress, states, and trusted release URLs.
 - `src/electron-main.mjs`: packaged-build eligibility, delayed startup, and graceful install handoff.
 - `src/server-options.mjs`: fixed standalone defaults plus validated desktop port flags.
-- `src/server.mjs`: explicit readiness promise and actual bound HTTP endpoint.
+- `src/server.mjs`: explicit readiness promise, actual bound HTTP endpoint, and sanitized desktop update status.
 - `src/codex-app-server.mjs`: actual shared proxy endpoint advertisement after dynamic binding.
 - `src/diagnostics.mjs`: bounded JSONL persistence shared by Electron and the backend.
 - `build/icon.png`: 1024px transparent Crowie source used for native application icons and the development Dock icon.
 - `electron-builder.yml`: native targets, artifact names, update metadata generation, and GitHub publisher.
 - `.github/workflows/build-desktop.yml`: native build matrix, tag/version guard, artifact upload, and GitHub release publishing.
-- `scripts/release.mjs`: clean-tree checks, version selection, isolated AI generation, verification, commit, tag, and atomic push.
+- `scripts/deploy.mjs`: clean-tree checks, version selection, isolated AI generation, verification, commit, tag, and atomic push.
 - `scripts/release-core.mjs`: deterministic SemVer, changelog normalization, formatting, and extraction helpers.
 - `scripts/release-check.mjs` and `scripts/release-notes.mjs`: CI metadata enforcement and GitHub Release body extraction.
 - `CHANGELOG.md`: canonical compact release history.
 - `package.json` and `package-lock.json`: app version and `electron-updater` dependency.
 
-No renderer IPC, preload permission, localhost route, or environment variable is required for updates. The existing `PORTABLE_EXECUTABLE_FILE` marker is read only to identify the Windows portable runtime; CC Relay does not create or mutate it.
+No renderer IPC, preload permission, writable update route, or environment variable is required for updates. The existing `PORTABLE_EXECUTABLE_FILE` marker is read only to identify the Windows portable runtime; CC Relay does not create or mutate it.
 
 ## Troubleshooting
 
 - **No check during development:** expected. Use a packaged build; `npm run desktop` is intentionally ineligible.
+- **No header indicator:** expected when the app is current, still checking, unpackaged, or a Windows portable build. A valid newer version is required before the link appears.
 - **Portable Windows build does not update:** expected. Download the latest portable artifact manually or install the NSIS build for automatic updates.
 - **No update after a tag:** confirm the tag is `vX.Y.Z`, the package version is `X.Y.Z`, and the GitHub release contains the platform's `latest-*.yml`, blockmaps, and installers.
 - **macOS update will not install:** verify the release is signed and notarized and that the app was distributed from a compatible release channel.

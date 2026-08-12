@@ -35,15 +35,15 @@ const AI_OUTPUT_LIMIT = 512 * 1024;
 const EXPECTED_REMOTE = /github\.com(?::|\/)Crowie-s-r-o\/CC-Relay(?:\.git)?$/i;
 
 function usage() {
-  return `CC Relay release
+  return `CC Relay deploy
 
 Usage:
-  npm run release -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run]
+  npm run deploy -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run]
 
 Examples:
-  npm run release -- auto
-  npm run release -- minor --provider claude
-  npm run release -- patch --dry-run`;
+  npm run deploy
+  npm run deploy -- minor --provider claude
+  npm run deploy -- patch --dry-run`;
 }
 
 function parseArguments(argv) {
@@ -415,10 +415,10 @@ async function main() {
       `The local release commit and ${tag} are valid, but GitHub push failed: ${error.message}. Retry with git push --atomic origin main ${tag}`,
     );
   }
-  console.log(`Released ${tag}. GitHub Actions will build and publish the desktop artifacts.`);
+  console.log(`Deployed ${tag}. GitHub Actions will build and publish the desktop artifacts.`);
 }
 
 main().catch((error) => {
-  console.error(`Release failed: ${error.message}`);
+  console.error(`Deploy failed: ${error.message}`);
   process.exitCode = 1;
 });

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import electronUpdater from 'electron-updater';
 import { desktopZoomFactorForInput } from './desktop-zoom.mjs';
 import { createDesktopUpdater } from './desktop-updater.mjs';
+import { DESKTOP_RELEASES_URL } from './desktop-update-status.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
 import { RELAY_APPLICATION_DIRECTORY } from './server-options.mjs';
 
@@ -22,6 +23,7 @@ let mainWindow = null;
 let relayShutdown = null;
 let quitting = false;
 let desktopDiagnostics = null;
+let publishDesktopUpdateState = null;
 
 function errorDetails(error) {
   return {
@@ -58,6 +60,9 @@ const desktopUpdater = createDesktopUpdater({
     || (process.platform === 'win32' && !process.env.PORTABLE_EXECUTABLE_FILE)
   ),
   getMainWindow: () => mainWindow,
+  releasesUrl: `${DESKTOP_RELEASES_URL}/latest`,
+  releaseUrlForVersion: (version) => `${DESKTOP_RELEASES_URL}/tag/v${version}`,
+  onStateChange: (state) => publishDesktopUpdateState?.(state),
   restartAndInstall: async () => {
     quitting = true;
     try {
@@ -114,6 +119,8 @@ async function createWindow() {
   const relay = await import('./server.mjs');
   const endpoint = await relay.serverReady;
   relayShutdown = relay.shutdown;
+  publishDesktopUpdateState = relay.setDesktopUpdateState;
+  publishDesktopUpdateState(desktopUpdater.status());
   desktopDiagnostic('desktop.server.ready', endpoint);
 
   mainWindow = new BrowserWindow({

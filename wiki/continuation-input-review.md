@@ -104,7 +104,7 @@ The executor sets `{ uncertain: true }` only after it has typed the message into
 
 - `sendError()` accepts additive fields and carries `deliveryUncertain: true` when the error does. Status code, outcome, and retry policy are unchanged. This is response shape only.
 - `api()` copies the flag onto the thrown error so callers never parse error copy.
-- `continuationDispatchOutcome()` in [[task-continuation-state]] maps one response to `clearComposer`, `kind`, `message`, and `detail`. Confirmed delivery and unconfirmed delivery both clear the composer and the persisted draft. A failure that provably delivered nothing keeps both.
+- `continuationDispatchOutcome()` in `public/task-continuation-state.js` maps one response to `clearComposer`, `kind`, `message`, and `detail`. Confirmed delivery and unconfirmed delivery both clear the composer and the persisted draft. A failure that provably delivered nothing keeps both. See [[same-task-session-continuation]].
 - Unconfirmed delivery renders as a calm `warning`, sticky across the two-second refresh, with the provider's exact account on the element title because the status row is one truncated line.
 
 **Why clearing an unconfirmed delivery is correct.** CC Relay has already declined to send the message twice over, so the only thing a retained draft can produce is a duplicate turn.

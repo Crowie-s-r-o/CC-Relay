@@ -7339,12 +7339,16 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
   padding: 5px 8px;
 }
 
-.turbo-council-order {
+/* Scoped to the Turbo panel on purpose. Execute's provider-order control carries the same
+   .turbo-council-order class (index.html: class="turbo-council-order plan-council-order"),
+   so an unscoped compaction here also shrank a control this panel never touched. Execute
+   keeps the earlier 10px margin, 4px padding, and 28px buttons. */
+.turbo-config .turbo-council-order {
   margin-top: 8px;
   padding: 3px;
 }
 
-.turbo-council-order button {
+.turbo-config .turbo-council-order button {
   min-height: 24px;
 }
 
@@ -11157,6 +11161,18 @@ html[data-theme="dark"] .standup-body {
   background: var(--app-well);
 }
 
+/* The Turbo council surface keeps its .council-config class so it still owns the shared
+   Plan council component and its --council-* tokens, but it must not paint a second frame
+   inside .turbo-config. The light rule that removes that frame is a single class, so both
+   dark .council-config blocks above outrank it; today the result only looks right because
+   they paint .turbo-config the same color. This restates the removal at their specificity,
+   after the later one, so the panel stays flat if either color ever changes. */
+html[data-theme="dark"] .turbo-council-config {
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
 html[data-theme="dark"] input,
 html[data-theme="dark"] select,
 html[data-theme="dark"] textarea,
@@ -13338,4 +13354,69 @@ html[data-theme="dark"] .session-complete-button[data-state="blocked"]:disabled 
 
 .task-session-modebar {
   margin: -11px -12px 8px;
+}
+
+/* A release signal belongs beside global app health, not inside any project queue. */
+.desktop-update-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 6px 10px;
+  border: 1px solid #cfd6ff;
+  border-radius: 8px;
+  color: #3f50dc;
+  background: #eef0ff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.desktop-update-indicator[hidden] {
+  display: none;
+}
+
+.desktop-update-indicator:hover {
+  border-color: #aeb8ff;
+  color: #2639c5;
+  background: #e4e8ff;
+}
+
+.desktop-update-indicator:focus-visible {
+  outline: 2px solid #7183ff;
+  outline-offset: 2px;
+}
+
+.desktop-update-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px rgb(63 80 220 / 12%);
+}
+
+.desktop-update-indicator[data-state="downloaded"] {
+  border-color: #b9e5d8;
+  color: #177057;
+  background: #eaf8f3;
+}
+
+html[data-theme="dark"] .desktop-update-indicator {
+  border-color: #40518b;
+  color: #b6c0ff;
+  background: #202b50;
+}
+
+html[data-theme="dark"] .desktop-update-indicator:hover {
+  border-color: #596bb0;
+  color: #d3d9ff;
+  background: #26345f;
+}
+
+html[data-theme="dark"] .desktop-update-indicator[data-state="downloaded"] {
+  border-color: #28584e;
+  color: #94dbc6;
+  background: #142d2b;
 }

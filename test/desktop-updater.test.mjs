@@ -48,6 +48,7 @@ function harness(options = {}) {
   };
   const window = { isDestroyed: () => false };
   const restartCalls = [];
+  const states = [];
   const coordinator = createDesktopUpdater({
     updater,
     dialog,
@@ -55,11 +56,14 @@ function harness(options = {}) {
     eligible: options.eligible ?? true,
     getMainWindow: () => options.window === undefined ? window : options.window,
     restartAndInstall: async () => restartCalls.push(true),
+    releasesUrl: 'https://github.com/Crowie-s-r-o/CC-Relay/releases/latest',
+    releaseUrlForVersion: (version) => `https://github.com/Crowie-s-r-o/CC-Relay/releases/tag/v${version}`,
+    onStateChange: (state) => states.push(state),
     logger,
     timer,
     delay: options.delay ?? 25,
   });
-  return { updater, coordinator, dialog, dialogs, logs, timers, restartCalls };
+  return { updater, coordinator, dialog, dialogs, logs, timers, restartCalls, states };
 }
 
 async function flush() {
@@ -101,11 +105,44 @@ test('start is idempotent, configures manual update flow, and schedules once', a
 });
 
 test('runs a check without prompting when no update is available', async () => {
-  const { updater, coordinator, dialogs } = harness({ runTimer: true });
+  const { updater, coordinator, dialogs, states } = harness({ runTimer: true });
   coordinator.start();
+  updater.emit('update-not-available');
   await flush();
   assert.equal(updater.checkCalls, 1);
   assert.equal(dialogs.length, 0);
+  assert.equal(states.at(-1).status, 'current');
+});
+
+test('publishes a safe, queryable update lifecycle for the desktop UI', async () => {
+  const { updater, coordinator, states } = harness({ choices: [1, 1] });
+  assert.equal(coordinator.status().status, 'unsupported');
+  coordinator.start();
+  assert.deepEqual(coordinator.status(), states.at(-1));
+  assert.equal(states.at(-1).supported, true);
+  assert.equal(states.at(-1).status, 'checking');
+
+  updater.emit('update-available', { version: '1.2.0' });
+  await flush();
+  assert.equal(states.at(-1).status, 'available');
+  assert.equal(states.at(-1).latestVersion, '1.2.0');
+  assert.equal(
+    states.at(-1).releaseUrl,
+    'https://github.com/Crowie-s-r-o/CC-Relay/releases/tag/v1.2.0',
+  );
+
+  updater.emit('download-progress', { percent: 47.6 });
+  assert.equal(states.at(-1).status, 'downloading');
+  assert.equal(states.at(-1).downloadPercent, 47.6);
+
+  updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  assert.equal(states.at(-1).status, 'downloaded');
+  assert.equal(states.at(-1).downloadPercent, 100);
+
+  updater.emit('error', new Error('network unavailable'));
+  assert.equal(states.at(-1).status, 'error');
+  assert.equal(states.at(-1).latestVersion, '1.2.0');
 });
 
 test('prompts for an available update and downloads only after acceptance', async () => {

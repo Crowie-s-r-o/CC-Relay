@@ -16,6 +16,10 @@ npm run release:check
 
 Run the localhost application with `npm start` or the Electron development shell with `npm run desktop`.
 
+## Contribution license
+
+By submitting a contribution, you confirm that you have the right to provide it and agree that it may be distributed under the repository's [PolyForm Noncommercial License 1.0.0](LICENSE). If an employer or another party may own the work, resolve that permission before submitting it.
+
 ## Before opening a pull request
 
 - Keep a change focused on one clear outcome.
@@ -28,7 +32,7 @@ Run the localhost application with `npm start` or the Electron development shell
 
 ## Commit messages
 
-The release command derives version intent from Conventional Commit headers:
+The deploy command derives version intent from Conventional Commit headers:
 
 ```text
 feat(queue): add project capacity controls
@@ -49,7 +53,7 @@ Include:
 - Remaining platform or live-environment gaps.
 - Screenshots for visible interface changes.
 
-Keep generated build output out of commits. Do not include a version bump or edit the changelog for an ordinary pull request; the release command owns those files.
+Keep generated build output out of commits. Do not include a version bump or edit the changelog for an ordinary pull request; the deploy command owns those files.
 
 ## Security issues
 

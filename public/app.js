@@ -49,6 +49,7 @@ import {
   queuedTaskIds,
 } from './queue-reorder.js';
 import { turboPlanMarker, turboWaitingCopy } from './turbo-state.js';
+import { turboControlsSignature } from './turbo-controls-signature.js';
 import {
   graphProgressPresentation,
   normalizeTurboPackage,
@@ -101,6 +102,7 @@ import {
 } from './provider-availability.js';
 import { createTextSelectionGuard } from './text-selection-guard.js';
 import { defaultEffortForModel } from './model-effort.js';
+import { desktopUpdatePresentation } from './desktop-update-state.js';
 import {
   breakdownIsActive,
   breakdownStatusPresentation,
@@ -153,6 +155,19 @@ const MAX_IMAGE_ATTACHMENTS = 99;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+
+/*
+ * A project accepts at most MAX_PROJECT_INSTANCES per provider (validateInstanceLimit in
+ * src/server.mjs), and a Turbo task on automatic pools reserves one planner slot plus one
+ * slot per worker. Eight workers would therefore need nine Codex slots, which no project
+ * can be configured to allow: the composer offered a fleet size that could never be
+ * dispatched and then advised raising a maximum past its own ceiling. Automatic pools cap
+ * the fleet one below the project ceiling; legacy live-terminal Turbo still allows eight
+ * because those workers are terminals the user opened, not pool slots.
+ */
+const MAX_PROJECT_INSTANCES = 8;
+const MAX_TURBO_WORKERS = 8;
+const MAX_POOL_TURBO_WORKERS = MAX_PROJECT_INSTANCES - 1;
 
 const API_TIMEOUT_MS = 20_000;
 // Task creation carries image data, so it gets a wider budget than a status read.
@@ -389,6 +404,9 @@ const state = {
   threadExecutionSettings: initialComposerState.threadExecutionSettings,
   planSettings: initialComposerState.planSettings,
   turboSettings: initialComposerState.turboSettings,
+  // Fold of everything the Turbo composer panel is drawn from. An unchanged fold means a
+  // refresh tick has nothing to repaint, so the panel keeps its open dropdowns and caret.
+  turboControlsSignature: '',
   planner: {
     open: false,
     loading: false,
@@ -426,6 +444,8 @@ const elements = {
   submitButton: document.querySelector('#task-submit-button'),
   codexStatus: document.querySelector('#codex-status'),
   codexStatusLabel: document.querySelector('#codex-status-label'),
+  desktopUpdateIndicator: document.querySelector('#desktop-update-indicator'),
+  desktopUpdateLabel: document.querySelector('#desktop-update-label'),
   providerInput: document.querySelector('#provider-id'),
   providerTabsContainer: document.querySelector('#provider-tabs'),
   modeTabs: [...document.querySelectorAll('.mode-tab')],
@@ -1545,7 +1565,13 @@ function renderAttachmentComposer() {
       ? 'Restart CC Relay once to enable image attachments.'
       : isExecuteCouncilEnabled()
         ? 'Sent to Claude and Codex throughout the review loop.'
-        : 'Sent to the selected AI with the prompt.';
+        // A Turbo prompt is delivered more than once: the planner turn carries the images,
+        // so does every worker turn, and council adds the second provider's stages.
+        : state.taskMode === 'turbo'
+          ? state.turboSettings.councilEnabled
+            ? 'Sent to both Plan council planners and to every worker turn.'
+            : 'Sent to the Turbo planner and to every worker turn.'
+          : 'Sent to the selected AI with the prompt.';
   const full = state.attachments.length >= MAX_IMAGE_ATTACHMENTS;
   elements.attachmentDropzone.dataset.state = !available ? 'unavailable' : full ? 'full' : 'ready';
   elements.attachmentInput.disabled = full || !available;
@@ -3535,9 +3561,90 @@ function turboCouncilIssue() {
   return readiness.ready ? '' : readiness.reason;
 }
 
-function renderTurboControls() {
+/** The most workers a fleet may hold, which the automatic pool ceiling constrains. */
+function maxTurboWorkers(automatic = usesDisposableTerminalPools()) {
+  return automatic ? MAX_POOL_TURBO_WORKERS : MAX_TURBO_WORKERS;
+}
+
+/**
+ * The field's text read as a fleet size: an empty or unreadable field falls back to one
+ * worker, and the live ceiling bounds the rest. The only copy of this rule.
+ */
+function clampTurboWorkerCount(value) {
+  const limit = maxTurboWorkers();
+  const requested = Math.floor(Number(value));
+  return Math.min(limit, Math.max(1, Number.isFinite(requested) ? requested : 1));
+}
+
+/*
+ * The one path that stores a fleet size. Forced: a value that clamps back to the stored
+ * count moves no signature, and the field would keep showing the rejected number.
+ */
+function commitTurboWorkerCount() {
+  state.turboSettings.workerCount = clampTurboWorkerCount(elements.turboWorkerCount.value);
+  renderTurboControls({ force: true });
+  updateSubmitState();
+}
+
+/*
+ * Safari does not move focus when a button is clicked, so a click on the submit button can
+ * arrive while the worker count still holds an edit that fired no change event: the request
+ * would carry the previously committed fleet size while the field shows a newer one.
+ * Chromium and Electron blur the field first, so their change listener has already stored
+ * this exact value and written it back into the field, and the comparison below returns
+ * before a second render.
+ */
+function flushTurboWorkerCount() {
+  if (clampTurboWorkerCount(elements.turboWorkerCount.value) === state.turboSettings.workerCount) return;
+  commitTurboWorkerCount();
+}
+
+/*
+ * Past the project ceiling, "raise the maximum" is advice the settings UI cannot follow,
+ * so the only honest instruction left is to shrink the fleet. Below it the original advice
+ * still resolves the wait, because the user really can raise that number.
+ */
+function turboCapacityAdvice(required) {
+  return required > MAX_PROJECT_INSTANCES
+    ? `Use at most ${MAX_POOL_TURBO_WORKERS} worker terminals · a project allows ${MAX_PROJECT_INSTANCES} Codex instances`
+    : `Raise Codex max instances to at least ${required}`;
+}
+
+/*
+ * Every datum renderTurboControls reads. Collected in one place so the fold below and the
+ * markup below that cannot drift apart: a field missing here produces a panel that stops
+ * repainting, which is worse than the rebuild it saves.
+ */
+function turboControlsSignatureInputs() {
+  const limits = projectInstanceLimits();
+  return {
+    automatic: usesDisposableTerminalPools(),
+    projectPath: activeProject()?.path || '',
+    codexLimit: limits.codex,
+    claudeLimit: limits.claude,
+    codexMissing: providerIsMissing('codex'),
+    claudeReady: isClaudePlanReady(),
+    // The readable blocker, not its three sources: this exact string can reach the chip.
+    claudeIssue: claudePlanIssue(),
+    keepTerminalOpen: state.keepTerminalOpen,
+    retainedTerminals: state.status?.capabilities?.retainedTerminalSessions === true,
+    hasPlannerThread: hasSelectedCodexThread(),
+    workerThreadCount: turboWorkerThreads().length,
+    settings: state.turboSettings,
+    catalogs: { codex: state.modelCatalogs.codex, claude: state.modelCatalogs.claude },
+  };
+}
+
+/*
+ * force is for the paths that must repaint even when no input moved: a committed worker
+ * count that clamped back to the value already stored, and a mode or project switch.
+ */
+function renderTurboControls({ force = false } = {}) {
+  const signature = turboControlsSignature(turboControlsSignatureInputs());
+  if (!force && state.turboControlsSignature === signature) return;
   const settings = state.turboSettings;
   const models = state.modelCatalogs.codex;
+  const automatic = usesDisposableTerminalPools();
   const plannerModel = preferredTurboModel(models, settings.plannerModel, 'sol');
   const workerModel = preferredTurboModel(models, settings.workerModel, 'luna');
   settings.plannerModel = plannerModel?.model || '';
@@ -3551,7 +3658,15 @@ function renderTurboControls() {
   elements.turboWorkerModel.disabled = models.length === 0;
   settings.plannerEffort = turboEffortOptions(elements.turboPlannerEffort, plannerModel, settings.plannerEffort);
   settings.workerEffort = turboEffortOptions(elements.turboWorkerEffort, workerModel, settings.workerEffort);
-  elements.turboWorkerCount.value = String(settings.workerCount);
+  const workerLimit = maxTurboWorkers(automatic);
+  // A fleet restored from a legacy session, or configured before the pool capability
+  // arrived, can exceed the automatic ceiling. Clamp before the field is written.
+  settings.workerCount = Math.min(workerLimit, Math.max(1, settings.workerCount));
+  elements.turboWorkerCount.max = String(workerLimit);
+  // Never replace text the user is still typing. The blur listener resyncs the field.
+  if (document.activeElement !== elements.turboWorkerCount) {
+    elements.turboWorkerCount.value = String(settings.workerCount);
+  }
   const council = syncTurboCouncilSettings();
   const claudeModels = state.modelCatalogs.claude;
   const claudeModel = claudeModels.find((item) => item.model === council.councilClaudeModel) || claudeModels[0] || null;
@@ -3593,7 +3708,6 @@ function renderTurboControls() {
   ].join('');
   elements.turboCouncilReviewerEffort.value = council.councilClaudeEffort;
   elements.turboCouncilReviewerEffort.disabled = reviewerEffortValues.length === 0;
-  const automatic = usesDisposableTerminalPools();
   const available = turboWorkerThreads().length;
   const councilIssue = turboCouncilIssue();
   const requiredCodexInstances = settings.workerCount + 1;
@@ -3609,11 +3723,21 @@ function renderTurboControls() {
     : councilIssue || (automatic
       ? providerIsMissing('codex')
         ? 'Codex CLI is not installed'
-        : `Raise Codex max instances to at least ${requiredCodexInstances}`
+        : turboCapacityAdvice(requiredCodexInstances)
       : `Need ${requiredCodexInstances} terminals · ${hasSelectedCodexThread() ? available + 1 : 0} connected here`);
+  /*
+   * Keeping the workflow terminals open is a live per-project toggle sitting directly
+   * below this sentence, and the queue honours it only when the backend advertises
+   * retention. The sentence has to follow both, or it promises a cleanup that will not run.
+   */
+  const retainsTerminals = automatic
+    && state.status?.capabilities?.retainedTerminalSessions === true
+    && state.keepTerminalOpen;
   elements.turboNote.textContent = !council.councilEnabled
     ? automatic
-      ? 'CC Relay launches one disposable Codex planner and the requested worker fleet, then closes every terminal when Turbo ends.'
+      ? retainsTerminals
+        ? 'CC Relay launches one disposable Codex planner and the requested worker fleet, and leaves every terminal connected when Turbo ends.'
+        : 'CC Relay launches one disposable Codex planner and the requested worker fleet, then closes every terminal when Turbo ends.'
       : 'The selected Codex CC Relay plans in read-only mode. CC Relay reads its JSON graph and dispatches ready tasks across the worker fleet.'
     : council.councilFirstProvider === 'claude'
       ? automatic
@@ -3622,6 +3746,14 @@ function renderTurboControls() {
       : automatic
         ? 'A disposable Codex planner authors the graph. Claude reviews it before CC Relay dispatches the worker turns.'
         : 'The selected Codex CC Relay authors the graph first. Claude reviews and corrects it before CC Relay dispatches workers.';
+  /*
+   * Recorded after the body, not before it. Model preference, effort fallback, the worker
+   * clamp, and council normalization all write settings back, and every DOM write above
+   * reads the normalized value, so the panel now matches the settled state rather than the
+   * state this render was entered with. Signing on entry would repaint once more for
+   * nothing on the very next tick.
+   */
+  state.turboControlsSignature = turboControlsSignature(turboControlsSignatureInputs());
 }
 
 function attachmentLimitIssue() {
@@ -3756,7 +3888,9 @@ function selectMode(mode, { focus = false } = {}) {
   renderProviderTabs();
   renderExecutionControls();
   renderPlanControls();
-  renderTurboControls();
+  // Forced: selectProject routes through here, and a mode or project switch must repaint
+  // the panel even when the fold has not moved.
+  renderTurboControls({ force: true });
   renderAttachmentComposer();
   renderThreads();
   updateSubmitState();
@@ -4016,6 +4150,13 @@ function renderStatus() {
   elements.codexStatusLabel.textContent = relayReady
     ? 'CC Relay online'
     : providersChecking ? 'Checking CC Relay' : 'CC Relay unavailable';
+  const update = desktopUpdatePresentation(state.status.desktopUpdate);
+  elements.desktopUpdateIndicator.hidden = update.hidden;
+  elements.desktopUpdateIndicator.dataset.state = update.state;
+  elements.desktopUpdateIndicator.href = update.href;
+  elements.desktopUpdateIndicator.title = update.title;
+  elements.desktopUpdateIndicator.setAttribute('aria-label', update.title || 'CC Relay update');
+  elements.desktopUpdateLabel.textContent = update.label;
   elements.pauseButton.textContent = paused ? 'Resume queue' : 'Pause queue';
   elements.pauseButton.classList.toggle('primary', paused);
   elements.pauseButton.disabled = !state.activeProjectPath;
@@ -7948,10 +8089,19 @@ elements.form.addEventListener('submit', async (event) => {
     return;
   }
   if (submissionMode === 'turbo') {
+    /*
+     * Before the first read of the fleet size, so an uncommitted edit reaches the capacity
+     * check, the submission signature, and the request body alike. Committing it after the
+     * signature would let a resized fleet reuse the UUID of an earlier failed attempt.
+     */
+    flushTurboWorkerCount();
     if (usesDisposableTerminalPools()) {
       const required = state.turboSettings.workerCount + 1;
       if (projectInstanceLimits().codex < required) {
-        setComposerAlert(`Turbo needs ${required} Codex instances. Raise this project's Codex maximum before adding the task.`);
+        // Above the project ceiling the fleet is the only adjustable half of the pair.
+        setComposerAlert(required > MAX_PROJECT_INSTANCES
+          ? `Turbo needs ${required} Codex instances and a project allows at most ${MAX_PROJECT_INSTANCES}. Reduce the worker terminals to ${MAX_POOL_TURBO_WORKERS} or fewer.`
+          : `Turbo needs ${required} Codex instances. Raise this project's Codex maximum before adding the task.`);
         return;
       }
     } else {
@@ -8498,6 +8648,9 @@ elements.keepTerminalOpen.addEventListener('change', () => {
     ...state.terminalSettings,
     keepTerminalOpen: state.keepTerminalOpen,
   };
+  // The Turbo fleet sentence states whether the terminals close, so it follows this toggle
+  // immediately rather than waiting for the settings request to settle.
+  renderTurboControls();
   void saveProjectTerminalSettings();
 });
 /*
@@ -8669,14 +8822,44 @@ elements.turboWorkerModel.addEventListener('input', () => {
 elements.turboWorkerEffort.addEventListener('change', () => {
   state.turboSettings.workerEffort = elements.turboWorkerEffort.value;
 });
-elements.turboWorkerCount.addEventListener('input', () => {
-  state.turboSettings.workerCount = Math.min(8, Math.max(1, Number(elements.turboWorkerCount.value) || 1));
-  renderTurboControls();
-  updateSubmitState();
+/*
+ * The worker count is a number field inside the task form, so an unguarded Return while
+ * editing it is an implicit form submission: a keystroke meant to commit a fleet size
+ * queued a multi-terminal Turbo task instead. Blurring commits the same value once,
+ * through the change listener below.
+ */
+elements.turboWorkerCount.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  elements.turboWorkerCount.blur();
+});
+/*
+ * change, not input. Clamping on every keystroke made a two-digit count impossible to
+ * type: "1" was committed and rewritten before the "2" arrived, and backspace then read
+ * back the clamped value. Transient out-of-range text is allowed while the field is being
+ * edited; this commit, the submit-time check, and the server all still bound it.
+ */
+elements.turboWorkerCount.addEventListener('change', () => {
+  commitTurboWorkerCount();
+});
+/*
+ * Leaving the field without editing it fires no change event, so the displayed value is
+ * resynced here rather than by a forced render: the render would also rewrite six selects
+ * for nothing, and it would write the stored count over digits the user is still holding.
+ * A browser that blurs the element when the window loses focus keeps it as activeElement,
+ * and that text is still an edit in progress, so it survives until focus really leaves.
+ */
+elements.turboWorkerCount.addEventListener('blur', () => {
+  if (document.activeElement === elements.turboWorkerCount) return;
+  const committed = String(state.turboSettings.workerCount);
+  if (elements.turboWorkerCount.value !== committed) elements.turboWorkerCount.value = committed;
 });
 elements.turboCouncilEnabled.addEventListener('change', () => {
   state.turboSettings.councilEnabled = elements.turboCouncilEnabled.checked;
   renderThreads();
+  // Council adds two more turns that receive the attached images, and the composer states
+  // where images go. renderThreads does not reach the attachment copy on its own.
+  renderAttachmentComposer();
 });
 for (const button of elements.turboCouncilOrderButtons) {
   button.addEventListener('click', () => {

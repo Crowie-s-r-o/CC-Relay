@@ -17,6 +17,8 @@ test('Electron uses CC Relay as its product name without moving existing desktop
   assert.match(builder, /^productName: CC Relay$/m);
   assert.match(builder, /^ {2}title: CC Relay$/m);
   assert.match(builder, /^artifactName: CC-Relay-\$\{version\}-\$\{os\}-\$\{arch\}\.\$\{ext\}$/m);
+  assert.match(builder, /^ {2}artifactName: CC-Relay-\$\{version\}-\$\{os\}-\$\{arch\}-Setup\.\$\{ext\}$/m);
+  assert.match(builder, /^portable:\n {2}artifactName: CC-Relay-\$\{version\}-\$\{os\}-\$\{arch\}-Portable\.\$\{ext\}$/m);
   assert.match(main, /const PRODUCT_NAME = 'CC Relay';/);
   assert.match(main, /app\.setName\(PRODUCT_NAME\);/);
   assert.match(main, /title: PRODUCT_NAME,/);
@@ -59,4 +61,20 @@ test('Electron persists startup, server, window, renderer, and shutdown diagnost
     assert.match(main, new RegExp(`['"]${event.replaceAll('.', '\\.')}['"]`));
   }
   assert.match(main, /new DiagnosticLog\(join\(dataRoot, 'relay-diagnostics\.jsonl'\)\)/);
+});
+
+test('Electron exposes GitHub updater state to the loopback UI', () => {
+  const main = readFileSync(join(projectRoot, 'src', 'electron-main.mjs'), 'utf8');
+  const server = readFileSync(join(projectRoot, 'src', 'server.mjs'), 'utf8');
+  const app = readFileSync(join(projectRoot, 'public', 'app.js'), 'utf8');
+  const markup = readFileSync(join(projectRoot, 'public', 'index.html'), 'utf8');
+
+  assert.match(main, /onStateChange: \(state\) => publishDesktopUpdateState\?\.\(state\)/);
+  assert.match(main, /publishDesktopUpdateState = relay\.setDesktopUpdateState;/);
+  assert.match(main, /publishDesktopUpdateState\(desktopUpdater\.status\(\)\);/);
+  assert.match(server, /export function setDesktopUpdateState\(value = \{\}\)/);
+  assert.match(server, /desktopUpdate: desktopUpdateState,/);
+  assert.match(server, /desktopUpdates: IS_DESKTOP,/);
+  assert.match(app, /desktopUpdatePresentation\(state\.status\.desktopUpdate\)/);
+  assert.match(markup, /id="desktop-update-indicator"/);
 });

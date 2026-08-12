@@ -20,6 +20,7 @@ import { CodexAppServer } from './codex-app-server.mjs';
 import { readCodexRuntimeStatus } from './codex-runtime-status.mjs';
 import { RelayDatabase } from './database.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
+import { normalizeDesktopUpdateState } from './desktop-update-status.mjs';
 import {
   DisposableTerminalPool,
   disposableTerminalRequirements,
@@ -378,6 +379,7 @@ const terminalCloseCoordinator = new TerminalCloseCoordinator({
   onReleased: () => queue.schedule(),
 });
 const sseClients = new Set();
+let desktopUpdateState = normalizeDesktopUpdateState({ status: 'unsupported' });
 const agentUpdates = new AgentUpdateCache({
   latestEventId: (taskId) => database.latestEventId(taskId),
   listEventsSince: (taskId, sinceId, limit) => database.listEventsSince(taskId, sinceId, limit),
@@ -844,6 +846,13 @@ function broadcast(change) {
   }
 }
 
+export function setDesktopUpdateState(value = {}) {
+  if (!IS_DESKTOP) return false;
+  desktopUpdateState = normalizeDesktopUpdateState(value);
+  broadcast({ desktopUpdate: true });
+  return true;
+}
+
 // Reconcile a plan breakdown against the terminal state of its linked queue task.
 // A breakdown runs as an ordinary `mode: breakdown` queue task on the chosen live
 // session; when it settles, its raw response is parsed into review-ready proposals
@@ -929,6 +938,7 @@ export const server = createServer(async (request, response) => {
         ...queue.status(projectPath),
         codex: { ...runtimeStatus, appServer: codexAppServer.status() },
         claude: claudeRuntimeStatus,
+        desktopUpdate: desktopUpdateState,
         capabilities: {
           directClaudeExecution: true,
           parallelClaudeExecution: true,
@@ -973,6 +983,7 @@ export const server = createServer(async (request, response) => {
           aiStandupConfiguration: true,
           aiStandupAllTasks: true,
           crossProcessLaunchOwnership: true,
+          desktopUpdates: IS_DESKTOP,
         },
         taskCount: tasks.length,
         runningTasks: agentUpdates.feed(tasks),

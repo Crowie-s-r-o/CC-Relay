@@ -18,7 +18,7 @@ The complete user-facing product name is **CC Relay**.
 - GitHub Actions uploads use the machine-safe `cc-relay-<runner-os>` name.
 
 > [!important]
-> Release filenames use `CC-Relay-${version}-${os}-${arch}.${ext}`. When `artifactName` contained a space, electron-builder emitted files with spaces but normalized `latest-mac.yml` URLs to hyphens. The update feed therefore referenced files that did not exist. The explicit hyphenated form keeps artifact names and feed URLs identical.
+> macOS release filenames use `CC-Relay-${version}-${os}-${arch}.${ext}`. Windows NSIS and portable files append `-Setup` and `-Portable` so their shared `.exe` extension cannot collide. When `artifactName` contained a space, electron-builder emitted files with spaces but normalized update-feed URLs to hyphens. The explicit hyphenated forms keep artifact names and feed URLs identical.
 
 ## Compatibility contract
 
@@ -31,7 +31,7 @@ The rename does not change identifiers that would disconnect an installation fro
 
 `src/electron-main.mjs` explicitly maps Electron `userData` to the established application-data directory before assigning the display name. It creates the directory for a new installation. Existing projects, task history, settings, diagnostics, and updater state therefore remain visible after the rename. See [[shared-project-configuration]] and [[desktop-updates]].
 
-The public open-source repository and updater publisher moved from `patrikkelemen/relay` to `Crowie-s-r-o/CC-Relay` on August 12, 2026. A desktop build embeds its publisher at package time, so an older build that still points to the former repository needs one manual install of a new release before it can follow the new update feed.
+The public source-available repository and updater publisher moved from `patrikkelemen/relay` to `Crowie-s-r-o/CC-Relay` on August 12, 2026. A desktop build embeds its publisher at package time, so an older build that still points to the former repository needs one manual install of a new release before it can follow the new update feed.
 
 ## Verification
 

@@ -68,7 +68,7 @@ Forward-planning Turbo turns a large objective into a dependency-aware execution
 
 CC Relay launches one read-only Codex planner and the requested number of workers. The planner studies the workspace once and returns a structured plan containing execution packages and their dependencies. CC Relay validates the plan, assigns ready packages to workers, runs independent packages concurrently, and unlocks dependent packages as their prerequisites finish.
 
-Workers share the same project workspace. The planner is expected to separate file ownership where possible and encode required ordering explicitly. CC Relay reuses workers until the graph finishes, then closes the complete fleet.
+Workers share the same project workspace. The planner is expected to separate file ownership where possible and encode required ordering explicitly. CC Relay reuses workers until the graph finishes, then closes the complete fleet by default. **Keep workflow terminals open** retains that fleet when hands-on follow-up is useful.
 
 You can choose:
 
@@ -127,6 +127,10 @@ All tasks keeps each recorded task separate. The other modes group related work 
 ### Local persistence
 
 CC Relay stores task records in local SQLite and writes readable artifacts for prompts, events, results, plans, errors, and attachments. This provides a durable record of what was requested, what ran, and what the agents produced.
+
+### Desktop updates
+
+Packaged macOS apps and installed Windows NSIS builds check the public `Crowie-s-r-o/CC-Relay` GitHub Releases feed after launch. When a newer version is available, the global header shows its version and links to that exact release. Downloads and restarts remain user-confirmed. Windows portable builds update manually, and Linux desktop packages are not currently produced.
 
 ## Choosing a workflow
 

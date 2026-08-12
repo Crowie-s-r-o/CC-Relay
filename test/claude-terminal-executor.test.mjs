@@ -1838,6 +1838,519 @@ test('a Stop hook background task cannot be overridden by a transcript end_turn'
   );
 });
 
+// Tasks 218 and 223 (August 11 to 12, 2026 UTC) reproduced the task 129 wedge: a background
+// sub-agent reports back, Claude re-invokes the parent with a prompt id CC Relay never submitted,
+// and every Stop from those internal boundaries used to be dropped before it could replace the
+// snapshot taken while the sub-agent was still running. Task 223 then failed with "1 background
+// task had not finished when the terminal closed" three minutes after Claude had answered.
+test('a Stop hook from a later prompt boundary clears the frozen background snapshot', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  let liveHook = null;
+  let settled = false;
+  const io = collect();
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'UserPromptSubmit',
+          prompt_id: 'prompt-a',
+          prompt: deliveredPrompt(),
+        });
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-a',
+          last_assistant_message: 'Interim reply while dev-1 is still running.',
+          background_tasks: [{ id: 'background-task-1' }],
+          session_crons: [],
+        });
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        assistant('end_turn', [text('Interim transcript reply.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'idle',
+      mutate: () => {
+        assert.equal(settled, false);
+        liveHook({
+          session_id: SESSION_ID,
+          // The notification turn Claude ran on its own. CC Relay never submitted this prompt, so
+          // this identifier can never become hookPromptId through any submission channel.
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-b',
+          last_assistant_message: 'Done. Consolidated reply after every sub-agent finished.',
+          background_tasks: [],
+          session_crons: [],
+        });
+      },
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    hookBridge,
+    openTranscript: () => fake.source,
+    // Bounds the pre-fix behaviour: with the snapshot frozen nothing else refreshes activity, so
+    // the wedge fails on the inactivity ceiling instead of running the harness forever.
+    inactivityCeilingMs: 30_000,
+  });
+  const execution = executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+  void execution.then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+
+  const outcome = await execution;
+  assert.equal(outcome.finalResponse, 'Done. Consolidated reply after every sub-agent finished.');
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-pending').length,
+    1,
+  );
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
+});
+
+test('a later Stop survives the stale pending count until its closing duration clears it', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  let liveHook = null;
+  const finalResponse = 'Done after the background notification turn.';
+  const io = collect();
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'UserPromptSubmit',
+          prompt_id: 'prompt-a',
+          prompt: deliveredPrompt(),
+        });
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-a',
+          last_assistant_message: 'Interim reply while dev-1 is still running.',
+          background_tasks: [{ id: 'background-task-1' }],
+          session_crons: [],
+        });
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        turnDuration(1),
+        assistant('end_turn', [text('Interim transcript reply.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'idle',
+      // Claude writes the assistant record, posts Stop, then writes turn_duration. The Stop sees
+      // the previous duration's count of one even though its own hook snapshot is already empty.
+      append: [assistant('end_turn', [text(finalResponse)])],
+      mutate: () => liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'Stop',
+        prompt_id: 'prompt-b',
+        last_assistant_message: finalResponse,
+        background_tasks: [],
+        session_crons: [],
+      }),
+    },
+    {
+      status: 'idle',
+      // JSON serialization omits the undefined property, matching the production closing record.
+      append: [turnDuration(undefined)],
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    hookBridge,
+    openTranscript: () => fake.source,
+    inactivityCeilingMs: 30_000,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, finalResponse);
+  assert.equal(
+    io.events.filter((entry) => (
+      entry.event.type === 'claude/message'
+      && entry.event.text === finalResponse
+    )).length,
+    1,
+  );
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
+});
+
+// The same bookkeeping clear on the channel that has no Stop hook in it at all. Claude writes the
+// consolidated assistant record first and its closing turn_duration after it, so the count still
+// reads the previous boundary's value when the final is recorded and clears one record later. A
+// terminal whose hooks never registered ends every turn this way, so the confirming clear cannot
+// be reserved for the hook path.
+test('a pending count cleared after the final assistant record still releases the turn', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const finalResponse = 'Consolidated response after the pending agent finished.';
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        turnDuration(1),
+        assistant('end_turn', [text('Interim response with one pending agent.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    { status: 'busy', append: [assistant('end_turn', [text(finalResponse)])] },
+    // JSON serialization omits the undefined property, matching the production closing record.
+    { status: 'idle', append: [turnDuration(undefined)] },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    openTranscript: () => fake.source,
+    inactivityCeilingMs: 30_000,
+  });
+  const io = collect();
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, finalResponse);
+  assert.equal(
+    io.events.filter((entry) => (
+      entry.event.type === 'claude/message'
+      && entry.event.text === finalResponse
+    )).length,
+    1,
+  );
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-pending').length,
+    1,
+  );
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
+});
+
+// The mismatched-Stop ordering where the closing turn_duration is already on disk when the hook
+// arrives. The guard drains before it decides, so the count clears inside that drain and the
+// pending-work fence then rejects the Stop, correctly: there is no frozen snapshot left to repair.
+// The transcript final that same drain confirmed is the only final this turn produces, and the
+// rejected hook must not re-emit it.
+test('a Stop rejected by the pending fence still leaves the drained transcript final armed', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  let liveHook = null;
+  const finalResponse = 'Done after the background notification turn closed itself.';
+  const io = collect();
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'UserPromptSubmit',
+          prompt_id: 'prompt-a',
+          prompt: deliveredPrompt(),
+        });
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      append: [
+        userPrompt(deliveredPrompt()),
+        turnDuration(1),
+        assistant('end_turn', [text('Interim transcript reply.')]),
+      ],
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'idle',
+      append: [
+        assistant('end_turn', [text(finalResponse)]),
+        turnDuration(undefined),
+      ],
+      mutate: () => liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'Stop',
+        prompt_id: 'prompt-b',
+        last_assistant_message: finalResponse,
+        background_tasks: [],
+        session_crons: [],
+      }),
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    hookBridge,
+    openTranscript: () => fake.source,
+    inactivityCeilingMs: 30_000,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, finalResponse);
+  assert.equal(
+    io.events.filter((entry) => (
+      entry.event.type === 'claude/message'
+      && entry.event.text === finalResponse
+    )).length,
+    1,
+  );
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
+});
+
+test('each later Stop boundary replaces the snapshot, and only an empty one completes the turn', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  let liveHook = null;
+  let settled = false;
+  const io = collect();
+  const finishedEvents = () => io.events.filter(
+    (entry) => entry.event.deliveryState === 'background-work-finished',
+  );
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'UserPromptSubmit',
+          prompt_id: 'prompt-a',
+          prompt: deliveredPrompt(),
+        });
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-a',
+          last_assistant_message: 'Interim reply while dev-1 is still running.',
+          background_tasks: [{ id: 'background-task-1' }],
+          session_crons: [],
+        });
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    { status: 'busy', append: [userPrompt(deliveredPrompt())] },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'idle',
+      // A middle notification boundary. Its snapshot is newer, so it replaces the frozen one, but
+      // it still reports work in flight and must not release the task.
+      mutate: () => liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'Stop',
+        prompt_id: 'prompt-b',
+        last_assistant_message: 'Second interim reply while dev-2 is still running.',
+        background_tasks: [{ id: 'background-task-2' }],
+        session_crons: [],
+      }),
+    },
+    { status: 'idle' },
+    { status: 'idle' },
+    {
+      status: 'idle',
+      mutate: () => {
+        assert.equal(settled, false);
+        assert.equal(finishedEvents().length, 0);
+        liveHook({
+          session_id: SESSION_ID,
+          hook_event_name: 'Stop',
+          prompt_id: 'prompt-c',
+          last_assistant_message: 'Done. Consolidated reply after both sub-agents finished.',
+          background_tasks: [],
+          session_crons: [],
+        });
+      },
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    hookBridge,
+    openTranscript: () => fake.source,
+    inactivityCeilingMs: 30_000,
+  });
+  const execution = executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+  void execution.then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
+
+  const outcome = await execution;
+  assert.equal(outcome.finalResponse, 'Done. Consolidated reply after both sub-agents finished.');
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-pending').length,
+    1,
+  );
+  assert.equal(finishedEvents().length, 1);
+});
+
+test('a delayed Stop from an older prompt cannot end a turn that is still in flight', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  let liveHook = null;
+  const io = collect();
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        handler({
+          session_id: SESSION_ID,
+          hook_event_name: 'UserPromptSubmit',
+          prompt_id: 'prompt-a',
+          prompt: deliveredPrompt(),
+        });
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    {
+      status: 'busy',
+      // Real tracked background work, so the pending fence alone cannot reject the delayed hook
+      // below. This turn has produced no boundary of its own, which is the only reason it stays
+      // rejected.
+      append: [
+        userPrompt(deliveredPrompt()),
+        backgroundAgentLaunch(),
+        backgroundAgentResult(),
+      ],
+    },
+    {
+      status: 'busy',
+      mutate: () => liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'Stop',
+        prompt_id: 'prompt-older-turn',
+        last_assistant_message: 'Stale earlier response.',
+        background_tasks: [],
+        session_crons: [],
+      }),
+    },
+    { status: 'idle', append: [backgroundAgentNotification()] },
+    {
+      status: 'idle',
+      mutate: () => liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'Stop',
+        prompt_id: 'prompt-a',
+        last_assistant_message: 'Own consolidated response.',
+        background_tasks: [],
+        session_crons: [],
+      }),
+    },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    hookBridge,
+    openTranscript: () => fake.source,
+    inactivityCeilingMs: 30_000,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, 'Own consolidated response.');
+  assert.equal(io.events.some((entry) => /Stale earlier response/.test(entry.message || '')), false);
+  // The rejected hook never reached recordFinalSignal, so it never registered as a reply waiting
+  // on background work either.
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-pending').length,
+    0,
+  );
+});
+
 test('a Stop hook session cron independently holds completion', async () => {
   const fake = fakeTranscript();
   fake.append({ type: 'mode' });
@@ -2735,6 +3248,250 @@ test('a live prompt id rejects a delayed Stop hook from the earlier prompt', asy
 
   assert.equal(outcome.finalResponse, 'Newest prompt completed.');
   assert.equal(io.events.some((entry) => /Stale earlier response/.test(entry.message || '')), false);
+});
+
+// The pairing of the two rules. A steer moves the accepted boundary onto a turn that has not
+// ended, so the evidence that made a later Stop adoptable is gone again, even though the frozen
+// snapshot from the previous boundary is still pending and would otherwise invite adoption.
+test('an accepted live update makes a mismatched Stop hook rejectable again', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const active = { cancelRequested: false };
+  const injections = [];
+  let liveHook = null;
+  let allowIdle = false;
+  let idleReads = 0;
+  let steerPromise = null;
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = {
+    readConnectedSession: async () => {
+      if (allowIdle) {
+        idleReads += 1;
+        if (idleReads === 3) {
+          liveHook({
+            session_id: SESSION_ID,
+            hook_event_name: 'Stop',
+            prompt_id: 'steer-prompt',
+            last_assistant_message: 'Steered reply after the background task finished.',
+            background_tasks: [],
+            session_crons: [],
+          });
+        }
+      }
+      return {
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: injections.length > 0 && !allowIdle ? 'busy' : 'idle',
+        pid: PID,
+      };
+    },
+  };
+  const io = collect();
+  const onEvent = (entry) => {
+    io.onEvent(entry);
+    if (entry.event.type !== 'claude/started' || steerPromise) return;
+    // The accepted turn reaches its own boundary with one background task still running: the
+    // snapshot that used to freeze for the rest of the task.
+    liveHook({
+      session_id: SESSION_ID,
+      hook_event_name: 'Stop',
+      prompt_id: 'original-prompt',
+      last_assistant_message: 'Interim reply while the background task runs.',
+      background_tasks: [{ id: 'background-task-1' }],
+      session_crons: [],
+    });
+    steerPromise = active.steer('Use only the newest prompt.')
+      .then(() => {
+        allowIdle = true;
+      });
+  };
+  const { executor } = makeExecutor({
+    sessions,
+    hookBridge,
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    openTranscript: () => fake.source,
+    readScreen: async () => ({ ok: true, reason: 'read', text: EMPTY_COMPOSER_FRAME }),
+    inject: async (windowId, value) => {
+      injections.push({ windowId, value });
+      if (injections.length === 1) {
+        fake.append(userPrompt(value, 'original-prompt'));
+        return;
+      }
+      liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'UserPromptSubmit',
+        prompt_id: 'steer-prompt',
+        prompt: value,
+      });
+      // Delayed, mismatched, and arriving while tracked background work is pending, so the pending
+      // fence cannot reject it. It is fired before the durable record exists, so the acknowledged
+      // update is the only thing that moved the boundary: this is the acknowledgement's own reset
+      // or nothing.
+      liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'Stop',
+        prompt_id: 'prompt-stale',
+        last_assistant_message: 'Stale earlier response.',
+        background_tasks: [],
+        session_crons: [],
+      });
+      fake.append(userPrompt(value, 'steer-prompt'));
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    pollMs: 2,
+    steerSubmitNudgeMs: 20,
+    steerAcceptanceTimeoutMs: 100,
+    // This case runs on the real clock, so a regression that holds the task must fail within
+    // seconds instead of parking the suite on the production inactivity ceiling.
+    inactivityCeilingMs: 10_000,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    active,
+    { id: SESSION_ID },
+    TERMINAL,
+    { onEvent, onStderr: io.onStderr },
+  );
+  await steerPromise;
+
+  assert.equal(outcome.finalResponse, 'Steered reply after the background task finished.');
+  assert.equal(io.events.some((entry) => /Stale earlier response/.test(entry.message || '')), false);
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-pending').length,
+    1,
+  );
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
+});
+
+// The other ordering of the same boundary. Claude writes the final assistant record before it runs
+// the Stop hook, so a Stop that beats the transcript watcher carries the only proof that the turn
+// ended in a file CC Relay has not read yet. The guard drains before it decides, which is why this
+// completes instead of holding on the frozen snapshot forever.
+test('a Stop hook that outruns the transcript still finds its own turn ended', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const active = { cancelRequested: false };
+  const injections = [];
+  let liveHook = null;
+  let allowIdle = false;
+  let idleReads = 0;
+  let steerPromise = null;
+  const hookBridge = {
+    register: () => ({
+      settings: { hooks: {} },
+      activate: (handler) => {
+        liveHook = handler;
+        return true;
+      },
+      deactivate: () => true,
+    }),
+  };
+  const sessions = {
+    readConnectedSession: async () => {
+      if (allowIdle) {
+        idleReads += 1;
+        if (idleReads === 3) {
+          // Both halves of one boundary, in the order Claude produces them and faster than the
+          // watcher can wake. The steered turn's own end_turn is still unread when its successor's
+          // Stop arrives under a prompt id CC Relay never submitted.
+          fake.append(assistant('end_turn', [text('Steered turn ended with work still tracked.')]));
+          liveHook({
+            session_id: SESSION_ID,
+            hook_event_name: 'Stop',
+            prompt_id: 'prompt-notification',
+            last_assistant_message: 'Done. Consolidated reply after the notification turn.',
+            background_tasks: [],
+            session_crons: [],
+          });
+        }
+      }
+      return {
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: injections.length > 0 && !allowIdle ? 'busy' : 'idle',
+        pid: PID,
+      };
+    },
+  };
+  const io = collect();
+  const onEvent = (entry) => {
+    io.onEvent(entry);
+    if (entry.event.type !== 'claude/started' || steerPromise) return;
+    liveHook({
+      session_id: SESSION_ID,
+      hook_event_name: 'Stop',
+      prompt_id: 'original-prompt',
+      last_assistant_message: 'Interim reply while the background task runs.',
+      background_tasks: [{ id: 'background-task-1' }],
+      session_crons: [],
+    });
+    // The steer is what leaves the snapshot frozen while the turn-ended latch is clear, which is
+    // the only reachable state where the drain inside the guard decides the outcome.
+    steerPromise = active.steer('Use only the newest prompt.')
+      .then(() => {
+        allowIdle = true;
+      });
+  };
+  const { executor } = makeExecutor({
+    sessions,
+    hookBridge,
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    openTranscript: () => fake.source,
+    readScreen: async () => ({ ok: true, reason: 'read', text: EMPTY_COMPOSER_FRAME }),
+    inject: async (windowId, value) => {
+      injections.push({ windowId, value });
+      if (injections.length === 1) {
+        fake.append(userPrompt(value, 'original-prompt'));
+        return;
+      }
+      liveHook({
+        session_id: SESSION_ID,
+        hook_event_name: 'UserPromptSubmit',
+        prompt_id: 'steer-prompt',
+        prompt: value,
+      });
+      fake.append(userPrompt(value, 'steer-prompt'));
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    pollMs: 2,
+    steerSubmitNudgeMs: 20,
+    steerAcceptanceTimeoutMs: 100,
+    inactivityCeilingMs: 10_000,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    active,
+    { id: SESSION_ID },
+    TERMINAL,
+    { onEvent, onStderr: io.onStderr },
+  );
+  await steerPromise;
+
+  assert.equal(outcome.finalResponse, 'Done. Consolidated reply after the notification turn.');
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'background-work-finished').length,
+    1,
+  );
 });
 
 test('a durable live prompt boundary cannot finalize with the earlier transcript response', async () => {

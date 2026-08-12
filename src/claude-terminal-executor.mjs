@@ -2036,6 +2036,13 @@ export class ClaudeTerminalExecutor {
     let sessionMissing = false;
     let hookBackgroundTasks = [];
     let hookSessionCrons = [];
+    // Latched the first time the accepted prompt's own turn is observed to end, by either channel
+    // (its Stop hook or its turn-final transcript record). A Claude session runs exactly one turn
+    // at a time and sub-agent hooks are already excluded by `agent_id`, so after this latch a Stop
+    // carrying a DIFFERENT prompt id can only belong to a turn that started later, which is what
+    // makes the boundary advance in the prompt-id guard below safe. Steer acceptance moves the
+    // boundary to a turn that has not ended yet, so it clears the latch again.
+    let acceptedTurnEnded = false;
     let backgroundReplyObserved = false;
     let freshFinalRequired = false;
     let backgroundWorkPendingAnnounced = false;
@@ -2043,6 +2050,10 @@ export class ClaudeTerminalExecutor {
     const hookItemEvents = new Set();
     const hookMessages = new Map();
     const hookFinalMessageTexts = [];
+    // Message mirroring is independent of completion state. Finality reconciliation may clear
+    // lastText while the same text remains visible in the task console, so deduplication needs its
+    // own durable record of the most recently emitted assistant message.
+    let lastMirroredMessageText = '';
     const pendingInputRequests = new Map();
     const consumedSteerPromptIds = new Set();
     const pendingSteers = new Set();
@@ -2117,10 +2128,20 @@ export class ClaudeTerminalExecutor {
         before.sessionCrons.length > 0 && after.sessionCrons.length === 0
       );
       if (
-        (discoveredPending || trackedFinish || countCleared || hookWorkCleared)
+        (discoveredPending || trackedFinish || hookWorkCleared)
         && (sawFinal || freshFinalRequired)
       ) {
         invalidateFinality({ replyObserved: sawFinal || backgroundReplyObserved });
+      } else if (countCleared && !after.pending && freshFinalRequired && finalText) {
+        // The numeric count changes only inside turn_duration, the closing record for the same
+        // turn whose end_turn was just held above it. Task 223 proved that treating this bookkeeping
+        // clear as later work completion erases the only valid final signal and strands the task.
+        // Real work transitions still invalidate through the branch above; this one confirms the
+        // already-held response once every independent pending channel agrees that work is done.
+        sawFinal = true;
+        freshFinalRequired = false;
+        backgroundReplyObserved = false;
+        idleObservations = 0;
       }
       if (before.pending && !after.pending) emitBackgroundWorkFinished();
       return after;
@@ -2132,6 +2153,12 @@ export class ClaudeTerminalExecutor {
       return emitted;
     };
     const recordFinalSignal = (text, promptId = null) => {
+      // Deliberately above the pending branch. Both callers are genuine boundaries of the accepted
+      // prompt, and a boundary reached while background work is still running is exactly the state
+      // the prompt-id guard has to recognize later: that turn ended, its Stop snapshot froze, and
+      // every further Stop carries a newer prompt id. Latching only on the clean branch would leave
+      // the wedge in place for the case it was written for.
+      acceptedTurnEnded = true;
       if (backgroundWorkPending()) {
         sawFinal = false;
         finalPromptId = null;
@@ -2223,6 +2250,9 @@ export class ClaudeTerminalExecutor {
         finalPromptId = null;
         finalText = '';
         lastText = '';
+        // The accepted boundary just moved to a turn that has not ended, so a Stop carrying any
+        // other prompt id is once again a delayed hook from an older turn, not a newer one.
+        acceptedTurnEnded = false;
         idleObservations = 0;
         lastActivity = this.now();
         request.releaseAcknowledgement();
@@ -2258,6 +2288,10 @@ export class ClaudeTerminalExecutor {
         finalPromptId = null;
         finalText = '';
         lastText = '';
+        // Same reason as the acknowledgement path: this branch means the newly anchored turn is
+        // still running. The preserved branch means the opposite, that the current prompt already
+        // completed, so there the latch has to survive.
+        acceptedTurnEnded = false;
       }
       idleObservations = 0;
     };
@@ -2466,6 +2500,9 @@ export class ClaudeTerminalExecutor {
           if (hookItemEvents.has(key)) continue;
           hookItemEvents.add(key);
         }
+        if (emitted?.event?.type === 'claude/message') {
+          lastMirroredMessageText = normalizedMessageText(emitted.event.text);
+        }
         onEvent(emitted);
       }
     };
@@ -2531,7 +2568,34 @@ export class ClaudeTerminalExecutor {
         && hookPromptId
         && payloadPromptId
         && payloadPromptId !== hookPromptId
-      ) return;
+      ) {
+        // Two different hooks reach here, and only one of them is foreign.
+        //
+        // A delayed hook from an OLDER turn, arriving while the accepted turn is still in flight.
+        // Task 129 is why it must stay rejected: its output, its final text, and its background
+        // snapshot all belong to a turn this task did not run, and accepting any of it would let
+        // the previous response become this task's answer.
+        //
+        // A hook from a NEWER turn of the same session. Claude re-invokes the parent with a fresh
+        // prompt id when a background sub-agent reports back, so the turn CC Relay is watching
+        // continues across internal prompt boundaries that this task never submitted. Tasks 218
+        // and 223 wedged there: the accepted turn's Stop snapshotted a running background task,
+        // every later Stop was dropped by this guard before it could replace the array, and the
+        // completion gate stayed shut on a snapshot Claude had long since cleared.
+        //
+        // The two are separable because a Claude session runs one turn at a time and sub-agent
+        // hooks were already excluded above. Once the accepted prompt's own turn has been observed
+        // to end, no older turn can still be running, so a mismatched Stop is the newer boundary
+        // and its snapshot supersedes the frozen one. Draining first closes the race where this
+        // boundary's own final assistant record is already on disk but not yet read: Claude writes
+        // that record before it runs the Stop hook, so the drain can be what proves the turn ended.
+        // The pending-work fence keeps the adoption to the wedge itself. A mismatched Stop arriving
+        // after a clean turn end has nothing to repair and is left rejected.
+        if (eventName !== 'Stop') return;
+        drain();
+        if (!acceptedTurnEnded || !backgroundWorkPending()) return;
+        hookPromptId = payloadPromptId;
+      }
 
       if (eventName === 'PreCompact') {
         compacting = true;
@@ -2672,6 +2736,18 @@ export class ClaudeTerminalExecutor {
       }
 
       if (eventName === 'Stop') {
+        const text = typeof payload.last_assistant_message === 'string'
+          ? payload.last_assistant_message.trim()
+          : '';
+        // Capture this before background reconciliation can intentionally clear lastText. The
+        // mismatched-Stop guard drains the transcript first, so equality here proves that exact
+        // assistant response was already mirrored and must not be emitted a second time.
+        const normalized = normalizedMessageText(text);
+        const alreadyMirroredAsLatest = Boolean(normalized && lastMirroredMessageText === normalized);
+        const alreadyDisplayedByHook = Boolean(
+          normalized && [...hookMessages.values()]
+            .some((message) => normalizedMessageText(message.text) === normalized)
+        );
         const beforeBackgroundWork = backgroundWorkState();
         hookBackgroundTasks = Array.isArray(payload.background_tasks)
           ? payload.background_tasks
@@ -2680,15 +2756,8 @@ export class ClaudeTerminalExecutor {
           ? payload.session_crons
           : [];
         reconcileBackgroundWork(beforeBackgroundWork);
-        const text = typeof payload.last_assistant_message === 'string'
-          ? payload.last_assistant_message.trim()
-          : '';
         if (text) {
-          lastText = text;
-          const normalized = normalizedMessageText(text);
-          const alreadyDisplayed = [...hookMessages.values()]
-            .some((message) => normalizedMessageText(message.text) === normalized);
-          if (!alreadyDisplayed) {
+          if (!alreadyMirroredAsLatest && !alreadyDisplayedByHook) {
             const liveMessageId = `stop:${payload.prompt_id || payload.turn_id || sessionId}`;
             onEvent({
               event: {
@@ -2701,14 +2770,16 @@ export class ClaudeTerminalExecutor {
               },
               message: text,
             });
+            lastMirroredMessageText = normalized;
           }
-          rememberFinalHookText(text);
+          // When drain() already mirrored the assistant record, there is no later transcript copy
+          // to suppress. Otherwise remember the hook text for the normal hook-before-file order.
+          if (!alreadyMirroredAsLatest) rememberFinalHookText(text);
+          lastText = text;
         }
         recordFinalSignal(text, payloadPromptId || hookPromptId);
       }
     };
-
-    hookRegistration?.activate?.(consumeHook);
 
     const drain = () => {
       let consumed = false;
@@ -2875,6 +2946,7 @@ export class ClaudeTerminalExecutor {
               hookFinalMessageTexts.splice(match, 1);
               continue;
             }
+            lastMirroredMessageText = normalized;
           }
           onEvent(emitted);
         }
@@ -2892,6 +2964,13 @@ export class ClaudeTerminalExecutor {
       if (consumed) lastActivity = this.now();
       return consumed;
     };
+
+    // Activation has to follow the drain definition, not precede it: the prompt-id guard drains
+    // before it decides whether a mismatched Stop is a newer boundary, and a bridge that delivers
+    // a buffered payload synchronously from activate would otherwise reach that call while `drain`
+    // is still in its temporal dead zone. Nothing between the two declarations has side effects,
+    // so the registration order is unchanged in every other respect.
+    hookRegistration?.activate?.(consumeHook);
 
     // Spacing before the next guarded submit action. The first one waits for the composer to
     // settle after a large paste; later ones back off so a Return that did land always has time
