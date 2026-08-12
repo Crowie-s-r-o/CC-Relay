@@ -124,9 +124,11 @@ Removing the trailer from git does not immediately clear the **Contributors** bo
 The overview page loads that sidebar through a deferred fetch, so the identity is absent from the anonymous page HTML and cannot be found by grepping it. Poll the endpoint directly instead:
 
 ```bash
-curl -s https://github.com/OWNER/REPO/_sidebar \
+curl -s -H 'Accept: application/json' https://github.com/OWNER/REPO/_sidebar \
   | python3 -c 'import json,sys; d=json.load(sys.stdin)["contributors"]; print(d["contributorCount"], [c["login"] for c in d["contributors"]])'
 ```
+
+The `Accept` header is required. Without it the endpoint answers with an HTML fragment, and a browser user agent gets HTML even with the header.
 
 Because it answers `no-cache`, a cache-busting query string, a hard reload, and a private window all still show the stale set. That is the point: the staleness is backend state, not an HTTP or browser cache, so nothing done from the client side moves it. Pushes to the default branch did not clear it either. Only GitHub's own recount does, with Support as the escalation if it outlives a day, since no public API purges the record.
 
