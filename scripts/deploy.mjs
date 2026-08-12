@@ -402,6 +402,8 @@ function writeJson(path, value) {
 }
 
 function runReleaseGates() {
+  console.log('Checking commit attribution...');
+  npm(['run', 'attribution:check'], { inherit: true });
   console.log('Checking release metadata...');
   npm(['run', 'release:check'], { inherit: true });
   console.log('Running the complete test suite...');

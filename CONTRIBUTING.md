@@ -10,6 +10,7 @@ CC Relay is currently validated only on macOS. Focused Windows and Linux reports
 git clone https://github.com/Crowie-s-r-o/CC-Relay.git
 cd CC-Relay
 npm ci
+npm run hooks:install
 npm test
 npm run release:check
 ```
@@ -42,6 +43,8 @@ feat(api)!: replace the task event contract
 ```
 
 Use `BREAKING CHANGE:` in the commit body or `!` in the header for an incompatible change. Maintainers can still choose an explicit release bump when history needs correction.
+
+Commits must use the human contributor's configured Git identity. Do not add Claude, Codex, Anthropic, OpenAI, or another assistant as an author, committer, co-author, signer, generator, or session trailer. `npm run hooks:install` enables the local commit check, and `npm run attribution:check` verifies reachable history.
 
 ## Pull requests
 

@@ -105,11 +105,23 @@ The public-release audit found and resolved these concrete issues:
 Every commit in the published history is authored by the maintainer alone. Assistant co-author trailers must not reach the repository.
 
 > [!warning]
-> `Co-Authored-By: Claude ...` and `Claude-Session: ...` trailers come from the Claude Code harness, not from anything inside this repository. There is no commit template, hook, or script here that adds them, so grepping the working tree will never explain their presence. The harness setting `"includeCoAuthoredBy": false` in `~/.claude/settings.json` is the only thing that suppresses them, and it overrides the assistant's own commit-message instructions.
+> `Co-Authored-By: Claude ...` and `Claude-Session: ...` trailers originally came from the Claude Code harness, not from repository code. The harness setting `"includeCoAuthoredBy": false` in `~/.claude/settings.json` suppresses them at the source and overrides the assistant's own commit-message instructions. The repository now also rejects assistant attribution independently.
 
 GitHub builds the repository's **Contributors** list from commits on the default branch, so a single trailer on one commit is enough to publish a second contributor identity. The sidebar is a cached view and can keep showing a removed contributor for hours after a corrective force push. Verify locally with `git log origin/main --format=%B | grep -i claude`, never by reloading the repository page.
 
 `v0.2.1` was the one affected commit pair. `git filter-branch --msg-filter` over `HEAD~2..HEAD` stripped both trailer lines while preserving author and committer identity and timestamps, and `main` plus the tag were force pushed atomically.
+
+### Permanent attribution guard
+
+The repository protects both Claude and Codex attribution at several boundaries:
+
+- `AGENTS.md` and `CLAUDE.md` forbid assistants from changing the configured human identity or adding credit and session trailers.
+- `.githooks/commit-msg` calls `scripts/check-commit-attribution.mjs` before a commit is created. `npm run hooks:install` enables it through the repository-local `core.hooksPath`; this clone has it enabled.
+- `npm run attribution:check` scans reachable history for assistant authors, committers, credit trailers, and session trailers while allowing ordinary commit prose about Claude and Codex.
+- CI uses a full checkout and runs the history scan. `npm run deploy` runs the same gate before creating a release commit.
+
+> [!note]
+> After the rewritten branch, tag, GitHub API, and pull-request refs were verified, the temporary `backup/pre-claude-trailer-strip` branch and `refs/original/refs/heads/main` were deleted. No named local ref contains the old attributed commit. The repository-wide test suite passes 1,239 of 1,239 tests with the guard installed.
 
 ### The sidebar keeps its own contributor record
 

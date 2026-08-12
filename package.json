@@ -28,6 +28,8 @@
     "deploy": "node scripts/deploy.mjs",
     "release:check": "node scripts/release-check.mjs",
     "release:notes": "node scripts/release-notes.mjs",
+    "attribution:check": "node scripts/check-commit-attribution.mjs",
+    "hooks:install": "git config core.hooksPath .githooks",
     "plugin:install": "node scripts/install-plugin.mjs"
   },
   "dependencies": {
