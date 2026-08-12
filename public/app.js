@@ -800,7 +800,7 @@ function setProjectTerminalSettingsDisabled(disabled) {
 }
 
 function resetTerminalLayoutStatus() {
-  elements.terminalLayoutStatus.textContent = 'Only the window CC Relay opens is minimized. Other Terminal windows are untouched. Grid launches use the next available cell.';
+  elements.terminalLayoutStatus.textContent = 'Grid launches use the next available cell.';
 }
 
 function projectTerminalSettingIsFocused() {
@@ -6438,7 +6438,6 @@ function renderThreads() {
           : 'Codex council Relays and Execute-only Claude sessions'
         : 'Connected Codex terminals',
   );
-  renderTerminalSettingsHeader();
   const availableIds = new Set(selectableThreads.map((thread) => thread.id));
   const previouslySelectedThreadId = state.selectedThreadId;
   if (!selectionLocked && !availableIds.has(state.selectedThreadId)) {

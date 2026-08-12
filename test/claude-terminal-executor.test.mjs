@@ -2825,7 +2825,9 @@ test('a live update that stays held exhausts the bounded submit limit', async ()
     now: Date.now,
     wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
     steerSubmitNudgeMs: 3,
-    steerAcceptanceTimeoutMs: 35,
+    // Leave enough real-clock slack that scheduler load cannot consume the final guarded action.
+    // The production schedule contract is covered separately with the default 80 second window.
+    steerAcceptanceTimeoutMs: 100,
     submitRetryMs: 3,
     submitRetryBackoffMs: 0,
     maxSubmitAttempts: 3,

@@ -7,6 +7,9 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 12: the terminal settings dialog dropped its launch command row and was redesigned.** The `codex ...` string and its **Copy** button are gone; automatic pools open their own terminals and the manual path keeps **Launch Codex** and **Launch Claude** in the terminal panel. The dialog is now two sections with one rhythm, shared pill switches, and a single `renderTerminalSettingsHeader()` that always names the project being edited. `state.connection.launchCommand` is unchanged on the backend. Light and dark verified at 900, 620, and 420 pixels with no horizontal overflow. See [[project-terminal-settings]].
+
+> [!important]
 > **August 12: composer and Plan council dropdowns no longer fight the refresh.** The two-second snapshot refresh and the four-second thread poll rewrote the options of `#model-select`, `#plan-author-model`, `#plan-reviewer-model`, `#plan-author-terminal`, and both council effort selects on every tick, which closed whichever native popup was open and made changing the Claude model take several attempts. `public/stable-select.js` now writes a select only when its live options, value, or disabled state would actually change, and the effort slider markers are rebuilt only when the effort values change. Measured on the live page: 15 and 23 rewrites in 31 idle seconds before, zero in 46.8 idle seconds after, with a provider switch still repainting exactly once. See [[stable-composer-selects]].
 
 > [!important]

@@ -57,6 +57,20 @@ The settings dialog labels the stored `terminal_layout.background` field as **Op
 > The terminal settings dialog no longer exposes **Copy diagnostics** or its local-path warning. The diagnostics API and internal diagnostic logging remain available for engineering use; this change removes only the end-user control from this dialog.
 
 > [!note]
+> **August 12: the dialog no longer shows a launch command row.** The `codex ...` / `claude ...` string and its **Copy** button are gone, along with `#connection-command-row`, `#launch-command`, and `#copy-command-button`. Automatic pools open their own terminals, and the manual path still has **Launch Codex** and **Launch Claude** in the terminal panel, so no flow lost a way to start a session. `state.connection.launchCommand` and `claudeLaunchCommand` are untouched on the backend; only the renderer's display was removed. The dialog header is now written by one `renderTerminalSettingsHeader()` helper that always names the project being edited, replacing four separate provider-specific title and copy assignments in `renderThreads()` and `renderAutomaticTerminalPool()`. The IDs `#connection-help-title` and `#connection-help-copy` are unchanged because the first is the dialog's `aria-labelledby` target.
+
+## Dialog presentation
+
+The dialog body is `.terminal-settings-body`, and each group is a `.terminal-settings-section` with one rhythm: a `.terminal-settings-section-head` carrying the section name on the left and that section's own control on the right, then the fields, then a quiet status line. Sections sit on the card surface separated by hairlines instead of gray bands.
+
+Both boolean settings use the shared `.terminal-settings-switch` pill. **Arrange in a grid** is the bare pill in the window-layout head; **Open new terminals minimized** and **Speak project and task word** add `.terminal-settings-switch-row` for a bordered two-line row with its explanation as a `<small>`. This retired the `!important` stack the old `.terminal-background-toggle` needed to escape `.terminal-layout-settings label`; the background toggle is now a sibling of that grid, not a child of it.
+
+> [!important]
+> `.terminal-layout-settings`, `.completion-alert-settings`, `.terminal-layout-heading`, `.completion-alert-heading`, `.terminal-background-toggle`, and `.completion-speech-toggle` kept their class names through the redesign. Dark-theme parity for this dialog is spread across six blocks in `public/style.css`, and `test/dark-mode.test.mjs` asserts several of those selectors by name. Any new class in this dialog needs its own `html[data-theme="dark"]` rule in the end-of-cascade repair block, or it will show a white surface in the midnight shell.
+
+The compact rule set collapses the layout grid to two columns, moves the monitor field to its own row, wraps section heads instead of stacking them, and drops the completion alert section to a single column. Verified with no horizontal overflow in light and dark at 900, 620, and 420 pixels.
+
+> [!note]
 > Retention changes apply to new task submissions immediately. When a renderer is temporarily connected to an older backend without `capabilities.projectTerminalSettings`, it keeps the choice in that project's in-memory composer session without showing a restart requirement. A current backend also persists the same snapshot through the project settings API.
 
 ## Task snapshot boundary
@@ -65,6 +79,7 @@ Each submitted task still snapshots `keep_terminal_open`. New direct Execute tas
 
 ## Validation
 
+- August 12 dialog pass: full `npm test` (1,427 tests) passed, `npm run release:check` reported consistent v0.2.3 metadata, and `git diff --check` was clean.
 - 136 focused renderer, database, shared-config, launcher, and dark-theme tests passed.
 - Database coverage proves a bulk layout copy changes both project layouts while preserving their different retention and idle-routing values.
 - An isolated live backend copied a 4 by 2 minimized layout to two projects through the bulk API and returned both projects with their other settings intact.
@@ -84,6 +99,8 @@ Each submitted task still snapshots `keep_terminal_open`. New direct Execute tas
 - `test/project-config-store.test.mjs`
 - `test/database.test.mjs`
 - `test/composer-workflows.test.mjs`
+- `test/completion-alerts-ui.test.mjs`
+- `test/dark-mode.test.mjs`
 
 See [[retained-terminal-sessions]], [[shared-project-configuration]], [[interface-layout]], and [[project-workspaces]].
 

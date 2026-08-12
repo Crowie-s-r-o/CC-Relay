@@ -96,6 +96,14 @@ would have confused two distinct user messages.
 
 ## Regression coverage
 
+> [!note] Test reliability, 2026-08-12
+> The hard-cap regression uses real timers because delivery acknowledgement and retry waits race
+> through the same asynchronous path as production. Its former 35 ms acceptance window could lose
+> the third configured action to ordinary event-loop delay while also reserving the scaled final
+> confirmation margin. The fixture now uses 100 ms. This changes no production timing or action
+> limit; the separate default-contract test continues to prove that all four production actions
+> and the final 15 second confirmation interval fit inside the 80 second window.
+
 The executor suite now pins these cases:
 
 - Task 129's image chip and collapsed-paste shape ignores the first action, crosses from busy to
