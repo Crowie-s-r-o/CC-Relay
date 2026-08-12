@@ -2,6 +2,17 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.5] - 2026-08-12
+
+### Added
+
+- Desktop users can manually check for available releases.
+
+### Changed
+
+- Adding projects now uses a simpler workflow.
+- Desktop update status and discovery feedback are clearer.
+
 ## [0.2.4] - 2026-08-12
 
 ### Added
