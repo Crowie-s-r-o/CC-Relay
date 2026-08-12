@@ -2,6 +2,22 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.1] - 2026-08-12
+
+### Added
+
+- Deploy now watches the tag build and confirms that a release was published.
+- The new --no-watch option preserves push-and-stop deployment behavior.
+
+### Changed
+
+- Automated tests now run on macOS, while Windows remains a packaging check.
+
+### Fixed
+
+- Tagged desktop builds no longer skip release publishing because of Windows test failures.
+- Deploy now fails with build details when no release is published, or prints the release URL when GitHub CLI is unavailable.
+
 ## [0.2.0] - 2026-08-12
 
 ### Added
