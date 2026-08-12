@@ -27,27 +27,36 @@ import {
   parseVersion,
   prependChangelog,
   releaseNotesSchema,
+  releasePublishStatus,
+  selectReleaseWorkflowRun,
 } from './release-core.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const AI_TIMEOUT_MS = 180_000;
 const AI_OUTPUT_LIMIT = 512 * 1024;
 const EXPECTED_REMOTE = /github\.com(?::|\/)Crowie-s-r-o\/CC-Relay(?:\.git)?$/i;
+const RELEASE_REPOSITORY = 'Crowie-s-r-o/CC-Relay';
+const RELEASE_WATCH_TIMEOUT_MS = 45 * 60_000;
+const RELEASE_WATCH_INTERVAL_MS = 20_000;
+const RELEASE_SETTLE_POLLS = 6;
 
 function usage() {
   return `CC Relay deploy
 
 Usage:
-  npm run deploy -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run]
+  npm run deploy -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run] [--no-watch]
 
 Examples:
   npm run deploy
   npm run deploy -- minor --provider claude
-  npm run deploy -- patch --dry-run`;
+  npm run deploy -- patch --dry-run
+
+Deploy waits for GitHub Actions to publish the release and fails if it does not.
+Pass --no-watch to stop right after the atomic push.`;
 }
 
 function parseArguments(argv) {
-  const options = { releaseType: 'auto', provider: 'auto', dryRun: false, help: false };
+  const options = { releaseType: 'auto', provider: 'auto', dryRun: false, watch: true, help: false };
   let sawReleaseType = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -57,6 +66,10 @@ function parseArguments(argv) {
     }
     if (value === '--dry-run') {
       options.dryRun = true;
+      continue;
+    }
+    if (value === '--no-watch') {
+      options.watch = false;
       continue;
     }
     if (value === '--provider') {
@@ -319,6 +332,71 @@ async function generateReleaseNotes(prompt, providerPreference) {
   throw new Error(`AI changelog generation failed. ${failures.join(' | ')}`);
 }
 
+// The GitHub CLI carries the maintainer credential, so deploy never handles a token itself.
+// `gh api` is used instead of `gh run`/`gh release` because the REST paths are stable across the
+// old CLI builds that are commonly installed.
+function ghJson(path) {
+  const resolved = resolveExecutableOnPath('gh');
+  const invocation = providerCommandInvocation(resolved, [
+    'api',
+    '-H',
+    'Accept: application/vnd.github+json',
+    path,
+  ]);
+  const result = commandResult(invocation.command, invocation.args, {
+    allowFailure: true,
+    invocationOptions: invocation.options,
+  });
+  if (result.error || result.status !== 0) return null;
+  try {
+    return JSON.parse(String(result.stdout || ''));
+  } catch {
+    return null;
+  }
+}
+
+// A missing release and an unusable CLI both fail the same way, so probe the repository once and
+// treat only a positive answer as permission to interpret later 404s as "not published yet".
+function releaseWatchAvailable() {
+  const repository = ghJson(`repos/${RELEASE_REPOSITORY}`);
+  return String(repository?.full_name || '') === RELEASE_REPOSITORY;
+}
+
+function delay(milliseconds) {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, milliseconds);
+  });
+}
+
+async function watchReleasePublication(tag, sha) {
+  const deadline = Date.now() + RELEASE_WATCH_TIMEOUT_MS;
+  let settleRemaining = RELEASE_SETTLE_POLLS;
+  let lastMessage = '';
+  while (Date.now() < deadline) {
+    const release = ghJson(`repos/${RELEASE_REPOSITORY}/releases/tags/${tag}`);
+    const runs = ghJson(`repos/${RELEASE_REPOSITORY}/actions/runs?per_page=30&head_sha=${sha}`);
+    const run = selectReleaseWorkflowRun(runs, { tag, sha });
+    const status = releasePublishStatus({
+      tag,
+      run,
+      releaseUrl: release?.html_url || '',
+      settleRemaining,
+    });
+    if (status.done) return status;
+    if (status.message !== lastMessage) {
+      console.log(status.message);
+      lastMessage = status.message;
+    }
+    if (run && run.status === 'completed') settleRemaining -= 1;
+    await delay(RELEASE_WATCH_INTERVAL_MS);
+  }
+  return {
+    done: true,
+    ok: false,
+    message: `Timed out waiting for the GitHub Release for ${tag}. Inspect https://github.com/${RELEASE_REPOSITORY}/actions`,
+  };
+}
+
 function writeJson(path, value) {
   writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`);
 }
@@ -415,7 +493,25 @@ async function main() {
       `The local release commit and ${tag} are valid, but GitHub push failed: ${error.message}. Retry with git push --atomic origin main ${tag}`,
     );
   }
-  console.log(`Deployed ${tag}. GitHub Actions will build and publish the desktop artifacts.`);
+
+  const sha = gitText(['rev-parse', 'HEAD']).trim();
+  const releasePage = `https://github.com/${RELEASE_REPOSITORY}/releases/tag/${tag}`;
+  if (!options.watch) {
+    console.log(`Pushed ${tag}. Confirm the published release at ${releasePage}`);
+    return;
+  }
+  if (!releaseWatchAvailable()) {
+    console.log(`Pushed ${tag}, but the GitHub CLI could not read the repository, so the release is unconfirmed.`);
+    console.log(`Confirm it at ${releasePage}`);
+    return;
+  }
+
+  console.log(`Waiting for GitHub Actions to build and publish ${tag}...`);
+  const outcome = await watchReleasePublication(tag, sha);
+  if (!outcome.ok) {
+    throw new Error(`${outcome.message}\nThe commit and ${tag} are already pushed. Fix the build, then re-run the workflow for ${tag}.`);
+  }
+  console.log(outcome.message);
 }
 
 main().catch((error) => {

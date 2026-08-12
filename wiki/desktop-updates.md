@@ -67,6 +67,12 @@ package.json version: 0.2.0
 git tag:             v0.2.0
 ```
 
+> [!important]
+> Deploy does not stop at the push. It polls the GitHub REST API through the maintainer's `gh` credential, selects the desktop build run for the pushed tag by head SHA plus tag head branch, and exits non-zero with the failing run URL when GitHub publishes no release. Silence after a successful push used to mean the release page stayed empty; `npm run deploy` is now the only command a maintainer needs, and its exit status is the truth about whether a release exists. `--no-watch` returns the old push-and-stop behavior, and an unavailable or unauthenticated `gh` degrades to a printed release URL rather than a hard failure.
+
+> [!important]
+> The desktop build workflow runs `npm test` on the macOS matrix entry only. CC Relay is validated on macOS, and the suite simulates Windows paths, shims, and `cmd.exe` invocation from POSIX, so 75 of those cases fail on a real Windows runner. Because the release job declares `needs: build`, a red Windows job silently skipped publication: that is exactly why `v0.2.0` was tagged and pushed with no GitHub Release. The Windows job remains packaging verification. Do not paper over a red job with `continue-on-error`; `fail_on_unmatched_files: true` would then trip on the missing installer.
+
 The release job rejects any tag, package, lockfile, changelog, publisher, or Windows target-name mismatch before downloading or publishing artifacts. It extracts the matching AI-written changelog entry as the GitHub Release body. Native builds upload only packaged deliverables from `dist/`; unpacked application directories and builder diagnostics never become release assets. The expected feed metadata and artifacts are:
 
 | Platform | Update metadata | Installable artifacts |
@@ -92,8 +98,8 @@ Signing credentials are not stored in the repository. Production macOS releases 
 - `build/icon.png`: 1024px transparent Crowie source used for native application icons and the development Dock icon.
 - `electron-builder.yml`: native targets, artifact names, update metadata generation, and GitHub publisher.
 - `.github/workflows/build-desktop.yml`: native build matrix, tag/version guard, artifact upload, and GitHub release publishing.
-- `scripts/deploy.mjs`: clean-tree checks, version selection, isolated AI generation, verification, commit, tag, and atomic push.
-- `scripts/release-core.mjs`: deterministic SemVer, changelog normalization, formatting, and extraction helpers.
+- `scripts/deploy.mjs`: clean-tree checks, version selection, isolated AI generation, verification, commit, tag, atomic push, and the GitHub Release watch that fails loudly when publication does not happen.
+- `scripts/release-core.mjs`: deterministic SemVer, changelog normalization, formatting, extraction helpers, and the pure workflow-run selection and publication-status decisions that deploy polls with.
 - `scripts/release-check.mjs` and `scripts/release-notes.mjs`: CI metadata enforcement and GitHub Release body extraction.
 - `CHANGELOG.md`: canonical compact release history.
 - `package.json` and `package-lock.json`: app version and `electron-updater` dependency.
@@ -106,6 +112,7 @@ No renderer IPC, preload permission, writable update route, or environment varia
 - **No header indicator:** expected when the app is current, still checking, unpackaged, or a Windows portable build. A valid newer version is required before the link appears.
 - **Portable Windows build does not update:** expected. Download the latest portable artifact manually or install the NSIS build for automatic updates.
 - **No update after a tag:** confirm the tag is `vX.Y.Z`, the package version is `X.Y.Z`, and the GitHub release contains the platform's `latest-*.yml`, blockmaps, and installers.
+- **The tag is pushed but the Releases page is empty:** the desktop build workflow failed, so `needs: build` skipped the release job. Open the run that deploy names in its failure message. A tag whose run already failed cannot be recovered by re-running the workflow, because the dispatch uses the workflow file at that ref; release the fix under the next version instead of retagging.
 - **macOS update will not install:** verify the release is signed and notarized and that the app was distributed from a compatible release channel.
 - **Packaged startup reports that the `autoUpdater` named export is missing:** inspect `src/electron-main.mjs` and keep the CommonJS default-import interop described above.
 - **Signing reports that `CC Relay.app` could not be found, or packaging reports `ENOTEMPTY` for `dist/mac-arm64`:** confirm that only one `electron-builder` process is running and that no app is running from the output bundle. Concurrent builds share and replace the same `dist/mac-arm64` directory, so one build can remove the bundle while another signs it.

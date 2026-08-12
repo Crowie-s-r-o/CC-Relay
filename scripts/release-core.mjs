@@ -252,3 +252,57 @@ export function changelogEntryForVersion(changelog, version) {
   if (!/^- \S/m.test(body)) throw new Error(`CHANGELOG.md entry ${version} has no release notes.`);
   return { date: heading[1], full, body };
 }
+
+export const RELEASE_WORKFLOW_PATH = '.github/workflows/build-desktop.yml';
+
+// A release tag and the release commit on main share one SHA, so several workflow runs report
+// the same head. Only the desktop build workflow publishes the GitHub Release, and only its
+// tag-triggered run carries the tag as the head branch.
+export function selectReleaseWorkflowRun(payload, { tag = '', sha = '' } = {}) {
+  const runs = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
+  const candidates = runs.filter((run) => {
+    if (!run || typeof run !== 'object') return false;
+    if (run.path && run.path !== RELEASE_WORKFLOW_PATH) return false;
+    if (sha && run.head_sha !== sha) return false;
+    if (tag && run.head_branch && run.head_branch !== tag) return false;
+    return Boolean(sha || tag);
+  });
+  if (candidates.length === 0) return null;
+  return candidates.reduce((newest, run) => (Number(run.id || 0) > Number(newest.id || 0) ? run : newest));
+}
+
+export function releasePublishStatus({
+  tag,
+  run = null,
+  releaseUrl = '',
+  settleRemaining = 0,
+} = {}) {
+  const label = String(tag || 'the release tag');
+  if (releaseUrl) {
+    return { done: true, ok: true, message: `Published ${label}: ${releaseUrl}` };
+  }
+  if (!run) {
+    return { done: false, ok: false, message: `Waiting for the desktop build workflow for ${label}...` };
+  }
+  const status = String(run.status || '');
+  const conclusion = String(run.conclusion || '');
+  const url = String(run.html_url || `https://github.com/Crowie-s-r-o/CC-Relay/actions`);
+  if (status !== 'completed') {
+    return { done: false, ok: false, message: `Desktop build for ${label} is ${status || 'queued'}: ${url}` };
+  }
+  if (conclusion !== 'success') {
+    return {
+      done: true,
+      ok: false,
+      message: `The desktop build workflow for ${label} ended as ${conclusion || 'unsuccessful'}, so GitHub published no release. Inspect ${url}`,
+    };
+  }
+  if (settleRemaining > 0) {
+    return { done: false, ok: false, message: `Desktop build succeeded for ${label}; waiting for the release assets...` };
+  }
+  return {
+    done: true,
+    ok: false,
+    message: `The desktop build workflow succeeded for ${label} but no GitHub Release exists. Inspect ${url}`,
+  };
+}

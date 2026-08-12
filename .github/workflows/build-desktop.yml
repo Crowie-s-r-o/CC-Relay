@@ -26,7 +26,12 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm test
+      # CC Relay is validated on macOS only. The suite simulates Windows paths, shims, and
+      # cmd.exe invocation from POSIX, so those cases fail on a real Windows runner and used to
+      # skip the release job through `needs: build`. macOS gates correctness here and in ci.yml;
+      # the Windows job stays as packaging verification.
+      - if: runner.os == 'macOS'
+        run: npm test
       - run: ${{ matrix.command }}
       - uses: actions/upload-artifact@v7
         with:

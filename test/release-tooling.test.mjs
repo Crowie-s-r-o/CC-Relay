@@ -14,6 +14,8 @@ import {
   normalizeReleaseNotes,
   parseVersion,
   prependChangelog,
+  releasePublishStatus,
+  selectReleaseWorkflowRun,
 } from '../scripts/release-core.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -28,6 +30,24 @@ test('npm run deploy owns versioning, verification, tags, and the atomic push', 
   assert.match(deploy, /git\(\['commit', '-m', `chore\(release\): \$\{tag\}`\]/);
   assert.match(deploy, /git\(\['tag', '-a', tag/);
   assert.match(deploy, /git\(\['push', '--atomic', 'origin', 'main', tag\]/);
+  assert.match(deploy, /watchReleasePublication\(tag, sha\)/);
+  assert.match(deploy, /if \(!outcome\.ok\) \{/);
+});
+
+test('the desktop build workflow runs the suite on macOS and never skips the release job silently', () => {
+  const workflow = readFileSync(
+    join(projectRoot, '.github', 'workflows', 'build-desktop.yml'),
+    'utf8',
+  );
+  const deploy = readFileSync(join(projectRoot, 'scripts', 'deploy.mjs'), 'utf8');
+
+  // The suite simulates Windows from POSIX, so running it on a Windows runner failed the build
+  // job, and `needs: build` then skipped the release job while the tag push looked successful.
+  assert.match(workflow, /- if: runner\.os == 'macOS'\n\s+run: npm test/);
+  assert.doesNotMatch(workflow, /^\s+- run: npm test$/m);
+  assert.match(workflow, /needs: build/);
+  assert.doesNotMatch(workflow, /continue-on-error/);
+  assert.doesNotMatch(deploy, /GitHub Actions will build and publish/);
 });
 
 test('GitHub Releases publish only packaged deliverables with distinct Windows names', () => {
@@ -202,4 +222,54 @@ Compact release history.
   assert.doesNotMatch(extracted.body, /## \[0\.2\.0\]/);
   assert.throws(() => prependChangelog(changelog, entry, '0.2.0'), /already contains/);
   assert.throws(() => changelogEntryForVersion(changelog, '9.9.9'), /has no entry/);
+});
+
+test('release watching picks the tag run and only reports success once the release exists', () => {
+  const payload = {
+    workflow_runs: [
+      { id: 3, path: '.github/workflows/ci.yml', head_sha: 'abc', head_branch: 'main', status: 'completed', conclusion: 'success' },
+      { id: 1, path: '.github/workflows/build-desktop.yml', head_sha: 'abc', head_branch: 'v1.2.3', status: 'completed', conclusion: 'failure', html_url: 'https://example.invalid/1' },
+      { id: 2, path: '.github/workflows/build-desktop.yml', head_sha: 'abc', head_branch: 'v1.2.3', status: 'in_progress', conclusion: null, html_url: 'https://example.invalid/2' },
+      { id: 9, path: '.github/workflows/build-desktop.yml', head_sha: 'other', head_branch: 'v1.2.3', status: 'completed', conclusion: 'success' },
+    ],
+  };
+
+  const selected = selectReleaseWorkflowRun(payload, { tag: 'v1.2.3', sha: 'abc' });
+  assert.equal(selected.id, 2);
+  assert.equal(selectReleaseWorkflowRun(payload, { tag: 'v9.9.9', sha: 'missing' }), null);
+  assert.equal(selectReleaseWorkflowRun({}, { tag: 'v1.2.3', sha: 'abc' }), null);
+  assert.equal(selectReleaseWorkflowRun(payload, {}), null);
+
+  const waiting = releasePublishStatus({ tag: 'v1.2.3', run: null });
+  assert.equal(waiting.done, false);
+
+  const running = releasePublishStatus({ tag: 'v1.2.3', run: selected });
+  assert.equal(running.done, false);
+  assert.match(running.message, /in_progress/);
+
+  const failed = releasePublishStatus({ tag: 'v1.2.3', run: payload.workflow_runs[1] });
+  assert.equal(failed.done, true);
+  assert.equal(failed.ok, false);
+  assert.match(failed.message, /failure/);
+  assert.match(failed.message, /https:\/\/example\.invalid\/1/);
+
+  const succeededRun = { status: 'completed', conclusion: 'success', html_url: 'https://example.invalid/2' };
+  const settling = releasePublishStatus({ tag: 'v1.2.3', run: succeededRun, settleRemaining: 2 });
+  assert.equal(settling.done, false);
+
+  const missingRelease = releasePublishStatus({ tag: 'v1.2.3', run: succeededRun, settleRemaining: 0 });
+  assert.equal(missingRelease.done, true);
+  assert.equal(missingRelease.ok, false);
+  assert.match(missingRelease.message, /no GitHub Release exists/);
+
+  const published = releasePublishStatus({
+    tag: 'v1.2.3',
+    run: failed,
+    releaseUrl: 'https://example.invalid/releases/v1.2.3',
+  });
+  assert.deepEqual(published, {
+    done: true,
+    ok: true,
+    message: 'Published v1.2.3: https://example.invalid/releases/v1.2.3',
+  });
 });
