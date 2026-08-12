@@ -8,6 +8,7 @@ import {
   advertisedWebSocketEndpoint,
   isFreshThreadPersistenceError,
   normalizeThread,
+  notificationMessage,
   SHARED_CODEX_ENDPOINT,
 } from '../src/codex-app-server.mjs';
 import { RELAY_NON_INTERACTIVE_INSTRUCTION } from '../src/relay-prompt.mjs';
@@ -230,6 +231,738 @@ test('Windows and POSIX sub-agent paths resolve to the same sub-agent name', () 
     client.activeTurns.clear();
     client.close();
   }
+});
+
+// The turn id a goal-driven thread reports for plan and goal updates differs from the one
+// turn/start returned, so these fixtures deliberately use a second turn-id space.
+const GOAL_TURN_ID = 'a86ddc0c-bb5f-4596-9dc1-26b7311638ae';
+const ACTIVE_TURN_ID = '019ff6aa-83cb-7bd1-a81f-620552d6afc2';
+// A second turn on the same thread reports its own ids in both turn-id spaces. Nothing may
+// fold two turns into one plan row, so no fixture below reuses a turn id across turns.
+const SECOND_ACTIVE_TURN_ID = '019ff7c1-4d2e-7a55-b0c7-4f1d9a2b6e83';
+const SECOND_GOAL_TURN_ID = 'c4b1f0d7-2a68-4f3c-9b5e-71d0e8a3c942';
+
+// finishActiveTurn resolves the run promise and releases the thread subscription, so the
+// fixture carries the fields that path reads as well as the notification fields. It mirrors
+// the record `run` builds, so a field missing here that `run` sets is a bug in the fixture.
+function activeTurnFixture({ taskId, turnId, events }) {
+  return {
+    taskId,
+    threadId: THREAD_ID,
+    turnId,
+    finalResponse: '',
+    reasoningSummaries: new Map(),
+    lastGoalPayload: null,
+    subscribed: false,
+    earlyCompletion: null,
+    cancelRequested: false,
+    onEvent: (event) => events.push(event),
+    onStderr: () => {},
+    resolve: () => {},
+    reject: () => {},
+  };
+}
+
+function planTurnClient(taskId, turnId = ACTIVE_TURN_ID) {
+  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  const events = [];
+  client.activeTurns.set(THREAD_ID, activeTurnFixture({ taskId, turnId, events }));
+  return { client, events };
+}
+
+function completeTurn(client, turnId) {
+  client.finishActiveTurn({
+    threadId: THREAD_ID,
+    turn: { id: turnId, status: 'completed', items: [] },
+  });
+}
+
+const LIVE_GOAL = {
+  objective: 'Summarize the repository README',
+  status: 'active',
+  tokenBudget: null,
+  tokensUsed: 38885,
+  timeUsedSeconds: 19,
+  createdAt: 1786549797,
+  updatedAt: 1786549816,
+};
+
+test('a Codex plan update on a goal-driven turn id still reaches the task event stream', () => {
+  const { client, events } = planTurnClient(210);
+
+  try {
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      explanation: null,
+      plan: [
+        { step: 'Locate the repository README', status: 'inProgress' },
+        { step: 'Read the README completely', status: 'pending' },
+        { step: 'Summarize the README key guidance', status: 'pending' },
+      ],
+    });
+
+    assert.equal(events.length, 1);
+    assert.deepEqual(events[0].event, {
+      type: 'turn/plan/updated',
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      planKey: `${THREAD_ID}:${GOAL_TURN_ID}`,
+      explanation: '',
+      plan: [
+        { step: 'Locate the repository README', status: 'inProgress' },
+        { step: 'Read the README completely', status: 'pending' },
+        { step: 'Summarize the README key guidance', status: 'pending' },
+      ],
+    });
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('the turn guard still drops ordinary notifications from a foreign turn', () => {
+  const { client, events } = planTurnClient(211);
+
+  try {
+    client.handleNotification('item/completed', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      item: { id: 'foreign', type: 'agentMessage', text: 'Reply from another turn.' },
+    });
+
+    assert.deepEqual(events, []);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a plan update for an unrelated Codex thread is ignored', () => {
+  const { client, events } = planTurnClient(212);
+
+  try {
+    client.handleNotification('turn/plan/updated', {
+      threadId: '019f0000-0000-7000-8000-000000000000',
+      turnId: GOAL_TURN_ID,
+      explanation: 'Other thread.',
+      plan: [{ step: 'Should not be stored', status: 'pending' }],
+    });
+
+    assert.deepEqual(events, []);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('successive plan revisions each carry the full plan under one fold key', () => {
+  const { client, events } = planTurnClient(213);
+
+  try {
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      explanation: 'Starting the review.',
+      plan: [
+        { step: 'Read the executor', status: 'inProgress' },
+        { step: 'Patch the guard', status: 'pending' },
+      ],
+    });
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      explanation: 'Guard located.',
+      plan: [
+        { step: 'Read the executor', status: 'completed' },
+        { step: 'Patch the guard', status: 'inProgress' },
+      ],
+    });
+
+    assert.equal(events.length, 2);
+    assert.deepEqual(events.map(({ event }) => event.planKey), [
+      `${THREAD_ID}:${GOAL_TURN_ID}`,
+      `${THREAD_ID}:${GOAL_TURN_ID}`,
+    ]);
+    assert.deepEqual(events.map(({ event }) => event.plan.length), [2, 2]);
+    assert.deepEqual(events[1].event.plan, [
+      { step: 'Read the executor', status: 'completed' },
+      { step: 'Patch the guard', status: 'inProgress' },
+    ]);
+    assert.deepEqual(events.map(({ message }) => message), [
+      'Codex updated its plan (0/2 steps done): Read the executor',
+      'Codex updated its plan (1/2 steps done): Patch the guard',
+    ]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('malformed Codex plan payloads normalize instead of throwing', () => {
+  const { client, events } = planTurnClient(214);
+
+  try {
+    client.handleNotification('turn/plan/updated', { threadId: THREAD_ID, turnId: GOAL_TURN_ID });
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      explanation: '  Recovering  ',
+      plan: 'not-an-array',
+    });
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      plan: [
+        { step: 42, status: 'inProgress' },
+        { step: 'Unknown status step', status: 'abandoned' },
+        { step: 'Multi\nline  step', status: 'completed' },
+        null,
+      ],
+    });
+    client.handleNotification('turn/plan/updated', { threadId: THREAD_ID, plan: [] });
+
+    assert.equal(events.length, 4);
+    assert.deepEqual(events[0].event.plan, []);
+    assert.equal(events[0].event.explanation, '');
+    assert.deepEqual(events[1].event.plan, []);
+    assert.equal(events[1].event.explanation, 'Recovering');
+    assert.deepEqual(events[2].event.plan, [
+      { step: '', status: 'inProgress' },
+      { step: 'Unknown status step', status: 'pending' },
+      { step: 'Multi line step', status: 'completed' },
+      { step: '', status: 'pending' },
+    ]);
+    assert.equal(events[3].event.turnId, null);
+    assert.equal(events[3].event.planKey, THREAD_ID);
+    assert.deepEqual(events.map(({ message }) => message), [
+      'Codex updated its plan.',
+      'Codex updated its plan.',
+      'Codex updated its plan (1/4 steps done).',
+      'Codex updated its plan.',
+    ]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('Codex thread goal updates and clears reach the task event stream', () => {
+  const { client, events } = planTurnClient(215);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: {
+        threadId: THREAD_ID,
+        objective: 'Summarize the repository README',
+        status: 'active',
+        tokenBudget: null,
+        tokensUsed: 38885,
+        timeUsedSeconds: 19,
+        createdAt: 1786549797,
+        updatedAt: 1786549816,
+      },
+    });
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: null,
+      goal: { objective: '  Paused work  ', status: 'usageLimited', tokensUsed: 'many' },
+    });
+    client.handleNotification('thread/goal/cleared', { threadId: THREAD_ID });
+
+    assert.equal(events.length, 3);
+    assert.deepEqual(events[0].event, {
+      type: 'thread/goal/updated',
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: {
+        objective: 'Summarize the repository README',
+        status: 'active',
+        tokenBudget: null,
+        tokensUsed: 38885,
+        timeUsedSeconds: 19,
+        createdAt: 1786549797,
+        updatedAt: 1786549816,
+      },
+    });
+    assert.equal(events[1].event.turnId, null);
+    assert.equal(events[1].event.goal.objective, 'Paused work');
+    assert.equal(events[1].event.goal.tokensUsed, null);
+    assert.deepEqual(events[2].event, { type: 'thread/goal/cleared', threadId: THREAD_ID });
+    assert.deepEqual(events.map(({ message }) => message), [
+      'Codex goal active: Summarize the repository README',
+      'Codex goal usageLimited: Paused work',
+      'Codex cleared the thread goal.',
+    ]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a goal still live when the Codex turn ends is closed by one turn-final record', () => {
+  const { client, events } = planTurnClient(216);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { threadId: THREAD_ID, ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    // Codex reports the finished goal after the active turn is gone, so these two are dropped
+    // by the active-turn guard. The turn-final record above is the only thing standing between
+    // the operator and a goal row that claims to be live forever.
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL, status: 'complete' },
+    });
+    client.handleNotification('thread/goal/cleared', { threadId: THREAD_ID });
+
+    assert.equal(events.length, 2);
+    assert.equal(events[0].event.turnEnded, undefined);
+    assert.deepEqual(events[1].event, {
+      type: 'thread/goal/updated',
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+      turnEnded: true,
+    });
+    assert.deepEqual(events.map(({ message }) => message), [
+      'Codex goal active: Summarize the repository README',
+      'Codex goal active as the turn ended: Summarize the repository README',
+    ]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('the turn-final goal record carries the last goal once, however the turn end is observed', () => {
+  const { client, events } = planTurnClient(217);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL, status: 'blocked', tokensUsed: 41200 },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    // The turn-completed notification and the one-second turn poll both call finishActiveTurn,
+    // so a second finish must not append a second turn-final record. The active-turn delete in
+    // finishActiveTurn is the whole guard: no once-only flag rides on the turn record.
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 3);
+    assert.equal(events[2].event.turnEnded, true);
+    assert.equal(events[2].event.goal.status, 'blocked');
+    assert.equal(events[2].event.goal.tokensUsed, 41200);
+    assert.equal(events.filter(({ event }) => event.turnEnded === true).length, 1);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a Codex turn that never reported a goal records no turn-final goal', () => {
+  const { client, events } = planTurnClient(218);
+
+  try {
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      plan: [{ step: 'Read the README completely', status: 'inProgress' }],
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event.type, 'turn/plan/updated');
+    assert.deepEqual(events.filter(({ event }) => String(event.type).startsWith('thread/goal/')), []);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a goal cleared before the turn ends stays resolved instead of gaining a live record', () => {
+  const { client, events } = planTurnClient(219);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    client.handleNotification('thread/goal/cleared', { threadId: THREAD_ID });
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 2);
+    assert.deepEqual(events[1].event, { type: 'thread/goal/cleared', threadId: THREAD_ID });
+    assert.deepEqual(events.filter(({ event }) => event.turnEnded === true), []);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a goal set again after a clear is closed by the turn-final record', () => {
+  const { client, events } = planTurnClient(220);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    client.handleNotification('thread/goal/cleared', { threadId: THREAD_ID });
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: SECOND_GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL, objective: 'Review the release gates' },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 4);
+    assert.deepEqual(events[3].event, {
+      type: 'thread/goal/updated',
+      threadId: THREAD_ID,
+      turnId: SECOND_GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL, objective: 'Review the release gates' },
+      turnEnded: true,
+    });
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+// A goal notification whose `goal` object is missing, null, or wrongly typed normalizes to
+// blank text with null or bare-zero usage. Task Activity folds every goal event into one row
+// and the turn-final record is the one nothing can revise afterwards, so replaying a blank as
+// the turn ends would settle the row on a bare "Recorded" label with no objective. The blank is
+// still logged verbatim: Codex output is reported as it arrived, it just cannot become the
+// turn's last word.
+test('a goal update naming neither objective nor status cannot become the turn-final goal', () => {
+  const { client, events } = planTurnClient(225);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { objective: 42, status: null, tokensUsed: 0, timeUsedSeconds: 0 },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 3);
+    // The blank update still reaches the activity log exactly as it normalized.
+    assert.equal(events[1].event.turnEnded, undefined);
+    assert.deepEqual(events[1].event.goal, {
+      objective: '',
+      status: '',
+      tokenBudget: null,
+      tokensUsed: 0,
+      timeUsedSeconds: 0,
+      createdAt: null,
+      updatedAt: null,
+    });
+    assert.deepEqual(events[2].event, {
+      type: 'thread/goal/updated',
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+      turnEnded: true,
+    });
+    assert.deepEqual(events.map(({ message }) => message), [
+      'Codex goal active: Summarize the repository README',
+      'Codex goal updated.',
+      'Codex goal active as the turn ended: Summarize the repository README',
+    ]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a Codex turn whose only goal update named nothing records no turn-final goal', () => {
+  const { client, events } = planTurnClient(226);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 1);
+    assert.equal(events[0].event.goal.objective, '');
+    // Nothing readable was ever reported, so there is no goal worth closing the row on and the
+    // renderer settles the row from the finished task status instead.
+    assert.deepEqual(events.filter(({ event }) => event.turnEnded === true), []);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+// Pinned decision rather than a discovery: the blank update after a clear leaves the turn with
+// no goal to close on, so the folded row keeps the blank live record and leans on the finished
+// task status. Reviving the cleared goal instead would be worse: it would claim Codex still
+// held a goal it had already dropped.
+test('a cleared goal is not revived by a goal update that names nothing', () => {
+  const { client, events } = planTurnClient(227);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    client.handleNotification('thread/goal/cleared', { threadId: THREAD_ID });
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { objective: '   ', status: '  ' },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 3);
+    assert.deepEqual(events[1].event, { type: 'thread/goal/cleared', threadId: THREAD_ID });
+    assert.equal(events[2].event.goal.objective, '');
+    assert.deepEqual(events.filter(({ event }) => event.turnEnded === true), []);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+// Nothing that ends one turn may outlive it. Every `run` builds a fresh turn record, so the
+// second turn on a thread closes on its own goal; a guard latched across turns, or held on the
+// client instead of the record, would leave this turn with no terminal record at all.
+test('two Codex turns on one thread each close on their own turn-final goal record', () => {
+  const { client, events } = planTurnClient(228);
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    client.activeTurns.set(THREAD_ID, activeTurnFixture({
+      taskId: 228,
+      turnId: SECOND_ACTIVE_TURN_ID,
+      events,
+    }));
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: SECOND_GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL, objective: 'Review the release gates', tokensUsed: 51200 },
+    });
+    completeTurn(client, SECOND_ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 4);
+    assert.deepEqual(
+      events.map(({ event }) => [event.turnId, event.goal.objective, event.turnEnded === true]),
+      [
+        [GOAL_TURN_ID, 'Summarize the repository README', false],
+        [GOAL_TURN_ID, 'Summarize the repository README', true],
+        [SECOND_GOAL_TURN_ID, 'Review the release gates', false],
+        [SECOND_GOAL_TURN_ID, 'Review the release gates', true],
+      ],
+    );
+    assert.equal(events[3].event.goal.tokensUsed, 51200);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+// The goal row folds every goal event on a thread into one entry that outlives the turn, so it
+// needs a terminal record. A plan row folds on `planKey`, which is turn scoped, so replaying
+// the checklist would repeat the whole plan without changing a single rendered row.
+test('a plan left mid-flight when the turn ends is not replayed as a turn-final record', () => {
+  const { client, events } = planTurnClient(221);
+
+  try {
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      plan: [
+        { step: 'Read the executor', status: 'completed' },
+        { step: 'Patch the guard', status: 'inProgress' },
+      ],
+    });
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(events.length, 3);
+    assert.equal(events.filter(({ event }) => event.type === 'turn/plan/updated').length, 1);
+    assert.equal(events[0].event.turnEnded, undefined);
+    assert.equal(events[2].event.type, 'thread/goal/updated');
+    assert.equal(events[2].event.turnEnded, true);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('two Codex turns on one thread keep two plan rows', () => {
+  const { client, events } = planTurnClient(222);
+
+  try {
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      plan: [{ step: 'Read the README completely', status: 'inProgress' }],
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    client.activeTurns.set(THREAD_ID, activeTurnFixture({
+      taskId: 222,
+      turnId: SECOND_ACTIVE_TURN_ID,
+      events,
+    }));
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      turnId: SECOND_GOAL_TURN_ID,
+      plan: [{ step: 'Summarize the README key guidance', status: 'inProgress' }],
+    });
+    completeTurn(client, SECOND_ACTIVE_TURN_ID);
+
+    const planKeys = events.map(({ event }) => event.planKey);
+    assert.equal(events.length, 2);
+    assert.deepEqual(planKeys, [
+      `${THREAD_ID}:${GOAL_TURN_ID}`,
+      `${THREAD_ID}:${SECOND_GOAL_TURN_ID}`,
+    ]);
+    assert.equal(new Set(planKeys).size, 2);
+    assert.notEqual(planKeys[0], planKeys[1]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+// Known behavior, pinned so it is a decision rather than a surprise: a plan update that reports
+// no turn id keys on the thread alone, so two turns that both omit it do share one row. Codex
+// has always reported a turn id on the plan notification, and keying the fallback on the active
+// turn instead would leave `planKey` naming a different turn than the event's own `turnId`.
+test('plan updates without a turn id keep the thread-scoped fallback key', () => {
+  const { client, events } = planTurnClient(223);
+
+  try {
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      plan: [{ step: 'Read the README completely', status: 'inProgress' }],
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    client.activeTurns.set(THREAD_ID, activeTurnFixture({
+      taskId: 223,
+      turnId: SECOND_ACTIVE_TURN_ID,
+      events,
+    }));
+    client.handleNotification('turn/plan/updated', {
+      threadId: THREAD_ID,
+      plan: [{ step: 'Summarize the README key guidance', status: 'inProgress' }],
+    });
+
+    assert.deepEqual(events.map(({ event }) => event.planKey), [THREAD_ID, THREAD_ID]);
+    assert.deepEqual(events.map(({ event }) => event.turnId), [null, null]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('Codex goal timestamps survive as epoch numbers or ISO strings and nothing else', () => {
+  const { client, events } = planTurnClient(224);
+  const update = (createdAt, updatedAt) => client.handleNotification('thread/goal/updated', {
+    threadId: THREAD_ID,
+    turnId: GOAL_TURN_ID,
+    goal: { objective: 'Timestamp shapes', status: 'active', createdAt, updatedAt },
+  });
+
+  try {
+    // The live Codex payload reports epoch integers, the app-server schema declares int64 with
+    // no unit, and other Codex surfaces report ISO strings. Both forms are stored as they
+    // arrived so no consumer inherits a seconds-against-milliseconds guess.
+    update(1786549797, 1786549816);
+    update('2026-08-12T09:09:57Z', '  2026-08-12T09:10:16.500+02:00  ');
+    update('2026-08-12', '2026-08-12 09:10:16');
+    update('yesterday', 'Dec 25, 2026');
+    update('2026-13-45T00:00:00Z', { seconds: 1786549797 });
+    update(Number.NaN, Number.POSITIVE_INFINITY);
+    update(0, null);
+
+    assert.deepEqual(
+      events.map(({ event }) => [event.goal.createdAt, event.goal.updatedAt]),
+      [
+        [1786549797, 1786549816],
+        ['2026-08-12T09:09:57Z', '2026-08-12T09:10:16.500+02:00'],
+        ['2026-08-12', '2026-08-12 09:10:16'],
+        [null, null],
+        [null, null],
+        [null, null],
+        [0, null],
+      ],
+    );
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('plan and goal notifications read as single readable log lines', () => {
+  assert.equal(
+    notificationMessage('turn/plan/updated', {
+      plan: [
+        { step: 'Locate the repository README', status: 'completed' },
+        { step: 'Read the README completely', status: 'inProgress' },
+        { step: 'Summarize the key guidance', status: 'pending' },
+      ],
+    }),
+    'Codex updated its plan (1/3 steps done): Read the README completely',
+  );
+  assert.equal(
+    notificationMessage('turn/plan/updated', {
+      plan: [{ step: 'Ship the change', status: 'completed' }],
+    }),
+    'Codex updated its plan (1/1 steps done).',
+  );
+  assert.equal(notificationMessage('turn/plan/updated', {}), 'Codex updated its plan.');
+  assert.equal(
+    notificationMessage('thread/goal/updated', { goal: { objective: 'Ship plan visibility', status: 'blocked' } }),
+    'Codex goal blocked: Ship plan visibility',
+  );
+  assert.equal(notificationMessage('thread/goal/updated', {}), 'Codex goal updated.');
+  assert.equal(
+    notificationMessage('thread/goal/updated', {
+      turnEnded: true,
+      goal: { objective: 'Ship plan visibility', status: 'active' },
+    }),
+    'Codex goal active as the turn ended: Ship plan visibility',
+  );
+  assert.equal(
+    notificationMessage('thread/goal/updated', { turnEnded: true, goal: {} }),
+    'Codex goal updated as the turn ended.',
+  );
+  assert.equal(notificationMessage('thread/goal/cleared', {}), 'Codex cleared the thread goal.');
 });
 
 class FakeWebSocket extends EventTarget {

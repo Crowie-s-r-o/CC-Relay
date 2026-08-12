@@ -13,7 +13,10 @@ CC Relay's public home is `https://github.com/Crowie-s-r-o/CC-Relay`. The curren
 
 ## Public documentation contract
 
-The root [[../README|README]] is the compact public front door. It leads with the platform warning, latest-release download, and `docs/assets/cc-relay-overview.png`, then keeps the product loop, safety model, setup, updates, development, and release operation concise. The selected image is the later `OnPaste.20260812-005444.png` attachment; the earlier screenshot was replaced and is not retained as a second repository asset.
+The root [[../README|README]] is the compact public front door. It leads with the platform warning, latest-release download, and `docs/assets/cc-relay-overview.png`, then keeps the product loop, safety model, packaged setup, updates, development, and release operation concise. The selected image is the later `OnPaste.20260812-005444.png` attachment; the earlier screenshot was replaced and is not retained as a second repository asset.
+
+> [!important]
+> **Get started** is reserved for people running a packaged desktop release. It links to the latest GitHub Release, explains how to launch the macOS DMG or Windows Setup and Portable executables, and states the provider CLI prerequisite. Source checkout, Node.js, localhost, and Electron development commands belong only under **Development**.
 
 [[../CONTRIBUTING|CONTRIBUTING]] documents focused changes, required verification, Conventional Commit signals, synthetic fixtures, and the rule that normal pull requests do not edit versions or the changelog. [[../SECURITY|SECURITY]] routes suspected vulnerabilities to GitHub's private advisory flow.
 

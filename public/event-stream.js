@@ -24,6 +24,212 @@ const CODEX_AGENT_STATUS_LABELS = {
   notFound: 'Unavailable',
 };
 
+// Both providers publish the complete plan on every revision, never a delta, so the newest
+// event is always the whole truth for its fold key.
+const PLAN_EVENT_TYPES = new Set(['turn/plan/updated', 'claude/plan']);
+const PLAN_STEP_STATUSES = new Set(['pending', 'inProgress', 'completed']);
+
+const GOAL_EVENT_TYPES = new Set(['thread/goal/updated', 'thread/goal/cleared']);
+const GOAL_STATUS_LABELS = {
+  active: 'Active',
+  paused: 'Paused',
+  blocked: 'Blocked',
+  usageLimited: 'Usage limited',
+  budgetLimited: 'Budget limited',
+  complete: 'Complete',
+};
+
+// Provider text indexes the label maps below. An unguarded `LABELS[status]` walks the
+// prototype chain, so a status named `__proto__` renders `[object Object]` and one named
+// `toString` or `constructor` renders a function body, in the pill and in the copied log.
+function labelFor(labels, key) {
+  return Object.prototype.hasOwnProperty.call(labels, key) ? labels[key] : '';
+}
+
+function planEventPayload(event) {
+  return PLAN_EVENT_TYPES.has(event?.payload?.type) ? event.payload : null;
+}
+
+function goalEventPayload(event) {
+  return GOAL_EVENT_TYPES.has(event?.payload?.type) ? event.payload : null;
+}
+
+// The stored goal keeps a status CC Relay does not recognize rather than discarding it, so an
+// unfamiliar status is humanized here instead of being flattened into a generic word. The
+// label rides in an uppercase pill, so an absurd provider value is bounded rather than
+// allowed to dominate the row.
+function goalStatusLabel(status) {
+  const known = labelFor(GOAL_STATUS_LABELS, status);
+  if (known) {
+    return known;
+  }
+  const words = String(status ?? '').replace(/([a-z0-9])([A-Z])/g, '$1 $2').trim().slice(0, 48);
+  return words ? `${words.charAt(0).toUpperCase()}${words.slice(1).toLowerCase()}` : 'Recorded';
+}
+
+// The fold key is `planKey`. An event that somehow arrives without one keeps its own row
+// rather than collapsing every unrelated plan in the task into a single misleading entry.
+function planFoldKey(event) {
+  const payload = planEventPayload(event);
+  if (!payload) {
+    return '';
+  }
+  const key = String(payload.planKey ?? '').trim()
+    || String(payload.turnId ?? '').trim()
+    || String(payload.threadId ?? '').trim();
+  return key || `event-${event.id}`;
+}
+
+function goalFoldKey(event) {
+  const payload = goalEventPayload(event);
+  if (!payload) {
+    return '';
+  }
+  const key = String(payload.threadId ?? '').trim();
+  return key || `event-${event.id}`;
+}
+
+function positiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+export function isPlanEntry(entry) {
+  return Boolean(entry?.planKey);
+}
+
+export function isGoalEntry(entry) {
+  return Boolean(entry?.goalThreadId);
+}
+
+function planStepList(payload) {
+  return (Array.isArray(payload?.plan) ? payload.plan : []).map((step) => ({
+    step: String(step?.step ?? '').trim(),
+    status: PLAN_STEP_STATUSES.has(step?.status) ? step.status : 'pending',
+    owner: String(step?.owner ?? '').trim(),
+  }));
+}
+
+// `src/claude-execution-runner.mjs` marks a revision `partial: true` when it could not read
+// the Claude board mirror and its own fold is not known to be whole: the payload then carries
+// this turn's steps and no more. Such a revision may never shrink a board the operator has
+// already been shown, so its steps are layered onto the fuller board instead of replacing it.
+// A named step keeps its place and takes the newer status and owner, and a step the fuller
+// board never had is appended rather than dropped. Repeated step text is paired in order, so
+// a duplicated title moves one row rather than every row that shares its wording.
+function planLayerSteps(base, incoming) {
+  const merged = base.map((step) => ({ ...step }));
+  const claimed = new Set();
+  for (const step of incoming) {
+    const index = merged.findIndex((candidate, at) => !claimed.has(at) && candidate.step === step.step);
+    if (index === -1) {
+      merged.push({ ...step });
+      claimed.add(merged.length - 1);
+      continue;
+    }
+    claimed.add(index);
+    merged[index] = {
+      ...merged[index],
+      status: step.status,
+      owner: step.owner || merged[index].owner,
+    };
+  }
+  return merged;
+}
+
+// Normalized, provider-neutral plan state. Codex and Claude publish the same step shape;
+// `owner` is Claude-only and stays empty for Codex. Every count here describes the steps this
+// same object carries, so a consumer that draws `steps` can report `done`/`total` honestly.
+export function planEntryDetails(entry) {
+  if (!isPlanEntry(entry)) {
+    return null;
+  }
+  const events = entry.planEvents || [];
+  const latest = events.at(-1)?.payload || null;
+  if (!latest) {
+    return null;
+  }
+  // Whether the row is standing on a partial revision. Always a boolean: the payload field is
+  // present only when true, and the renderer must not have to re-derive this.
+  const partial = latest.partial === true;
+  // The base is the newest revision that claimed to be whole; every partial revision recorded
+  // after it layers on in order, so a step one partial turn completed is not reverted by the
+  // next partial turn that never mentions it. A fold that is partial all the way back starts
+  // from its own first revision. Codex never sends `partial`, so a Codex fold walks nothing
+  // and keeps its exact last-write-wins reading.
+  let baseIndex = events.length - 1;
+  while (baseIndex > 0 && events[baseIndex]?.payload?.partial === true) {
+    baseIndex -= 1;
+  }
+  let steps = planStepList(events[baseIndex]?.payload);
+  for (let index = baseIndex + 1; index < events.length; index += 1) {
+    steps = planLayerSteps(steps, planStepList(events[index]?.payload));
+  }
+  const done = steps.filter((step) => step.status === 'completed').length;
+  const inProgress = steps.filter((step) => step.status === 'inProgress').length;
+  return {
+    provider: latest.type === 'claude/plan' ? 'claude' : 'codex',
+    planKey: entry.planKey,
+    partial,
+    // The explanation still follows the newest revision alone, exactly as it always did. The
+    // backend derives it from the step being worked on right now, so a partial revision that
+    // carries none leaves the line empty rather than resurrecting a sentence about an earlier
+    // turn's step and printing it beside a merged board.
+    explanation: String(latest.explanation ?? '').trim(),
+    steps,
+    total: steps.length,
+    done,
+    inProgress,
+    // Two partial turns can each leave a step in progress, because neither one can speak for
+    // the other's steps. Board order decides the current step rather than arrival order.
+    current: steps.find((step) => step.status === 'inProgress')?.step || '',
+  };
+}
+
+// A goal is only ever set by a Codex client, so a task without a goal event has no goal
+// details at all and must not render an invented empty panel.
+export function goalEntryDetails(entry) {
+  if (!isGoalEntry(entry)) {
+    return null;
+  }
+  let goal = null;
+  let cleared = false;
+  // The backend replays the goal a turn last observed, flagged `turnEnded`, once that turn
+  // ends. `src/queue.mjs` dispatches a same-session follow-up into the same task stream and
+  // every goal on a thread folds into this one entry, so the flag rides on the goal record
+  // that carries it rather than latching: the next turn's goal record clears it and reads as
+  // live again. A task that is no longer running is settled by its own status instead.
+  let turnEnded = false;
+  for (const event of entry.goalEvents || []) {
+    if (event.payload?.type === 'thread/goal/cleared') {
+      cleared = true;
+      continue;
+    }
+    if (event.payload?.goal) {
+      goal = event.payload.goal;
+      cleared = false;
+      // Both shapes are accepted so the flag survives either emitter, and a record carrying
+      // neither clears both.
+      turnEnded = event.payload.turnEnded === true || event.payload.goal.turnEnded === true;
+    }
+  }
+  const status = String(goal?.status ?? '').trim();
+  return {
+    provider: 'codex',
+    threadId: entry.goalThreadId,
+    cleared,
+    turnEnded,
+    objective: String(goal?.objective ?? '').trim(),
+    status: cleared ? 'cleared' : status,
+    statusLabel: cleared ? 'Cleared' : goalStatusLabel(status),
+    tokensUsed: positiveNumber(goal?.tokensUsed),
+    tokenBudget: positiveNumber(goal?.tokenBudget),
+    timeUsedSeconds: positiveNumber(goal?.timeUsedSeconds),
+    createdAt: goal?.createdAt || '',
+    updatedAt: goal?.updatedAt || '',
+  };
+}
+
 function isPairableItemEvent(event) {
   return event?.payload?.item?.id
     && ['item/started', 'item/updated', 'item/completed'].includes(event.payload.type);
@@ -34,6 +240,17 @@ function liveClaudeMessageId(event) {
   return typeof event.payload.liveMessageId === 'string'
     ? event.payload.liveMessageId.trim()
     : '';
+}
+
+// Claude board bookkeeping. `src/claude-execution-runner.mjs` marks the `TaskCreate`,
+// `TaskUpdate`, and `TodoWrite` calls it folds into the plan, so the console can render them
+// quietly beside the plan row that already reports the same change instead of stacking a
+// loud generic tool row next to it. A call that failed folded nothing and stays loud.
+export function isPlanToolItem(item) {
+  return Boolean(item
+    && item.type === 'mcpToolCall'
+    && item.planTool === true
+    && item.status !== 'failed');
 }
 
 function isClaudeSubAgentItem(item) {
@@ -98,6 +315,8 @@ export function groupEventEntries(events) {
   const entriesByItemId = new Map();
   const entriesByLiveMessageId = new Map();
   const entriesByCodexAgentId = new Map();
+  const entriesByPlanKey = new Map();
+  const entriesByGoalThreadId = new Map();
   const codexAgentIdsByItemId = new Map();
   // A backgrounded sub-agent's task notification can be written to the transcript before the
   // launch record it belongs to, so the fold targets are collected before grouping starts.
@@ -151,8 +370,68 @@ export function groupEventEntries(events) {
     return entry;
   };
 
+  // Plan and goal rows are last-write-wins folds that keep their first-seen position, exactly
+  // like Codex worker rows. They never set `startedEvent`, so a live plan can never inflate
+  // the active-work metric or read as a running signal.
+  const entryForPlan = (planKey) => {
+    let entry = entriesByPlanKey.get(planKey);
+    if (!entry) {
+      entry = {
+        id: `plan-${planKey}`,
+        events: [],
+        startedEvent: null,
+        updatedEvent: null,
+        completedEvent: null,
+        agentFinishedEvent: null,
+        planKey,
+        planEvents: [],
+      };
+      entriesByPlanKey.set(planKey, entry);
+      entries.push(entry);
+    }
+    return entry;
+  };
+
+  const entryForGoal = (threadId) => {
+    let entry = entriesByGoalThreadId.get(threadId);
+    if (!entry) {
+      entry = {
+        id: `goal-${threadId}`,
+        events: [],
+        startedEvent: null,
+        updatedEvent: null,
+        completedEvent: null,
+        agentFinishedEvent: null,
+        goalThreadId: threadId,
+        goalEvents: [],
+      };
+      entriesByGoalThreadId.set(threadId, entry);
+      entries.push(entry);
+    }
+    return entry;
+  };
+
   for (const event of list) {
     const item = event?.payload?.item;
+
+    const planKey = planFoldKey(event);
+    if (planKey) {
+      const entry = entryForPlan(planKey);
+      entry.events.push(event);
+      entry.planEvents.push(event);
+      continue;
+    }
+
+    const goalThreadId = goalFoldKey(event);
+    if (goalThreadId) {
+      const entry = entryForGoal(goalThreadId);
+      entry.events.push(event);
+      entry.goalEvents.push(event);
+      // A cleared goal resolves its row; a later goal on the same thread reopens it.
+      entry.completedEvent = event.payload.type === 'thread/goal/cleared' ? event : null;
+      continue;
+    }
+
     const groupedCodexAgentIds = item?.id && codexAgentIdsByItemId.has(item.id)
       ? [...codexAgentIdsByItemId.get(item.id)]
       : codexAgentIds(item);
@@ -256,6 +535,11 @@ export function groupEventEntries(events) {
 }
 
 export function entryItem(entry) {
+  // Plan and goal notifications carry no thread item at all. Returning null keeps every
+  // item-shaped consumer (category, stats, presentation) on its existing null path.
+  if (entry?.planEvents?.length || entry?.goalEvents?.length) {
+    return null;
+  }
   if (entry?.codexAgentEvents?.length) {
     return entry.codexAgentEvents.at(-1)?.payload?.item || null;
   }
@@ -267,6 +551,12 @@ export function entryItem(entry) {
 }
 
 export function entryLastEvent(entry) {
+  if (entry?.planEvents?.length) {
+    return entry.planEvents.at(-1) || null;
+  }
+  if (entry?.goalEvents?.length) {
+    return entry.goalEvents.at(-1) || null;
+  }
   if (entry?.codexAgentEvents?.length) {
     return entry.codexAgentEvents.at(-1) || null;
   }
@@ -274,6 +564,12 @@ export function entryLastEvent(entry) {
 }
 
 export function entryFirstEvent(entry) {
+  if (entry?.planEvents?.length) {
+    return entry.planEvents[0] || null;
+  }
+  if (entry?.goalEvents?.length) {
+    return entry.goalEvents[0] || null;
+  }
   if (entry?.codexAgentEvents?.length) {
     return entry.codexAgentEvents[0] || null;
   }
@@ -281,6 +577,11 @@ export function entryFirstEvent(entry) {
 }
 
 export function eventEntryCategory(entry) {
+  // Plan and goal rows are neither commands nor messages. This must stay ahead of the
+  // event-kind fallthrough below, which would file a `kind: 'claude'` plan under Messages.
+  if (isPlanEntry(entry) || isGoalEntry(entry)) {
+    return 'system';
+  }
   if (entry?.codexAgentThreadId || isSubAgentItem(entryItem(entry))) {
     return 'commands';
   }
@@ -298,12 +599,19 @@ export function eventEntryCategory(entry) {
 }
 
 export function isEventEntryHighlight(entry) {
+  // The plan checklist and the goal are the two rows an operator most wants in a compact
+  // view, so they are pinned into Highlights rather than left to the fallthrough.
+  if (isPlanEntry(entry) || isGoalEntry(entry)) {
+    return true;
+  }
   const item = entryItem(entry);
   const lastEvent = entryLastEvent(entry);
   if (lastEvent?.kind === 'stderr' || lastEvent?.payload?.type === 'error') {
     return true;
   }
-  if (QUIET_ITEM_TYPES.has(item?.type)) {
+  // Board bookkeeping is the plan row's own paperwork. It stays in All and in Commands, and
+  // in the copied log, but the compact view shows the folded plan instead of its mechanics.
+  if (QUIET_ITEM_TYPES.has(item?.type) || isPlanToolItem(item)) {
     return false;
   }
   if (lastEvent?.payload?.type === 'turn/started'
@@ -382,7 +690,7 @@ function codexSubAgentDetails(entry) {
   const pathName = agentPath.split(/[\\/]/).filter(Boolean).at(-1) || '';
   details.name = pathName || `agent ${entry.codexAgentThreadId.slice(0, 8)}`;
   details.agentType = [model, reasoningEffort].filter(Boolean).join(' / ') || 'Codex';
-  details.statusLabel = CODEX_AGENT_STATUS_LABELS[details.reportedStatus] || 'Recorded';
+  details.statusLabel = labelFor(CODEX_AGENT_STATUS_LABELS, details.reportedStatus) || 'Recorded';
   details.failed = ['errored', 'interrupted', 'notFound'].includes(details.reportedStatus);
   return details;
 }
@@ -444,8 +752,38 @@ export function eventStreamStats(entries, { turnEnded = false } = {}) {
     running: 0,
     thinkingTokens: 0,
     agents: activeSubAgentCount(entries, { turnEnded }),
+    // The current plan, or null when the task never published one. Never a zeroed object:
+    // the metrics strip must not show a plan tile for a task that has no plan.
+    plan: null,
   };
+  // Entries keep their first-seen position, so entry order is not revision order: a Claude
+  // plan folds on a session-scoped key and stays put while later Codex turns append rows
+  // after it. The tile follows the most recently written plan event instead.
+  let newestPlanRank = -Infinity;
   for (const entry of entries || []) {
+    // Plan and goal rows are telemetry of their own and never contribute to the command,
+    // message, error, or active-work tallies. A `kind: 'claude'` plan event would otherwise
+    // be counted as a Claude message by the generic accumulator below.
+    const planDetails = planEntryDetails(entry);
+    if (planDetails) {
+      // A task can hold one plan per turn, and per provider. The metric reports the newest
+      // plan rather than summing historical turns into a nonsense total. Event ids are
+      // written in order; a stream without numeric ids falls back to entry order.
+      const rank = Number(entryLastEvent(entry)?.id);
+      const ordered = Number.isFinite(rank) ? rank : newestPlanRank + 1;
+      if (ordered >= newestPlanRank) {
+        newestPlanRank = ordered;
+        stats.plan = {
+          total: planDetails.total,
+          done: planDetails.done,
+          inProgress: planDetails.inProgress,
+        };
+      }
+      continue;
+    }
+    if (isGoalEntry(entry)) {
+      continue;
+    }
     const item = entryItem(entry);
     const last = entryLastEvent(entry);
     if (item?.type === 'commandExecution') stats.commands += 1;

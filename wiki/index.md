@@ -55,6 +55,7 @@ type: index
 - [[disposable-retry-conversation-initialization]]
 - [[claude-fresh-session-review]]
 - [[provider-sub-agent-visibility]]
+- [[provider-plan-and-goal-visibility]]
 - [[claude-terminal-visibility]]
 - [[claude-terminal-live-output]]
 - [[claude-background-sub-agent-completion]]

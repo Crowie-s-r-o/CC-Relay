@@ -4,9 +4,14 @@ import {
   entryLastEvent,
   eventEntryCategory,
   filterEventEntries,
+  goalEntryDetails,
   groupEventEntries,
   eventStreamStats,
+  isGoalEntry,
+  isPlanEntry,
+  isPlanToolItem,
   isSubAgentEntry,
+  planEntryDetails,
   subAgentEntryDetails,
   subAgentEntryState,
 } from './event-stream.js';
@@ -1937,6 +1942,280 @@ const SUB_AGENT_STATUS_LABELS = {
   finished: 'Finished',
 };
 
+/* Plan checklist ---------------------------------------------------------------
+   One provider-neutral checklist for both Codex `turn/plan/updated` and Claude
+   `claude/plan`. Status is carried by glyph, color, and weight together, never by
+   color alone, and the step word rides along for assistive technology. */
+const PLAN_STEP_GLYPHS = {
+  completed: '✔',
+  inProgress: '▸',
+  pending: '☐',
+  unfinished: '◌',
+};
+
+const PLAN_STEP_LABELS = {
+  completed: 'Completed',
+  inProgress: 'In progress',
+  pending: 'Pending',
+  unfinished: 'Unfinished',
+};
+
+// The copied log stays plain text, so the checklist copies as text markers.
+const PLAN_STEP_MARKERS = {
+  completed: '[x]',
+  inProgress: '[>]',
+  pending: '[ ]',
+  unfinished: '[~]',
+};
+
+// A step still in progress when the turn ended is not being worked on any more. The stored
+// plan is never rewritten: only the reading changes, so the step keeps its place in the
+// checklist and reads as left unfinished instead of as currently working.
+const PLAN_ENDED_STEP_STATUS = 'unfinished';
+
+/* Bounds on provider-controlled plan and goal text ---------------------------------
+   Steps, explanations, and objectives are provider output with no count or length
+   limit of their own, and this row is rebuilt on every poll, so one plan must not be
+   able to grow into hundreds of kilobytes of markup. Nothing is dropped in silence:
+   the count cap reports its own remainder on a visible line, clipped text keeps an
+   ellipsis plus a bounded hover title, and the copied log stays lossless because it
+   copies from the unclamped details rather than from the row. */
+const PLAN_STEP_LIMIT = 50;
+const PLAN_STEP_TEXT_LIMIT = 220;
+const PLAN_EXPLANATION_LIMIT = 600;
+const PLAN_OWNER_LIMIT = 48;
+const GOAL_OBJECTIVE_LIMIT = 300;
+// `title` is hover-only and is not reliably announced by assistive technology, so it is a
+// convenience rather than the record. The lossless channel is the copied log.
+const ROW_TITLE_LIMIT = 600;
+
+/* A partial plan revision reports one turn's own steps and no more. `planEntryDetails` keeps
+   the fuller board rendered and layers the partial steps onto it, so the row is drawing more
+   than the newest revision alone said. That is worth saying out loud: the hint sits beside the
+   progress in the same quiet register as the step-cap overflow line, and the copied log
+   carries the same caveat in its own sentence. */
+const PLAN_PARTIAL_HINT = 'partial board';
+const PLAN_PARTIAL_NOTE = `${PLAN_PARTIAL_HINT}: the newest revision carried only its own turn's steps`;
+
+function clampText(value, limit) {
+  const text = String(value ?? '');
+  return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
+}
+
+// The rule renderEventStream already applies to sub-agents: a task that is no longer running
+// owns no live work, so nothing it recorded may keep rendering as live.
+function isTurnEnded(task) {
+  return task?.status !== 'running';
+}
+
+// Presentation-only reading of the recorded steps. The plan data itself is untouched.
+function planViewSteps(steps, turnEnded) {
+  const list = steps || [];
+  if (!turnEnded) {
+    return list;
+  }
+  return list.map((step) => (planStepStatus(step?.status) === 'inProgress'
+    ? { ...step, status: PLAN_ENDED_STEP_STATUS }
+    : step));
+}
+
+const GOAL_ATTENTION_STATUSES = ['blocked', 'usageLimited', 'budgetLimited'];
+// A paused goal is neither live nor resolved, so it must not borrow the running accent.
+const GOAL_LIVE_STATUSES = ['active'];
+
+// Provider text indexes the glyph, label, and marker maps, so the lookup is guarded: an
+// unguarded `PLAN_STEP_GLYPHS[status]` accepts `__proto__` and renders `[object Object]`
+// as the step marker, and `constructor` renders a function body as the spoken status.
+function planStepStatus(status) {
+  return Object.prototype.hasOwnProperty.call(PLAN_STEP_GLYPHS, status) ? status : 'pending';
+}
+
+// Step text and owner are provider output. Both are escaped before interpolation, including
+// inside the hover title, and both are bounded before they reach the DOM.
+function planChecklistMarkup(steps) {
+  const list = steps || [];
+  const shown = list.slice(0, PLAN_STEP_LIMIT);
+  const items = shown.map((step) => {
+    const status = planStepStatus(step?.status);
+    const owner = clampText(String(step?.owner || '').trim(), PLAN_OWNER_LIMIT);
+    const text = String(step?.step || '');
+    const clipped = clampText(text, PLAN_STEP_TEXT_LIMIT);
+    const title = clipped === text ? '' : clampText(text, ROW_TITLE_LIMIT);
+    return `<li class="term-plan-step" data-plan-status="${escapeHtml(status)}">`
+      + `<span class="term-plan-mark" aria-hidden="true">${escapeHtml(PLAN_STEP_GLYPHS[status])}</span>`
+      + `<span class="sr-only">${escapeHtml(PLAN_STEP_LABELS[status])}</span>`
+      + `<span class="term-plan-text"${title ? ` title="${escapeHtml(title)}"` : ''}>${escapeHtml(clipped)}</span>`
+      + (owner ? `<span class="term-plan-owner">${escapeHtml(owner)}</span>` : '')
+      + '</li>';
+  }).join('');
+  if (!items) {
+    return '';
+  }
+  // The honest half of the cap: the reader is told exactly how many steps the row is not
+  // showing rather than handed a plan that looks complete and is not.
+  const hidden = list.length - shown.length;
+  const overflow = hidden > 0
+    ? `<li class="term-plan-more">and ${escapeHtml(hidden.toLocaleString())} more step${hidden === 1 ? '' : 's'}</li>`
+    : '';
+  return `<ol class="term-plan-list">${items}${overflow}</ol>`;
+}
+
+// The copied log is the lossless channel: every step at full length, every step there is,
+// and the whole explanation, however hard the rendered row is bounded.
+function planCopyLines(details, { turnEnded = false } = {}) {
+  const lines = [];
+  if (details?.explanation) {
+    lines.push(details.explanation);
+  }
+  // The copied log makes the same admission the row does, so a pasted plan never reads as a
+  // board the provider vouched for whole.
+  if (details?.partial === true) {
+    lines.push(PLAN_PARTIAL_NOTE);
+  }
+  for (const step of planViewSteps(details?.steps, turnEnded)) {
+    const owner = String(step?.owner || '').trim();
+    lines.push(`${PLAN_STEP_MARKERS[planStepStatus(step?.status)]} ${String(step?.step || '')}${owner ? ` (${owner})` : ''}`);
+  }
+  return lines;
+}
+
+// Compact elapsed label for the Codex goal, which reports whole seconds.
+function goalTimeLabel(seconds) {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (!total) {
+    return '';
+  }
+  if (total < 60) {
+    return `${total}s`;
+  }
+  const minutes = Math.floor(total / 60);
+  if (minutes < 60) {
+    return `${minutes}m ${String(total % 60).padStart(2, '0')}s`;
+  }
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+}
+
+function goalMetaParts(details) {
+  const parts = [`${Math.round(Number(details?.tokensUsed) || 0).toLocaleString()} tokens used`];
+  const budget = Math.round(Number(details?.tokenBudget) || 0);
+  if (budget > 0) {
+    parts.push(`${budget.toLocaleString()} token budget`);
+  }
+  const time = goalTimeLabel(details?.timeUsedSeconds);
+  if (time) {
+    parts.push(`${time} used`);
+  }
+  return parts;
+}
+
+function goalMetaMarkup(details) {
+  const parts = goalMetaParts(details);
+  if (!parts.length) {
+    return '';
+  }
+  const cells = parts
+    .map((part) => `<span>${escapeHtml(part)}</span>`)
+    .join('<span class="term-sep" aria-hidden="true">·</span>');
+  return `<div class="term-goal-meta">${cells}</div>`;
+}
+
+function goalCopyLines(details) {
+  const lines = [];
+  if (details?.objective) {
+    lines.push(details.objective);
+  }
+  lines.push([details?.statusLabel, ...goalMetaParts(details)].filter(Boolean).join(' · '));
+  return lines;
+}
+
+// The plan row is the reference "Updated Plan" block: an explanation line and a checklist
+// whose current step is emphasized. The full plan arrives on every revision, so the newest
+// event alone describes the row.
+function planPresentation(entry, common, { turnEnded = false } = {}) {
+  const details = planEntryDetails(entry);
+  if (!details) {
+    return null;
+  }
+  const complete = details.total > 0 && details.done === details.total;
+  // A task that is no longer running owns no live step, however its last revision left the
+  // plan. Providers stop revising the plan when the turn ends, so a step left in progress
+  // would otherwise read as work in flight for as long as the task is kept.
+  const live = !turnEnded && details.inProgress > 0;
+  const steps = planViewSteps(details.steps, turnEnded);
+  const explanation = clampText(details.explanation, PLAN_EXPLANATION_LIMIT);
+  return {
+    ...common,
+    provider: details.provider,
+    kind: 'plan',
+    glyph: '☰',
+    // State is pinned from the plan itself. The generic `eventState` reads the event message,
+    // which carries untrusted step text and would call a step named "error" a failure.
+    state: complete ? 'success' : (live ? 'running' : 'neutral'),
+    title: 'Plan',
+    // The count stays the true count: the row bounds what it draws, never what it reports.
+    // `details` already merged a partial revision into the fuller board, so this tally
+    // describes the board being drawn rather than the newest revision's smaller slice.
+    status: `${details.done}/${details.total} step${details.total === 1 ? '' : 's'}`,
+    duration: '',
+    live,
+    // Read from the details rather than re-derived here, so the row, the copied log, and the
+    // metrics tile all stand on one reading of the same fold.
+    partial: details.partial === true,
+    partialHint: details.partial === true ? PLAN_PARTIAL_HINT : '',
+    explanation,
+    explanationTitle: explanation === details.explanation ? '' : clampText(details.explanation, ROW_TITLE_LIMIT),
+    current: live ? details.current : '',
+    steps,
+    checklistMarkup: planChecklistMarkup(steps),
+  };
+}
+
+// A goal is only ever set by a Codex client, never by CC Relay, so this row exists only when
+// the task actually recorded a goal event.
+function goalPresentation(entry, common, { turnEnded = false } = {}) {
+  const details = goalEntryDetails(entry);
+  if (!details) {
+    return null;
+  }
+  // The backend stops receiving goal notifications when the turn ends, so the last observed
+  // status is not evidence of a live goal. The turn-final record settles it when the stream
+  // carries one; stored history written before that record has only the task status.
+  const ended = turnEnded || details.turnEnded === true;
+  const resolved = details.cleared || details.status === 'complete';
+  let state = 'neutral';
+  if (resolved) {
+    state = 'success';
+  } else if (GOAL_ATTENTION_STATUSES.includes(details.status)) {
+    state = 'error';
+  } else if (!ended && GOAL_LIVE_STATUSES.includes(details.status)) {
+    state = 'running';
+  }
+  const objective = clampText(details.objective, GOAL_OBJECTIVE_LIMIT);
+  return {
+    ...common,
+    provider: 'codex',
+    kind: 'goal',
+    glyph: '⚑',
+    state,
+    title: 'Goal',
+    // The label keeps reporting the last status the provider actually published. What a
+    // finished task loses is the claim that the goal is still live: the state, the running
+    // glyph, and the live accent on the pill.
+    status: details.statusLabel,
+    goalStatus: details.status,
+    quiet: details.cleared,
+    duration: '',
+    live: state === 'running',
+    // The pill drops the live accent only where it would otherwise claim to be live. A goal
+    // that ended blocked stays red and one that ended complete stays green: those are facts
+    // about how it ended, not claims that it is still running.
+    endedLive: ended && GOAL_LIVE_STATUSES.includes(details.status),
+    objective,
+    objectiveTitle: objective === details.objective ? '' : clampText(details.objective, ROW_TITLE_LIMIT),
+    metaMarkup: goalMetaMarkup(details),
+  };
+}
+
 // Presentation for one sub-agent run. `item` is the launch tool call when this stream saw it;
 // a task notification that arrived without its launch (a resumed agent, or a notification
 // written before the launch record) still renders from the notification alone.
@@ -1987,6 +2266,7 @@ function eventPresentation(entry, task) {
   const duration = formatEventDuration(entry);
   const stateName = eventState(entry);
   const completed = Boolean(entry.completedEvent);
+  const turnEnded = isTurnEnded(task);
   const common = {
     provider,
     state: stateName,
@@ -1998,6 +2278,23 @@ function eventPresentation(entry, task) {
   // stay live for hours, so "who is working" must be legible without opening tool arguments.
   if (isSubAgentEntry(entry)) {
     return subAgentPresentation(entry, item, common);
+  }
+
+  // Plan and goal rows carry no thread item, so they are resolved before every item branch.
+  // Their provider comes from the payload type rather than the recorded event kind, which
+  // keeps one neutral path for both providers.
+  if (isPlanEntry(entry)) {
+    const plan = planPresentation(entry, common, { turnEnded });
+    if (plan) {
+      return plan;
+    }
+  }
+
+  if (isGoalEntry(entry)) {
+    const goal = goalPresentation(entry, common, { turnEnded });
+    if (goal) {
+      return goal;
+    }
   }
 
   if (item?.type === 'commandExecution') {
@@ -2042,11 +2339,16 @@ function eventPresentation(entry, task) {
 
   if (item?.type === 'mcpToolCall') {
     const output = toolResultText(item.result);
+    // Claude board bookkeeping already speaks through the folded plan row sitting next to it.
+    // It keeps its line, its arguments, and its place in the copied log, but reads quietly
+    // instead of competing with the plan it just produced.
+    const planTool = isPlanToolItem(item);
     return {
       ...common,
       kind: 'tool',
-      glyph: '◆',
-      title: item.tool || 'Connected tool',
+      quiet: planTool,
+      glyph: planTool ? '☰' : '◆',
+      title: planTool ? 'Plan board' : (item.tool || 'Connected tool'),
       status: item.status === 'failed' ? 'failed' : eventStatusLabel(entry, 'tool'),
       inline: `<span class="term-route">${escapeHtml(item.server || 'tool')}<b>/</b>${escapeHtml(item.tool || 'call')}</span>`,
       // Arguments first so its disclosure keeps slot 0 while streamed output appears at slot 1.
@@ -2312,6 +2614,41 @@ function renderEventEntryInner(p, time) {
     `;
   }
 
+  if (p.kind === 'plan') {
+    // Clipped provider text keeps the rest of itself in a bounded title, which is escaped
+    // exactly like the visible half because it is interpolated into a quoted attribute.
+    const explanation = p.explanation
+      ? `<p class="term-plan-explanation"${p.explanationTitle ? ` title="${escapeHtml(p.explanationTitle)}"` : ''}>${escapeHtml(p.explanation)}</p>`
+      : '';
+    return `
+      <div class="term-signal-row">
+        <span class="term-glyph" aria-hidden="true">${escapeHtml(p.glyph)}</span>
+        <span class="term-signal-title">${escapeHtml(p.title)}</span>
+        <span class="term-signal-state term-plan-progress">${escapeHtml(p.status)}</span>
+        ${p.partialHint ? `<span class="term-plan-partial">${escapeHtml(p.partialHint)}</span>` : ''}
+        <time class="term-time">${escapeHtml(time)}</time>
+      </div>
+      ${explanation}
+      ${p.checklistMarkup || ''}
+    `;
+  }
+
+  if (p.kind === 'goal') {
+    const objective = p.objective
+      ? `<span class="term-signal-inline term-goal-objective"${p.objectiveTitle ? ` title="${escapeHtml(p.objectiveTitle)}"` : ''}>${escapeHtml(p.objective)}</span>`
+      : '';
+    return `
+      <div class="term-signal-row">
+        <span class="term-glyph" aria-hidden="true">${escapeHtml(p.glyph)}</span>
+        <span class="term-signal-title">${escapeHtml(p.title)}</span>
+        ${objective}
+        <span class="term-signal-state term-goal-state${p.endedLive ? ' is-ended' : ''}" data-goal-status="${escapeHtml(p.goalStatus)}">${escapeHtml(p.status)}</span>
+        <time class="term-time">${escapeHtml(time)}</time>
+      </div>
+      ${p.metaMarkup || ''}
+    `;
+  }
+
   const inline = p.inline ? `<span class="term-signal-inline">${p.inline}</span>` : '';
   const status = p.status ? `<span class="term-signal-state">${escapeHtml(p.status)}</span>` : '';
   const row = `
@@ -2356,6 +2693,10 @@ function eventCopyText(entry, task) {
     if (brief) {
       lines.push(brief);
     }
+  } else if (isPlanEntry(entry)) {
+    lines.push(...planCopyLines(planEntryDetails(entry), { turnEnded: isTurnEnded(task) }));
+  } else if (isGoalEntry(entry)) {
+    lines.push(...goalCopyLines(goalEntryDetails(entry)));
   } else if (item?.type === 'commandExecution') {
     lines.push(item.command || 'Command details unavailable');
     if (item.aggregatedOutput) {
@@ -2677,6 +3018,7 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     <span><b>${stats.files}</b><small>file changes</small></span>
     <span><b>${stats.messages}</b><small>messages</small></span>
     <span class="${stats.errors ? 'has-errors' : ''}"><b>${stats.errors}</b><small>errors</small></span>
+    ${stats.plan ? `<span class="has-plan"><b>${stats.plan.done}/${stats.plan.total}</b><small>plan steps</small></span>` : ''}
     ${stats.agents ? `<span class="has-agents"><b>${stats.agents}</b><small>sub-agents</small></span>` : ''}
     ${stats.running ? `<span class="is-running"><b>${stats.running}</b><small>active</small></span>` : ''}
   `;

@@ -110,6 +110,85 @@ function itemMessage(item, phase) {
   return `${item.type || 'Codex item'} ${phase}.`;
 }
 
+const PLAN_STEP_STATUSES = new Set(['pending', 'inProgress', 'completed']);
+
+// Plan steps, explanations, and goal objectives are provider text rendered as single-line
+// rows, so whitespace is collapsed the same way connected thread previews are.
+function singleLineText(value) {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim() : '';
+}
+
+// Codex reports an absent token budget as null. Number() would turn that into a real 0 budget,
+// so only finite numbers survive and everything else stays null.
+function finiteNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+// Codex declares the goal timestamps as `int64` with no unit and reports them as epoch
+// integers today, while other Codex surfaces report times as ISO 8601 strings. Both forms are
+// therefore kept exactly as they arrived: rewriting an epoch number into a string would mean
+// guessing seconds against milliseconds, and reading 1786549797 as milliseconds lands in 1970,
+// which would write a wrong date into stored history. A string only survives when it really is
+// an ISO 8601 date, so provider free text cannot reach a consumer that calls Date.parse on it.
+const ISO_TIMESTAMP = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+function goalTimestamp(value) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
+  const text = singleLineText(value);
+  return ISO_TIMESTAMP.test(text) && Number.isFinite(Date.parse(text)) ? text : null;
+}
+
+// Codex resends the whole checklist on every revision, so the stored event carries the full
+// plan plus a stable planKey that folds every revision of one turn into a single entry.
+// Goal-driven threads report plan updates on a second turn-id space, so a missing turn id
+// falls back to the thread alone rather than baking "null" into the key.
+function normalizePlanParams(params) {
+  const threadId = typeof params.threadId === 'string' ? params.threadId : '';
+  const turnId = singleLineText(params.turnId) || null;
+  const steps = Array.isArray(params.plan) ? params.plan : [];
+  return {
+    threadId: threadId || null,
+    turnId,
+    planKey: turnId ? `${threadId}:${turnId}` : threadId,
+    explanation: singleLineText(params.explanation),
+    plan: steps.map((entry) => ({
+      step: singleLineText(entry?.step),
+      status: PLAN_STEP_STATUSES.has(entry?.status) ? entry.status : 'pending',
+    })),
+  };
+}
+
+// A goal status CC Relay does not know about is still worth showing, so it is kept as trimmed
+// text instead of being forced into a known value the way plan step statuses are.
+function normalizeGoalParams(params) {
+  const goal = params.goal && typeof params.goal === 'object' ? params.goal : {};
+  return {
+    threadId: typeof params.threadId === 'string' ? params.threadId : null,
+    turnId: singleLineText(params.turnId) || null,
+    goal: {
+      objective: singleLineText(goal.objective),
+      status: singleLineText(goal.status),
+      tokenBudget: finiteNumber(goal.tokenBudget),
+      tokensUsed: finiteNumber(goal.tokensUsed),
+      timeUsedSeconds: finiteNumber(goal.timeUsedSeconds),
+      createdAt: goalTimestamp(goal.createdAt),
+      updatedAt: goalTimestamp(goal.updatedAt),
+    },
+  };
+}
+
+// The objective and the status are the two fields that name a goal and its state, so a
+// normalized goal carrying neither describes nothing an operator can read. That is exactly
+// what a notification with a missing, null, or wrongly typed `goal` object normalizes to:
+// every field blanks and the usage numbers land as null or as a bare 0. Codex resends the
+// whole goal on every update, so such a record is a malformed report rather than a usage-only
+// tick, and it must never become the goal a turn closes on.
+function describesGoal(goal) {
+  return Boolean(goal?.objective) || Boolean(goal?.status);
+}
+
 export function notificationMessage(method, params) {
   if (method === 'item/reasoning/summaryTextDelta') {
     return 'Codex reasoning summary updated.';
@@ -129,9 +208,33 @@ export function notificationMessage(method, params) {
   if (method === 'error') {
     return params.error?.message || params.message || 'Codex reported an error.';
   }
+  if (method === 'turn/plan/updated') {
+    const { plan } = normalizePlanParams(params);
+    if (plan.length === 0) {
+      return 'Codex updated its plan.';
+    }
+    const completed = plan.filter((entry) => entry.status === 'completed').length;
+    const progress = `Codex updated its plan (${completed}/${plan.length} steps done)`;
+    const current = plan.find((entry) => entry.status === 'inProgress')?.step;
+    return current ? `${progress}: ${current}` : `${progress}.`;
+  }
+  if (method === 'thread/goal/updated') {
+    const { goal } = normalizeGoalParams(params);
+    const label = goal.status ? `Codex goal ${goal.status}` : 'Codex goal updated';
+    // The turn-final replay repeats a goal state the log already showed, so it names itself
+    // rather than reading as a second, later report from Codex.
+    const scoped = params.turnEnded === true ? `${label} as the turn ended` : label;
+    return goal.objective ? `${scoped}: ${goal.objective}` : `${scoped}.`;
+  }
+  if (method === 'thread/goal/cleared') {
+    return 'Codex cleared the thread goal.';
+  }
   return method;
 }
 
+// Plan and goal notifications are deliberately absent here. They are stored by their own
+// branches in handleNotification, which run above the turn guard and return immediately, so
+// listing them again would store a second unnormalized copy of every notification.
 function shouldStoreNotification(method) {
   return method === 'item/reasoning/summaryTextDelta'
     || method === 'item/started'
@@ -526,6 +629,47 @@ export class CodexAppServer extends EventEmitter {
     if (!active) {
       return;
     }
+
+    // Plan and goal updates are routed by thread alone, above the turn guard. A thread that
+    // carries a goal reports them on a second turn-id space, so the guard below would drop
+    // every plan and goal update on exactly the threads that have a goal. Each branch returns
+    // so the generic store path cannot emit a second event for the same notification.
+    if (method === 'turn/plan/updated') {
+      active.onEvent({
+        event: { type: method, ...normalizePlanParams(params) },
+        message: notificationMessage(method, params),
+      });
+      return;
+    }
+    if (method === 'thread/goal/updated') {
+      // A goal belongs to the thread, not to the turn, so every goal update that lands after
+      // the turn finished is dropped by the `active` guard above. The last goal that named an
+      // objective or a status is kept here so finishActiveTurn can close the row with a real
+      // record. A goal update that names neither is still logged verbatim below, because Codex
+      // output is reported as it arrived, but it cannot become the turn's last word: Task
+      // Activity folds every goal event into one row, so replaying a blank record as the turn
+      // ends would erase a real objective and its usage behind a bare "Recorded" label, and
+      // that record is the one nothing can revise afterwards.
+      const payload = normalizeGoalParams(params);
+      if (describesGoal(payload.goal)) {
+        active.lastGoalPayload = payload;
+      }
+      active.onEvent({
+        event: { type: method, ...payload },
+        message: notificationMessage(method, params),
+      });
+      return;
+    }
+    if (method === 'thread/goal/cleared') {
+      // A cleared goal already resolves its row, so the turn end has nothing left to record.
+      active.lastGoalPayload = null;
+      active.onEvent({
+        event: { type: method, threadId: params.threadId },
+        message: notificationMessage(method, params),
+      });
+      return;
+    }
+
     if (active.turnId && params.turnId && params.turnId !== active.turnId) {
       return;
     }
@@ -587,6 +731,7 @@ export class CodexAppServer extends EventEmitter {
     if (!active) {
       return;
     }
+    this.recordTurnFinalGoal(active);
     this.activeTurns.delete(active.threadId);
     const { turn } = params;
     const finalItem = [...(turn.items || [])].reverse().find((item) => item.type === 'agentMessage');
@@ -603,6 +748,31 @@ export class CodexAppServer extends EventEmitter {
         return;
       }
       active.reject(new CodexAppServerError(turn.error?.message || `Codex turn ${turn.status}.`));
+    });
+  }
+
+  // Task Activity folds every goal event on a thread into one row, so a goal last reported as
+  // `active` keeps describing live work long after the turn that reported it is gone. The last
+  // goal Codex reported during the turn is replayed once as the turn ends, flagged
+  // `turnEnded`, so the stored history closes on a record that cannot change again. Codex is
+  // never second-guessed: the status it last reported is replayed verbatim, and a goal that was
+  // cleared or never seen during the turn records nothing.
+  //
+  // Once per turn needs no flag on the record. finishActiveTurn is the only caller, and it
+  // reads the record out of `activeTurns` and deletes it, so the second finish of one turn (the
+  // turn/completed notification and the one-second poll both call it) finds nothing to replay.
+  // Nothing re-enters finishActiveTurn synchronously from inside the replay either: its other
+  // two call sites sit after awaits, and the only synchronous one is the socket message
+  // dispatch. A second turn on the same thread is a second `run`, which builds a fresh record,
+  // so it replays its own goal rather than inheriting a spent guard.
+  recordTurnFinalGoal(active) {
+    if (!active?.lastGoalPayload) {
+      return;
+    }
+    const payload = { ...active.lastGoalPayload, turnEnded: true };
+    active.onEvent({
+      event: { type: 'thread/goal/updated', ...payload },
+      message: notificationMessage('thread/goal/updated', payload),
     });
   }
 
@@ -906,6 +1076,7 @@ export class CodexAppServer extends EventEmitter {
         turnId: null,
         finalResponse: '',
         reasoningSummaries: new Map(),
+        lastGoalPayload: null,
         earlyCompletion: null,
         cancelRequested: false,
         subscribed: false,

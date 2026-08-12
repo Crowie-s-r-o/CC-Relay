@@ -3795,6 +3795,62 @@ pre {
   background: #f6efeb;
 }
 
+.markdown-document .markdown-table-scroll {
+  max-width: 100%;
+  margin: 10px 0;
+  overflow-x: auto;
+  border: 1px solid #cbd8d3;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.markdown-document .markdown-table-scroll:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.markdown-document table {
+  width: 100%;
+  border-collapse: collapse;
+  color: inherit;
+  font-size: 0.96em;
+  line-height: 1.45;
+}
+
+.markdown-document th,
+.markdown-document td {
+  min-width: 7em;
+  padding: 8px 10px;
+  border-right: 1px solid #dce5e2;
+  border-bottom: 1px solid #dce5e2;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.markdown-document th:last-child,
+.markdown-document td:last-child {
+  border-right: 0;
+}
+
+.markdown-document tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-document th {
+  color: #1f3a31;
+  background: #edf3f1;
+  font-family: var(--font-body);
+  font-weight: 700;
+}
+
+.markdown-document tbody tr:nth-child(even) td {
+  background: #f7faf9;
+}
+
+.markdown-document .align-center { text-align: center; }
+.markdown-document .align-right { text-align: right; }
+
 /* ============================================================
    Tokyo Night terminal surface (task activity console).
    The palette is scoped to .events-section via --term-* vars so
@@ -3884,6 +3940,10 @@ pre {
 /* Live sub-agents: a team session is the reason a Claude turn runs for hours. */
 .event-metrics .has-agents b,
 .event-metrics .has-agents small { color: var(--term-cyan); }
+
+/* Plan progress: present only while the task actually published a plan. */
+.event-metrics .has-plan b,
+.event-metrics .has-plan small { color: var(--term-blue); }
 
 /* Toolbar (filters + copy) -------------------------------------- */
 .event-toolbar {
@@ -4135,6 +4195,142 @@ pre {
 
 @keyframes term-agent-pulse { 50% { opacity: 0.35; } }
 
+/* Plan checklist + Codex goal --------------------------------------
+   One provider-neutral checklist for Codex `turn/plan/updated` and Claude
+   `claude/plan`. Both live entirely inside the .events-section terminal scope
+   and resolve through its --term-* palette, so the dark execution ledger looks
+   identical under the light and the dark application theme. Status is carried
+   by glyph, color, and weight together, never by color alone, and the current
+   step is emphasized without motion. */
+.event-kind-plan .term-glyph { color: var(--term-blue); }
+.event-provider-claude.event-kind-plan .term-glyph { color: var(--claude); }
+.term-plan-progress { color: var(--term-cyan); }
+
+.term-plan-explanation {
+  margin: 3px 0 0;
+  padding-left: 22px;
+  color: var(--term-muted2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-style: italic;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.term-plan-list {
+  display: grid;
+  gap: 2px;
+  margin: 5px 0 0;
+  padding-left: 22px;
+  list-style: none;
+}
+
+.term-plan-step {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  color: var(--term-muted2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.term-plan-mark { font-weight: 700; text-align: center; }
+.term-plan-text { min-width: 0; overflow-wrap: anywhere; }
+
+.term-plan-step[data-plan-status="completed"] .term-plan-mark { color: var(--term-green); }
+.term-plan-step[data-plan-status="completed"] .term-plan-text { color: var(--term-muted); }
+
+.term-plan-step[data-plan-status="pending"] .term-plan-mark { color: var(--term-sep); }
+.term-plan-step[data-plan-status="pending"] .term-plan-text { color: var(--term-muted2); }
+
+/* The current step is the point of the whole row: brightest text, heaviest weight,
+   its own caret glyph, and one soft same-hue band. No animation. */
+.term-plan-step[data-plan-status="inProgress"] {
+  margin: 1px 0;
+  padding: 2px 6px 2px 0;
+  border-radius: 0 4px 4px 0;
+  background: rgb(125 207 255 / 10%);
+  box-shadow: inset 2px 0 0 var(--term-cyan);
+}
+
+.term-plan-step[data-plan-status="inProgress"] .term-plan-mark { color: var(--term-cyan); }
+
+.term-plan-step[data-plan-status="inProgress"] .term-plan-text {
+  color: var(--term-fg);
+  font-weight: 650;
+}
+
+/* A step left in progress when the turn ended is not being worked on any more: it keeps
+   its place in the checklist and reads as unfinished, with neither the live caret glyph
+   nor the live band the current step owns. */
+.term-plan-step[data-plan-status="unfinished"] .term-plan-mark { color: var(--term-amber); }
+.term-plan-step[data-plan-status="unfinished"] .term-plan-text { color: var(--term-muted2); }
+
+/* The honest half of the step cap: provider plans are unbounded, so a long one draws its
+   first steps and then says plainly how many it is not drawing. */
+.term-plan-more {
+  color: var(--term-muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+/* The row is standing on a revision that carried only one turn's steps. It keeps drawing the
+   fuller board it already had and admits which it is, in the same quiet register as the step
+   cap above, without borrowing the uppercase progress pill next to it. */
+.term-plan-partial {
+  color: var(--term-muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-style: italic;
+}
+
+.term-plan-owner {
+  color: var(--term-magenta);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.event-kind-goal .term-glyph { color: var(--term-amber); }
+.term-goal-objective { color: var(--term-fg); font-weight: 600; }
+.term-goal-state[data-goal-status="active"] { color: var(--term-cyan); }
+.term-goal-state[data-goal-status="complete"] { color: var(--term-green); }
+.term-goal-state[data-goal-status="paused"],
+.term-goal-state[data-goal-status="usageLimited"],
+.term-goal-state[data-goal-status="budgetLimited"] { color: var(--term-amber); }
+.term-goal-state[data-goal-status="blocked"] { color: var(--term-red); }
+
+/* A finished, failed, or cancelled task owns no live goal, whatever status the provider
+   last published before it stopped reporting. One extra class-level step of specificity
+   settles it against the status rules above without depending on source order. */
+.event-kind-goal .term-goal-state.is-ended { color: var(--term-muted2); }
+
+.term-goal-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  margin: 3px 0 0;
+  padding-left: 22px;
+  color: var(--term-muted2);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+/* Compact panel: the checklist keeps its gutter but gives every pixel it can to
+   the step text, which is the only part an operator reads at this width. */
+@media (max-width: 1344px) {
+  .term-plan-list,
+  .term-plan-explanation,
+  .term-goal-meta { padding-left: 18px; }
+
+  .term-plan-step { grid-template-columns: 12px minmax(0, 1fr) auto; gap: 6px; }
+}
+
 /* Quiet / low-priority protocol + queue lines */
 .event-entry-quiet .term-signal-row { color: var(--term-muted); font-size: 12px; }
 .event-entry-quiet .term-signal-title { color: var(--term-muted2); }
@@ -4270,6 +4466,36 @@ pre {
   border-left: 2px solid var(--term-caret);
   color: var(--term-muted2);
   background: rgb(187 154 247 / 7%);
+}
+
+.events-section .terminal-markdown .markdown-table-scroll {
+  margin: 10px 0;
+  border-color: var(--term-border);
+  background: rgb(8 9 13 / 72%);
+}
+
+.events-section .terminal-markdown .markdown-table-scroll:focus-visible {
+  outline-color: var(--term-cyan);
+}
+
+.events-section .terminal-markdown table {
+  font-size: 0.94em;
+}
+
+.events-section .terminal-markdown th,
+.events-section .terminal-markdown td {
+  min-width: 9em;
+  padding: 7px 9px;
+  border-color: var(--term-sep);
+}
+
+.events-section .terminal-markdown th {
+  color: #e5ebff;
+  background: rgb(122 162 247 / 16%);
+}
+
+.events-section .terminal-markdown tbody tr:nth-child(even) td {
+  background: rgb(122 162 247 / 5%);
 }
 
 /* Output + long-message disclosures ----------------------------- */
@@ -11619,6 +11845,25 @@ html[data-theme="dark"] .markdown-document blockquote {
   border-left-color: var(--app-violet);
   color: var(--app-text-muted);
   background: color-mix(in srgb, var(--app-violet) 8%, var(--app-panel));
+}
+
+html[data-theme="dark"] .markdown-document .markdown-table-scroll {
+  border-color: var(--app-border);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .markdown-document th,
+html[data-theme="dark"] .markdown-document td {
+  border-color: var(--app-border);
+}
+
+html[data-theme="dark"] .markdown-document th {
+  color: var(--app-text);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .markdown-document tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--app-blue) 5%, var(--app-well));
 }
 
 html[data-theme="dark"] .terminal-settings-card,

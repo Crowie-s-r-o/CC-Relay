@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { readFileSync as fsReadFileSync, readdirSync as fsReaddirSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { providerCommandInvocation, terminateChildProcess } from './claude-binary.mjs';
 import { ClaudeTerminalExecutor } from './claude-terminal-executor.mjs';
 import { injectionPromptIssue } from './claude-transcript-tail.mjs';
@@ -122,6 +124,486 @@ function subAgentLaunchOutcome(record, block) {
   return { backgrounded: false, agentId: '' };
 }
 
+// Claude's own task board is the closest thing it reports to a Codex plan. It arrives as a
+// stream of partial tool calls, so CC Relay folds them into one plan event per mutation rather
+// than leaving a row of loud generic tool calls that never say what the task is working through.
+const PLAN_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet', 'TodoWrite']);
+
+// Reads keep their quiet row but never move the folded board.
+const PLAN_READ_TOOL_NAMES = new Set(['TaskList', 'TaskGet']);
+
+const PLAN_STATUSES = new Map([
+  ['pending', 'pending'],
+  ['in_progress', 'inProgress'],
+  ['completed', 'completed'],
+]);
+
+const PLAN_DELETED_STATUS = 'deleted';
+
+// Claude confirms a new task in prose. The headless stream-json path carries only this text.
+const TASK_CREATED_ID = /task\s+#(\d+)\s+created successfully/i;
+
+// A board tool can fail without setting `is_error`: the August 12 team transcript recorded
+// `TaskUpdate` answering `{"success":false,"error":"Task not found"}` as an ordinary result.
+// Folding that as a mutation would report a step the board never actually moved.
+const PLAN_TOOL_ERROR_TEXT = /^\s*(?:task not found|error\b)/i;
+
+function planObject(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+// Provider payloads are untrusted, so a field only counts as sent when the record owns it.
+function planFieldPresent(input, name) {
+  return Object.prototype.hasOwnProperty.call(input, name);
+}
+
+function planIdString(value) {
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '';
+}
+
+function planStatus(value) {
+  return PLAN_STATUSES.get(typeof value === 'string' ? value.trim() : '') || 'pending';
+}
+
+function planStatusDeleted(value) {
+  return (typeof value === 'string' ? value.trim() : '') === PLAN_DELETED_STATUS;
+}
+
+// What this turn watched happen. It is never replaced by another board source, because it is
+// the only record of the ids this turn created and the only thing left to publish when the
+// mirrored directory below stops being readable partway through a turn.
+function planBoard(context) {
+  if (!(context.planBoard instanceof Map)) {
+    context.planBoard = new Map();
+  }
+  return context.planBoard;
+}
+
+// Every id a successful mirror read has shown this turn. A task the mirror once carried and no
+// longer carries was removed by Claude, so the fold must not put it back; a task the mirror has
+// never carried is either newer than the last read or was never mirrored, so it survives.
+function planDirectorySeen(context) {
+  if (!(context.planDirectorySeen instanceof Set)) {
+    context.planDirectorySeen = new Set();
+  }
+  return context.planDirectorySeen;
+}
+
+// The transcript record states the outcome structurally, so it settles the question. The text
+// literal below only serves the headless stream-json path, which carries no result object.
+function planToolFailed(block, record) {
+  if (block?.is_error === true) {
+    return true;
+  }
+  const reported = record?.toolUseResult;
+  if (reported && typeof reported === 'object' && !Array.isArray(reported)) {
+    return reported.success === false || Boolean(trimmedString(reported.error));
+  }
+  return PLAN_TOOL_ERROR_TEXT.test(resultText(block?.content));
+}
+
+function createdTaskId(block, record, toolUseId) {
+  const structural = planIdString(planObject(record?.toolUseResult).task?.id);
+  if (structural) {
+    return structural;
+  }
+  const parsed = resultText(block?.content).match(TASK_CREATED_ID)?.[1] || '';
+  // A deterministic synthetic id keeps the step visible, and keeps it stable if the same tool
+  // use is folded twice, when neither the record nor the text names the real one.
+  return parsed || `tool-${trimmedString(toolUseId) || 'unknown'}`;
+}
+
+// Returns the id the new step was filed under, which is never empty, so the caller can both
+// treat it as the mutation flag and read the number Claude issued.
+function planCreate(board, input, block, record, toolUseId) {
+  const id = createdTaskId(block, record, toolUseId);
+  const activeForm = trimmedString(input.activeForm);
+  board.set(id, {
+    step: trimmedString(input.subject)
+      || trimmedString(planObject(record?.toolUseResult).task?.subject)
+      || activeForm
+      || `Task ${id}`,
+    status: planStatus(input.status),
+    owner: trimmedString(input.owner),
+    activeForm,
+  });
+  return id;
+}
+
+// The task an update names, whether the arguments or the result carry it. An update that names
+// no task at all is malformed rather than evidence of a step this turn cannot see.
+function planUpdateTargetId(input, record) {
+  return planIdString(input.taskId) || planIdString(planObject(record?.toolUseResult).taskId);
+}
+
+// `TaskUpdate` sends only the fields that changed, so everything it omits has to survive.
+function planUpdate(board, input, record) {
+  const id = planUpdateTargetId(input, record);
+  if (!id) {
+    return false;
+  }
+  // `deleted` removes the task, so it is read before the normalizer below folds every
+  // unrecognized status into `pending`.
+  if (planFieldPresent(input, 'status') && planStatusDeleted(input.status)) {
+    return board.delete(id);
+  }
+  const existing = board.get(id);
+  // An update for a task this turn never watched being created belongs to an older board.
+  // Inventing a row here would show a step with no readable subject.
+  if (!existing) {
+    return false;
+  }
+  const next = { ...existing };
+  if (planFieldPresent(input, 'subject')) {
+    next.step = trimmedString(input.subject) || next.step;
+  }
+  if (planFieldPresent(input, 'activeForm')) {
+    next.activeForm = trimmedString(input.activeForm);
+  }
+  if (planFieldPresent(input, 'owner')) {
+    next.owner = trimmedString(input.owner);
+  }
+  if (planFieldPresent(input, 'status')) {
+    next.status = planStatus(input.status);
+  }
+  board.set(id, next);
+  return true;
+}
+
+// Older Claude builds report the whole list on every `TodoWrite`, so the board is replaced
+// outright. Claude Code 2.1.228 uses the task board above instead.
+function planReplaceTodos(board, input) {
+  const todos = Array.isArray(input.todos) ? input.todos : [];
+  board.clear();
+  todos.forEach((value, index) => {
+    const todo = planObject(value);
+    if (planStatusDeleted(todo.status)) {
+      return;
+    }
+    const activeForm = trimmedString(todo.activeForm);
+    board.set(`todo-${index + 1}`, {
+      step: trimmedString(todo.content) || activeForm || `Step ${index + 1}`,
+      status: planStatus(todo.status),
+      owner: trimmedString(todo.owner),
+      activeForm,
+    });
+  });
+  return true;
+}
+
+// Claude numbers its tasks, so a numeric board reads in task order. Any other id keeps the
+// order CC Relay first saw the step in.
+function planEntries(board) {
+  const ids = [...board.keys()];
+  const numeric = ids.length > 0 && ids.every((id) => /^\d+$/.test(id));
+  const ordered = numeric ? [...ids].sort((left, right) => Number(left) - Number(right)) : ids;
+  return ordered.map((id) => board.get(id));
+}
+
+// Claude mirrors its board to ~/.claude/tasks/<sessionId>/<n>.json, one file per task, beside
+// the `.lock` and `.highwatermark` bookkeeping dotfiles. That directory is the whole board, so
+// it answers the question the transcript fold cannot: a continuation turn sees only the calls
+// it watched, while the operator is looking at every step the conversation ever created.
+const PLAN_DIRECTORY_NAME = 'tasks';
+
+// A session id becomes a path component here, so only an id that cannot escape the directory is
+// used. A leading dot is refused too, which rejects `.` and `..` outright.
+const PLAN_SESSION_ID_SHAPE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+// An explicit refusal, not a silent truncation: past this many task files CC Relay treats the
+// directory as unusable and falls back to the fold rather than presenting a cut-off board as
+// the whole plan. Real boards run to tens of tasks.
+const PLAN_DIRECTORY_FILE_LIMIT = 500;
+
+// Injected wholesale by tests. Both context literals that reach this code are built by callers
+// that never pass one, so the real fs stays the default.
+function planBoardIO(context) {
+  const io = planObject(context?.planBoardIO);
+  return {
+    home: trimmedString(io.home) || homedir(),
+    readdirSync: typeof io.readdirSync === 'function' ? io.readdirSync : fsReaddirSync,
+    readFileSync: typeof io.readFileSync === 'function' ? io.readFileSync : fsReadFileSync,
+  };
+}
+
+// One mirrored task file. Everything here is untrusted data read off disk, so every field is
+// coerced and a record that names no task at all is dropped rather than shown as a blank step.
+// A file whose JSON is not an object is not a task record at all: reading `null`, an array, a
+// string, or a number as one invented a `Task N` step with no readable subject and inflated the
+// step count, so it is dropped exactly like a file that could not be read.
+function planDirectoryEntry(record, fileName) {
+  if (!record || typeof record !== 'object' || Array.isArray(record)) {
+    return null;
+  }
+  const task = planObject(record);
+  const id = planIdString(task.id) || fileName.replace(/\.json$/i, '');
+  if (!id || planStatusDeleted(task.status)) {
+    return null;
+  }
+  const activeForm = trimmedString(task.activeForm);
+  return [id, {
+    step: trimmedString(task.subject) || activeForm || `Task ${id}`,
+    status: planStatus(task.status),
+    owner: trimmedString(task.owner),
+    activeForm,
+  }];
+}
+
+// Reads the authoritative board for this session. Returns null, never a partial or empty board,
+// whenever the directory cannot stand in for the fold: no usable session id, an unreadable or
+// absent directory (older Claude builds, a sandbox with no access), or a directory that was
+// cleared after the session ended. A board wiped from disk must degrade to the transcript fold
+// instead of reporting that the operator's plan is now empty.
+function readPlanDirectoryBoard(context) {
+  const sessionId = trimmedString(context?.sessionId);
+  if (!sessionId || !PLAN_SESSION_ID_SHAPE.test(sessionId)) {
+    return null;
+  }
+  const io = planBoardIO(context);
+  const directory = join(io.home, '.claude', PLAN_DIRECTORY_NAME, sessionId);
+  let names = null;
+  try {
+    names = io.readdirSync(directory);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(names)) {
+    return null;
+  }
+  // Dotfiles are Claude's own bookkeeping. `.highwatermark` counts ids ever issued, not steps
+  // that still exist, so it is never read: a cleared board legitimately reports 4 there with no
+  // task left on disk. Sorting the names keeps a non-numeric board in one order on every
+  // platform, since readdir order is not guaranteed.
+  const files = names
+    .filter((name) => typeof name === 'string' && name.trim() && !name.trim().startsWith('.'))
+    .map((name) => name.trim())
+    .sort();
+  if (files.length === 0 || files.length > PLAN_DIRECTORY_FILE_LIMIT) {
+    return null;
+  }
+  const board = new Map();
+  for (const fileName of files) {
+    let record = null;
+    try {
+      record = JSON.parse(io.readFileSync(join(directory, fileName), 'utf8'));
+    } catch {
+      // An unreadable or malformed file is one missing step, not a failed turn.
+      continue;
+    }
+    const entry = planDirectoryEntry(record, fileName);
+    if (entry && !board.has(entry[0])) {
+      board.set(entry[0], entry[1]);
+    }
+  }
+  return board.size > 0 ? board : null;
+}
+
+// A `TaskList` result carries the full authoritative board, so it repairs a fold that never
+// watched these ids being created. It stays a read: it reconciles what the next mutation will
+// report and emits nothing itself, because a read must never be shown as a board movement.
+// Reports whether the fold now holds a whole board.
+//
+// The shipped `TaskList` takes no parameters, so its result is always the entire board and
+// clearing the fold against it is what correctly drops the tasks Claude has removed. A build
+// that grows a filter would answer a subset, and clearing against a subset would erase real
+// steps, so any argument at all makes this read decline to reconcile rather than guess.
+function planReconcileList(board, input, record) {
+  const tasks = planObject(record?.toolUseResult).tasks;
+  if (!Array.isArray(tasks) || Object.keys(input).length > 0) {
+    return false;
+  }
+  const next = new Map();
+  for (const value of tasks) {
+    const task = planObject(value);
+    const id = planIdString(task.id);
+    if (!id || next.has(id) || planStatusDeleted(task.status)) {
+      continue;
+    }
+    // The list reports id, subject, and status. Whatever it omits survives from the fold, so a
+    // reconcile never erases the `activeForm` that explains the running step.
+    const existing = board.get(id);
+    const activeForm = trimmedString(task.activeForm) || trimmedString(existing?.activeForm);
+    next.set(id, {
+      step: trimmedString(task.subject) || trimmedString(existing?.step) || activeForm || `Task ${id}`,
+      status: planStatus(task.status),
+      owner: trimmedString(task.owner) || trimmedString(existing?.owner),
+      activeForm,
+    });
+  }
+  if (next.size === 0) {
+    return false;
+  }
+  board.clear();
+  for (const [id, entry] of next) {
+    board.set(id, entry);
+  }
+  return true;
+}
+
+// The two boards answer different questions, so neither one replaces the other. The mirror is
+// authoritative for what the board contains and for what each mirrored step says; the fold is
+// the only source for a step this turn created that the mirror has not written yet, and the
+// only source at all once the mirror stops being readable.
+function planMergedEntry(mirrored, own) {
+  if (!own) {
+    return mirrored;
+  }
+  return {
+    step: mirrored.step,
+    status: mirrored.status,
+    owner: mirrored.owner,
+    // `activeForm` explains the running step and is never rendered as a plan step, so keeping
+    // the one this turn watched arrive costs no board content and only ever adds the sentence.
+    activeForm: mirrored.activeForm || own.activeForm,
+  };
+}
+
+// The board this call publishes. With no readable mirror that is the fold alone, which is what
+// keeps a turn reporting after a board is cleared from disk mid-turn.
+function planPublishedBoard(context, mirror) {
+  const board = planBoard(context);
+  if (!mirror) {
+    return board;
+  }
+  const seen = planDirectorySeen(context);
+  const composed = new Map();
+  for (const [id, mirrored] of mirror) {
+    composed.set(id, planMergedEntry(mirrored, board.get(id)));
+  }
+  for (const [id, own] of board) {
+    // A step the mirror has never shown is this turn's own and has not been mirrored yet, so it
+    // stays visible rather than vanishing for one event and reappearing on the next read.
+    if (!composed.has(id) && !seen.has(id)) {
+      composed.set(id, own);
+    }
+  }
+  for (const id of mirror.keys()) {
+    seen.add(id);
+  }
+  return composed;
+}
+
+// One board keeps one renderer row for the life of the turn. The session id is the identity
+// everywhere else and is constant across the turns of a conversation, so it leads; the task
+// fallback only serves a context that never learned one.
+function planKey(context) {
+  const frozen = trimmedString(context?.planKey);
+  if (frozen) {
+    return frozen;
+  }
+  const taskId = planIdString(context?.taskId);
+  const key = trimmedString(context?.sessionId) || (taskId ? `task-${taskId}` : 'claude-plan');
+  if (context && typeof context === 'object') {
+    context.planKey = key;
+  }
+  return key;
+}
+
+// Folds one completed board tool call into the turn's plan. Returns the single event for that
+// mutation, or null when the call read the board, failed, or changed nothing worth reporting.
+function foldPlanToolCall(context, item, block, record) {
+  const name = trimmedString(item?.planToolName);
+  if (!PLAN_TOOL_NAMES.has(name)) {
+    return null;
+  }
+  // First, and before any board source is consulted: a call the CLI refused must leave the
+  // board exactly where it was. A real `TaskUpdate` rejection answers `{"success":false}` as an
+  // ordinary result, with no `is_error` flag to catch it.
+  if (planToolFailed(block, record)) {
+    return null;
+  }
+  const board = planBoard(context);
+  const input = planObject(item.arguments);
+  if (PLAN_READ_TOOL_NAMES.has(name)) {
+    if (name === 'TaskList' && planReconcileList(board, input, record)) {
+      // The list is the entire board, so the fold it just rewrote is the entire board too.
+      context.planFoldWhole = true;
+    }
+    return null;
+  }
+  let mutated = false;
+  if (name === 'TaskCreate') {
+    const wasEmpty = board.size === 0;
+    const created = planCreate(board, input, block, record, item.id);
+    mutated = Boolean(created);
+    // Claude numbers a session's tasks from 1 and `.highwatermark` never goes back, so a turn
+    // whose first board call creates task 1 watched this board come into existence: its fold is
+    // the whole board even with no other source. A first create numbered anything else resumed
+    // a board that already had steps on it, and the fold alone can never be the whole plan.
+    if (mutated && wasEmpty && created === '1' && context.planFoldWhole !== false) {
+      context.planFoldWhole = true;
+    }
+  } else if (name === 'TaskUpdate') {
+    mutated = planUpdate(board, input, record);
+    if (!mutated && planUpdateTargetId(input, record)) {
+      // The update named a real task this turn never watched being created, so Claude's board
+      // holds steps the fold cannot name. Anything the fold publishes alone from here is known
+      // to be missing steps.
+      context.planFoldWhole = false;
+    }
+  } else if (name === 'TodoWrite') {
+    mutated = planReplaceTodos(board, input);
+    // An older build's `TodoWrite` publishes the whole board in one call, so it is a complete
+    // board by construction, and the task directory does not mirror it: those builds write no
+    // task files at all, and a directory left over from a newer build describes a different
+    // board entirely. The mirror is dropped for the rest of the turn rather than allowed to
+    // discard the todos this call just published.
+    context.planTodoBoard = true;
+    context.planFoldWhole = true;
+  }
+  // The mirrored directory is Claude's own copy of the whole board and already reflects the
+  // call that just completed, so it decides what the board contains. It never replaces the
+  // fold: the ids this turn created are the only thing left to publish once the directory stops
+  // being readable, which is why the mutation above still runs first and stays.
+  const mirror = context.planTodoBoard ? null : readPlanDirectoryBoard(context);
+  if (!mirror && !mutated) {
+    return null;
+  }
+  const entries = planEntries(planPublishedBoard(context, mirror));
+  const plan = entries.map((entry) => ({
+    step: entry.step,
+    status: entry.status,
+    owner: entry.owner,
+  }));
+  const explanation = entries.find(
+    (entry) => entry.status === 'inProgress' && entry.activeForm,
+  )?.activeForm || '';
+  // A mirrored board is the whole board. Without one, only a fold that watched the board from
+  // its first task, or one a `TaskList` or `TodoWrite` has since republished whole, can say the
+  // same. Everything else is this turn's own steps and no more: still worth reporting, since
+  // the alternative is a row frozen on a stale board, but the renderer folds one plan key into
+  // one row and has to be told before it replaces a whole plan with part of one.
+  const partial = !mirror && context.planFoldWhole !== true;
+  // An owner-only edit still changes what the console shows, so the whole rendered payload
+  // decides whether this is news. The signature is recorded even for an emptied board so a
+  // later repopulation still reports.
+  const signature = JSON.stringify([explanation, plan, partial]);
+  if (context.planSignature === signature) {
+    return null;
+  }
+  context.planSignature = signature;
+  if (plan.length === 0) {
+    return null;
+  }
+  const done = plan.filter((entry) => entry.status === 'completed').length;
+  return {
+    event: {
+      type: 'claude/plan',
+      provider: 'claude',
+      planKey: planKey(context),
+      explanation,
+      plan,
+      // Purely additive and only ever present when true, so every consumer of the four fields
+      // above keeps working unchanged.
+      ...(partial ? { partial: true } : {}),
+    },
+    message: `Claude updated its plan (${done}/${plan.length} steps done).`,
+  };
+}
+
 function toolItem(block, cwd) {
   const input = block.input || {};
   if (block.name === AGENT_TOOL_NAME) {
@@ -162,7 +644,7 @@ function toolItem(block, cwd) {
       status: 'inProgress',
     };
   }
-  return {
+  const item = {
     type: 'mcpToolCall',
     id: block.id,
     server: 'Claude Code',
@@ -171,6 +653,16 @@ function toolItem(block, cwd) {
     status: 'inProgress',
     result: null,
   };
+  if (PLAN_TOOL_NAMES.has(block.name)) {
+    // The envelope stays exactly what grouping, the copy log, and stored events from older
+    // tasks expect. The flat marker exists so the renderer can treat board bookkeeping quietly
+    // rather than as another generic tool call, and the console's plan presentation is what
+    // consumes it. Stored events from older tasks carry no marker, so every consumer has to
+    // keep reading an unmarked board tool call as an ordinary one.
+    item.planTool = true;
+    item.planToolName = block.name;
+  }
+  return item;
 }
 
 function completedToolItem(item, block, record = null) {
@@ -438,6 +930,15 @@ export function consumeClaudeStreamMessage(message, context) {
             ? `Command ${completedItem.status}: ${completedItem.command}`
             : `Claude ${completedItem.tool || 'file change'} ${completedItem.status}.`),
       });
+      if (completedItem.planTool) {
+        // Folded at the result, not the call: `TaskCreate` only learns its id here, and a
+        // rejected `TaskUpdate` must leave the board alone. The plan follows its own row so
+        // the console settles the tool call first.
+        const planUpdate = foldPlanToolCall(context, completedItem, block, message);
+        if (planUpdate) {
+          emitted.push(planUpdate);
+        }
+      }
     }
   }
 
@@ -617,6 +1118,9 @@ export class ClaudeExecutionRunner {
       tools: new Map(),
       finalResponse: '',
       sessionId: task.thread_id,
+      // Only a fallback key for the folded plan, for the case where a turn never reports a
+      // session id. The session id stays the identity everywhere else.
+      taskId: task.id ?? null,
       reportedSessionId: null,
       error: null,
       pendingBackgroundAgentCount: null,

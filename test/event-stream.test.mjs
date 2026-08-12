@@ -2,12 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   activeSubAgentCount,
+  entryFirstEvent,
   entryItem,
   entryLastEvent,
+  eventEntryCategory,
   eventStreamStats,
   filterEventEntries,
+  goalEntryDetails,
   groupEventEntries,
+  isEventEntryHighlight,
+  isGoalEntry,
+  isPlanEntry,
+  isPlanToolItem,
   isSubAgentEntry,
+  planEntryDetails,
   subAgentEntryDetails,
   subAgentEntryState,
 } from '../public/event-stream.js';
@@ -99,6 +107,7 @@ test('event stream summarizes execution telemetry', () => {
     running: 0,
     thinkingTokens: 0,
     agents: 0,
+    plan: null,
   });
 });
 
@@ -570,4 +579,824 @@ test('event stream folds streamed reasoning summaries into one All entry', () =>
   assert.equal(entryItem(entries[0]).summary[0].text, 'Inspecting the queue and terminal bridge.');
   assert.equal(filterEventEntries(entries, 'highlights').length, 0);
   assert.equal(filterEventEntries(entries, 'all').length, 1);
+});
+
+/* Plan checklist and Codex goal ----------------------------------------------
+   Plan events carry no `payload.item.id`, so without a dedicated fold every
+   revision would land in the generic `event-<id>` branch and the scrollback
+   would fill with duplicate plans. */
+
+function codexPlanEvent(planKey, plan, overrides = {}) {
+  return {
+    id: overrides.eventId || 1,
+    kind: overrides.kind || 'codex',
+    message: overrides.message || 'Updated plan.',
+    created_at: overrides.createdAt || '2026-08-12T09:00:00.000Z',
+    payload: {
+      type: 'turn/plan/updated',
+      threadId: overrides.threadId || 'thread-a1b2c3',
+      turnId: overrides.turnId || 'turn-0001',
+      planKey,
+      explanation: overrides.explanation ?? 'Working through the queue repair.',
+      plan,
+    },
+  };
+}
+
+function claudePlanEvent(planKey, plan, overrides = {}) {
+  return {
+    id: overrides.eventId || 1,
+    kind: overrides.kind || 'claude',
+    message: overrides.message || 'Updated plan.',
+    created_at: overrides.createdAt || '2026-08-12T09:00:00.000Z',
+    payload: {
+      type: 'claude/plan',
+      planKey,
+      explanation: overrides.explanation ?? 'Working through the queue repair.',
+      plan,
+      // `src/claude-execution-runner.mjs` writes the flag only when it is true, so a test that
+      // never asks for it produces the exact payload an ordinary whole revision has.
+      ...(overrides.partial ? { partial: true } : {}),
+    },
+  };
+}
+
+// A revision the runner could not vouch for whole: this turn's own steps and no more.
+function claudePartialPlanEvent(planKey, plan, overrides = {}) {
+  return claudePlanEvent(planKey, plan, { ...overrides, partial: true });
+}
+
+function goalEvent(overrides = {}) {
+  return {
+    id: overrides.eventId || 1,
+    kind: 'codex',
+    message: 'Goal updated.',
+    created_at: overrides.createdAt || '2026-08-12T09:00:00.000Z',
+    payload: {
+      type: 'thread/goal/updated',
+      threadId: overrides.threadId || 'thread-a1b2c3',
+      turnId: overrides.turnId || 'turn-0001',
+      goal: {
+        objective: 'Ship the plan visibility work',
+        status: 'active',
+        tokenBudget: 250_000,
+        tokensUsed: 41_500,
+        timeUsedSeconds: 903,
+        createdAt: '2026-08-12T08:30:00.000Z',
+        updatedAt: '2026-08-12T09:00:00.000Z',
+        ...overrides.goal,
+      },
+    },
+  };
+}
+
+function goalClearedEvent(overrides = {}) {
+  return {
+    id: overrides.eventId || 2,
+    kind: 'codex',
+    message: 'Goal cleared.',
+    created_at: overrides.createdAt || '2026-08-12T09:05:00.000Z',
+    payload: {
+      type: 'thread/goal/cleared',
+      threadId: overrides.threadId || 'thread-a1b2c3',
+    },
+  };
+}
+
+test('repeated plan revisions fold into one entry that reflects the latest plan', () => {
+  const entries = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [
+      { step: 'Read the queue module', status: 'inProgress' },
+      { step: 'Repair the fold', status: 'pending' },
+      { step: 'Cover it with tests', status: 'pending' },
+    ], { eventId: 1 }),
+    codexPlanEvent('plan-turn-1', [
+      { step: 'Read the queue module', status: 'completed' },
+      { step: 'Repair the fold', status: 'inProgress' },
+      { step: 'Cover it with tests', status: 'pending' },
+    ], { eventId: 2, createdAt: '2026-08-12T09:01:00.000Z', explanation: 'Fold repaired next.' }),
+  ]);
+
+  assert.equal(entries.length, 1, 'every revision folds into one plan row');
+  assert.equal(entries[0].id, 'plan-plan-turn-1');
+  assert.equal(entries[0].events.length, 2);
+  assert.equal(entryFirstEvent(entries[0]).id, 1);
+  assert.equal(entryLastEvent(entries[0]).id, 2);
+  assert.equal(entryItem(entries[0]), null, 'a plan notification carries no thread item');
+
+  const details = planEntryDetails(entries[0]);
+  assert.equal(details.explanation, 'Fold repaired next.');
+  assert.equal(details.total, 3);
+  assert.equal(details.done, 1);
+  assert.equal(details.inProgress, 1);
+  assert.equal(details.current, 'Repair the fold');
+  assert.deepEqual(details.steps.map((step) => step.status), ['completed', 'inProgress', 'pending']);
+});
+
+test('two plan keys in one task keep their own rows and first-seen order', () => {
+  const entries = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [{ step: 'First turn work', status: 'completed' }], { eventId: 1 }),
+    codexPlanEvent('plan-turn-2', [{ step: 'Second turn work', status: 'inProgress' }], {
+      eventId: 2,
+      turnId: 'turn-0002',
+    }),
+    codexPlanEvent('plan-turn-1', [{ step: 'First turn work', status: 'completed' }], { eventId: 3 }),
+  ]);
+
+  assert.equal(entries.length, 2);
+  assert.deepEqual(entries.map((entry) => entry.id), ['plan-plan-turn-1', 'plan-plan-turn-2']);
+  assert.equal(planEntryDetails(entries[1]).current, 'Second turn work');
+});
+
+test('a Claude plan and a Codex plan normalize through the same neutral shape', () => {
+  const [codex] = groupEventEntries([
+    codexPlanEvent('codex-key', [{ step: 'Shared step', status: 'inProgress' }]),
+  ]);
+  const [claude] = groupEventEntries([
+    claudePlanEvent('claude-key', [{ step: 'Shared step', status: 'inProgress', owner: 'dev-3' }]),
+  ]);
+
+  const codexDetails = planEntryDetails(codex);
+  const claudeDetails = planEntryDetails(claude);
+  assert.equal(codexDetails.provider, 'codex');
+  assert.equal(claudeDetails.provider, 'claude');
+  assert.deepEqual(
+    { ...codexDetails, provider: null, planKey: null },
+    { ...claudeDetails, provider: null, planKey: null, steps: codexDetails.steps },
+  );
+  // owner is Claude-only and normalizes to an empty string for Codex.
+  assert.equal(codexDetails.steps[0].owner, '');
+  assert.equal(claudeDetails.steps[0].owner, 'dev-3');
+});
+
+test('an unknown step status degrades to pending instead of vanishing', () => {
+  const [entry] = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [{ step: 'Mystery step', status: 'somethingElse' }, { step: '', status: 'pending' }]),
+  ]);
+  const details = planEntryDetails(entry);
+  assert.equal(details.total, 2);
+  assert.equal(details.steps[0].status, 'pending');
+  assert.equal(details.done, 0);
+});
+
+test('plan and goal rows are system category and survive the Highlights filter', () => {
+  const entries = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [{ step: 'Codex step', status: 'pending' }], { eventId: 1 }),
+    claudePlanEvent('claude-turn-1', [{ step: 'Claude step', status: 'pending' }], { eventId: 2 }),
+    goalEvent({ eventId: 3 }),
+  ]);
+
+  assert.equal(entries.length, 3);
+  for (const entry of entries) {
+    assert.equal(eventEntryCategory(entry), 'system');
+    assert.equal(isEventEntryHighlight(entry), true);
+  }
+  assert.equal(filterEventEntries(entries, 'highlights').length, 3);
+  assert.equal(filterEventEntries(entries, 'commands').length, 0);
+  // A Claude plan event is recorded with kind 'claude'; it must never file under Messages.
+  assert.equal(filterEventEntries(entries, 'messages').length, 0);
+});
+
+test('plan progress joins the stats without disturbing the other counts', () => {
+  const entries = groupEventEntries([
+    itemEvent('command-1', 'started', 'commandExecution', { eventId: 1 }),
+    itemEvent('command-1', 'completed', 'commandExecution', { eventId: 2 }),
+    itemEvent('files-1', 'completed', 'fileChange', { eventId: 3 }),
+    itemEvent('message-1', 'completed', 'agentMessage', { eventId: 4 }),
+    claudePlanEvent('claude-turn-1', [
+      { step: 'Done work', status: 'completed' },
+      { step: 'Live work', status: 'inProgress' },
+      { step: 'Later work', status: 'pending' },
+      { step: 'Even later work', status: 'pending' },
+      { step: 'Last work', status: 'pending' },
+    ], { eventId: 5 }),
+    goalEvent({ eventId: 6 }),
+  ]);
+
+  assert.deepEqual(eventStreamStats(entries), {
+    commands: 1,
+    files: 1,
+    messages: 1,
+    errors: 0,
+    running: 0,
+    thinkingTokens: 0,
+    agents: 0,
+    plan: { total: 5, done: 1, inProgress: 1 },
+  });
+});
+
+test('a live plan never inflates the active-work or message counts', () => {
+  const entries = groupEventEntries([
+    claudePlanEvent('claude-turn-1', [{ step: 'Live work', status: 'inProgress' }], { eventId: 1 }),
+    claudePlanEvent('claude-turn-1', [{ step: 'Live work', status: 'inProgress' }], { eventId: 2 }),
+  ]);
+
+  assert.equal(entries[0].startedEvent, null, 'a plan row is never an open signal');
+  const stats = eventStreamStats(entries);
+  assert.equal(stats.running, 0);
+  assert.equal(stats.messages, 0);
+  assert.equal(stats.errors, 0);
+  assert.deepEqual(stats.plan, { total: 1, done: 0, inProgress: 1 });
+});
+
+test('a step whose text reads like a failure never turns the stats red', () => {
+  const entries = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [{ step: 'Reproduce the cancelled retry error', status: 'inProgress' }], {
+      message: 'Updated plan: reproduce the cancelled retry error.',
+    }),
+  ]);
+  assert.equal(eventStreamStats(entries).errors, 0);
+});
+
+test('the newest plan owns the stats tile when a task ran several turns', () => {
+  const entries = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [
+      { step: 'Turn one work', status: 'completed' },
+      { step: 'Turn one follow-up', status: 'completed' },
+    ], { eventId: 1 }),
+    codexPlanEvent('plan-turn-2', [
+      { step: 'Turn two work', status: 'inProgress' },
+      { step: 'Turn two follow-up', status: 'pending' },
+      { step: 'Turn two review', status: 'pending' },
+    ], { eventId: 2, turnId: 'turn-0002' }),
+  ]);
+  assert.deepEqual(eventStreamStats(entries).plan, { total: 3, done: 0, inProgress: 1 });
+});
+
+test('the plan tile follows the newest revision, not the oldest row position', () => {
+  /*
+   * A Claude plan folds on a session-scoped key, so its row is created once and never moves.
+   * A Codex turn that starts later appends its row after it. Reading the stats in entry order
+   * would then report the Codex plan even while the Claude plan is the one still being
+   * revised, so the tile follows the most recently written plan event instead.
+   */
+  const entries = groupEventEntries([
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Claude step one', status: 'inProgress' },
+      { step: 'Claude step two', status: 'pending' },
+    ], { eventId: 1 }),
+    codexPlanEvent('plan-turn-9', [
+      { step: 'Codex step one', status: 'completed' },
+      { step: 'Codex step two', status: 'completed' },
+      { step: 'Codex step three', status: 'completed' },
+    ], { eventId: 2, turnId: 'turn-0009' }),
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Claude step one', status: 'completed' },
+      { step: 'Claude step two', status: 'inProgress' },
+    ], { eventId: 3 }),
+  ]);
+
+  assert.deepEqual(entries.map((entry) => entry.id), ['plan-session-8f21a0c4', 'plan-plan-turn-9']);
+  assert.deepEqual(eventStreamStats(entries).plan, { total: 2, done: 1, inProgress: 1 });
+});
+
+/* A partial Claude revision never shrinks the board -------------------------------
+   `src/claude-execution-runner.mjs` marks a revision `partial: true` when it has no readable
+   board mirror and its own fold is not known to be whole: the payload is that turn's steps and
+   no more. Folding last-write-wins on such a revision would replace the operator's board with
+   a knowingly smaller one and drop the tile with it, so the fold layers instead. */
+
+test('a partial revision layers onto the fuller board instead of replacing it', () => {
+  const entries = groupEventEntries([
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Land the backend', status: 'completed' },
+      { step: 'Land the renderer', status: 'inProgress' },
+      { step: 'Cover it with tests', status: 'pending' },
+    ], { eventId: 1 }),
+    claudePartialPlanEvent('session-8f21a0c4', [
+      { step: 'Land the renderer', status: 'completed' },
+    ], { eventId: 2, createdAt: '2026-08-12T09:05:00.000Z' }),
+  ]);
+
+  assert.equal(entries.length, 1, 'a partial revision still folds into the same row');
+  const details = planEntryDetails(entries[0]);
+  assert.equal(details.partial, true);
+  assert.equal(details.total, 3, 'the fuller board is what the row still carries');
+  assert.deepEqual(details.steps.map((step) => step.step), [
+    'Land the backend',
+    'Land the renderer',
+    'Cover it with tests',
+  ]);
+  // The movement the partial revision reported is exactly what changed.
+  assert.deepEqual(details.steps.map((step) => step.status), ['completed', 'completed', 'pending']);
+  assert.equal(details.done, 2);
+  assert.equal(details.inProgress, 0);
+  assert.equal(details.current, '');
+});
+
+test('a step only the partial revision knows is added, never dropped', () => {
+  const entries = groupEventEntries([
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Land the backend', status: 'completed' },
+      { step: 'Land the renderer', status: 'pending' },
+    ], { eventId: 1 }),
+    claudePartialPlanEvent('session-8f21a0c4', [
+      { step: 'Land the renderer', status: 'completed' },
+      { step: 'Write the release note', status: 'inProgress', owner: 'dev-9' },
+    ], { eventId: 2 }),
+  ]);
+
+  const details = planEntryDetails(entries[0]);
+  assert.equal(details.total, 3);
+  assert.deepEqual(details.steps.map((step) => step.step), [
+    'Land the backend',
+    'Land the renderer',
+    'Write the release note',
+  ]);
+  assert.equal(details.steps[2].status, 'inProgress');
+  assert.equal(details.steps[2].owner, 'dev-9');
+  assert.equal(details.done, 2);
+  assert.equal(details.current, 'Write the release note');
+});
+
+test('every partial revision since the last whole board layers in order', () => {
+  const entries = groupEventEntries([
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Land the backend', status: 'inProgress' },
+      { step: 'Land the renderer', status: 'pending' },
+      { step: 'Cover it with tests', status: 'pending' },
+    ], { eventId: 1 }),
+    claudePartialPlanEvent('session-8f21a0c4', [{ step: 'Land the backend', status: 'completed' }], { eventId: 2 }),
+    claudePartialPlanEvent('session-8f21a0c4', [{ step: 'Land the renderer', status: 'inProgress' }], { eventId: 3 }),
+  ]);
+
+  const details = planEntryDetails(entries[0]);
+  // The completion the second turn reported survives the third turn, which never mentioned it.
+  assert.deepEqual(details.steps.map((step) => step.status), ['completed', 'inProgress', 'pending']);
+  assert.equal(details.done, 1);
+  assert.equal(details.current, 'Land the renderer');
+});
+
+test('two partial turns can each leave a step in progress and board order decides the current one', () => {
+  /*
+   * Neither partial turn can speak for the other turn's steps, so nothing here is entitled to
+   * clear the first in-progress step. Both are reported and the row reads the board in its own
+   * order rather than in arrival order, which is the reading the checklist draws.
+   */
+  const entries = groupEventEntries([
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Land the backend', status: 'inProgress' },
+      { step: 'Land the renderer', status: 'pending' },
+    ], { eventId: 1 }),
+    claudePartialPlanEvent('session-8f21a0c4', [{ step: 'Land the renderer', status: 'inProgress' }], { eventId: 2 }),
+  ]);
+
+  const details = planEntryDetails(entries[0]);
+  assert.equal(details.inProgress, 2);
+  assert.equal(details.current, 'Land the backend');
+  assert.equal(details.total, 2);
+});
+
+test('a whole revision after a partial one replaces the board outright', () => {
+  const entries = groupEventEntries([
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Dropped step one', status: 'completed' },
+      { step: 'Dropped step two', status: 'completed' },
+      { step: 'Dropped step three', status: 'inProgress' },
+    ], { eventId: 1 }),
+    claudePartialPlanEvent('session-8f21a0c4', [{ step: 'Dropped step three', status: 'completed' }], { eventId: 2 }),
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'The board the mirror actually holds', status: 'inProgress' },
+      { step: 'Its only other step', status: 'pending' },
+    ], { eventId: 3 }),
+  ]);
+
+  const details = planEntryDetails(entries[0]);
+  assert.equal(details.partial, false, 'a readable whole board ends the partial reading');
+  assert.equal(details.total, 2, 'a whole revision is the whole truth and may shrink the row');
+  assert.deepEqual(details.steps.map((step) => step.step), [
+    'The board the mirror actually holds',
+    'Its only other step',
+  ]);
+});
+
+test('a partial revision with no fuller board behind it reports exactly what it carries', () => {
+  const entries = groupEventEntries([
+    claudePartialPlanEvent('session-8f21a0c4', [
+      { step: 'The only step this turn knows', status: 'inProgress' },
+    ], { eventId: 1 }),
+  ]);
+
+  const details = planEntryDetails(entries[0]);
+  assert.equal(details.partial, true, 'there is nothing fuller to keep, and the row still says so');
+  assert.equal(details.total, 1);
+  assert.equal(details.current, 'The only step this turn knows');
+});
+
+test('a Codex fold is untouched by the layering and never reads as partial', () => {
+  const entries = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [
+      { step: 'Codex step one', status: 'completed' },
+      { step: 'Codex step two', status: 'inProgress' },
+      { step: 'Codex step three', status: 'pending' },
+    ], { eventId: 1 }),
+    // Codex never sends `partial`, so a shorter revision is the whole new plan and replaces
+    // the row exactly as it always did.
+    codexPlanEvent('plan-turn-1', [{ step: 'Codex replanned', status: 'inProgress' }], { eventId: 2 }),
+  ]);
+
+  const details = planEntryDetails(entries[0]);
+  assert.equal(details.partial, false);
+  assert.equal(details.total, 1);
+  assert.deepEqual(details.steps.map((step) => step.step), ['Codex replanned']);
+});
+
+test('the plan tile keeps the fuller board when the newest revision is partial', () => {
+  const entries = groupEventEntries([
+    claudePlanEvent('session-8f21a0c4', [
+      { step: 'Land the backend', status: 'completed' },
+      { step: 'Land the renderer', status: 'inProgress' },
+      { step: 'Cover it with tests', status: 'pending' },
+    ], { eventId: 1 }),
+    claudePartialPlanEvent('session-8f21a0c4', [{ step: 'Land the renderer', status: 'completed' }], { eventId: 2 }),
+  ]);
+
+  // The tile reads the same fold the row does, so it must not drop from three steps to one.
+  assert.deepEqual(eventStreamStats(entries).plan, { total: 3, done: 2, inProgress: 0 });
+});
+
+test('goal notifications fold by thread and a cleared goal resolves the row', () => {
+  const entries = groupEventEntries([
+    goalEvent({ eventId: 1 }),
+    goalEvent({ eventId: 2, goal: { status: 'blocked', tokensUsed: 60_000 } }),
+    goalClearedEvent({ eventId: 3 }),
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].id, 'goal-thread-a1b2c3');
+  assert.equal(isGoalEntry(entries[0]), true);
+  assert.equal(isPlanEntry(entries[0]), false);
+  assert.equal(entries[0].completedEvent.id, 3, 'the cleared event resolves the row');
+
+  const details = goalEntryDetails(entries[0]);
+  assert.equal(details.cleared, true);
+  assert.equal(details.status, 'cleared');
+  assert.equal(details.statusLabel, 'Cleared');
+  // The last known objective survives the clear so the row keeps its meaning.
+  assert.equal(details.objective, 'Ship the plan visibility work');
+  assert.equal(details.tokensUsed, 60_000);
+});
+
+test('goal usage details are always real, non-negative numbers', () => {
+  // src/codex-app-server.mjs reports an absent budget, token count, or elapsed time as null.
+  // goalEntryDetails is the contract the renderer consumes, so the clamp lives here too and
+  // is not left to the presentation layer alone.
+  const [nulled] = groupEventEntries([goalEvent({
+    eventId: 1,
+    goal: { tokenBudget: null, tokensUsed: null, timeUsedSeconds: null },
+  })]);
+  assert.deepEqual(
+    [goalEntryDetails(nulled).tokenBudget, goalEntryDetails(nulled).tokensUsed, goalEntryDetails(nulled).timeUsedSeconds],
+    [0, 0, 0],
+  );
+
+  const [bare] = groupEventEntries([{
+    id: 2,
+    kind: 'codex',
+    message: 'Goal updated.',
+    created_at: '2026-08-12T09:00:00.000Z',
+    payload: { type: 'thread/goal/updated', threadId: 'thread-a1b2c3', goal: { objective: 'Ship it' } },
+  }]);
+  const bareDetails = goalEntryDetails(bare);
+  assert.equal(bareDetails.tokensUsed, 0);
+  assert.equal(Number.isFinite(bareDetails.tokensUsed), true);
+  assert.equal(bareDetails.statusLabel, 'Recorded');
+
+  const [nonsense] = groupEventEntries([goalEvent({
+    eventId: 3,
+    goal: { tokenBudget: -1, tokensUsed: 'lots', timeUsedSeconds: Number.POSITIVE_INFINITY },
+  })]);
+  const nonsenseDetails = goalEntryDetails(nonsense);
+  assert.deepEqual(
+    [nonsenseDetails.tokenBudget, nonsenseDetails.tokensUsed, nonsenseDetails.timeUsedSeconds],
+    [0, 0, 0],
+  );
+});
+
+test('a goal set again after a clear reopens its row', () => {
+  const entries = groupEventEntries([
+    goalEvent({ eventId: 1 }),
+    goalClearedEvent({ eventId: 2 }),
+    goalEvent({ eventId: 3, goal: { objective: 'Finish the release gates', status: 'usageLimited' } }),
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].completedEvent, null);
+  const details = goalEntryDetails(entries[0]);
+  assert.equal(details.cleared, false);
+  assert.equal(details.objective, 'Finish the release gates');
+  assert.equal(details.statusLabel, 'Usage limited');
+});
+
+test('a task that never recorded a goal has no goal entry at all', () => {
+  const entries = groupEventEntries([
+    itemEvent('command-1', 'completed', 'commandExecution', { eventId: 1 }),
+    codexPlanEvent('plan-turn-1', [{ step: 'Only a plan', status: 'pending' }], { eventId: 2 }),
+  ]);
+
+  assert.equal(entries.some(isGoalEntry), false);
+  assert.equal(goalEntryDetails(entries[0]), null);
+  assert.equal(goalEntryDetails(entries[1]), null);
+  assert.equal(planEntryDetails(entries[0]), null);
+});
+
+test('a plan or goal row never adopts a thread item, even if one rides along', () => {
+  // The row is defined by its payload, not by an item. A stray item would otherwise reach
+  // the command classifier through entryItem and file the plan under Commands.
+  const plan = codexPlanEvent('plan-turn-1', [{ step: 'Only step', status: 'pending' }]);
+  plan.payload.item = { id: 'command-9', type: 'commandExecution', command: 'rm -rf .data' };
+  const goal = goalEvent({ eventId: 2 });
+  goal.payload.item = { id: 'command-8', type: 'commandExecution', command: 'echo hi' };
+
+  const entries = groupEventEntries([plan, goal]);
+  assert.equal(entries.length, 2);
+  assert.equal(entryItem(entries[0]), null);
+  assert.equal(entryItem(entries[1]), null);
+  assert.equal(eventEntryCategory(entries[0]), 'system');
+  assert.equal(eventEntryCategory(entries[1]), 'system');
+  assert.equal(eventStreamStats(entries).commands, 0);
+});
+
+test('the plan and goal guards keep those rows in Highlights ahead of the quiet check', () => {
+  /*
+   * These two entries are built by hand, not by groupEventEntries. A grouped plan row never
+   * carries a thread item, so every later check in isEventEntryHighlight misses it and the
+   * permissive fallthrough returns true on its own: a test built from a grouped row passes
+   * exactly as happily with the guard deleted, and proves nothing. A row that is a plan by
+   * its fold key while a quiet item rides along in its events is the case that tells the
+   * guard apart from the fallthrough.
+   */
+  const planWithQuietItem = {
+    id: 'plan-plan-turn-1',
+    planKey: 'plan-turn-1',
+    events: [{
+      id: 1,
+      kind: 'claude',
+      created_at: '2026-08-12T09:00:00.000Z',
+      payload: { type: 'item/completed', item: { id: 'reason-1', type: 'reasoning' } },
+    }],
+  };
+  const goalWithQuietItem = {
+    id: 'goal-thread-a1b2c3',
+    goalThreadId: 'thread-a1b2c3',
+    events: [{
+      id: 2,
+      kind: 'codex',
+      created_at: '2026-08-12T09:00:00.000Z',
+      payload: { type: 'item/completed', item: { id: 'prompt-1', type: 'userMessage' } },
+    }],
+  };
+  assert.equal(entryItem(planWithQuietItem)?.type, 'reasoning', 'the quiet item is reachable');
+  assert.equal(entryItem(goalWithQuietItem)?.type, 'userMessage', 'the quiet item is reachable');
+  assert.equal(isPlanEntry(planWithQuietItem), true);
+  assert.equal(isGoalEntry(goalWithQuietItem), true);
+  assert.equal(isEventEntryHighlight(planWithQuietItem), true, 'the plan guard runs before the quiet check');
+  assert.equal(isEventEntryHighlight(goalWithQuietItem), true, 'the goal guard runs before the quiet check');
+  assert.equal(filterEventEntries([planWithQuietItem, goalWithQuietItem], 'highlights').length, 2);
+
+  // The fallthrough is genuinely permissive: unrecognized protocol noise is what it drops.
+  const noise = groupEventEntries([{
+    id: 1,
+    kind: 'codex',
+    message: 'Turn started.',
+    created_at: '2026-08-12T09:00:00.000Z',
+    payload: { type: 'turn/started' },
+  }]);
+  assert.equal(isEventEntryHighlight(noise[0]), false);
+
+  const rows = groupEventEntries([
+    codexPlanEvent('plan-turn-1', [{ step: 'Only step', status: 'pending' }], { eventId: 2 }),
+    goalClearedEvent({ eventId: 3 }),
+  ]);
+  assert.equal(isEventEntryHighlight(rows[0]), true);
+  assert.equal(isEventEntryHighlight(rows[1]), true, 'a cleared goal is still worth showing');
+  assert.equal(filterEventEntries(rows, 'highlights').length, 2);
+});
+
+test('a plan event with no planKey keeps its own row instead of collapsing the task', () => {
+  const first = codexPlanEvent('', [{ step: 'A', status: 'pending' }], { eventId: 7 });
+  const second = codexPlanEvent('', [{ step: 'B', status: 'pending' }], { eventId: 8 });
+  delete first.payload.planKey;
+  delete second.payload.planKey;
+  delete first.payload.turnId;
+  delete second.payload.turnId;
+
+  const entries = groupEventEntries([first, second]);
+  // The threadId is the next-best fold key; two turns on one thread still share a row only
+  // when the backend omitted both keys, which never collapses unrelated threads together.
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].id, 'plan-thread-a1b2c3');
+
+  delete first.payload.threadId;
+  delete second.payload.threadId;
+  const unkeyed = groupEventEntries([first, second]);
+  assert.equal(unkeyed.length, 2, 'a completely unkeyed plan never folds into a stranger');
+});
+
+function goalTurnEndedEvent(overrides = {}) {
+  return {
+    id: overrides.eventId || 2,
+    kind: 'codex',
+    message: 'Goal recorded at turn end.',
+    created_at: overrides.createdAt || '2026-08-12T09:10:00.000Z',
+    payload: {
+      type: 'thread/goal/updated',
+      threadId: overrides.threadId || 'thread-a1b2c3',
+      ...(overrides.nested ? {} : { turnEnded: true }),
+      goal: {
+        objective: 'Ship the plan visibility work',
+        status: 'active',
+        ...(overrides.nested ? { turnEnded: true } : {}),
+        ...overrides.goal,
+      },
+    },
+  };
+}
+
+function planToolEvent(itemId, phase, toolName, overrides = {}) {
+  return {
+    id: overrides.eventId || itemId,
+    kind: 'claude',
+    message: `Claude ${toolName} ${phase}.`,
+    created_at: overrides.createdAt || '2026-08-12T09:00:00.000Z',
+    payload: {
+      type: `item/${phase}`,
+      provider: 'claude',
+      item: {
+        type: 'mcpToolCall',
+        id: itemId,
+        server: 'Claude Code',
+        tool: toolName,
+        arguments: { title: 'Land the renderer half' },
+        status: overrides.status || (phase === 'completed' ? 'completed' : 'inProgress'),
+        result: null,
+        planTool: true,
+        planToolName: toolName,
+      },
+    },
+  };
+}
+
+test('a goal carries no turn-ended signal until a turn-final record says so', () => {
+  const [live] = groupEventEntries([goalEvent({ eventId: 1 })]);
+  assert.equal(goalEntryDetails(live).turnEnded, false, 'stored history from before that record has no flag');
+
+  const [flagged] = groupEventEntries([goalEvent({ eventId: 1 }), goalTurnEndedEvent({ eventId: 2 })]);
+  assert.equal(goalEntryDetails(flagged).turnEnded, true);
+  assert.equal(goalEntryDetails(flagged).status, 'active', 'the recorded status is kept exactly as published');
+
+  // The flag is honoured on the goal object too, so the backend can carry it either way.
+  const [nested] = groupEventEntries([goalEvent({ eventId: 1 }), goalTurnEndedEvent({ eventId: 2, nested: true })]);
+  assert.equal(goalEntryDetails(nested).turnEnded, true);
+});
+
+test('a later goal record clears the turn-ended signal the previous turn left behind', () => {
+  /*
+   * src/queue.mjs dispatches a same-session follow-up with addEvent(sourceTask.id, ...), so a
+   * second turn's goal events land in the same task stream and fold onto the same threadId.
+   * A latching flag would let turn 1's turn-final record poison turn 2's live goal forever,
+   * so the flag is read off the goal record that carries it and cleared by the next one.
+   */
+  const ended = groupEventEntries([goalEvent({ eventId: 1 }), goalTurnEndedEvent({ eventId: 2 })])[0];
+  assert.equal(goalEntryDetails(ended).turnEnded, true, 'the turn-final record still ends its own turn');
+
+  const [entry] = groupEventEntries([
+    goalEvent({ eventId: 1 }),
+    goalTurnEndedEvent({ eventId: 2 }),
+    goalEvent({ eventId: 3, createdAt: '2026-08-12T09:20:00.000Z', goal: { status: 'active', tokensUsed: 500 } }),
+  ]);
+  const details = goalEntryDetails(entry);
+  assert.equal(details.turnEnded, false, 'turn 2 reports its own live goal');
+  assert.equal(details.status, 'active');
+  assert.equal(details.tokensUsed, 500, 'the newest goal record is the one that describes the row');
+  assert.equal(details.objective, 'Ship the plan visibility work');
+
+  // The nested shape behaves identically, in both directions.
+  const nestedEnded = groupEventEntries([goalEvent({ eventId: 1 }), goalTurnEndedEvent({ eventId: 2, nested: true })])[0];
+  assert.equal(goalEntryDetails(nestedEnded).turnEnded, true);
+  const [nested] = groupEventEntries([
+    goalEvent({ eventId: 1 }),
+    goalTurnEndedEvent({ eventId: 2, nested: true }),
+    goalEvent({ eventId: 3, createdAt: '2026-08-12T09:20:00.000Z', goal: { status: 'active', tokensUsed: 500 } }),
+  ]);
+  assert.equal(goalEntryDetails(nested).turnEnded, false);
+  assert.equal(goalEntryDetails(nested).tokensUsed, 500);
+});
+
+test('a cleared goal reads the same in every order it can meet a turn-final record', () => {
+  // Clearing and ending a turn are different facts. A cleared goal is resolved whichever
+  // side of the turn-final record it lands on, and a goal set again after a clear reopens.
+  const [clearedThenLive] = groupEventEntries([
+    goalClearedEvent({ eventId: 1 }),
+    goalEvent({ eventId: 2, createdAt: '2026-08-12T09:20:00.000Z' }),
+  ]);
+  assert.equal(clearedThenLive.completedEvent, null, 'the later goal reopens the row');
+  assert.equal(goalEntryDetails(clearedThenLive).cleared, false);
+  assert.equal(goalEntryDetails(clearedThenLive).turnEnded, false);
+  assert.equal(goalEntryDetails(clearedThenLive).status, 'active');
+
+  const [liveThenCleared] = groupEventEntries([goalEvent({ eventId: 1 }), goalClearedEvent({ eventId: 2 })]);
+  assert.equal(liveThenCleared.completedEvent.id, 2);
+  assert.equal(goalEntryDetails(liveThenCleared).cleared, true);
+  assert.equal(goalEntryDetails(liveThenCleared).status, 'cleared');
+  assert.equal(goalEntryDetails(liveThenCleared).statusLabel, 'Cleared');
+
+  const [endedThenCleared] = groupEventEntries([
+    goalEvent({ eventId: 1 }),
+    goalTurnEndedEvent({ eventId: 2 }),
+    goalClearedEvent({ eventId: 3, createdAt: '2026-08-12T09:20:00.000Z' }),
+  ]);
+  assert.equal(endedThenCleared.completedEvent.id, 3);
+  assert.equal(goalEntryDetails(endedThenCleared).cleared, true, 'the clear is not undone by the record before it');
+  assert.equal(goalEntryDetails(endedThenCleared).status, 'cleared');
+
+  // A goal set again after all of that is live once more.
+  const [reopened] = groupEventEntries([
+    goalEvent({ eventId: 1 }),
+    goalTurnEndedEvent({ eventId: 2 }),
+    goalClearedEvent({ eventId: 3, createdAt: '2026-08-12T09:20:00.000Z' }),
+    goalEvent({ eventId: 4, createdAt: '2026-08-12T09:30:00.000Z' }),
+  ]);
+  assert.equal(reopened.completedEvent, null);
+  assert.deepEqual(
+    [goalEntryDetails(reopened).cleared, goalEntryDetails(reopened).turnEnded, goalEntryDetails(reopened).status],
+    [false, false, 'active'],
+  );
+});
+
+test('a goal status naming an Object prototype member reads as text, never as the prototype', () => {
+  // src/codex-app-server.mjs deliberately keeps an unrecognized status, so provider text
+  // reaches the label lookup. An unguarded index would answer with Object.prototype itself.
+  for (const status of ['__proto__', 'constructor', 'toString', 'valueOf', 'hasOwnProperty', 'isPrototypeOf']) {
+    const [entry] = groupEventEntries([goalEvent({ eventId: 1, goal: { status } })]);
+    const { statusLabel } = goalEntryDetails(entry);
+    assert.equal(typeof statusLabel, 'string', `${status} renders a string`);
+    assert.doesNotMatch(statusLabel, /\[object |native code|=>|function /, `${status} renders no prototype member`);
+    assert.ok(statusLabel.length > 0 && statusLabel.length <= 48, `${status} stays bounded`);
+  }
+
+  const label = (status) => goalEntryDetails(groupEventEntries([goalEvent({ goal: { status } })])[0]).statusLabel;
+  assert.equal(label('toString'), 'To string');
+  assert.equal(label('hasOwnProperty'), 'Has own property');
+  assert.equal(label('constructor'), 'Constructor');
+  assert.equal(label('__proto__'), '__proto__');
+  // The known statuses still resolve through the same guarded lookup.
+  assert.equal(label('usageLimited'), 'Usage limited');
+  assert.equal(label('complete'), 'Complete');
+});
+
+test('a Codex agent status naming an Object prototype member reads as recorded', () => {
+  for (const status of ['__proto__', 'constructor', 'toString']) {
+    const [entry] = groupEventEntries([
+      codexAgentSpawn('agent-thread-proto', 'completed', {
+        item: { agentsStates: { 'agent-thread-proto': { status, message: null } } },
+      }),
+    ]);
+    const details = subAgentEntryDetails(entry);
+    assert.equal(details.statusLabel, 'Recorded', `${status} falls back to the recorded label`);
+    assert.equal(subAgentEntryState(entry), 'finished', `${status} is not a running state`);
+  }
+  const [known] = groupEventEntries([codexAgentSpawn('agent-thread-known', 'completed')]);
+  assert.equal(subAgentEntryDetails(known).statusLabel, 'Running');
+});
+
+test('Claude board bookkeeping reads quietly without leaving the ledger', () => {
+  const entries = groupEventEntries([
+    claudePlanEvent('claude-turn-1', [
+      { step: 'Land the renderer half', status: 'inProgress', owner: 'dev-6' },
+    ], { eventId: 1 }),
+    planToolEvent('toolu_board_1', 'completed', 'TaskUpdate', { eventId: 2 }),
+    itemEvent('toolu_other_1', 'completed', 'mcpToolCall', { eventId: 3, kind: 'claude' }),
+  ]);
+  assert.equal(entries.length, 3);
+  const [planRow, board, ordinary] = entries;
+
+  assert.equal(isPlanToolItem(entryItem(board)), true);
+  assert.equal(isPlanToolItem(entryItem(ordinary)), false, 'an ordinary connected tool call is untouched');
+  assert.equal(isPlanToolItem(entryItem(planRow)), false, 'the plan row carries no item at all');
+
+  // Quiet, not hidden: it keeps its category and its place in every non-compact view.
+  assert.equal(eventEntryCategory(board), 'commands');
+  assert.equal(isEventEntryHighlight(board), false, 'the folded plan row already reports this change');
+  assert.equal(isEventEntryHighlight(ordinary), true);
+  assert.equal(filterEventEntries(entries, 'all').length, 3);
+  assert.equal(filterEventEntries(entries, 'commands').length, 2);
+  assert.equal(filterEventEntries(entries, 'highlights').length, 2);
+});
+
+test('a board tool call that failed folded nothing into the plan and stays loud', () => {
+  const [entry] = groupEventEntries([
+    planToolEvent('toolu_board_2', 'completed', 'TaskCreate', { status: 'failed' }),
+  ]);
+  assert.equal(isPlanToolItem(entryItem(entry)), false);
+  assert.equal(isEventEntryHighlight(entry), true, 'a rejected board call is news, not bookkeeping');
+  assert.equal(eventStreamStats([entry]).errors, 1);
+});
+
+test('the plan-tool marker is only trusted on a connected tool call', () => {
+  assert.equal(isPlanToolItem(null), false);
+  assert.equal(isPlanToolItem(undefined), false);
+  assert.equal(isPlanToolItem({ type: 'commandExecution', planTool: true }), false);
+  assert.equal(isPlanToolItem({ type: 'mcpToolCall', planTool: 'yes' }), false, 'only the exact marker counts');
+  assert.equal(isPlanToolItem({ type: 'mcpToolCall', planTool: true }), true);
 });

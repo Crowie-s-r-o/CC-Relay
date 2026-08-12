@@ -34,6 +34,13 @@ test('result preview removes Markdown punctuation', () => {
   );
 });
 
+test('result preview flattens Markdown tables without delimiter noise', () => {
+  assert.equal(
+    markdownPreviewText('| Call | Result |\n|---|---|\n| owner groups | 200 |'),
+    'Call Result owner groups 200',
+  );
+});
+
 test('Task Activity renders Result as a larger Markdown document', async () => {
   const [app, page, style] = await Promise.all([
     readFile(new URL('public/app.js', root), 'utf8'),

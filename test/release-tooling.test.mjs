@@ -87,6 +87,16 @@ test('the public README leads with platform truth, download, and the six core be
   assert.deepEqual(benefits, [...benefits].sort((left, right) => left - right));
   assert.match(readme, /launches minimized by default and closes automatically/);
   assert.match(readme, /Copies previously received under MIT keep those MIT rights/);
+
+  const getStarted = readme.match(/## Get started\n([\s\S]*?)\n## /)?.[1] || '';
+  const development = readme.match(/## Development\n([\s\S]*?)\n## /)?.[1] || '';
+  assert.match(getStarted, /latest GitHub Release/);
+  assert.match(getStarted, /-Setup\.exe/);
+  assert.match(getStarted, /-Portable\.exe/);
+  assert.doesNotMatch(getStarted, /git clone|npm (?:ci|start|run desktop)|Node\.js 24\+/);
+  assert.match(development, /git clone https:\/\/github\.com\/Crowie-s-r-o\/CC-Relay\.git/);
+  assert.match(development, /npm start/);
+  assert.match(development, /npm run desktop/);
 });
 
 test('semantic versions parse, compare, and bump without prerelease ambiguity', () => {

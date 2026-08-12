@@ -48,6 +48,6 @@ The complete repository suite passes 1,081 tests. The focused collaboration suit
 > [!warning]
 > Restart CC Relay and rebuild the desktop bundle after current tasks finish to activate renderer and app-server changes. Do not replace the running bundle while provider turns are active.
 
-See also [[claude-terminal-visibility]], [[claude-background-sub-agent-completion]], and [[terminal-markdown]].
+See also [[claude-terminal-visibility]], [[claude-background-sub-agent-completion]], [[terminal-markdown]], and [[provider-plan-and-goal-visibility]] for the plan checklist and Codex goal rows that share this stream.
 
 #relay #terminal #sub-agent #codex #claude

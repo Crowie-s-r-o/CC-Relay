@@ -26,24 +26,12 @@ You also get live execution, local SQLite history, artifacts, image attachments,
 
 ## Get started
 
-Download the newest desktop build from [GitHub Releases](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest). macOS builds are the only tested artifacts today. Windows NSIS and portable builds are published for experimental validation; Linux desktop packages are not currently produced.
+Download CC Relay from the [latest GitHub Release](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest), then run the packaged app:
 
-Or run from source:
+- **macOS (tested):** Download the `.dmg`, open it, drag **CC Relay** to **Applications**, and launch the app.
+- **Windows (experimental):** Download and run the `-Setup.exe` installer. To run CC Relay without installing it, download and execute the `-Portable.exe` file instead.
 
-```bash
-git clone https://github.com/Crowie-s-r-o/CC-Relay.git
-cd CC-Relay
-npm ci
-npm start
-```
-
-Open [http://127.0.0.1:4768](http://127.0.0.1:4768). You need Node.js 24+ and at least one authenticated provider CLI: Codex with ChatGPT or Claude Code with a Claude subscription.
-
-Run the Electron shell during development with:
-
-```bash
-npm run desktop
-```
+Linux desktop packages are not currently produced. The desktop builds do not require a source checkout or Node.js. Before queueing work, install and sign in to at least one provider CLI: Codex with ChatGPT or Claude Code with a Claude subscription.
 
 ## The loop
 
@@ -75,8 +63,20 @@ The app binds to `127.0.0.1`, keeps provider credentials inside their CLIs, stor
 
 ## Development
 
+Running CC Relay from source is the development path. It requires Node.js 24+ and at least one authenticated provider CLI.
+
 ```bash
+git clone https://github.com/Crowie-s-r-o/CC-Relay.git
+cd CC-Relay
 npm ci
+npm start
+```
+
+Open [http://127.0.0.1:4768](http://127.0.0.1:4768). To run the Electron development shell instead, use `npm run desktop`.
+
+Before submitting a change, run:
+
+```bash
 npm test
 npm run release:check
 ```

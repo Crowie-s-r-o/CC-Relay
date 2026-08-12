@@ -6,6 +6,27 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 12: provider plan and goal state is now visible in Task Activity for both Codex and
+> Claude.** Codex `turn/plan/updated` and `thread/goal/*` notifications are routed by `threadId`
+> above the turnId guard, because a goal-carrying thread reports them on a different turn-id space
+> and the guard silently dropped exactly those threads. A turn that observed a goal replays it once
+> with a top-level `turnEnded: true`, so a finished task stops reading live. Claude's board
+> (`TaskCreate` / `TaskUpdate` / `TaskList`, plus legacy `TodoWrite`) is folded at the tool_result,
+> because a rejected `TaskUpdate` answers `{"success": false}` with no `is_error` flag, and the
+> `~/.claude/tasks/<sessionId>/` mirror overlays that fold rather than replacing it. A knowingly
+> partial board carries `partial: true` and layers onto the last whole revision. Full suite
+> 1,395 tests, the four suites covering this contract 199 tests, `release:check` green. Restart CC Relay and
+> rebuild the desktop bundle to activate it. See [[provider-plan-and-goal-visibility]].
+
+> [!note]
+> **August 12: provider Markdown tables now render as readable semantic tables.** Task Activity,
+> Result, plan, and session response surfaces recognize pipe tables with alignment, preserve inline
+> code and escaped pipes, and keep raw HTML escaped. Header bands, column rules, alternating rows,
+> cell wrapping, keyboard focus, and bounded horizontal scrolling replace visible Markdown pipe
+> syntax. Wide and 480 pixel browser checks had no page overflow or console warnings. See
+> [[terminal-markdown]].
+
 > [!important]
 > **August 12: GitHub Support ticket #4656799 is open for the stale `claude` sidebar contributor.** A fresh live audit still showed only `pkelemen` in the Contributors REST API and contributor graph, while `GET /Crowie-s-r-o/CC-Relay/_sidebar` alone returned `pkelemen,claude`. The only branch is clean, both release tags are clean, and all five closed pull request refs are clean. GitHub Support's guided analysis confirmed that there is no self-service sidebar purge and that contributor displays can take about 24 hours to refresh after a history rewrite. The submitted ticket asks GitHub to recalculate or purge the sidebar record and, if possible, garbage collect orphaned pre-rewrite commit `844fdb999532e43ba9d12ebb12d585bd11346673`. Track it at https://support.github.com/ticket/personal/0/4656799. See [[open-source-releases]].
 
@@ -19,7 +40,7 @@ type: hot
 > **August 12: the Claude session-end wedge is fixed in source; rebuild and restart to activate it.** Tasks whose Claude turn crossed background sub-agent boundaries (team sessions with standby agents) stayed Running forever and failed with "N background tasks had not finished when the terminal closed" when their terminal closed: the prompt-id guard dropped every later Stop hook, freezing the `hookBackgroundTasks` snapshot, and a stale `pendingBackgroundAgentCount` could strand finality even after the arrays cleared. Tonight's victims were tasks 218, 222, and 223 (task 129 was the first diagnosed case); single-boundary tasks like 221 were never affected. The fix (boundary-adopting Stop guard with acceptedTurnEnded latch and pending fence, countCleared re-arm of the held final, message dedupe) lives in `src/claude-terminal-executor.mjs` with 8 regression tests, adversarially reviewed twice with runtime probes; focused suite 196/196, full suite 1232/1232. The change is working-tree only and must be committed before any release tag. The running packaged app still holds the wedged code. See [[claude-stale-background-stop-hook]] and [[claude-background-sub-agent-completion]].
 
 > [!important]
-> **August 12: the public README now leads with Relay's six core benefits.** The order is provider-specific concurrency, disposable minimized terminals with same-conversation resume, multi-project Launchpad operation, queue-ahead prompts, challenged two-provider Plan council, and stronger-planner plus lower-cost-worker Turbo. The terminal promise was checked against the implementation: new projects default to background launch and no retention, macOS miniaturizes the exact owned window, terminal outcomes release exact owned launches, and **Continue session** resumes the saved provider conversation. See [[core-product-story]], [[disposable-terminal-pools]], and [[project-terminal-settings]].
+> **August 12: the public README now leads with Relay's six core benefits and keeps end-user setup separate from development.** The order is provider-specific concurrency, disposable minimized terminals with same-conversation resume, multi-project Launchpad operation, queue-ahead prompts, challenged two-provider Plan council, and stronger-planner plus lower-cost-worker Turbo. **Get started** now tells users to download and run the packaged macOS or Windows release, while source checkout, Node.js, localhost, and Electron commands live only under **Development**. The terminal promise was checked against the implementation: new projects default to background launch and no retention, macOS miniaturizes the exact owned window, terminal outcomes release exact owned launches, and **Continue session** resumes the saved provider conversation. See [[core-product-story]], [[open-source-releases]], [[disposable-terminal-pools]], and [[project-terminal-settings]].
 
 > [!important]
 > **August 12: Windows support is code-complete and gated on a real-machine smoke run.** Before this pass the Windows build could not work at all: every static asset 404ed (backslash-blind containment guards), every direct provider spawn failed (npm `.cmd` shims plus a resolver probe that rejected them), kills orphaned providers holding port 4769, the grid-placement PowerShell never compiled, and manually closed terminals leaked pool slots forever. All fixed across 14 src files with win32-simulated tests; macOS behavior is byte-identical per adversarial review. Full suite 1194/1194, `release:check` green. Plan council terminal execution, live steering, and runtime terminal recovery stay macOS-only by design and are advertised through `capabilities`. The 15-item Windows smoke checklist (items 1-5 are the release gate) and the unproven-on-macOS register live in [[windows-compatibility]].
