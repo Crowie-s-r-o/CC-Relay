@@ -119,9 +119,16 @@ Removing the trailer from git does not immediately clear the **Contributors** bo
 | --- | --- |
 | `gh api repos/OWNER/REPO/contributors` | Correct within minutes. |
 | `https://github.com/OWNER/REPO/graphs/contributors-data` | Returns `202` while it recomputes, then `200` with the corrected set. Polling it forces the recompute. |
-| Repository overview sidebar | Server rendered from a persisted per-repository contributor association. Survives the rewrite and lags well behind the other two. |
+| `https://github.com/OWNER/REPO/_sidebar` | The record the overview sidebar actually renders. Returns `contributors.contributorCount` and a login list, answers `cache-control: no-cache`, and keeps the removed identity long after the other two are corrected. |
 
-The sidebar entry is embedded in the overview HTML, not fetched from a JSON endpoint, so a cache-busting query string, a hard reload, and a private window all still show it. That association row is created when a co-authored commit is first pushed and is cleared by a background recount, not by the push that removed the commit. Pushes to the default branch are what schedule the recount, so the practical sequence is: rewrite, push, then let it settle. If the box still shows a removed identity after a day, GitHub Support is the only remaining lever, because no public API purges the association.
+The overview page loads that sidebar through a deferred fetch, so the identity is absent from the anonymous page HTML and cannot be found by grepping it. Poll the endpoint directly instead:
+
+```bash
+curl -s https://github.com/OWNER/REPO/_sidebar \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin)["contributors"]; print(d["contributorCount"], [c["login"] for c in d["contributors"]])'
+```
+
+Because it answers `no-cache`, a cache-busting query string, a hard reload, and a private window all still show the stale set. That is the point: the staleness is backend state, not an HTTP or browser cache, so nothing done from the client side moves it. Pushes to the default branch did not clear it either. Only GitHub's own recount does, with Support as the escalation if it outlives a day, since no public API purges the record.
 
 Orphaned pre-rewrite commits also stay reachable on GitHub by SHA. They are invisible to the contributor computation but they are not deleted, and only GitHub Support can garbage collect them.
 
