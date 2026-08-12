@@ -907,6 +907,14 @@ export class CodexAppServer extends EventEmitter {
     return connected;
   }
 
+  // The app-server owns ChatGPT authentication and returns the same subscription windows that
+  // Codex renders itself. Keeping this request here means CC Relay never reads or stores an auth
+  // token, and the status endpoint can consume a cached monitor snapshot instead of doing I/O.
+  async readRateLimits() {
+    await this.start();
+    return this.request('account/rateLimits/read', null, 10_000);
+  }
+
   // The model list is a paginated JSON-RPC round trip, and every Codex, Plan council, and
   // Turbo submission validates its model against it. Leaving it uncached kept a cold wire
   // round trip (up to the 30s request timeout, more than once when paginated) on the

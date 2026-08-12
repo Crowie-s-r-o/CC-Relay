@@ -50,7 +50,7 @@ test('the desktop build workflow runs the suite on macOS and never skips the rel
   assert.doesNotMatch(deploy, /GitHub Actions will build and publish/);
 });
 
-test('GitHub Releases publish only packaged deliverables with distinct Windows names', () => {
+test('GitHub Releases publish a DMG-only macOS package', () => {
   const builder = readFileSync(join(projectRoot, 'electron-builder.yml'), 'utf8');
   const workflow = readFileSync(
     join(projectRoot, '.github', 'workflows', 'build-desktop.yml'),
@@ -61,8 +61,13 @@ test('GitHub Releases publish only packaged deliverables with distinct Windows n
   assert.match(builder, /-Portable\.\$\{ext\}/);
   assert.match(builder, /^\s*- LICENSE$/m);
   assert.match(builder, /^\s*- THIRD_PARTY_NOTICES\.md$/m);
+  const macConfig = builder.match(/^mac:\n([\s\S]*?)^win:/m)?.[1] || '';
+  assert.match(macConfig, /^ {2}target:\n {4}- dmg$/m);
+  assert.doesNotMatch(macConfig, /^\s+- zip$/m);
   assert.doesNotMatch(workflow, /(?:path|files): dist\/\*\*/);
-  for (const pattern of ['*.dmg', '*.zip', '*.exe', '*.blockmap', 'latest*.yml']) {
+  assert.doesNotMatch(workflow, /dist\/\*\.zip/);
+  assert.doesNotMatch(workflow, /latest(?:\*|-mac)\.yml/);
+  for (const pattern of ['*.dmg', '*.exe', '*.blockmap', 'latest.yml']) {
     assert.equal(workflow.split(`dist/${pattern}`).length, 3);
   }
 });

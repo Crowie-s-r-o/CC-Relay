@@ -18,7 +18,7 @@ The complete user-facing product name is **CC Relay**.
 - GitHub Actions uploads use the machine-safe `cc-relay-<runner-os>` name.
 
 > [!important]
-> macOS release filenames use `CC-Relay-${version}-${os}-${arch}.${ext}`. Windows NSIS and portable files append `-Setup` and `-Portable` so their shared `.exe` extension cannot collide. When `artifactName` contained a space, electron-builder emitted files with spaces but normalized update-feed URLs to hyphens. The explicit hyphenated forms keep artifact names and feed URLs identical.
+> macOS releases publish only `CC-Relay-${version}-${os}-${arch}.dmg`. Windows NSIS and portable files append `-Setup` and `-Portable` so their shared `.exe` extension cannot collide. When `artifactName` contained a space, electron-builder emitted files with spaces but normalized update-feed URLs to hyphens. The explicit hyphenated forms keep artifact names and feed URLs identical.
 
 ## Compatibility contract
 

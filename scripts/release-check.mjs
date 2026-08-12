@@ -21,6 +21,10 @@ try {
   const lockfile = readJson('package-lock.json');
   const changelog = readFileSync(resolve(projectRoot, 'CHANGELOG.md'), 'utf8');
   const builder = readFileSync(resolve(projectRoot, 'electron-builder.yml'), 'utf8');
+  const desktopWorkflow = readFileSync(
+    resolve(projectRoot, '.github/workflows/build-desktop.yml'),
+    'utf8',
+  );
   const license = readFileSync(resolve(projectRoot, 'LICENSE'), 'utf8');
   const readme = readFileSync(resolve(projectRoot, 'README.md'), 'utf8');
   const thirdPartyNotices = readFileSync(resolve(projectRoot, 'THIRD_PARTY_NOTICES.md'), 'utf8');
@@ -78,6 +82,16 @@ try {
   }
   if (!/^portable:\s*\n\s+artifactName:\s*CC-Relay-\$\{version\}-\$\{os\}-\$\{arch\}-Portable\.\$\{ext\}\s*$/m.test(builder)) {
     throw new Error('electron-builder.yml must give the Windows portable build a unique name.');
+  }
+  const macConfig = builder.match(/^mac:\n([\s\S]*?)^win:/m)?.[1] || '';
+  if (!/^ {2}target:\n {4}- dmg$/m.test(macConfig) || /^\s+- zip$/m.test(macConfig)) {
+    throw new Error('electron-builder.yml must build the macOS DMG without a ZIP target.');
+  }
+  if (/dist\/\*\.zip/.test(desktopWorkflow)) {
+    throw new Error('The desktop release workflow must not publish ZIP artifacts.');
+  }
+  if (/latest\*\.yml/.test(desktopWorkflow) || /latest-mac\.yml/.test(desktopWorkflow)) {
+    throw new Error('The desktop release workflow must publish only the Windows latest.yml feed.');
   }
   for (const packagedNotice of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
     if (!new RegExp(`^\\s*- ${packagedNotice.replace('.', '\\.')}$`, 'm').test(builder)) {

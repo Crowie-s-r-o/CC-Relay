@@ -20,21 +20,21 @@
   </head>
   <body>
     <header class="app-header">
-      <div class="brand-lockup">
+      <button id="about-button" class="brand-lockup" type="button" aria-haspopup="dialog" aria-controls="about-modal" title="About CC Relay">
         <img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true">
         <div>
           <h1>CC Relay</h1>
           <p>AI work, one task at a time</p>
         </div>
-      </div>
+      </button>
       <div id="header-running-tasks" class="header-running-tasks" aria-label="Running tasks across all projects" aria-live="polite">
         <div class="header-running-empty"><i aria-hidden="true"></i><span>No tasks running</span></div>
       </div>
       <div class="header-actions">
-        <a id="desktop-update-indicator" class="desktop-update-indicator" href="https://github.com/Crowie-s-r-o/CC-Relay/releases/latest" target="_blank" rel="noreferrer" data-state="hidden" hidden>
+        <button id="desktop-update-indicator" class="desktop-update-indicator" type="button" aria-haspopup="dialog" aria-controls="desktop-update-modal" data-state="hidden" hidden>
           <span class="desktop-update-dot" aria-hidden="true"></span>
           <span id="desktop-update-label">Update available</span>
-        </a>
+        </button>
         <button id="header-position-toggle" class="header-position-toggle" type="button" aria-label="Move monitor bar to bottom" title="Move monitor bar to bottom" aria-pressed="false">
           <span id="header-position-icon" class="header-position-icon" aria-hidden="true">↓</span>
           <span id="header-position-label">Bottom</span>
@@ -50,7 +50,28 @@
           <span class="live-dot" aria-hidden="true"></span>
           <span id="codex-status-label">Checking CC Relay</span>
         </span>
-        <button id="pause-button" class="button secondary" type="button">Pause queue</button>
+        <section id="provider-usage" class="provider-usage" aria-label="Provider subscription usage" aria-live="polite" aria-busy="true">
+          <div class="provider-usage-meter" data-usage-key="claude-five-hour" data-provider="claude" data-level="checking">
+            <span>Claude 5h</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Claude 5-hour usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+          </div>
+          <div class="provider-usage-meter" data-usage-key="claude-weekly" data-provider="claude" data-level="checking">
+            <span>Claude week</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Claude weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+          </div>
+          <div class="provider-usage-meter" data-usage-key="claude-fable" data-provider="claude" data-level="checking">
+            <span>Fable week</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Claude Fable weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+          </div>
+          <div class="provider-usage-meter" data-usage-key="codex-weekly" data-provider="codex" data-level="checking">
+            <span>Codex week</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Codex weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+          </div>
+        </section>
       </div>
     </header>
 
@@ -371,19 +392,20 @@
               <div id="connection-command-row" class="command-row">
               <code id="launch-command">codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false</code>
               <button id="copy-command-button" class="button compact" type="button">Copy</button>
-              <button id="copy-diagnostics-button" class="button compact" type="button">Copy diagnostics</button>
-              <small class="diagnostics-note">Diagnostics include local paths and session IDs.</small>
               </div>
               <div class="terminal-layout-settings" aria-label="Terminal window layout">
                 <div class="terminal-layout-heading">
                   <span>Window layout</span>
                   <label class="terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked> Arrange in a grid</label>
                 </div>
-                <label class="terminal-background-toggle"><input id="terminal-launch-background" type="checkbox" checked> Launch behind other windows</label>
+                <label class="terminal-background-toggle"><input id="terminal-launch-background" type="checkbox" checked> Open new terminals minimized</label>
                 <label><span>Columns</span><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"></label>
                 <label><span>Rows</span><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"></label>
                 <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
-                <small>Background launches are minimized. Grid launches use the next available cell.</small>
+                <div class="terminal-layout-footer">
+                  <small id="terminal-layout-status" role="status">Only the window CC Relay opens is minimized. Other Terminal windows are untouched. Grid launches use the next available cell.</small>
+                  <button id="terminal-layout-apply-all" class="button compact" type="button">Apply to all projects</button>
+                </div>
               </div>
               <div class="completion-alert-settings" aria-label="Task completion alerts">
                 <div class="completion-alert-heading">
@@ -932,6 +954,82 @@
           <button id="task-edit-save" class="button primary compact" type="button">Save changes</button>
         </div>
       </div>
+    </dialog>
+
+    <dialog id="desktop-update-modal" class="terminal-settings-modal desktop-update-modal" aria-labelledby="desktop-update-title">
+      <div class="terminal-settings-card desktop-update-card">
+        <div class="terminal-settings-header desktop-update-header">
+          <div>
+            <span class="eyebrow">Desktop release</span>
+            <h2 id="desktop-update-title">A new Relay is ready</h2>
+          </div>
+          <button id="desktop-update-close" class="terminal-settings-close" type="button" aria-label="Close update details">×</button>
+        </div>
+        <div class="desktop-update-body">
+          <p id="desktop-update-message">A newer CC Relay release is available.</p>
+          <div class="desktop-update-route" aria-label="CC Relay version change">
+            <div class="desktop-update-version" data-kind="current">
+              <small>This Relay</small>
+              <strong id="desktop-update-current-version">v0.0.0</strong>
+            </div>
+            <div class="desktop-update-track" aria-hidden="true"><i></i><span>→</span><i></i></div>
+            <div class="desktop-update-version" data-kind="latest">
+              <small>New release</small>
+              <strong id="desktop-update-latest-version">v0.0.0</strong>
+            </div>
+          </div>
+          <div id="desktop-update-progress" class="desktop-update-progress" hidden>
+            <div class="desktop-update-progress-copy">
+              <span id="desktop-update-status">Downloading update</span>
+              <strong id="desktop-update-progress-value">0%</strong>
+            </div>
+            <div id="desktop-update-progress-bar" class="desktop-update-progress-bar" role="progressbar" aria-label="Desktop update download" aria-valuemin="0" aria-valuemax="100">
+              <i></i>
+            </div>
+          </div>
+          <p class="desktop-update-cadence"><span aria-hidden="true">↻</span> CC Relay checks for a new release every five minutes while the desktop app is running.</p>
+        </div>
+        <div class="desktop-update-actions">
+          <button id="desktop-update-dismiss" class="button compact" type="button">Close</button>
+          <a id="desktop-update-release" class="button primary compact" href="https://github.com/Crowie-s-r-o/CC-Relay/releases/latest" target="_blank" rel="noreferrer">View latest release</a>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="about-modal" class="terminal-settings-modal about-modal" aria-labelledby="about-title">
+      <article class="terminal-settings-card about-card">
+        <button id="about-close" class="terminal-settings-close about-close" type="button" aria-label="Close About CC Relay">×</button>
+        <section class="about-hero">
+          <div class="about-mark-scene" aria-hidden="true">
+            <span class="about-orbit"></span>
+            <span class="about-mark"><img src="/favicon.svg" alt=""></span>
+          </div>
+          <div class="about-introduction">
+            <span class="about-eyebrow">Local AI orchestration</span>
+            <h2 id="about-title"><span>CC</span> Relay</h2>
+            <p>Built for serious software work across Codex and Claude Code.</p>
+          </div>
+        </section>
+        <div class="about-body">
+          <p class="about-statement">A focused command center for teams that value dependable execution, clear ownership, and carefully engineered software.</p>
+          <div class="about-identity-grid">
+            <section>
+              <span>Company</span>
+              <strong>Crowie s.r.o.</strong>
+              <p>Software Development company</p>
+            </section>
+            <section>
+              <span>Founder</span>
+              <strong>Ing. Patrik Kelemen</strong>
+              <p>Founder and software engineer</p>
+            </section>
+          </div>
+          <footer class="about-footer">
+            <span><i aria-hidden="true"></i> Crafted with care in Slovakia</span>
+            <strong>High-quality software, built to last.</strong>
+          </footer>
+        </div>
+      </article>
     </dialog>
 
     <script type="module" src="/app.js"></script>

@@ -55,7 +55,16 @@ The Plan execution shortcut opens the modal before scrolling and focusing its ex
 
 ## Desktop zoom
 
-The desktop app no longer forces a 100 percent zoom level. `src/desktop-zoom.mjs` maps Command or Control plus and minus to bounded whole-page factors from 50 through 200 percent. Command or Control zero resets to 100 percent.
+The desktop app no longer forces a 100 percent zoom level. `src/desktop-zoom.mjs` maps Command or Control plus and minus to bounded whole-page factors from 50 through 200 percent. Command or Control zero resets to 100 percent. Windows and Linux use Control for the same shortcuts.
+
+macOS ignores `BrowserWindow.removeMenu()` and keeps Electron's default application menu, whose `zoomin`, `zoomout`, and `resetzoom` roles bind the same accelerators and step unbounded zoom levels outside the factor table. `src/desktop-menu.mjs` therefore installs an explicit macOS menu that keeps the standard application, edit, view, and window roles but routes every zoom accelerator into `nextDesktopZoomFactor`. Windows and Linux keep a menu-free window.
+
+The `before-input-event` key handler stays registered on every platform. Whether a macOS accelerator also reaches the renderer is not observable from a test, so dropping the handler there would risk leaving the primary platform with no zoom at all. Instead both paths call one sink that ignores a second request inside `DESKTOP_ZOOM_REPEAT_MS`, so a single keystroke can never step twice.
+
+The accelerator set covers Command or Control with plus, equals, minus, zero, and the numeric keypad equivalents. The equals and keypad items are hidden menu entries with `acceleratorWorksWhenHidden`, so zooming in does not require the Shift key.
+
+> [!important]
+> The key handler is registered before `loadURL`. Registering it after the load leaves the window without zoom shortcuts whenever the page load stalls or fails.
 
 Whole-page `webContents` zoom is intentional. The renderer still contains legacy pixel geometry and JavaScript-authored pixel sizes for persisted panel splits. Changing only the root font size would enlarge some text while leaving those surfaces behind. Native page zoom scales text, CSS geometry, terminal content, dialogs, and inline pixel sizes together. New or reshaped responsive UI should still prefer `em` units.
 
@@ -66,8 +75,11 @@ Whole-page `webContents` zoom is intentional. The renderer still contains legacy
 - `public/style.css`
 - `src/electron-main.mjs`
 - `src/desktop-zoom.mjs`
+- `src/desktop-menu.mjs`
 - `test/task-detail-modal.test.mjs`
 - `test/desktop-zoom.test.mjs`
+
+August 12 verification for the single-owner zoom change: a live Electron probe built the real menu template, confirmed the accelerator list, and stepped the loaded window through 1.0, 1.25, the 0.5 floor, the 2.0 ceiling, and the reset. `test/desktop-zoom.test.mjs` covers the stepper, the direction parser, the menu template, and the pre-load handler registration. The full suite reports three unrelated `style.css` reduced-motion failures from concurrent in-flight work; every other test passes and `release:check` is green.
 
 An isolated live renderer verified the 84 percent split, modal interaction, council content, dark-theme contrast, and zero browser console warnings. Focused modal, Markdown, and dark-mode tests cover the larger full-record typography. After the compact task-name and execution-profile refinement, the complete repository suite passes 1,069 tests.
 

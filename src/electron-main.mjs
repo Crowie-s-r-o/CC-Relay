@@ -1,10 +1,11 @@
-import { app, BrowserWindow, dialog, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, Menu, dialog, nativeImage, shell } from 'electron';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import electronUpdater from 'electron-updater';
-import { desktopZoomFactorForInput } from './desktop-zoom.mjs';
+import { desktopMenuRequired, desktopMenuTemplate } from './desktop-menu.mjs';
+import { desktopZoomDirectionForInput, nextDesktopZoomFactor } from './desktop-zoom.mjs';
 import { createDesktopUpdater } from './desktop-updater.mjs';
 import { DESKTOP_RELEASES_URL } from './desktop-update-status.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
@@ -13,17 +14,21 @@ import { RELAY_APPLICATION_DIRECTORY } from './server-options.mjs';
 const { autoUpdater } = electronUpdater;
 const DESKTOP_RELAY_PORT = 0;
 const DESKTOP_CODEX_PORT = 0;
+const DESKTOP_ZOOM_REPEAT_MS = 150;
 const APP_ICON_PATH = fileURLToPath(new URL('../build/icon.png', import.meta.url));
+const SPLASH_PATH = fileURLToPath(new URL('../public/splash.html', import.meta.url));
 const PRODUCT_NAME = 'CC Relay';
 const DESKTOP_DATA_ROOT = join(app.getPath('appData'), RELAY_APPLICATION_DIRECTORY);
 mkdirSync(DESKTOP_DATA_ROOT, { recursive: true });
 app.setPath('userData', DESKTOP_DATA_ROOT);
 app.setName(PRODUCT_NAME);
 let mainWindow = null;
+let splashWindow = null;
 let relayShutdown = null;
 let quitting = false;
 let desktopDiagnostics = null;
 let publishDesktopUpdateState = null;
+let lastDesktopZoomAt = 0;
 
 function errorDetails(error) {
   return {
@@ -37,6 +42,26 @@ function desktopDiagnostic(event, details = {}) {
   return desktopDiagnostics?.write(event, {
     processId: process.pid,
     ...details,
+  });
+}
+
+/*
+ * Both the macOS menu accelerators and the renderer key handler call this. Whether a macOS
+ * accelerator also reaches the renderer is not observable from tests, so instead of dropping one
+ * path on that guess the sink collapses a single keystroke into a single step.
+ */
+function applyDesktopZoom(direction) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const now = Number(process.hrtime.bigint() / 1000000n);
+  if (now - lastDesktopZoomAt < DESKTOP_ZOOM_REPEAT_MS) return;
+  lastDesktopZoomAt = now;
+  const currentFactor = mainWindow.webContents.getZoomFactor();
+  const nextFactor = nextDesktopZoomFactor(direction, currentFactor);
+  if (nextFactor == null || nextFactor === currentFactor) return;
+  mainWindow.webContents.setZoomFactor(nextFactor);
+  desktopDiagnostic('desktop.window.zoom.changed', {
+    factor: nextFactor,
+    percent: Math.round(nextFactor * 100),
   });
 }
 
@@ -94,11 +119,54 @@ function applyDevelopmentAppIcon() {
   return icon;
 }
 
+async function createSplashWindow(appIcon) {
+  splashWindow = new BrowserWindow({
+    width: 520,
+    height: 600,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    show: false,
+    backgroundColor: '#0d0e11',
+    title: `${PRODUCT_NAME} is starting`,
+    ...(appIcon ? { icon: appIcon } : {}),
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+    },
+  });
+  splashWindow.removeMenu();
+  splashWindow.on('closed', () => {
+    splashWindow = null;
+  });
+  await splashWindow.loadFile(SPLASH_PATH);
+  splashWindow.show();
+  desktopDiagnostic('desktop.splash.shown');
+}
+
+function closeSplashWindow() {
+  if (!splashWindow || splashWindow.isDestroyed()) return;
+  splashWindow.close();
+  desktopDiagnostic('desktop.splash.closed');
+}
+
 async function createWindow() {
   const dataRoot = app.getPath('userData');
   initializeDesktopDiagnostics(dataRoot);
-  restoreMacShellPath();
   const appIcon = applyDevelopmentAppIcon();
+  app.setAboutPanelOptions({
+    applicationName: PRODUCT_NAME,
+    applicationVersion: app.getVersion(),
+    copyright: 'Copyright © 2026 Crowie s.r.o.',
+    credits: 'Software Development company\nFounded and engineered by Ing. Patrik Kelemen',
+    authors: ['Ing. Patrik Kelemen'],
+    website: 'https://github.com/Crowie-s-r-o/CC-Relay',
+  });
+  await createSplashWindow(appIcon);
+  restoreMacShellPath();
   process.argv.push(
     '--relay-data-dir',
     dataRoot,
@@ -130,6 +198,7 @@ async function createWindow() {
     minHeight: 700,
     backgroundColor: '#dfe7e4',
     title: PRODUCT_NAME,
+    show: false,
     ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
       contextIsolation: true,
@@ -141,7 +210,26 @@ async function createWindow() {
     width: 1540,
     height: 980,
   });
-  mainWindow.removeMenu();
+  if (desktopMenuRequired()) {
+    /*
+     * macOS ignores removeMenu() and keeps Electron's default menu, whose zoom roles bind the same
+     * accelerators and step unbounded zoom levels outside the bounded factor table. Owning the menu
+     * is the only way to keep those accelerators inside it.
+     */
+    Menu.setApplicationMenu(Menu.buildFromTemplate(desktopMenuTemplate({ onZoom: applyDesktopZoom })));
+  } else {
+    mainWindow.removeMenu();
+  }
+  /*
+   * Registered on every platform and before the page load, so neither a menu-less window nor a
+   * stalled or failed load can leave the app without zoom shortcuts.
+   */
+  mainWindow.webContents.on('before-input-event', (event, input) => {
+    const direction = desktopZoomDirectionForInput(input);
+    if (!direction) return;
+    event.preventDefault();
+    applyDesktopZoom(direction);
+  });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://') || url.startsWith('https://')) shell.openExternal(url);
     return { action: 'deny' };
@@ -176,18 +264,9 @@ async function createWindow() {
   desktopDiagnostic('desktop.window.load.requested', { url: endpoint.url });
   await mainWindow.loadURL(endpoint.url);
   desktopDiagnostic('desktop.window.load.completed', { url: endpoint.url });
-  mainWindow.webContents.on('before-input-event', (event, input) => {
-    const currentFactor = mainWindow.webContents.getZoomFactor();
-    const nextFactor = desktopZoomFactorForInput(input, currentFactor);
-    if (nextFactor == null) return;
-    event.preventDefault();
-    if (nextFactor === currentFactor) return;
-    mainWindow.webContents.setZoomFactor(nextFactor);
-    desktopDiagnostic('desktop.window.zoom.changed', {
-      factor: nextFactor,
-      percent: Math.round(nextFactor * 100),
-    });
-  });
+  mainWindow.show();
+  mainWindow.focus();
+  closeSplashWindow();
   desktopUpdater.start();
   desktopDiagnostic('desktop.updater.started');
 }
@@ -197,13 +276,14 @@ if (!lock) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    const activeWindow = mainWindow || splashWindow;
     desktopDiagnostic('desktop.second_instance.received', {
-      windowAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+      windowAvailable: Boolean(activeWindow && !activeWindow.isDestroyed()),
     });
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
+    if (activeWindow) {
+      if (activeWindow.isMinimized()) activeWindow.restore();
+      activeWindow.show();
+      activeWindow.focus();
     }
   });
   app.whenReady().then(createWindow).catch((error) => {

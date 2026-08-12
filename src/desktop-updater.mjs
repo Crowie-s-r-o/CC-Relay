@@ -1,4 +1,5 @@
 const DEFAULT_DELAY = 5_000;
+export const DESKTOP_UPDATE_CHECK_INTERVAL = 5 * 60 * 1_000;
 
 function noop() {}
 
@@ -36,7 +37,6 @@ function resolveEligibility(options) {
     return true;
   }
   if (!packaged) return false;
-  if (platform === 'darwin') return true;
   return platform === 'win32' && portable !== true;
 }
 
@@ -128,7 +128,11 @@ export function createDesktopUpdater(options = {}) {
   const restartAndInstall = options.restartAndInstall || noop;
   const logger = options.logger || console;
   const schedule = options.timer || options.setTimeout || globalThis.setTimeout;
+  const repeat = options.intervalTimer || options.setInterval || globalThis.setInterval;
   const delay = Number.isFinite(options.delay) ? Math.max(0, options.delay) : DEFAULT_DELAY;
+  const interval = Number.isFinite(options.interval)
+    ? Math.min(DESKTOP_UPDATE_CHECK_INTERVAL, Math.max(1, options.interval))
+    : DESKTOP_UPDATE_CHECK_INTERVAL;
   const onStateChange = options.onStateChange;
 
   let started = false;
@@ -136,6 +140,7 @@ export function createDesktopUpdater(options = {}) {
   let downloadInFlight = false;
   let availablePromptInFlight = false;
   let downloadedPromptInFlight = false;
+  let lastAvailablePromptVersion = null;
   let state = {
     supported: false,
     status: 'unsupported',
@@ -165,9 +170,14 @@ export function createDesktopUpdater(options = {}) {
   }
 
   async function checkForUpdates() {
-    if (checkInFlight) return;
+    if (
+      checkInFlight
+      || downloadInFlight
+      || state.status === 'downloaded'
+      || state.status === 'installing'
+    ) return;
     checkInFlight = true;
-    publish('checking', { downloadPercent: null });
+    if (!state.latestVersion) publish('checking', { downloadPercent: null });
     safeLogger(logger, 'info', 'Checking for desktop updates.');
     try {
       await updater.checkForUpdates();
@@ -182,11 +192,14 @@ export function createDesktopUpdater(options = {}) {
   async function handleAvailable(info) {
     if (availablePromptInFlight || downloadInFlight) return;
     publishUpdate('available', info, { downloadPercent: null });
+    const version = availableVersion(info);
+    if (lastAvailablePromptVersion === version) return;
     const window = dialogWindow(getMainWindow);
     if (!window) {
       safeLogger(logger, 'info', 'Desktop update available, but no live window can show the prompt.');
       return;
     }
+    lastAvailablePromptVersion = version;
     availablePromptInFlight = true;
     try {
       const response = await showMessage(
@@ -280,6 +293,10 @@ export function createDesktopUpdater(options = {}) {
     schedule(() => {
       void checkForUpdates();
     }, delay);
+    const recurringTimer = repeat(() => {
+      void checkForUpdates();
+    }, interval);
+    recurringTimer?.unref?.();
     return true;
   }
 

@@ -68,6 +68,7 @@ test('Electron exposes GitHub updater state to the loopback UI', () => {
   const server = readFileSync(join(projectRoot, 'src', 'server.mjs'), 'utf8');
   const app = readFileSync(join(projectRoot, 'public', 'app.js'), 'utf8');
   const markup = readFileSync(join(projectRoot, 'public', 'index.html'), 'utf8');
+  const style = readFileSync(join(projectRoot, 'public', 'style.css'), 'utf8');
 
   assert.match(main, /onStateChange: \(state\) => publishDesktopUpdateState\?\.\(state\)/);
   assert.match(main, /publishDesktopUpdateState = relay\.setDesktopUpdateState;/);
@@ -77,4 +78,10 @@ test('Electron exposes GitHub updater state to the loopback UI', () => {
   assert.match(server, /desktopUpdates: IS_DESKTOP,/);
   assert.match(app, /desktopUpdatePresentation\(state\.status\.desktopUpdate\)/);
   assert.match(markup, /id="desktop-update-indicator"/);
+  assert.match(markup, /id="desktop-update-modal"/);
+  assert.match(markup, /aria-controls="desktop-update-modal"/);
+  assert.match(app, /elements\.desktopUpdateModal\.showModal\(\)/);
+  assert.match(style, /html\[data-theme="dark"\] \.desktop-update-card/);
+  assert.match(style, /@media \(max-width: 560px\) \{/);
+  assert.match(style, /@media \(prefers-reduced-motion: no-preference\) \{\s*\.desktop-update-progress-bar i \{\s*transition: width 180ms ease;/);
 });

@@ -105,6 +105,7 @@ import {
   availableProviderSelection,
   providerInstallationState,
 } from './provider-availability.js';
+import { providerUsagePresentation } from './provider-usage.js';
 import { createTextSelectionGuard } from './text-selection-guard.js';
 import { defaultEffortForModel } from './model-effort.js';
 import { desktopUpdatePresentation } from './desktop-update-state.js';
@@ -451,6 +452,18 @@ const elements = {
   codexStatusLabel: document.querySelector('#codex-status-label'),
   desktopUpdateIndicator: document.querySelector('#desktop-update-indicator'),
   desktopUpdateLabel: document.querySelector('#desktop-update-label'),
+  desktopUpdateModal: document.querySelector('#desktop-update-modal'),
+  desktopUpdateClose: document.querySelector('#desktop-update-close'),
+  desktopUpdateDismiss: document.querySelector('#desktop-update-dismiss'),
+  desktopUpdateTitle: document.querySelector('#desktop-update-title'),
+  desktopUpdateMessage: document.querySelector('#desktop-update-message'),
+  desktopUpdateCurrentVersion: document.querySelector('#desktop-update-current-version'),
+  desktopUpdateLatestVersion: document.querySelector('#desktop-update-latest-version'),
+  desktopUpdateStatus: document.querySelector('#desktop-update-status'),
+  desktopUpdateProgress: document.querySelector('#desktop-update-progress'),
+  desktopUpdateProgressBar: document.querySelector('#desktop-update-progress-bar'),
+  desktopUpdateProgressValue: document.querySelector('#desktop-update-progress-value'),
+  desktopUpdateRelease: document.querySelector('#desktop-update-release'),
   providerInput: document.querySelector('#provider-id'),
   providerTabsContainer: document.querySelector('#provider-tabs'),
   modeTabs: [...document.querySelectorAll('.mode-tab')],
@@ -537,19 +550,24 @@ const elements = {
   terminalCloseLabel: document.querySelector('#terminal-close-label'),
   terminalCloseReason: document.querySelector('#terminal-close-reason'),
   closeTerminalButton: document.querySelector('#close-terminal-button'),
-  copyDiagnosticsButton: document.querySelector('#copy-diagnostics-button'),
   terminalLayoutEnabled: document.querySelector('#terminal-layout-enabled'),
   terminalLayoutColumns: document.querySelector('#terminal-layout-columns'),
   terminalLayoutRows: document.querySelector('#terminal-layout-rows'),
   terminalLayoutDisplay: document.querySelector('#terminal-layout-display'),
   terminalLaunchBackground: document.querySelector('#terminal-launch-background'),
+  terminalLayoutApplyAll: document.querySelector('#terminal-layout-apply-all'),
+  terminalLayoutStatus: document.querySelector('#terminal-layout-status'),
   completionSound: document.querySelector('#completion-sound'),
   completionSpeech: document.querySelector('#completion-speech'),
   completionAlertPreview: document.querySelector('#completion-alert-preview'),
   completionAlertStatus: document.querySelector('#completion-alert-status'),
-  pauseButton: document.querySelector('#pause-button'),
+  providerUsage: document.querySelector('#provider-usage'),
+  providerUsageMeters: [...document.querySelectorAll('[data-usage-key]')],
   themeToggle: document.querySelector('#theme-toggle'),
   headerPositionToggle: document.querySelector('#header-position-toggle'),
+  aboutButton: document.querySelector('#about-button'),
+  aboutModal: document.querySelector('#about-modal'),
+  aboutClose: document.querySelector('#about-close'),
   appHeader: document.querySelector('.app-header'),
   taskViewButtons: [...document.querySelectorAll('[data-task-view]')],
   queueSummary: document.querySelector('#queue-summary'),
@@ -783,9 +801,19 @@ function setProjectTerminalSettingsDisabled(disabled) {
     elements.terminalLayoutRows,
     elements.terminalLayoutDisplay,
     elements.terminalLaunchBackground,
+    elements.terminalLayoutApplyAll,
   ]) {
     control.disabled = disabled;
   }
+  const applyAllSupported = state.status?.capabilities?.projectTerminalSettings === true;
+  elements.terminalLayoutApplyAll.disabled = disabled || !activeProject() || !applyAllSupported;
+  elements.terminalLayoutApplyAll.title = applyAllSupported
+    ? 'Copy this window layout to every pinned project.'
+    : 'Restart CC Relay to apply window settings to every project.';
+}
+
+function resetTerminalLayoutStatus() {
+  elements.terminalLayoutStatus.textContent = 'Only the window CC Relay opens is minimized. Other Terminal windows are untouched. Grid launches use the next available cell.';
 }
 
 function projectTerminalSettingIsFocused() {
@@ -854,6 +882,42 @@ function saveTerminalLayout() {
     layout: terminalLayout(),
   };
   void saveProjectTerminalSettings();
+}
+
+async function applyTerminalLayoutToAllProjects() {
+  const project = activeProject();
+  if (
+    !project
+    || state.projectSettingsSaving
+    || state.status?.capabilities?.projectTerminalSettings !== true
+  ) return;
+  const layout = terminalLayout();
+  state.projectSettingsSaving = true;
+  setProjectTerminalSettingsDisabled(true);
+  elements.terminalLayoutApplyAll.textContent = 'Applying...';
+  elements.terminalLayoutStatus.textContent = 'Applying this window layout to every pinned project.';
+  try {
+    const body = await api('/api/projects/terminal-layout', {
+      method: 'PATCH',
+      body: JSON.stringify({ terminalLayout: layout }),
+    });
+    state.projects = body.projects || state.projects.map((item) => ({
+      ...item,
+      terminal_layout: layout,
+    }));
+    state.terminalSettings = {
+      ...state.terminalSettings,
+      layout,
+    };
+    saveProjectComposerState(project.path);
+    elements.terminalLayoutStatus.textContent = `Applied to ${state.projects.length} ${state.projects.length === 1 ? 'project' : 'projects'}. Future changes remain project-specific.`;
+  } catch (error) {
+    elements.terminalLayoutStatus.textContent = `Could not apply the window layout: ${error.message}`;
+  } finally {
+    state.projectSettingsSaving = false;
+    setProjectTerminalSettingsDisabled(!activeProject());
+    elements.terminalLayoutApplyAll.textContent = 'Apply to all projects';
+  }
 }
 
 async function loadTerminalDisplays() {
@@ -4447,7 +4511,41 @@ function mostRecentlyStartedRunningTask(tasks) {
     .filter((task) => task.status === 'running')
     .sort((left, right) => (
       new Date(right.started_at || 0) - new Date(left.started_at || 0) || right.id - left.id
-    ))[0] || null;
+  ))[0] || null;
+}
+
+function renderProviderUsage() {
+  const supported = state.status?.capabilities?.providerUsage === true;
+  const usage = supported
+    ? state.status?.providerUsage
+    : {
+      claude: { status: 'unavailable' },
+      codex: { status: 'unavailable' },
+    };
+  const presentations = providerUsagePresentation(usage);
+  let checking = false;
+  for (const presentation of presentations) {
+    const meter = elements.providerUsageMeters.find(
+      (candidate) => candidate.dataset.usageKey === presentation.key,
+    );
+    if (!meter) continue;
+    const value = meter.querySelector('strong');
+    const track = meter.querySelector('.provider-usage-track');
+    meter.dataset.level = presentation.level;
+    meter.title = presentation.title;
+    value.textContent = presentation.value;
+    if (presentation.usedPercent === null) {
+      checking ||= presentation.level === 'checking';
+      track.style.removeProperty('--provider-usage-value');
+      track.removeAttribute('aria-valuenow');
+      track.setAttribute('aria-valuetext', presentation.title);
+    } else {
+      track.style.setProperty('--provider-usage-value', `${presentation.usedPercent}%`);
+      track.setAttribute('aria-valuenow', String(presentation.usedPercent));
+      track.removeAttribute('aria-valuetext');
+    }
+  }
+  elements.providerUsage.setAttribute('aria-busy', String(checking));
 }
 
 function renderStatus() {
@@ -4495,14 +4593,33 @@ function renderStatus() {
   const update = desktopUpdatePresentation(state.status.desktopUpdate);
   elements.desktopUpdateIndicator.hidden = update.hidden;
   elements.desktopUpdateIndicator.dataset.state = update.state;
-  elements.desktopUpdateIndicator.href = update.href;
   elements.desktopUpdateIndicator.title = update.title;
   elements.desktopUpdateIndicator.setAttribute('aria-label', update.title || 'CC Relay update');
   elements.desktopUpdateLabel.textContent = update.label;
-  elements.pauseButton.textContent = paused ? 'Resume queue' : 'Pause queue';
-  elements.pauseButton.classList.toggle('primary', paused);
-  elements.pauseButton.disabled = !state.activeProjectPath;
-  elements.pauseButton.title = state.activeProjectPath ? '' : 'Select a project to pause its queue';
+  elements.desktopUpdateModal.dataset.state = update.state;
+  elements.desktopUpdateTitle.textContent = update.modalTitle || 'CC Relay update';
+  elements.desktopUpdateMessage.textContent = update.modalMessage || 'Release details are unavailable.';
+  elements.desktopUpdateCurrentVersion.textContent = update.currentVersion
+    ? `v${update.currentVersion}`
+    : 'Unknown';
+  elements.desktopUpdateLatestVersion.textContent = update.latestVersion
+    ? `v${update.latestVersion}`
+    : 'Unknown';
+  elements.desktopUpdateStatus.textContent = update.statusLabel;
+  const showUpdateProgress = update.progress !== null
+    && ['downloading', 'downloaded'].includes(update.state);
+  elements.desktopUpdateProgress.hidden = !showUpdateProgress;
+  if (showUpdateProgress) {
+    elements.desktopUpdateProgressValue.textContent = `${update.progress}%`;
+    elements.desktopUpdateProgressBar.setAttribute('aria-valuenow', String(update.progress));
+    elements.desktopUpdateProgressBar.style.setProperty('--desktop-update-progress', `${update.progress}%`);
+  } else {
+    elements.desktopUpdateProgressBar.removeAttribute('aria-valuenow');
+    elements.desktopUpdateProgressBar.style.removeProperty('--desktop-update-progress');
+  }
+  elements.desktopUpdateRelease.href = update.href;
+  elements.desktopUpdateRelease.textContent = update.releaseLabel;
+  renderProviderUsage();
 
   renderHeaderRunningTasks();
 
@@ -6164,7 +6281,7 @@ function renderAutomaticTerminalPool() {
     ? `${project.name} terminal settings`
     : 'Project terminal settings';
   elements.connectionHelpCopy.textContent = project
-    ? `Window layout and launch behavior are saved only for ${project.name}.`
+    ? `Window settings are saved for ${project.name}. You can copy them to every pinned project below.`
     : 'Choose a pinned project before changing terminal settings.';
   if (!state.submitting) state.selectedThreadId = null;
   elements.threadInput.value = '';
@@ -8715,23 +8832,6 @@ elements.form.addEventListener('submit', async (event) => {
   }
 });
 
-elements.pauseButton.addEventListener('click', async () => {
-  if (!state.activeProjectPath) {
-    window.alert('Select a project before pausing its queue.');
-    return;
-  }
-  const action = isActiveProjectPaused() ? 'resume' : 'pause';
-  try {
-    await api(`/api/queue/${action}`, {
-      method: 'POST',
-      body: JSON.stringify({ projectPath: state.activeProjectPath }),
-    });
-    await load();
-  } catch (error) {
-    window.alert(error.message);
-  }
-});
-
 elements.standupButton.addEventListener('click', openStandup);
 elements.clearTaskNotificationsButton.addEventListener('click', () => {
   const cleared = state.projectCompletionNotifications.acknowledgeProject(state.activeProjectPath);
@@ -8913,6 +9013,21 @@ elements.taskDetailOpen.addEventListener('click', openTaskDetailModal);
 elements.taskDetailModalClose.addEventListener('click', closeTaskDetailModal);
 elements.taskDetailModal.addEventListener('click', (event) => {
   if (event.target === elements.taskDetailModal) closeTaskDetailModal();
+});
+
+function closeDesktopUpdateModal() {
+  if (elements.desktopUpdateModal.open) elements.desktopUpdateModal.close();
+}
+
+elements.desktopUpdateIndicator.addEventListener('click', () => {
+  if (!elements.desktopUpdateIndicator.hidden && !elements.desktopUpdateModal.open) {
+    elements.desktopUpdateModal.showModal();
+  }
+});
+elements.desktopUpdateClose.addEventListener('click', closeDesktopUpdateModal);
+elements.desktopUpdateDismiss.addEventListener('click', closeDesktopUpdateModal);
+elements.desktopUpdateModal.addEventListener('click', (event) => {
+  if (event.target === elements.desktopUpdateModal) closeDesktopUpdateModal();
 });
 
 function updateTerminalHeightAccessibility(height, maximum) {
@@ -9335,6 +9450,7 @@ elements.copyCommandButton.addEventListener('click', async () => {
   }, 1200);
 });
 elements.terminalSettingsButton.addEventListener('click', () => {
+  resetTerminalLayoutStatus();
   elements.terminalSettingsModal.showModal();
 });
 elements.terminalSettingsClose.addEventListener('click', () => {
@@ -9424,24 +9540,6 @@ elements.taskEditPrompt.addEventListener('keydown', (event) => {
     saveTaskEdit();
   }
 });
-elements.copyDiagnosticsButton.addEventListener('click', async () => {
-  elements.copyDiagnosticsButton.disabled = true;
-  try {
-    const body = await api('/api/diagnostics?limit=500');
-    const text = body.entries.map((entry) => JSON.stringify(entry)).join('\n');
-    await navigator.clipboard.writeText(text);
-    elements.copyDiagnosticsButton.textContent = `Copied ${body.entries.length} logs`;
-    elements.formMessage.textContent = `Diagnostics copied from ${body.file}.`;
-  } catch (error) {
-    elements.copyDiagnosticsButton.textContent = 'Copy failed';
-    elements.formMessage.textContent = error.message;
-  } finally {
-    setTimeout(() => {
-      elements.copyDiagnosticsButton.disabled = false;
-      elements.copyDiagnosticsButton.textContent = 'Copy diagnostics';
-    }, 1600);
-  }
-});
 async function launchTerminalProvider(provider, button) {
   let project = activeProject();
   const selectedThread = state.threads.find((thread) => thread.id === state.selectedThreadId);
@@ -9483,6 +9581,15 @@ elements.themeToggle.addEventListener('click', () => {
 elements.headerPositionToggle.addEventListener('click', () => {
   setHeaderPosition(currentHeaderPosition() === 'bottom' ? 'top' : 'bottom');
 });
+elements.aboutButton.addEventListener('click', () => {
+  if (!elements.aboutModal.open) elements.aboutModal.showModal();
+});
+elements.aboutClose.addEventListener('click', () => {
+  elements.aboutModal.close();
+});
+elements.aboutModal.addEventListener('click', (event) => {
+  if (event.target === elements.aboutModal) elements.aboutModal.close();
+});
 
 if ('ResizeObserver' in window) {
   new ResizeObserver(syncHeaderHeight).observe(elements.appHeader);
@@ -9521,6 +9628,7 @@ for (const control of [
 ]) {
   control.addEventListener('change', saveTerminalLayout);
 }
+elements.terminalLayoutApplyAll.addEventListener('click', applyTerminalLayoutToAllProjects);
 
 for (const button of elements.eventFilters) {
   button.addEventListener('click', () => {

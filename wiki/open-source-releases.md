@@ -73,9 +73,9 @@ This invocation follows the official Codex non-interactive pattern and reuses th
 
 Pushing `vX.Y.Z` starts `.github/workflows/build-desktop.yml`. The Ubuntu release job runs `release:check -- --tag`, extracts only the matching changelog body, downloads native artifacts, and publishes that body with the GitHub Release. GitHub's automatically generated notes are disabled so there is one canonical compact narrative.
 
-The native jobs transfer only DMG, ZIP, EXE, blockmap, and `latest*.yml` deliverables. Unpacked application trees and builder diagnostics are excluded. NSIS and portable Windows targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication.
+The native jobs transfer only DMG, EXE, blockmap, and Windows `latest.yml` deliverables. Unpacked application trees, macOS ZIP packages, the unusable DMG-only `latest-mac.yml`, and builder diagnostics are excluded. NSIS and portable Windows targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. GitHub still adds its generated source-code ZIP and tarball to every release.
 
-`electron-builder.yml` now publishes to owner `Crowie-s-r-o`, repository `CC-Relay`. Builds produced before this move still contain the old publisher and need one manual installation to enter the new update lineage. See [[desktop-updates]] and [[product-naming]].
+`electron-builder.yml` now publishes to owner `Crowie-s-r-o`, repository `CC-Relay`. Installed Windows builds produced before this move still contain the old publisher and need one manual installation to enter the new update lineage. See [[desktop-updates]] and [[product-naming]].
 
 ## Readiness audit
 

@@ -31,7 +31,7 @@ The native terminal remains open so its update or startup message is visible. Th
 > [!important]
 > CC Relay does not read or classify Terminal.app output. The update guidance is conditional because authentication, shell startup, or another Codex failure can also prevent the session from connecting.
 
-The connection panel includes **Copy diagnostics**, which copies the latest 500 structured entries. The same data is available from `GET /api/diagnostics?limit=500`.
+The terminal settings dialog no longer includes an end-user **Copy diagnostics** control. Structured entries remain available to engineering and support through `GET /api/diagnostics?limit=500` and the JSONL file.
 
 The file is capped operationally: after it exceeds 5 MB, CC Relay retains approximately the newest 2 MB. API reads inspect at most the newest 1 MB instead of loading the entire file.
 

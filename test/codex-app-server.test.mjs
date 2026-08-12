@@ -1148,6 +1148,25 @@ test('fresh-thread persistence errors include missing and temporarily empty roll
   assert.equal(isFreshThreadPersistenceError(new Error('permission denied')), false);
 });
 
+test('rate-limit reads use the authenticated Codex app-server account endpoint', async () => {
+  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  const requests = [];
+  client.start = async () => client.status();
+  client.request = async (method, params, timeoutMs) => {
+    requests.push({ method, params, timeoutMs });
+    return { rateLimitsByLimitId: {} };
+  };
+
+  const result = await client.readRateLimits();
+
+  assert.deepEqual(result, { rateLimitsByLimitId: {} });
+  assert.deepEqual(requests, [{
+    method: 'account/rateLimits/read',
+    params: null,
+    timeoutMs: 10_000,
+  }]);
+});
+
 test('app-server listening output exposes its dynamic WebSocket endpoint', () => {
   assert.equal(
     advertisedWebSocketEndpoint('  listening on: ws://127.0.0.1:61234'),

@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createDesktopUpdater } from '../src/desktop-updater.mjs';
+import {
+  DESKTOP_UPDATE_CHECK_INTERVAL,
+  createDesktopUpdater,
+} from '../src/desktop-updater.mjs';
 
 class FakeUpdater extends EventEmitter {
   constructor() {
@@ -46,6 +49,11 @@ function harness(options = {}) {
     if (options.runTimer) callback();
     return timers.length;
   };
+  const intervals = [];
+  const intervalTimer = (callback, delay) => {
+    intervals.push({ callback, delay });
+    return intervals.length;
+  };
   const window = { isDestroyed: () => false };
   const restartCalls = [];
   const states = [];
@@ -61,9 +69,21 @@ function harness(options = {}) {
     onStateChange: (state) => states.push(state),
     logger,
     timer,
+    intervalTimer,
     delay: options.delay ?? 25,
+    interval: options.interval,
   });
-  return { updater, coordinator, dialog, dialogs, logs, timers, restartCalls, states };
+  return {
+    updater,
+    coordinator,
+    dialog,
+    dialogs,
+    logs,
+    timers,
+    intervals,
+    restartCalls,
+    states,
+  };
 }
 
 async function flush() {
@@ -81,27 +101,47 @@ test('skips unpackaged or otherwise ineligible builds', async () => {
   assert.equal(updater.checkCalls, 0);
 });
 
-test('derives eligibility for packaged macOS and installed Windows builds', () => {
+test('derives eligibility for installed Windows builds only', () => {
   const mac = harness({ eligible: undefined });
   mac.coordinator = createDesktopUpdater({ updater: mac.updater, packaged: true, platform: 'darwin', timer: () => {} });
-  assert.equal(mac.coordinator.start(), true);
+  assert.equal(mac.coordinator.start(), false);
+  const installed = harness({ eligible: undefined });
+  installed.coordinator = createDesktopUpdater({
+    updater: installed.updater,
+    packaged: true,
+    platform: 'win32',
+    portable: false,
+    timer: () => {},
+    intervalTimer: () => {},
+  });
+  assert.equal(installed.coordinator.start(), true);
   const portable = harness({ eligible: undefined });
   portable.coordinator = createDesktopUpdater({ updater: portable.updater, packaged: true, platform: 'win32', portable: true, timer: () => {} });
   assert.equal(portable.coordinator.start(), false);
 });
 
-test('start is idempotent, configures manual update flow, and schedules once', async () => {
-  const { updater, coordinator, timers } = harness();
+test('start is idempotent, configures manual update flow, and checks every five minutes', async () => {
+  const { updater, coordinator, timers, intervals } = harness();
   assert.equal(coordinator.start(), true);
   assert.equal(coordinator.start(), false);
   assert.equal(updater.autoDownload, false);
   assert.equal(updater.autoInstallOnAppQuit, false);
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, 25);
-  timers[0].callback();
+  assert.equal(intervals.length, 1);
+  assert.equal(intervals[0].delay, DESKTOP_UPDATE_CHECK_INTERVAL);
   timers[0].callback();
   await flush();
   assert.equal(updater.checkCalls, 1);
+  intervals[0].callback();
+  await flush();
+  assert.equal(updater.checkCalls, 2);
+});
+
+test('caps an injected recurring cadence at five minutes', () => {
+  const { coordinator, intervals } = harness({ interval: DESKTOP_UPDATE_CHECK_INTERVAL * 2 });
+  coordinator.start();
+  assert.equal(intervals[0].delay, DESKTOP_UPDATE_CHECK_INTERVAL);
 });
 
 test('runs a check without prompting when no update is available', async () => {
@@ -164,6 +204,20 @@ test('defers an available update when the user chooses Later', async () => {
   await flush();
   assert.equal(dialogs.length, 1);
   assert.equal(updater.downloadCalls, 0);
+});
+
+test('does not repeat the available prompt for the same release on recurring checks', async () => {
+  const { updater, coordinator, dialogs } = harness({ choices: [1, 1] });
+  coordinator.start();
+  updater.emit('update-available', { version: '1.2.0' });
+  await flush();
+  updater.emit('update-available', { version: '1.2.0' });
+  await flush();
+  assert.equal(dialogs.length, 1);
+
+  updater.emit('update-available', { version: '1.3.0' });
+  await flush();
+  assert.equal(dialogs.length, 2);
 });
 
 test('prompts for a downloaded update and restarts only after acceptance', async () => {

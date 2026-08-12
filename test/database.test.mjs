@@ -698,6 +698,17 @@ test('database persists, deduplicates, launches, and removes pinned projects', (
     assert.equal(database.getProject(second.id).keep_terminal_open, false);
     assert.equal(database.getProject(second.id).prefer_idle_terminal, false);
     assert.equal(database.getProject(second.id).terminal_layout, null);
+    const sharedLayout = {
+      enabled: false,
+      columns: 4,
+      rows: 2,
+      display: 0,
+      background: true,
+    };
+    const updatedProjects = database.updateAllProjectTerminalLayouts(sharedLayout);
+    assert.deepEqual(updatedProjects.map((project) => project.terminal_layout), [sharedLayout, sharedLayout]);
+    assert.equal(database.getProject(first.id).prefer_idle_terminal, true);
+    assert.equal(database.getProject(second.id).keep_terminal_open, false);
     assert.equal(database.getProjectByPath('/repo/one').id, first.id);
     assert.deepEqual(database.listProjects().map((project) => project.id), [first.id, second.id]);
     assert.ok(database.markProjectLaunched(first.id).last_launched_at);

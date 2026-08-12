@@ -372,6 +372,16 @@ export class ProjectConfigStore {
     return updated;
   }
 
+  updateAllProjectTerminalLayouts(terminalLayout) {
+    this.database.prepare(`
+      UPDATE projects
+      SET terminal_layout_json = ?
+    `).run(terminalLayout ? JSON.stringify(terminalLayout) : null);
+    const projects = this.listProjects();
+    this.syncLegacyMirror();
+    return projects;
+  }
+
   updateProjectColor(id, color) {
     const project = this.getProject(id);
     if (!project) throw new Error('Pinned project not found.');

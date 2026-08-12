@@ -1,0 +1,205 @@
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import test from 'node:test';
+import {
+  ClaudeUsageProbe,
+  normalizeCodexUsage,
+  parseClaudeUsageScreen,
+  ProviderUsageMonitor,
+  stripTerminalControls,
+} from '../src/provider-usage.mjs';
+
+const CLAUDE_SCREEN = `
+\u001b[2JCurrent session
+1% used
+Resets 12:30am (Europe/Bratislava)
+Current week (all models)
+72% used
+Resets Aug 13 at 2pm (Europe/Bratislava)
+Current week (Fable)
+84% used
+Resets Aug 13 at 2pm (Europe/Bratislava)
+\u001b[HCurrent session
+3% used
+Resets 1:20am (Europe/Bratislava)
+Current week (all models)
+77% used
+Resets Aug 13 at 1:59pm (Europe/Bratislava)
+Current week (Fable)
+87% used
+Resets Aug 13 at 2pm (Europe/Bratislava)
+`;
+
+function fakeExpectProcess(screen, onScript = () => {}) {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  let script = '';
+  child.stdin.setEncoding('utf8');
+  child.stdin.on('data', (chunk) => {
+    script += chunk;
+  });
+  child.stdin.on('finish', () => {
+    onScript(script);
+    queueMicrotask(() => {
+      child.stdout.end(screen);
+      child.stderr.end();
+      child.emit('close', 0, null);
+    });
+  });
+  child.kill = () => true;
+  return child;
+}
+
+test('Claude usage parsing removes terminal controls and keeps the latest painted frame', () => {
+  assert.equal(stripTerminalControls('\u001b[31mClaude\u001b[0m'), 'Claude');
+  assert.deepEqual(parseClaudeUsageScreen(CLAUDE_SCREEN), {
+    fiveHour: {
+      usedPercent: 3,
+      resetsAt: null,
+      resetLabel: '1:20am (Europe/Bratislava)',
+    },
+    weekly: {
+      usedPercent: 77,
+      resetsAt: null,
+      resetLabel: 'Aug 13 at 1:59pm (Europe/Bratislava)',
+    },
+    fableWeekly: {
+      usedPercent: 87,
+      resetsAt: null,
+      resetLabel: 'Aug 13 at 2pm (Europe/Bratislava)',
+    },
+  });
+});
+
+test('Claude usage parsing leaves an absent Fable allowance unknown', () => {
+  const usage = parseClaudeUsageScreen(`
+Current session
+4% used
+Resets 2am
+Current week (all models)
+51% used
+Resets Friday
+`);
+  assert.equal(usage.fiveHour.usedPercent, 4);
+  assert.equal(usage.weekly.usedPercent, 51);
+  assert.equal(usage.fableWeekly, null);
+});
+
+test('Claude usage probe runs the authenticated CLI in a private Expect terminal and reuses its session', async () => {
+  const invocations = [];
+  const scripts = [];
+  const probe = new ClaudeUsageProbe({
+    command: '/opt/relay/claude',
+    cwd: '/tmp/relay-data',
+    platform: 'darwin',
+    sessionId: 'usage-session',
+    spawnProcess: (command, args, options) => {
+      invocations.push({ command, args, options });
+      return fakeExpectProcess(CLAUDE_SCREEN, (script) => scripts.push(script));
+    },
+  });
+
+  const first = await probe.read();
+  const second = await probe.read();
+
+  assert.equal(first.fableWeekly.usedPercent, 87);
+  assert.equal(second.weekly.usedPercent, 77);
+  assert.equal(invocations.length, 2);
+  assert.equal(invocations[0].command, '/usr/bin/expect');
+  assert.deepEqual(invocations[0].args.slice(0, 4), ['-f', '-', '28', '/opt/relay/claude']);
+  assert.ok(invocations[0].args.includes('--safe-mode'));
+  assert.deepEqual(invocations[0].args.slice(-2), ['--session-id', 'usage-session']);
+  assert.deepEqual(invocations[1].args.slice(-2), ['--resume', 'usage-session']);
+  assert.equal(invocations[0].options.cwd, '/tmp/relay-data');
+  assert.equal(invocations[0].options.detached, true);
+  assert.match(scripts[0], /spawn -noecho/);
+  assert.match(scripts[0], /\/usage/);
+});
+
+test('Claude usage probe reports unsupported platforms without spawning', async () => {
+  let spawned = false;
+  const probe = new ClaudeUsageProbe({
+    platform: 'linux',
+    spawnProcess: () => {
+      spawned = true;
+    },
+  });
+  await assert.rejects(probe.read(), (error) => error.code === 'unsupported_platform');
+  assert.equal(spawned, false);
+});
+
+test('Codex usage normalization selects the Codex seven-day bucket', () => {
+  const resetsAt = 1_786_743_600;
+  assert.deepEqual(normalizeCodexUsage({
+    rateLimitsByLimitId: {
+      codex: {
+        primary: { usedPercent: 6, windowDurationMins: 10_080, resetsAt },
+      },
+      spark: {
+        primary: { usedPercent: 92, windowDurationMins: 10_080, resetsAt: resetsAt + 100 },
+      },
+    },
+  }), {
+    weekly: { usedPercent: 6, resetsAt, resetLabel: null },
+  });
+
+  assert.deepEqual(normalizeCodexUsage({
+    rateLimits: {
+      primary: { usedPercent: 25, windowDurationMins: 300 },
+      secondary: { usedPercent: 41.6, windowDurationMins: 10_080, resetsAt },
+    },
+  }), {
+    weekly: { usedPercent: 42, resetsAt, resetLabel: null },
+  });
+});
+
+test('provider usage monitor deduplicates refreshes and preserves last-known values on failure', async () => {
+  let shouldFail = false;
+  let claudeReads = 0;
+  let codexReads = 0;
+  const changes = [];
+  const monitor = new ProviderUsageMonitor({
+    now: () => Date.parse('2026-08-12T21:00:00Z'),
+    readClaude: async () => {
+      claudeReads += 1;
+      if (shouldFail) throw new Error('offline');
+      return {
+        fiveHour: { usedPercent: 3, resetsAt: null, resetLabel: '1:20am' },
+        weekly: { usedPercent: 77, resetsAt: null, resetLabel: 'tomorrow' },
+        fableWeekly: { usedPercent: 87, resetsAt: null, resetLabel: 'tomorrow' },
+      };
+    },
+    readCodex: async () => {
+      codexReads += 1;
+      if (shouldFail) throw new Error('offline');
+      return {
+        weekly: { usedPercent: 6, resetsAt: 1_786_743_600, resetLabel: null },
+      };
+    },
+  });
+  monitor.on('changed', (state) => changes.push(state));
+
+  const first = monitor.refresh();
+  assert.equal(monitor.refresh(), first);
+  const ready = await first;
+  assert.equal(claudeReads, 1);
+  assert.equal(codexReads, 1);
+  assert.equal(ready.claude.status, 'ready');
+  assert.equal(ready.codex.status, 'ready');
+  assert.equal(ready.claude.checkedAt, '2026-08-12T21:00:00.000Z');
+  assert.equal(changes.length, 1);
+
+  shouldFail = true;
+  const stale = await monitor.refresh();
+  assert.equal(stale.claude.status, 'stale');
+  assert.equal(stale.codex.status, 'stale');
+  assert.equal(stale.claude.fableWeekly.usedPercent, 87);
+  assert.equal(stale.codex.weekly.usedPercent, 6);
+  assert.equal(changes.length, 2);
+
+  stale.claude.weekly.usedPercent = 0;
+  assert.equal(monitor.current().claude.weekly.usedPercent, 77);
+});

@@ -14,7 +14,7 @@ type: architecture
 
 The CC Relay UI follows the supplied `CC Relay.html` reference at its 1680 by 1180 desktop target. The main visual system uses bundled local copies of Instrument Sans, Source Serif 4, and JetBrains Mono, blue interaction states, white rounded panels, and a navy execution console.
 
-The Electron window supports bounded whole-page zoom through Command or Control plus and minus, with Command or Control zero resetting to 100 percent. `src/desktop-zoom.mjs` provides factors from 50 through 200 percent. Native page zoom is used because it scales legacy pixel geometry and JavaScript-authored pixel panel sizes together with text; new adaptive inspector geometry uses `em` units. See [[task-detail-modal-and-app-zoom]].
+The Electron window supports bounded whole-page zoom through Command or Control plus and minus, with Command or Control zero resetting to 100 percent. `src/desktop-zoom.mjs` provides factors from 50 through 200 percent, and `src/desktop-menu.mjs` gives macOS an explicit menu so its accelerators use those bounded factors instead of Electron's default unbounded zoom roles. Native page zoom is used because it scales legacy pixel geometry and JavaScript-authored pixel panel sizes together with text; new adaptive inspector geometry uses `em` units. See [[task-detail-modal-and-app-zoom]].
 
 ## Workspace columns
 
@@ -48,6 +48,14 @@ The center of the application header is a global monitoring rail, not a connecti
 Each compact card shows the task number, project, CC Relay or Claude session, live duration, prompt, and latest recorded agent response. `src/running-task-feed.mjs` selects only Codex `agentMessage` and Claude `claude/message` events, so command output, tool protocol, and hidden reasoning never replace the response preview. A task without an agent message says **Waiting for the first agent response**. Clicking a card selects its pinned project when available, returns to Queue, and opens the task's complete Task Activity view.
 
 The rail scrolls horizontally instead of compressing or dropping running tasks. Its empty state is the single neutral **No tasks running** message. A running card inherits the deterministic eight-color identity or persisted custom color of its project for its flat surface tint, mixed-color outline, live dot, task-number chip, project name, focus ring, and hover tint. It has no directional accent edge or gradient. The CC Relay name remains neutral so project ownership and execution ownership stay separate. Codex response ownership remains blue, and only Claude response ownership uses the reserved orange. At 1344px and below the rail moves to its own full-width header row; narrow cards remain horizontally scrollable.
+
+## Provider subscription runway
+
+The right side of the global header uses the space formerly occupied by **Pause queue** for a compact four-meter subscription runway. The meters show Claude 5h, Claude week, Fable week, and Codex week as percentage-used bars. Claude identity is orange, Codex identity is blue, warning state begins at 70 percent, and critical state begins at 90 percent. Percentage text and the semantic state keep the reading independent of color. Hover titles expose the corresponding reset time and identify a retained value as last known.
+
+The strip is a fixed compact instrument on wide layouts. At 760px and below it moves to its own full-width row inside the wrapping header actions. Light and dark surfaces use their respective semantic palettes, and reduced-motion mode removes bar transitions. Each track is an accessible progress bar with a numeric value when known and descriptive checking or unavailable text otherwise.
+
+The header no longer exposes queue pause or resume. Project pause state and backend pause routes remain intact for queue-management integrations and mixed-version compatibility. See [[provider-usage-monitor]].
 
 ## Execution ledger
 
@@ -195,7 +203,7 @@ Task Activity presents the saved draft, independent review, and final revision a
 
 The terminal window grid controls in the settings dialog use a two-level layout. A full-width heading row contains the grid enable switch, followed by compact column and row inputs and a flexible monitor selector. This keeps the switch label readable and gives the monitor name the remaining width without allowing it to crowd the other controls. Below 760px, the monitor selector moves to its own row.
 
-The persisted **Launch behind other windows** checkbox applies to every native launch path for the selected project, including project cards. CC Relay omits Terminal activation and minimizes the captured new Terminal.app window on macOS. It starts `cmd.exe` with PowerShell's minimized window style on Windows. The option is stored with that project's grid settings in `projects.terminal_layout_json` and travels in the existing launch request object. Both **Arrange in a grid** and **Launch behind other windows** default to enabled. A project without a saved layout receives clean defaults and never inherits the previously selected project's values. See [[project-terminal-settings]].
+The persisted **Open new terminals minimized** checkbox applies to every native launch path for the selected project, including project cards. CC Relay omits Terminal activation and minimizes only the captured new Terminal.app window on macOS. It starts `cmd.exe` with PowerShell's minimized window style on Windows. The compatibility field remains `background`, but the UI does not describe this as launching behind everything. The option is stored with that project's grid settings in `projects.terminal_layout_json` and travels in the existing launch request object. Both **Arrange in a grid** and **Open new terminals minimized** default to enabled. A project without a saved layout receives clean defaults and never inherits the previously selected project's values. The settings dialog can explicitly copy only the complete window-layout object to all pinned projects; later changes remain project-specific. See [[project-terminal-settings]].
 
 On macOS, each grid launch inspects the bounds of currently open Terminal.app windows and places the new window in the first unoccupied cell. Closing a terminal therefore frees that exact cell for the next launch. The launcher's in-memory rotating slot remains a fallback when Terminal window inspection is unavailable or every cell is occupied.
 

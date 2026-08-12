@@ -21,6 +21,7 @@
 4. **Queue the next prompts now.** Add, reorder, edit, or switch queued work while current tasks are still running. Relay dispatches it when the matching provider has capacity.
 5. **Make important plans survive a challenge.** Plan council lets one provider author a plan, the other review it critically, and the author revise it into an implementation-ready result.
 6. **Plan smart, execute economically.** Forward-planning Turbo uses a stronger model to build a dependency graph, then fans the work out to faster, lower-cost Codex workers.
+7. **See subscription runway at a glance.** Four compact header bars track Claude's current session, all-model weekly, and Fable weekly usage alongside Codex weekly usage.
 
 You also get live execution, local SQLite history, artifacts, image attachments, diagnostics, loopback-only networking, and exact terminal ownership checks. See the full [feature inventory](FEATURES.md).
 
@@ -50,9 +51,9 @@ Linux desktop packages are not currently produced. The desktop builds do not req
 
 ## Updates
 
-Packaged macOS apps and installed Windows NSIS builds check this public repository for a newer GitHub Release. When one exists, CC Relay shows the version in its header and asks before downloading or restarting. Windows portable builds update manually from the [latest release](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest).
+Installed Windows NSIS builds check this public repository for a newer GitHub Release after launch and every five minutes after that. When one exists, CC Relay shows the version in its header, opens a release-details modal from that signal, and asks before downloading or restarting. macOS DMG installations and Windows portable builds update manually from the [latest release](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest).
 
-Builds created before the move to `Crowie-s-r-o/CC-Relay` need one manual install from the new repository before automatic checks can follow this release line.
+Installed Windows builds created before the move to `Crowie-s-r-o/CC-Relay` need one manual install from the new repository before automatic checks can follow this release line.
 
 ## Safety
 

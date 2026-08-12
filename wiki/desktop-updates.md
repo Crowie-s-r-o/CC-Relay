@@ -13,14 +13,19 @@ CC Relay uses `electron-updater` with the GitHub publisher configured for `Crowi
 The coordinator in `src/desktop-updater.mjs` is dependency-injected and has no direct Electron imports. `src/electron-main.mjs` supplies the real `autoUpdater`, Electron `dialog`, the current app version, the main-window getter, and a graceful restart callback.
 
 > [!important]
-> Update checks run only when `app.isPackaged` is true and the runtime is either macOS or an installed Windows NSIS build. Development launches through `npm run desktop` do not check. The Windows portable executable is intentionally excluded and must be updated by downloading a newer portable artifact.
+> Update checks run only when `app.isPackaged` is true and the runtime is an installed Windows NSIS build. Development launches through `npm run desktop`, macOS DMG installations, and Windows portable executables update manually from GitHub Releases.
 
 > [!important]
 > `electron-updater` 6.8.9 is CommonJS and defines `autoUpdater` through a runtime property getter. Electron's ESM loader does not expose that getter as a named export. `src/electron-main.mjs` must default-import the package and destructure `autoUpdater` from that default object. A named import passes a source syntax check but crashes the packaged app before startup.
 
-The lifecycle starts once, after `BrowserWindow.loadURL()` succeeds, and schedules one delayed `checkForUpdates()` call. Automatic download and automatic installation on quit are disabled. An available update displays a window-modal **Download** or **Later** choice. A downloaded update displays **Restart and install** or **Later**. No-update results, check failures, and download failures never show background error dialogs.
+The lifecycle starts once, after `BrowserWindow.loadURL()` succeeds. It schedules one delayed `checkForUpdates()` call and a recurring check every five minutes. The recurring timer is unreferenced so it cannot keep a test or process alive by itself, and an injected interval is capped at five minutes so callers cannot silently weaken the cadence. Checks remain overlap-safe and pause while a download is active or installation is ready.
 
-`createDesktopUpdater` publishes `unsupported`, `checking`, `current`, `available`, `downloading`, `downloaded`, `installing`, and `error` snapshots. Electron forwards those snapshots through `setDesktopUpdateState`; `/api/status.desktopUpdate` returns only normalized versions, bounded progress, and a URL restricted to this repository's GitHub Releases path. The header stays hidden unless a valid newer version is known. It then links to the exact release, shows download progress, or marks the update ready while native dialogs continue to own consent.
+Automatic download and automatic installation on quit are disabled. An available update displays a window-modal **Download** or **Later** choice. A downloaded update displays **Restart and install** or **Later**. Recurring discovery remembers the version already offered, so choosing **Later** does not reopen the same native prompt every five minutes; a genuinely newer version can prompt once. No-update results, check failures, and download failures never show background error dialogs.
+
+`createDesktopUpdater` publishes `unsupported`, `checking`, `current`, `available`, `downloading`, `downloaded`, `installing`, and `error` snapshots. Electron forwards those snapshots through `setDesktopUpdateState`; `/api/status.desktopUpdate` returns only normalized versions, bounded progress, and a URL restricted to this repository's GitHub Releases path. The header stays hidden unless a valid newer version is known. It then becomes a compact status button that shows download progress or marks the update ready. Activating it opens an in-app details dialog with the installed-to-latest version route, bounded progress, the five-minute cadence, and the trusted release link. Native dialogs continue to own download and restart consent; the renderer remains read-only.
+
+> [!note]
+> The version route is the update dialog's visual signature: two compact release stations connected by one relay arrow. Light and dark themes share the same hierarchy, the dialog fits a 500 pixel viewport without page overflow, keyboard focus stays native to `<dialog>`, and progress motion is removed under `prefers-reduced-motion`.
 
 The coordinator ignores overlapping checks, downloads, and prompts. It also skips prompts when the main window is absent or destroyed. This keeps updater events safe during startup and shutdown.
 
@@ -39,14 +44,14 @@ The restart callback sets the existing Electron `quitting` guard before awaiting
 The shared `relayShutdown` path also closes every native terminal launched by this CC Relay process before the backend and desktop process exit. It uses exact macOS Terminal window IDs and Windows process IDs, so an update restart does not leave CC Relay sessions running and does not close unrelated terminals. Normal application quit and update installation use the same cleanup contract.
 
 > [!note]
-> macOS installation only works for signed and notarized release builds. A locally built unsigned app can check or download only when the update feed is reachable, but macOS Gatekeeper will reject an unsigned release update.
+> macOS releases are DMG-only and update through a manual DMG download. `electron-updater` requires a ZIP payload for Squirrel.Mac, so removing the ZIP also means macOS must not start the automatic updater and fail against a feed with no compatible ZIP payload. Electron-builder 26.15.3 still writes a DMG-only `latest-mac.yml`, but the workflow deliberately does not publish that unusable feed.
 
 ## Release contract
 
 The build configuration lives in [[../electron-builder.yml|electron-builder.yml]], the package metadata lives in [[../package.json|package.json]], and the native matrix plus GitHub release job live in [[../.github/workflows/build-desktop.yml|build-desktop.yml]]. The publisher is GitHub with owner `Crowie-s-r-o`, repository `CC-Relay`, and release type `release`.
 
 > [!important]
-> The product display name is `CC Relay`, but release artifact files stay hyphenated. macOS uses `CC-Relay-${version}-${os}-${arch}.${ext}`. Windows adds `-Setup` for NSIS and `-Portable` for the manual executable so two `.exe` targets cannot overwrite each other. A space in `artifactName` produces files with spaces while update metadata normalizes URLs to hyphens, leaving the feed pointed at missing files. Keep artifact names hyphenated and the bundle, DMG volume, menu, About item, and UI name spaced. See [[product-naming]].
+> The product display name is `CC Relay`, but release artifact files stay hyphenated. macOS publishes `CC-Relay-${version}-${os}-${arch}.dmg`. Windows adds `-Setup` for NSIS and `-Portable` for the manual executable so two `.exe` targets cannot overwrite each other. A space in `artifactName` produces files with spaces while update metadata normalizes URLs to hyphens, leaving the feed pointed at missing files. Keep artifact names hyphenated and the bundle, DMG volume, menu, About item, and UI name spaced. See [[product-naming]].
 
 > [!important]
 > The native Crowie application icon comes from `build/icon.png`. Both `mac.icon` and `win.icon` point to that build resource, which electron-builder converts for the macOS bundle and Windows executables. `public/favicon.svg` controls only the renderer tab icon and cannot replace the Electron logo in the Dock, Finder, taskbar, or installed application.
@@ -77,12 +82,12 @@ The release job rejects any tag, package, lockfile, changelog, publisher, or Win
 
 | Platform | Update metadata | Installable artifacts |
 | --- | --- | --- |
-| macOS | `latest-mac.yml` plus DMG and ZIP blockmaps | DMG and ZIP |
+| macOS | none; manual update | DMG |
 | Windows NSIS | `latest.yml` plus NSIS blockmaps | NSIS installer |
 | Windows portable | no automatic feed use | portable executable for manual download |
 
 > [!important]
-> Keep `latest-mac.yml`, `latest.yml`, blockmaps, DMG, ZIP, NSIS, and portable artifacts in the GitHub release. The updater needs the metadata and blockmaps to calculate and download differential updates. The portable executable is distributed in the release but is not an automatic-update target.
+> Keep `latest.yml`, blockmaps, DMG, NSIS, and portable artifacts in the GitHub release. The installed Windows updater needs its metadata and blockmap to calculate and download differential updates. The DMG and portable executable are manual downloads. GitHub adds its own source-code ZIP and tarball automatically; those are not desktop packages.
 
 Signing credentials are not stored in the repository. Production macOS releases need Apple Developer signing and notarization. Production Windows NSIS releases need a trusted code-signing certificate. Local directory builds and unsigned CI builds are useful for packaging validation but are not suitable for public update installation.
 
@@ -93,6 +98,8 @@ Signing credentials are not stored in the repository. Production macOS releases 
 - `src/electron-main.mjs`: packaged-build eligibility, delayed startup, and graceful install handoff.
 - `src/server-options.mjs`: fixed standalone defaults plus validated desktop port flags.
 - `src/server.mjs`: explicit readiness promise, actual bound HTTP endpoint, and sanitized desktop update status.
+- `public/desktop-update-state.js`: pure header and dialog copy, version, progress, and trusted-link presentation.
+- `public/index.html`, `public/app.js`, and `public/style.css`: accessible update trigger, details dialog, responsive route, and light and dark presentation.
 - `src/codex-app-server.mjs`: actual shared proxy endpoint advertisement after dynamic binding.
 - `src/diagnostics.mjs`: bounded JSONL persistence shared by Electron and the backend.
 - `build/icon.png`: 1024px transparent Crowie source used for native application icons and the development Dock icon.
@@ -109,11 +116,11 @@ No renderer IPC, preload permission, writable update route, or environment varia
 ## Troubleshooting
 
 - **No check during development:** expected. Use a packaged build; `npm run desktop` is intentionally ineligible.
-- **No header indicator:** expected when the app is current, still checking, unpackaged, or a Windows portable build. A valid newer version is required before the link appears.
+- **No header indicator:** expected on macOS, in development, in a Windows portable build, while the installed Windows app is current, or while its check is still running. A valid newer version is required before the link appears.
 - **Portable Windows build does not update:** expected. Download the latest portable artifact manually or install the NSIS build for automatic updates.
 - **No update after a tag:** confirm the tag is `vX.Y.Z`, the package version is `X.Y.Z`, and the GitHub release contains the platform's `latest-*.yml`, blockmaps, and installers.
 - **The tag is pushed but the Releases page is empty:** the desktop build workflow failed, so `needs: build` skipped the release job. Open the run that deploy names in its failure message. A tag whose run already failed cannot be recovered by re-running the workflow, because the dispatch uses the workflow file at that ref; release the fix under the next version instead of retagging.
-- **macOS update will not install:** verify the release is signed and notarized and that the app was distributed from a compatible release channel.
+- **macOS needs an update:** download the latest DMG from GitHub Releases and replace the installed application manually.
 - **Packaged startup reports that the `autoUpdater` named export is missing:** inspect `src/electron-main.mjs` and keep the CommonJS default-import interop described above.
 - **Signing reports that `CC Relay.app` could not be found, or packaging reports `ENOTEMPTY` for `dist/mac-arm64`:** confirm that only one `electron-builder` process is running and that no app is running from the output bundle. Concurrent builds share and replace the same `dist/mac-arm64` directory, so one build can remove the bundle while another signs it.
 - **Dock icon but no window:** inspect `relay-diagnostics.jsonl` for the `desktop.start.*`, `desktop.server.*`, `relay.listen.*`, and `desktop.window.*` sequence. Current builds use dynamic embedded ports and reject startup failures instead of waiting forever.

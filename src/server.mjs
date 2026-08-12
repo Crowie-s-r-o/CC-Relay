@@ -47,6 +47,11 @@ import {
 } from './plan-breakdown.mjs';
 import { PlanRunCoordinator } from './plan-run.mjs';
 import {
+  ClaudeUsageProbe,
+  normalizeCodexUsage,
+  ProviderUsageMonitor,
+} from './provider-usage.mjs';
+import {
   ProjectLauncher,
   claudeRelayCommand,
   cmdQuote,
@@ -429,6 +434,33 @@ function activateCodexRuntime(status) {
 const claudeRuntime = new ClaudeRuntimeStatus({ command: claudeBinaryPath });
 // Cache read only. Never spawns, never blocks, so it is safe on any request path.
 const currentClaudeStatus = () => claudeRuntime.current();
+const claudeUsageProbe = new ClaudeUsageProbe({
+  command: claudeBinaryPath,
+  cwd: DATA_ROOT,
+});
+const providerUsage = new ProviderUsageMonitor({
+  readClaude: async () => {
+    const status = await claudeRuntime.refresh();
+    if (!providerIsReady(status)) throw new Error('Claude usage needs an authenticated CLI.');
+    try {
+      return await claudeUsageProbe.read();
+    } catch (error) {
+      diagnostic('provider.usage.claude.failed', { code: error.code, error: error.message });
+      throw error;
+    }
+  },
+  readCodex: async () => {
+    const status = await refreshCodexStatus();
+    if (!providerIsReady(status)) throw new Error('Codex usage needs an authenticated CLI.');
+    try {
+      return normalizeCodexUsage(await codexAppServer.readRateLimits());
+    } catch (error) {
+      diagnostic('provider.usage.codex.failed', { error: error.message });
+      throw error;
+    }
+  },
+  cancelClaude: () => claudeUsageProbe.cancel(),
+});
 
 function sendJson(response, statusCode, value) {
   const body = JSON.stringify(value);
@@ -500,7 +532,7 @@ function validateProjectTerminalLayout(value) {
     throw new Error('Terminal window layout settings are required.');
   }
   if (typeof value.enabled !== 'boolean' || typeof value.background !== 'boolean') {
-    throw new Error('Terminal layout and background choices must be true or false.');
+    throw new Error('Terminal layout and minimized launch choices must be true or false.');
   }
   const grid = normalizeTerminalLayout({ ...value, enabled: true });
   return {
@@ -908,6 +940,7 @@ queue.on('changed', (change) => {
 });
 codexAppServer.on('status', (status) => broadcast({ codex: status }));
 codexAppServer.on('threads', () => broadcast({ threads: true }));
+providerUsage.on('changed', () => broadcast({ providerUsage: true }));
 codexAppServer.on('notification', ({ method }) => {
   if (method.startsWith('thread/')) {
     broadcast({ threads: true });
@@ -938,6 +971,7 @@ export const server = createServer(async (request, response) => {
         ...queue.status(projectPath),
         codex: { ...runtimeStatus, appServer: codexAppServer.status() },
         claude: claudeRuntimeStatus,
+        providerUsage: providerUsage.current(),
         desktopUpdate: desktopUpdateState,
         capabilities: {
           directClaudeExecution: true,
@@ -978,6 +1012,7 @@ export const server = createServer(async (request, response) => {
           sharedProjectConfig: true,
           localhostTaskImport: true,
           projectTerminalSettings: true,
+          providerUsage: true,
           projectColors: true,
           aiStandupGeneration: true,
           aiStandupConfiguration: true,
@@ -1272,6 +1307,16 @@ export const server = createServer(async (request, response) => {
         : null;
       if (launched) database.markProjectLaunched(project.id);
       sendJson(response, 200, { project, launched });
+      return;
+    }
+
+    if (request.method === 'PATCH' && pathname === '/api/projects/terminal-layout') {
+      const body = await readJson(request);
+      const projects = database.updateAllProjectTerminalLayouts(
+        validateProjectTerminalLayout(body.terminalLayout),
+      );
+      broadcast({ projects: true });
+      sendJson(response, 200, { projects });
       return;
     }
 
@@ -2759,6 +2804,7 @@ server.listen(PORT, HOST, () => {
   // Provider readiness is probed in the background from here on. Ordinary status and queue
   // requests never spawn probes. The explicit standup action launches one isolated AI run.
   claudeRuntime.start();
+  providerUsage.start();
   refreshCodexStatus().then((status) => {
     if (!status.available || !status.authenticated) {
       console.log('Codex is unavailable or not authenticated. Check `codex login status`.');
@@ -2777,6 +2823,7 @@ server.listen(PORT, HOST, () => {
 });
 
 export async function shutdown() {
+  providerUsage.stop();
   claudeRuntime.stop();
   relayEndpointUrl = null;
   claudeHookBridge.clear();

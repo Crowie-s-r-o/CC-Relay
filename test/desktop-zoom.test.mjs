@@ -3,8 +3,11 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   DESKTOP_ZOOM_FACTORS,
+  desktopZoomDirectionForInput,
   desktopZoomFactorForInput,
+  nextDesktopZoomFactor,
 } from '../src/desktop-zoom.mjs';
+import { desktopMenuRequired, desktopMenuTemplate } from '../src/desktop-menu.mjs';
 
 const mainSource = readFileSync(new URL('../src/electron-main.mjs', import.meta.url), 'utf8');
 
@@ -17,6 +20,11 @@ function keyInput(key, overrides = {}) {
     alt: false,
     ...overrides,
   };
+}
+
+function findZoomItems(template) {
+  const view = template.find((entry) => entry.label === 'View');
+  return view.submenu.filter((entry) => typeof entry.click === 'function');
 }
 
 test('desktop zoom shortcuts step, reset, and clamp the whole app scale', () => {
@@ -34,13 +42,75 @@ test('desktop zoom accepts Control and ignores unrelated or modified input', () 
   assert.equal(desktopZoomFactorForInput(keyInput('-', { alt: true }), 1), null);
   assert.equal(desktopZoomFactorForInput(keyInput('x'), 1), null);
   assert.equal(desktopZoomFactorForInput(keyInput('-', { type: 'keyUp' }), 1), null);
+  assert.equal(desktopZoomDirectionForInput(keyInput('_')), 'out');
+  assert.equal(desktopZoomDirectionForInput(keyInput('x')), null);
+});
+
+test('menu and key handler share one bounded stepper', () => {
+  assert.equal(nextDesktopZoomFactor('in', 1), 1.1);
+  assert.equal(nextDesktopZoomFactor('out', 1), 0.9);
+  assert.equal(nextDesktopZoomFactor('reset', 0.5), 1);
+  assert.equal(nextDesktopZoomFactor('in', 2), 2);
+  assert.equal(nextDesktopZoomFactor('out', 0.5), 0.5);
+  assert.equal(nextDesktopZoomFactor(null, 1), null);
+});
+
+test('macOS installs an owned menu and other platforms stay menu free', () => {
+  assert.equal(desktopMenuRequired('darwin'), true);
+  assert.equal(desktopMenuRequired('win32'), false);
+  assert.equal(desktopMenuRequired('linux'), false);
+});
+
+test('the desktop menu binds every zoom accelerator to the bounded stepper', () => {
+  const directions = [];
+  const template = desktopMenuTemplate({ onZoom: (direction) => directions.push(direction) });
+  const items = findZoomItems(template);
+  const accelerators = items.map((item) => item.accelerator);
+
+  assert.deepEqual(
+    accelerators.filter((accelerator) => accelerator.endsWith('0')),
+    ['CommandOrControl+0', 'CommandOrControl+num0'],
+  );
+  assert.ok(accelerators.includes('CommandOrControl+Plus'));
+  assert.ok(accelerators.includes('CommandOrControl+='));
+  assert.ok(accelerators.includes('CommandOrControl+-'));
+  assert.ok(items.every((item) => item.acceleratorWorksWhenHidden === true));
+  assert.equal(items.filter((item) => item.visible).length, 3);
+
+  items.forEach((item) => item.click());
+  assert.deepEqual(directions, ['reset', 'reset', 'in', 'in', 'in', 'out', 'out']);
+
+  const roles = template.flatMap((entry) => (entry.role ? [entry.role] : []));
+  assert.deepEqual(roles, ['appMenu', 'editMenu', 'windowMenu']);
 });
 
 test('Electron applies bounded page zoom instead of forcing 100 percent', () => {
-  assert.match(mainSource, /desktopZoomFactorForInput\(input, currentFactor\)/);
+  assert.match(mainSource, /nextDesktopZoomFactor\(direction, currentFactor\)/);
   assert.match(mainSource, /mainWindow\.webContents\.getZoomFactor\(\)/);
   assert.match(mainSource, /mainWindow\.webContents\.setZoomFactor\(nextFactor\)/);
   assert.match(mainSource, /event\.preventDefault\(\)/);
   assert.doesNotMatch(mainSource, /setVisualZoomLevelLimits\(1, 1\)/);
   assert.doesNotMatch(mainSource, /setZoomFactor\(1\);/);
+});
+
+test('the zoom key handler is attached on every platform before the window loads its page', () => {
+  const handlerIndex = mainSource.indexOf("on('before-input-event'");
+  const loadIndex = mainSource.indexOf('await mainWindow.loadURL(');
+  const menuBranchIndex = mainSource.indexOf('if (desktopMenuRequired())');
+  const branchEndIndex = mainSource.indexOf('mainWindow.removeMenu();');
+  assert.ok(handlerIndex > 0 && loadIndex > 0 && menuBranchIndex > 0);
+  assert.ok(handlerIndex < loadIndex);
+  /*
+   * The handler must sit after the platform branch closes. Stranding it inside the branch would
+   * leave whichever platform owns a menu with no zoom shortcuts at all if the accelerators are
+   * swallowed.
+   */
+  assert.ok(handlerIndex > branchEndIndex);
+  assert.match(mainSource, /Menu\.setApplicationMenu\(Menu\.buildFromTemplate\(desktopMenuTemplate/);
+});
+
+test('one keystroke applies at most one zoom step even when both owners fire', () => {
+  assert.match(mainSource, /now - lastDesktopZoomAt < DESKTOP_ZOOM_REPEAT_MS/);
+  assert.match(mainSource, /const DESKTOP_ZOOM_REPEAT_MS = \d+;/);
+  assert.match(mainSource, /lastDesktopZoomAt = now;/);
 });

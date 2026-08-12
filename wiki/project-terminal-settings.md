@@ -13,7 +13,7 @@ tags:
 # Project Terminal Settings
 
 > [!important]
-> Terminal behavior belongs to the exact pinned project. Terminal session or workflow retention, legacy idle CC Relay routing, grid enablement, rows, columns, monitor, and background launch must never read a value from another project.
+> Terminal behavior belongs to the exact pinned project. Terminal session or workflow retention, legacy idle CC Relay routing, grid enablement, rows, columns, monitor, and minimized launch must never read a value from another project. The only cross-project write is the explicit **Apply to all projects** window-layout action.
 
 The terminal retention choice defaults to disabled for every new project. Existing explicit project choices remain unchanged. Turning it on changes only the selected project. Direct Execute labels it **Terminal session mode** and snapshots manual completion; Plan council and Turbo label it **Keep workflow terminals open** and retain terminals without changing automatic completion. The renderer no longer reads or writes `relay.keepTerminalOpen`, `relay.preferIdleTerminal`, or `relay.terminalLayout`.
 
@@ -38,7 +38,7 @@ The same project configuration file may be opened by localhost and desktop CC Re
 - grid enabled
 - 3 columns and 3 rows
 - primary monitor
-- background launch enabled
+- minimized launch enabled
 
 The in-memory [[project-workspaces|project composer session]] also carries these settings as an older-backend fallback. Current backends treat the project row as authoritative and save changes immediately.
 
@@ -46,6 +46,15 @@ The in-memory [[project-workspaces|project composer session]] also carries these
 > A persisted `terminal_layout: null` means clean defaults for that project. It must not fall back to the previously selected project's layout. `normalizeProjectTerminalSettings()` distinguishes an explicit project row from an older backend that exposes no project setting fields.
 
 The terminal setting controls are disabled while their project write is active. The project object is updated optimistically so switching Launchpads immediately uses the selected project's own values. Background project refreshes do not repaint settings during a write.
+
+## Explicit window-layout copy
+
+The settings dialog labels the stored `terminal_layout.background` field as **Open new terminals minimized**. The compatibility field name remains unchanged, but its product meaning is narrow: minimize only the native terminal window created by that launch. It does not place the window behind every app, hide Terminal.app, or affect unrelated Terminal windows. Grid launches still use the next available cell.
+
+**Apply to all projects** sends the current grid enabled state, columns, rows, monitor, and minimized-launch choice to `PATCH /api/projects/terminal-layout`. `ProjectConfigStore.updateAllProjectTerminalLayouts()` updates every pinned project with one SQLite statement and then refreshes the shared legacy mirror. The bulk write changes only `terminal_layout_json`; project retention, idle routing, instance limits, colors, and active-project state remain untouched. Later edits return to normal project-specific saving.
+
+> [!note]
+> The terminal settings dialog no longer exposes **Copy diagnostics** or its local-path warning. The diagnostics API and internal diagnostic logging remain available for engineering use; this change removes only the end-user control from this dialog.
 
 > [!note]
 > Retention changes apply to new task submissions immediately. When a renderer is temporarily connected to an older backend without `capabilities.projectTerminalSettings`, it keeps the choice in that project's in-memory composer session without showing a restart requirement. A current backend also persists the same snapshot through the project settings API.
@@ -56,11 +65,11 @@ Each submitted task still snapshots `keep_terminal_open`. New direct Execute tas
 
 ## Validation
 
-- 765 repository tests passed.
-- Database tests prove two project rows retain different retention, idle-routing, and layout values.
-- Shared-config tests prove the values survive reopening while remaining isolated by project path.
-- An isolated live backend started on an operating-system-assigned port, saved Alpha with retention off and a 2 by 4 foreground grid, left Beta at retention on with default layout, restarted, and returned both exact records unchanged.
-- Browser click-through was unavailable because this session exposed no browser instance. Static renderer tests and the isolated HTTP test covered the same project switch and persistence contracts.
+- 136 focused renderer, database, shared-config, launcher, and dark-theme tests passed.
+- Database coverage proves a bulk layout copy changes both project layouts while preserving their different retention and idle-routing values.
+- An isolated live backend copied a 4 by 2 minimized layout to two projects through the bulk API and returned both projects with their other settings intact.
+- Browser checks covered the dark desktop dialog and a 620 pixel compact viewport. The compact dialog had no horizontal overflow, its action stacked below the explanation, and the console reported no warnings or errors.
+- `npm run release:check` and `git diff --check` passed.
 
 ## Files
 
@@ -70,6 +79,7 @@ Each submitted task still snapshots `keep_terminal_open`. New direct Execute tas
 - `src/project-config-store.mjs`
 - `src/database.mjs`
 - `src/server.mjs`
+- `public/style.css`
 - `test/project-composer-state.test.mjs`
 - `test/project-config-store.test.mjs`
 - `test/database.test.mjs`

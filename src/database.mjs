@@ -1080,6 +1080,10 @@ export class RelayDatabase {
     return this.projectConfig.updateProjectTerminalSettings(id, settings);
   }
 
+  updateAllProjectTerminalLayouts(terminalLayout) {
+    return this.projectConfig.updateAllProjectTerminalLayouts(terminalLayout);
+  }
+
   updateProjectColor(id, color) {
     return this.projectConfig.updateProjectColor(id, color);
   }

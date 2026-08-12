@@ -13,6 +13,13 @@ const registry = readFileSync(new URL('../src/claude-session-registry.mjs', impo
 const taskHistory = readFileSync(new URL('../public/task-history.js', import.meta.url), 'utf8');
 const gitignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
 
+function taskSubmitSource() {
+  const start = composerApp.indexOf("elements.form.addEventListener('submit'");
+  const end = composerApp.indexOf("elements.standupButton.addEventListener", start);
+  assert.ok(start >= 0 && end > start);
+  return composerApp.slice(start, end);
+}
+
 test('composer exposes Execute and Forward-planning Turbo as its only workflow tabs', () => {
   const workflows = [...composer.matchAll(/class="mode-tab[^"\n]*"[^>]*data-mode="([^"]+)"/g)]
     .map((match) => match[1]);
@@ -89,6 +96,16 @@ test('terminal window layout settings default to enabled', () => {
   assert.match(composerApp, /terminalLayoutEnabled\.checked = settings\.layout\.enabled/);
   assert.match(composerApp, /terminalLaunchBackground\.checked = settings\.layout\.background/);
   assert.doesNotMatch(composerApp, /relay\.terminalLayout/);
+});
+
+test('terminal settings describe minimized launches and can copy window layout to every project', () => {
+  assert.doesNotMatch(composer, /Copy diagnostics|Diagnostics include/);
+  assert.doesNotMatch(composerApp, /copyDiagnosticsButton/);
+  assert.match(composer, /Open new terminals minimized/);
+  assert.match(composer, /Only the window CC Relay opens is minimized\. Other Terminal windows are untouched\./);
+  assert.match(composer, /id="terminal-layout-apply-all"[^>]*>Apply to all projects<\/button>/);
+  assert.match(composerApp, /api\('\/api\/projects\/terminal-layout'/);
+  assert.match(server, /updateAllProjectTerminalLayouts/);
 });
 
 test('provider choice is explicit and the left panel configures automatic instance limits', () => {
@@ -364,9 +381,7 @@ test('direct execution settings render below the CC Relay picker', () => {
 
 test('direct effort slider submits its exact mapped value', () => {
   assert.match(composer, /id="effort-select"[^>]*type="range"/);
-  const submitStart = composerApp.indexOf("elements.form.addEventListener('submit'");
-  const pauseStart = composerApp.indexOf("elements.pauseButton.addEventListener", submitStart);
-  const submitSource = composerApp.slice(submitStart, pauseStart);
+  const submitSource = taskSubmitSource();
   assert.match(submitSource, /model: elements\.modelSelect\.value/);
   assert.match(submitSource, /JSON\.parse\(elements\.effortSelect\.dataset\.values/);
   assert.ok(
@@ -435,9 +450,7 @@ test('an old backend explains when separate project queues require a restart', (
 });
 
 test('successful submission opens the new task in Queue view', () => {
-  const submitStart = composerApp.indexOf("elements.form.addEventListener('submit'");
-  const pauseStart = composerApp.indexOf("elements.pauseButton.addEventListener", submitStart);
-  const submitSource = composerApp.slice(submitStart, pauseStart);
+  const submitSource = taskSubmitSource();
 
   assert.match(submitSource, /const body = await api\('\/api\/tasks'/);
   assert.match(submitSource, /state\.taskView = 'queue'/);
@@ -447,9 +460,7 @@ test('successful submission opens the new task in Queue view', () => {
 });
 
 test('composer locks before asynchronous routing and sends an idempotency key', () => {
-  const submitStart = composerApp.indexOf("elements.form.addEventListener('submit'");
-  const pauseStart = composerApp.indexOf("elements.pauseButton.addEventListener", submitStart);
-  const submitSource = composerApp.slice(submitStart, pauseStart);
+  const submitSource = taskSubmitSource();
 
   assert.ok(submitSource.indexOf('if (state.submitting)') < submitSource.indexOf('await settleIdleSubmissionThread'));
   assert.ok(submitSource.indexOf('setComposerPending(true)') < submitSource.indexOf('await settleIdleSubmissionThread'));
@@ -513,9 +524,7 @@ test('a submission in flight owns the CC Relay selection', () => {
 });
 
 test('a failed submission keeps the prompt and its attachments', () => {
-  const submitStart = composerApp.indexOf("elements.form.addEventListener('submit'");
-  const pauseStart = composerApp.indexOf("elements.pauseButton.addEventListener", submitStart);
-  const submitSource = composerApp.slice(submitStart, pauseStart);
+  const submitSource = taskSubmitSource();
 
   const catchIndex = submitSource.indexOf('setComposerAlert(error.message)');
   const guardIndex = submitSource.indexOf('if (!createdTask)');
@@ -563,9 +572,7 @@ test('every request is bounded so a hung fetch cannot freeze the composer', () =
 });
 
 test('dispatch-time idle routing replaces the client settle loop when advertised', () => {
-  const submitStart = composerApp.indexOf("elements.form.addEventListener('submit'");
-  const pauseStart = composerApp.indexOf("elements.pauseButton.addEventListener", submitStart);
-  const submitSource = composerApp.slice(submitStart, pauseStart);
+  const submitSource = taskSubmitSource();
 
   assert.match(submitSource, /const dispatchIdleRouting = state\.status\?\.capabilities\?\.dispatchIdleRouting === true\s+&& !automaticTerminals/);
   assert.match(submitSource, /const routedThreadId = automaticTerminals\s+\? null\s+: dispatchIdleRouting\s+\? state\.selectedThreadId\s+: await settleIdleSubmissionThread\(\{ runNow \}\)/);
@@ -613,16 +620,12 @@ test('an abort never claims the request was not sent', () => {
   assert.match(apiSource, /timeoutMessage = null/);
 
   // Task creation is safe to resend, but only because the retained UUID resolves to it.
-  const submitStart = composerApp.indexOf("elements.form.addEventListener('submit'");
-  const pauseStart = composerApp.indexOf("elements.pauseButton.addEventListener", submitStart);
-  const submitSource = composerApp.slice(submitStart, pauseStart);
+  const submitSource = taskSubmitSource();
   assert.match(submitSource, /The task may still have been created\. Sending it again is safe and will not create a duplicate\./);
 });
 
 test('a duplicate resolving to a finished task is not a silent success', () => {
-  const submitStart = composerApp.indexOf("elements.form.addEventListener('submit'");
-  const pauseStart = composerApp.indexOf("elements.pauseButton.addEventListener", submitStart);
-  const submitSource = composerApp.slice(submitStart, pauseStart);
+  const submitSource = taskSubmitSource();
 
   assert.match(submitSource, /duplicateSubmission = body\.duplicateSubmission === true/);
   const branchIndex = submitSource.indexOf('if (duplicateSubmission && isFinishedTaskStatus(createdTask.status))');

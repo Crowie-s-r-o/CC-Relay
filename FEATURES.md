@@ -19,6 +19,7 @@ CC Relay is designed to make AI development work easier to control:
 - Retry a failed direct task with a newly selected Codex or Claude executor, model, and effort.
 - Attach screenshots and other reference images to tasks.
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
+- Monitor Claude session, Claude weekly, Fable weekly, and Codex weekly subscription usage in the global header.
 - Persist prompts, events, results, plans, errors, and attachments locally.
 - Generate a date-selected, length-configurable daily standup from saved prompts and AI responses.
 - Reorder, prioritize, reassign, cancel, retry, and delete tasks.
@@ -118,6 +119,12 @@ Tasks can include PNG, JPEG, or WebP reference images. CC Relay validates and st
 
 CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. Filters, follow mode, and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
 
+### Provider subscription usage
+
+The global header shows four compact progress bars for Claude's current five-hour session window, Claude's all-model weekly window, Claude's Fable weekly window, and Codex's weekly window. The values refresh every five minutes, show reset details on hover, and retain their last-known values when a provider is temporarily unavailable. Amber begins at 70 percent used and red begins at 90 percent used.
+
+The monitor uses each installed, authenticated provider CLI. It does not add API keys or copy provider credentials into CC Relay. The former header **Pause queue** action is removed; the backend pause contract remains available to queue-management integrations.
+
 ### AI daily standup
 
 The Task queue includes a **Standup** action. Opening it does not run AI. **All tasks** is the default and produces one very short changed-thing item per recorded task. Short, Standard, and Detailed remain available for grouped summaries. Select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved prompts, assistant responses, final results, and failures for that project and Relay scope. It never uses a task terminal.
@@ -130,7 +137,7 @@ CC Relay stores task records in local SQLite and writes readable artifacts for p
 
 ### Desktop updates
 
-Packaged macOS apps and installed Windows NSIS builds check the public `Crowie-s-r-o/CC-Relay` GitHub Releases feed after launch. When a newer version is available, the global header shows its version and links to that exact release. Downloads and restarts remain user-confirmed. Windows portable builds update manually, and Linux desktop packages are not currently produced.
+Installed Windows NSIS builds check the public `Crowie-s-r-o/CC-Relay` GitHub Releases feed after launch and every five minutes while running. When a newer version is available, the global header shows its version and opens a release-details modal with installed and latest versions, progress, and the trusted release link. Downloads and restarts remain user-confirmed. macOS DMG installations and Windows portable builds update manually, and Linux desktop packages are not currently produced.
 
 ## Choosing a workflow
 

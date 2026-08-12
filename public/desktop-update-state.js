@@ -24,6 +24,7 @@ function releaseUrl(value) {
 
 export function desktopUpdatePresentation(update) {
   const status = String(update?.status || 'unsupported');
+  const currentVersion = cleanVersion(update?.currentVersion);
   const version = cleanVersion(update?.latestVersion);
   if (update?.supported !== true || !version || !VISIBLE_STATES.has(status)) {
     return {
@@ -32,36 +33,63 @@ export function desktopUpdatePresentation(update) {
       label: '',
       title: '',
       href: `${DESKTOP_RELEASES_URL}/latest`,
+      currentVersion,
+      latestVersion: null,
+      statusLabel: '',
+      modalTitle: '',
+      modalMessage: '',
+      releaseLabel: 'View latest release',
+      progress: null,
     };
   }
 
-  const percent = Number(update?.downloadPercent);
+  const rawPercent = update?.downloadPercent;
+  const percent = rawPercent === null || rawPercent === undefined || rawPercent === ''
+    ? Number.NaN
+    : Number(rawPercent);
+  const boundedProgress = Number.isFinite(percent)
+    ? Math.max(0, Math.min(100, Math.round(percent)))
+    : null;
+  const common = {
+    hidden: false,
+    state: status,
+    href: releaseUrl(update.releaseUrl),
+    currentVersion,
+    latestVersion: version,
+    releaseLabel: `View v${version} release`,
+    progress: status === 'downloaded' ? 100 : boundedProgress,
+  };
   if (status === 'downloading') {
-    const progress = Number.isFinite(percent) ? ` ${Math.max(0, Math.min(100, Math.round(percent)))}%` : '';
+    const progress = boundedProgress === null ? '' : ` ${boundedProgress}%`;
     return {
-      hidden: false,
-      state: status,
+      ...common,
       label: `Downloading v${version}${progress}`,
-      title: `CC Relay v${version} is downloading. Open its GitHub release.`,
-      href: releaseUrl(update.releaseUrl),
+      title: `CC Relay v${version} is downloading. Open update details.`,
+      statusLabel: 'Downloading update',
+      modalTitle: 'The next Relay is on its way',
+      modalMessage: `CC Relay v${version} is downloading in the background. You can keep working while it finishes.`,
     };
   }
   if (status === 'downloaded') {
     return {
-      hidden: false,
-      state: status,
+      ...common,
       label: `v${version} ready`,
-      title: `CC Relay v${version} is ready to install. Open its GitHub release.`,
-      href: releaseUrl(update.releaseUrl),
+      title: `CC Relay v${version} is ready to install. Open update details.`,
+      statusLabel: 'Ready to install',
+      modalTitle: 'Ready when you are',
+      modalMessage: `CC Relay v${version} has finished downloading. Use the desktop restart prompt when you are ready to install it.`,
     };
   }
   return {
-    hidden: false,
-    state: status,
+    ...common,
     label: `Update v${version}`,
     title: status === 'error'
-      ? `CC Relay v${version} is available, but the automatic download failed. Open its GitHub release.`
-      : `CC Relay v${version} is available. Open its GitHub release.`,
-    href: releaseUrl(update.releaseUrl),
+      ? `CC Relay v${version} is available, but the automatic download failed. Open update details.`
+      : `CC Relay v${version} is available. Open update details.`,
+    statusLabel: status === 'error' ? 'Update needs attention' : 'Update available',
+    modalTitle: status === 'error' ? 'The update needs a hand' : 'A new Relay is ready',
+    modalMessage: status === 'error'
+      ? `Automatic updating could not continue for CC Relay v${version}. Open the official release to review or install it manually.`
+      : `CC Relay v${version} is available. The desktop prompt can download it, and you can review the release before deciding.`,
   };
 }
