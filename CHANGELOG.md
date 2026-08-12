@@ -2,6 +2,21 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.4] - 2026-08-12
+
+### Added
+
+- AI standups can now produce schema-validated, categorized changelog notes.
+
+### Changed
+
+- Standups are standardized as changelogs with more stable composer controls.
+- Terminal settings have been redesigned.
+
+### Fixed
+
+- Claude live steering timing is more reliable.
+
 ## [0.2.3] - 2026-08-12
 
 ### Added
