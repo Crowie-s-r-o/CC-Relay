@@ -521,9 +521,9 @@ export class CodexAppServer extends EventEmitter {
       this.diagnostic('appserver.request.sent', {
         id,
         method,
-        threadId: params.threadId,
-        model: params.model,
-        effort: params.effort,
+        threadId: params?.threadId,
+        model: params?.model,
+        effort: params?.effort,
       });
       this.write({ id, method, params });
     });

@@ -16,20 +16,21 @@ test('desktop startup shows the Crowie splash before waiting for the embedded se
   assert.ok(splashStart > 0);
   assert.ok(serverStart > splashStart);
   assert.match(main, /const SPLASH_PATH = fileURLToPath\(new URL\('\.\.\/public\/splash\.html'/);
-  assert.match(main, /frame: false,[\s\S]*?show: false,[\s\S]*?backgroundColor: '#0d0e11'/);
-  assert.match(main, /await splashWindow\.loadFile\(SPLASH_PATH\);[\s\S]*?splashWindow\.show\(\);/);
+  assert.match(main, /frame: false,[\s\S]*?show: true,[\s\S]*?backgroundColor: '#0d0e11'/);
+  assert.match(main, /desktopDiagnostic\('desktop\.splash\.shown'\);[\s\S]*?await splashWindow\.loadFile\(SPLASH_PATH\);/);
   assert.match(main, /mainWindow\.show\(\);[\s\S]*?closeSplashWindow\(\);/);
 });
 
-test('splash presents the CC Relay and Crowie company identity accessibly', () => {
+test('splash presents a static CC Relay and Crowie company identity accessibly', () => {
   assert.match(splash, /role="status"[^>]+aria-live="polite"/);
-  assert.match(splash, /src="\.\/favicon\.svg"/);
+  assert.match(splash, /class="splash-logo" src="\.\/favicon\.svg"/);
   assert.match(splash, /<h1><span>CC<\/span> Relay<\/h1>/);
   assert.match(splash, /Software by Crowie s\.r\.o\./);
   assert.match(splash, /Software Development company/);
   assert.match(splash, /Preparing your command center/);
-  assert.match(splashStyle, /@media \(prefers-reduced-motion: reduce\)/);
+  assert.match(splashStyle, /\.splash \{[\s\S]*?background: #0d0e11;/);
   assert.match(splashStyle, /font-family: "Source Serif 4"/);
+  assert.doesNotMatch(splashStyle, /animation|transition|@keyframes|gradient/i);
 });
 
 test('the header opens a branded About dialog with company and founder details', () => {

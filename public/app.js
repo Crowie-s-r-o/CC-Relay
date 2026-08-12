@@ -40,7 +40,9 @@ import { idleExecutionThreadId, runningDirectTask, selectedExecutionProvider, se
 import { activityBuckets, isFinishedTaskStatus, periodRange, shiftPeriod, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
 import {
   dateFromLocalInput,
+  emptyStandupSections,
   localDateInputValue,
+  STANDUP_CHANGELOG_SECTIONS,
   standupCopyText,
   standupSections,
   tasksForStandupDay,
@@ -307,10 +309,7 @@ const state = {
     ? localStorage.getItem('relay.historyPeriod') : 'week',
   historyAnchor: new Date(),
   standupDate: '',
-  standupLength: ['all', 'short', 'standard', 'detailed'].includes(localStorage.getItem('relay.standupLength'))
-    ? localStorage.getItem('relay.standupLength') : 'all',
-  standupTasks: [],
-  standupBlockers: [],
+  standupChanges: emptyStandupSections(),
   standupClipboardText: '',
   standupTaskCount: 0,
   standupIncludedTaskCount: 0,
@@ -448,8 +447,6 @@ const elements = {
   formMessage: document.querySelector('#form-message'),
   composerAlert: document.querySelector('#composer-alert'),
   submitButton: document.querySelector('#task-submit-button'),
-  codexStatus: document.querySelector('#codex-status'),
-  codexStatusLabel: document.querySelector('#codex-status-label'),
   desktopUpdateIndicator: document.querySelector('#desktop-update-indicator'),
   desktopUpdateLabel: document.querySelector('#desktop-update-label'),
   desktopUpdateModal: document.querySelector('#desktop-update-modal'),
@@ -590,7 +587,6 @@ const elements = {
   standupClose: document.querySelector('#standup-close'),
   standupCancel: document.querySelector('#standup-cancel'),
   standupDate: document.querySelector('#standup-date'),
-  standupLength: document.querySelector('#standup-length'),
   standupScopeLabel: document.querySelector('#standup-scope-label'),
   standupCount: document.querySelector('#standup-count'),
   standupGeneratorProvider: document.querySelector('#standup-generator-provider'),
@@ -599,12 +595,6 @@ const elements = {
   standupSourceNote: document.querySelector('#standup-source-note'),
   standupSheet: document.querySelector('#standup-sheet'),
   standupResults: document.querySelector('#standup-results'),
-  standupTaskList: document.querySelector('#standup-task-list'),
-  standupTaskCount: document.querySelector('#standup-task-count'),
-  standupTaskEmpty: document.querySelector('#standup-task-empty'),
-  standupBlockerList: document.querySelector('#standup-blocker-list'),
-  standupBlockerCount: document.querySelector('#standup-blocker-count'),
-  standupBlockerEmpty: document.querySelector('#standup-blocker-empty'),
   standupLoadingList: document.querySelector('#standup-loading-list'),
   standupEmpty: document.querySelector('#standup-empty'),
   standupEmptyTitle: document.querySelector('#standup-empty-title'),
@@ -3309,13 +3299,12 @@ function resetStandupCopyFeedback() {
     window.clearTimeout(state.standupCopyTimer);
     state.standupCopyTimer = null;
   }
-  elements.standupCopy.textContent = 'Copy standup';
+  elements.standupCopy.textContent = 'Copy changelog';
   elements.standupCopyStatus.textContent = '';
 }
 
 function resetStandupOutput() {
-  state.standupTasks = [];
-  state.standupBlockers = [];
+  state.standupChanges = emptyStandupSections();
   state.standupClipboardText = '';
   state.standupTaskCount = 0;
   state.standupIncludedTaskCount = 0;
@@ -3325,8 +3314,7 @@ function resetStandupOutput() {
 
 function standupGenerationSupported() {
   return state.status?.capabilities?.aiStandupGeneration === true
-    && state.status?.capabilities?.aiStandupConfiguration === true
-    && state.status?.capabilities?.aiStandupAllTasks === true;
+    && state.status?.capabilities?.aiStandupChangelog === true;
 }
 
 function standupScopeLabel() {
@@ -3342,13 +3330,8 @@ function standupDateLabel(anchor) {
   }).format(anchor);
 }
 
-function standupLengthLabel(length = state.standupLength) {
-  return {
-    all: 'All tasks',
-    short: 'Short',
-    standard: 'Standard',
-    detailed: 'Detailed',
-  }[length] || 'All tasks';
+function standupItemCount(sections = state.standupChanges) {
+  return STANDUP_CHANGELOG_SECTIONS.reduce((total, { key }) => total + sections[key].length, 0);
 }
 
 function standupListMarkup(items, kind) {
@@ -3362,18 +3345,31 @@ function standupListMarkup(items, kind) {
   `).join('');
 }
 
+function standupResultsMarkup(sections) {
+  return STANDUP_CHANGELOG_SECTIONS
+    .filter(({ key }) => sections[key].length > 0)
+    .map(({ key, title }) => `
+      <section class="standup-result-group" data-kind="${key}" aria-labelledby="standup-${key}-title">
+        <div class="standup-result-heading">
+          <span id="standup-${key}-title">${title}</span>
+          <small>${sections[key].length}</small>
+        </div>
+        <ul class="standup-list">${standupListMarkup(sections[key], key)}</ul>
+      </section>
+    `).join('');
+}
+
 function renderStandup() {
   const anchor = dateFromLocalInput(elements.standupDate.value);
   const supported = standupGenerationSupported();
   const sourceTasks = anchor ? tasksForStandupDay(projectTasks(), anchor) : [];
   const projectName = workspaceName(state.activeProjectPath);
-  const itemCount = state.standupTasks.length + state.standupBlockers.length;
+  const itemCount = standupItemCount();
   const activeGenerator = providerLabel(state.standupProvider || state.selectedProvider);
 
-  elements.standupSubtitle.textContent = `Select a workday to generate an AI standup from saved prompts and responses in ${projectName}.`;
+  elements.standupSubtitle.textContent = `Select a workday to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
   elements.standupScopeLabel.textContent = `${projectName} · ${standupScopeLabel()}`;
   elements.standupDateLabel.textContent = anchor ? standupDateLabel(anchor) : 'Select a workday';
-  elements.standupLength.value = state.standupLength;
   elements.standupGeneratorProvider.textContent = state.standupProvider
     ? `${activeGenerator} used`
     : `${activeGenerator} preferred`;
@@ -3382,7 +3378,6 @@ function renderStandup() {
     : `Generation uses a fresh isolated CLI process, with the other signed-in provider as fallback. It never uses a task terminal.`;
   elements.standupSheet.setAttribute('aria-busy', String(state.standupGenerating));
   elements.standupDate.disabled = state.standupGenerating;
-  elements.standupLength.disabled = state.standupGenerating;
   elements.standupGenerate.disabled = (
     state.standupGenerating
     || !supported
@@ -3398,16 +3393,16 @@ function renderStandup() {
     elements.standupEmpty.hidden = false;
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = 'Select a workday';
-    elements.standupEmptyMessage.textContent = `Choose the length, then select a date. Generation starts after the date is selected.`;
+    elements.standupEmptyMessage.textContent = 'Select a date to generate short Added, Changed, Fixed, and Security bullets.';
     elements.standupCount.textContent = 'Waiting for a date';
-    elements.standupSourceNote.textContent = `${standupLengthLabel()} AI synthesis from recorded prompts and responses`;
+    elements.standupSourceNote.textContent = 'CHANGELOG-style AI synthesis from recorded prompts and responses';
     elements.standupGenerate.textContent = 'Select a date';
     return;
   }
 
   if (state.standupGenerating) {
     elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
-    elements.standupSourceNote.textContent = `${standupLengthLabel()} AI synthesis is reading the saved conversation history`;
+    elements.standupSourceNote.textContent = 'AI is categorizing confirmed changes from the saved conversation history';
     elements.standupLoadingList.innerHTML = Array.from({ length: 3 }, () => `
       <li class="standup-loading-item" aria-hidden="true">
         <span class="standup-item-marker"></span>
@@ -3424,18 +3419,12 @@ function renderStandup() {
     const taskCoverage = includedTaskCount < state.standupTaskCount
       ? `the latest ${includedTaskCount} of ${state.standupTaskCount} tasks`
       : `${state.standupTaskCount} task${state.standupTaskCount === 1 ? '' : 's'}`;
-    elements.standupCount.textContent = `${state.standupTasks.length} task${state.standupTasks.length === 1 ? '' : 's'} · ${state.standupBlockers.length} blocker${state.standupBlockers.length === 1 ? '' : 's'}`;
-    elements.standupSourceNote.textContent = `${standupLengthLabel()} result from saved prompts and responses across ${taskCoverage}`;
-    elements.standupTaskCount.textContent = String(state.standupTasks.length);
-    elements.standupTaskList.innerHTML = standupListMarkup(state.standupTasks, 'task');
-    elements.standupTaskList.hidden = state.standupTasks.length === 0;
-    elements.standupTaskEmpty.hidden = state.standupTasks.length > 0;
-    elements.standupBlockerCount.textContent = String(state.standupBlockers.length);
-    elements.standupBlockerList.innerHTML = standupListMarkup(state.standupBlockers, 'blocker');
-    elements.standupBlockerList.hidden = state.standupBlockers.length === 0;
-    elements.standupBlockerEmpty.hidden = state.standupBlockers.length > 0;
+    const categoryCount = STANDUP_CHANGELOG_SECTIONS.filter(({ key }) => state.standupChanges[key].length > 0).length;
+    elements.standupCount.textContent = `${itemCount} change${itemCount === 1 ? '' : 's'} · ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}`;
+    elements.standupSourceNote.textContent = `Categorized result from saved prompts and responses across ${taskCoverage}`;
+    elements.standupResults.innerHTML = standupResultsMarkup(state.standupChanges);
     elements.standupResults.hidden = false;
-    elements.standupGenerate.textContent = 'Regenerate';
+    elements.standupGenerate.textContent = 'Regenerate changelog';
     return;
   }
 
@@ -3452,15 +3441,15 @@ function renderStandup() {
     elements.standupEmptyTitle.textContent = 'No finished work recorded';
     elements.standupEmptyMessage.textContent = 'Choose another day or finish a task to generate a standup.';
     elements.standupCount.textContent = '0 source tasks';
-    elements.standupSourceNote.textContent = 'Completed and failed outcomes are eligible';
-    elements.standupGenerate.textContent = 'Generate standup';
+    elements.standupSourceNote.textContent = 'Only completed outcomes are eligible';
+    elements.standupGenerate.textContent = 'Generate changelog';
   } else {
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = 'Ready to generate';
-    elements.standupEmptyMessage.textContent = `Generate the ${standupLengthLabel()} standup for the selected workday.`;
+    elements.standupEmptyMessage.textContent = 'Generate concise Added, Changed, Fixed, and Security bullets for the selected workday.';
     elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
-    elements.standupSourceNote.textContent = 'Changing the length does not start another AI run';
-    elements.standupGenerate.textContent = 'Generate standup';
+    elements.standupSourceNote.textContent = 'The output uses the same categories and limits as deploy';
+    elements.standupGenerate.textContent = 'Generate changelog';
   }
 }
 
@@ -3471,7 +3460,6 @@ function openStandup() {
     resetStandupOutput();
   }
   elements.standupDate.value = state.standupDate;
-  elements.standupLength.value = state.standupLength;
   elements.standupDate.max = localDateInputValue(new Date());
   resetStandupCopyFeedback();
   if (!elements.standupModal.open) elements.standupModal.showModal();
@@ -3500,7 +3488,7 @@ async function generateStandup() {
     return;
   }
   if (!standupGenerationSupported()) {
-    state.standupError = 'Restart CC Relay to activate date and length configured standup generation.';
+    state.standupError = 'Restart CC Relay to activate categorized changelog standups.';
     renderStandup();
     return;
   }
@@ -3516,7 +3504,6 @@ async function generateStandup() {
         projectPath: state.activeProjectPath,
         threadId: null,
         provider: state.selectedProvider,
-        length: state.standupLength,
         date: state.standupDate,
         start: start.toISOString(),
         end: end.toISOString(),
@@ -3526,20 +3513,19 @@ async function generateStandup() {
     });
     if (sequence !== state.standupRequestSequence) return;
     const sections = standupSections({
-      tasks: Array.isArray(body.tasks) ? body.tasks : undefined,
-      blockers: Array.isArray(body.blockers) ? body.blockers : undefined,
+      added: Array.isArray(body.added) ? body.added : undefined,
+      changed: Array.isArray(body.changed) ? body.changed : undefined,
+      fixed: Array.isArray(body.fixed) ? body.fixed : undefined,
+      security: Array.isArray(body.security) ? body.security : undefined,
       standup: body.standup || '',
     });
-    state.standupTasks = sections.tasks;
-    state.standupBlockers = sections.blockers;
+    state.standupChanges = sections;
     state.standupTaskCount = Number(body.taskCount || sourceTasks.length);
     state.standupIncludedTaskCount = Number(body.includedTaskCount || state.standupTaskCount);
     state.standupProvider = body.provider || null;
-    if (['all', 'short', 'standard', 'detailed'].includes(body.length)) state.standupLength = body.length;
-    if (state.standupTasks.length + state.standupBlockers.length === 0) {
+    if (standupItemCount(sections) === 0) {
       state.standupError = 'The AI returned no usable standup items. Try generating it again.';
-      state.standupTasks = [];
-      state.standupBlockers = [];
+      state.standupChanges = emptyStandupSections();
     } else {
       state.standupClipboardText = standupCopyText(sections);
     }
@@ -3560,18 +3546,18 @@ async function copyStandup() {
     window.clearTimeout(state.standupCopyTimer);
     state.standupCopyTimer = null;
   }
-  const itemCount = state.standupTasks.length + state.standupBlockers.length;
+  const itemCount = standupItemCount();
   try {
     await navigator.clipboard.writeText(state.standupClipboardText);
     elements.standupCopy.textContent = 'Copied';
-    elements.standupCopyStatus.textContent = `${itemCount} AI-generated standup item${itemCount === 1 ? '' : 's'} copied as plain text without bullet prefixes.`;
+    elements.standupCopyStatus.textContent = `${itemCount} categorized changelog bullet${itemCount === 1 ? '' : 's'} copied as Markdown.`;
   } catch {
     elements.standupCopy.textContent = 'Copy failed';
     elements.standupCopyStatus.textContent = 'Clipboard access failed. Keep this window focused and try again.';
   }
   state.standupCopyTimer = window.setTimeout(() => {
     state.standupCopyTimer = null;
-    elements.standupCopy.textContent = 'Copy standup';
+    elements.standupCopy.textContent = 'Copy changelog';
   }, 1400);
 }
 
@@ -4553,20 +4539,7 @@ function renderStatus() {
     return;
   }
 
-  const { codex, claude } = state.status;
   const paused = isActiveProjectPaused();
-  const codexReady = Boolean(codex.available && codex.authenticated && codex.appServer?.connected);
-  const claudeReady = Boolean(claude?.available && claude?.authenticated);
-  const relayReady = codexReady || claudeReady;
-  /*
-   * Both providers are probed in the background after listen, so for the first moment after
-   * every CC Relay start neither reports available yet. That is "not known", not "not there",
-   * and rendering it as unavailable opens every launch with a false broken-backend banner.
-   * A provider still pending keeps the neutral checking state until it answers.
-   */
-  const providersChecking = !relayReady && ['codex', 'claude'].some(
-    (provider) => providerInstallationState(state.status, provider) === 'checking',
-  );
   const scopedTasks = projectTasks();
   const queuedCount = scopedTasks.filter((task) => task.status === 'queued').length;
   const runningInProject = scopedTasks.filter((task) => task.status === 'running');
@@ -4586,10 +4559,6 @@ function renderStatus() {
     runningTasks: state.tasks,
   });
 
-  elements.codexStatus.dataset.state = relayReady ? 'online' : providersChecking ? 'checking' : 'offline';
-  elements.codexStatusLabel.textContent = relayReady
-    ? 'CC Relay online'
-    : providersChecking ? 'Checking CC Relay' : 'CC Relay unavailable';
   const update = desktopUpdatePresentation(state.status.desktopUpdate);
   elements.desktopUpdateIndicator.hidden = update.hidden;
   elements.desktopUpdateIndicator.dataset.state = update.state;
@@ -8878,15 +8847,6 @@ elements.standupCopy.addEventListener('click', copyStandup);
 elements.standupDate.addEventListener('change', () => {
   state.standupDate = elements.standupDate.value;
   void generateStandup();
-});
-elements.standupLength.addEventListener('change', () => {
-  state.standupLength = ['all', 'short', 'standard', 'detailed'].includes(elements.standupLength.value)
-    ? elements.standupLength.value
-    : 'all';
-  localStorage.setItem('relay.standupLength', state.standupLength);
-  resetStandupCopyFeedback();
-  resetStandupOutput();
-  renderStandup();
 });
 elements.standupModal.addEventListener('click', (event) => {
   if (event.target === elements.standupModal) closeStandup();

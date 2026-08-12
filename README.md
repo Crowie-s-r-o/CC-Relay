@@ -9,62 +9,58 @@
 
 ### [Download the latest version](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest)
 
-**Stop babysitting AI terminals.** CC Relay is a local command center for Codex and Claude Code. Queue work across projects, control concurrency, watch every task live, continue saved conversations, and let two providers challenge important plans. It uses your existing CLI subscriptions, not API keys.
+**Stop babysitting AI terminals.** CC Relay is a local command center for Codex and Claude Code. Queue work across projects, control concurrency, watch every task live, and let two providers challenge important plans. It uses your existing CLI subscriptions, not API keys.
 
 ![CC Relay orchestrating projects and AI tasks](docs/assets/cc-relay-overview.png)
 
 ## Why Relay
 
-1. **Control provider concurrency.** Set separate per-project limits for Codex and Claude. Relay launches fresh provider terminals only when the whole task has the slots it needs.
-2. **Use disposable terminals by default.** Each task execution gets its own terminal. On macOS it launches minimized by default and closes automatically when the work ends. A finished direct task can use **Continue session** to relaunch the same saved conversation, while optional terminal retention is one click away.
-3. **Run many projects from one Launchpad.** Keep each repository, queue, limits, history, and task state together without managing ten permanent terminal windows.
-4. **Queue the next prompts now.** Add, reorder, edit, or switch queued work while current tasks are still running. Relay dispatches it when the matching provider has capacity.
-5. **Make important plans survive a challenge.** Plan council lets one provider author a plan, the other review it critically, and the author revise it into an implementation-ready result.
-6. **Plan smart, execute economically.** Forward-planning Turbo uses a stronger model to build a dependency graph, then fans the work out to faster, lower-cost Codex workers.
-7. **See subscription runway at a glance.** Four compact header bars track Claude's current session, all-model weekly, and Fable weekly usage alongside Codex weekly usage.
+1. **Control provider concurrency.** Separate per-project limits for Codex and Claude, with terminals launched only when a task has every slot it needs.
+2. **Use disposable terminals by default.** Each execution gets its own terminal that launches minimized by default and closes automatically when the work ends.
+3. **Run many projects from one Launchpad.** Repositories, queues, limits, history, and task state in one place.
+4. **Queue the next prompts now.** Add, reorder, or edit queued work while tasks run; Relay dispatches on capacity.
+5. **Make important plans survive a challenge.** Plan council has one provider author a plan and the other review it critically.
+6. **Plan smart, execute economically.** Turbo builds a dependency graph with a stronger model, then fans work out to faster Codex workers.
 
-You also get live execution, local SQLite history, artifacts, image attachments, diagnostics, loopback-only networking, and exact terminal ownership checks. See the full [feature inventory](FEATURES.md).
+Also included: live execution, local SQLite history, artifacts, image attachments, provider usage bars, and diagnostics. See the [feature inventory](FEATURES.md).
 
 ## Get started
 
-Download CC Relay from the [latest GitHub Release](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest), then run the packaged app:
+Grab the packaged app from the [latest GitHub Release](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest):
 
-- **macOS (tested):** Download the `.dmg`, open it, drag **CC Relay** to **Applications**, and launch the app.
-- **Windows (experimental):** Download and run the `-Setup.exe` installer. To run CC Relay without installing it, download and execute the `-Portable.exe` file instead.
+- **macOS (tested):** open the `.dmg` and drag **CC Relay** to **Applications**.
+- **Windows (experimental):** run the `-Setup.exe` installer, or the `-Portable.exe` file to skip installing.
 
-Linux desktop packages are not currently produced. The desktop builds do not require a source checkout or Node.js. Before queueing work, install and sign in to at least one provider CLI: Codex with ChatGPT or Claude Code with a Claude subscription.
+No source checkout or Node.js needed. Before queueing work, sign in to at least one provider CLI: Codex with ChatGPT, or Claude Code with a Claude subscription.
 
 ## The loop
 
-1. Pin a repository in the Launchpad.
-2. Choose a provider, model, effort, and optional workflow.
-3. Queue the prompt. `Ctrl+Enter` sends it to the front.
-4. CC Relay waits for capacity, launches an owned terminal, and binds the exact conversation.
-5. Follow execution in Task Activity, then continue or retry without losing history.
+Pin as many repositories as you want, pick a provider, model, effort, and workflow, then queue the prompt (`Ctrl+Enter` sends it to the front). Relay runs as many tasks in parallel as you allow; anything over the limit waits in the queue and launches the moment a slot frees up.
+
+While work runs:
+
+- **Every project at once.** Several repositories can execute side by side, each with its own queue, limits, and history.
+- **Hear and see the finish.** A sound plays when a task ends, and completed tasks stack up as notifications you can click through and review one by one.
+- **Read the terminal fast.** Live output is colorized, and a filter narrows it to just the agent's own messages when you only want the reasoning and the result.
+- **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low, and you can continue any saved task later exactly where it left off.
 
 | Workflow | Best for |
 | --- | --- |
 | Execute | One focused Codex or Claude task |
-| Plan council | A reviewed, implementation-ready plan |
-| Forward-planning Turbo | A dependency graph dispatched across Codex workers |
+| Plan council | One provider writes the plan, the other tears it apart, the author revises |
+| Forward-planning Turbo | A stronger model builds the dependency graph, fast Codex workers execute it |
 | Planner | Reusable project plans released through the normal queue |
-
-## Updates
-
-Installed Windows NSIS builds check this public repository for a newer GitHub Release after launch and every five minutes after that. When one exists, CC Relay shows the version in its header, opens a release-details modal from that signal, and asks before downloading or restarting. macOS DMG installations and Windows portable builds update manually from the [latest release](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest).
-
-Installed Windows builds created before the move to `Crowie-s-r-o/CC-Relay` need one manual install from the new repository before automatic checks can follow this release line.
 
 ## Safety
 
 > [!CAUTION]
 > CC Relay can start writable AI sessions with unattended permission settings. Use it only with repositories, prompts, hooks, and machines you trust.
 
-The app binds to `127.0.0.1`, keeps provider credentials inside their CLIs, stores task data locally, and closes only terminals whose live identity and ownership it can prove. No project environment variables or AI API keys are required.
+It binds to `127.0.0.1`, keeps provider credentials inside their CLIs, stores task data locally, and closes only terminals it can prove it owns.
 
 ## Development
 
-Running CC Relay from source is the development path. It requires Node.js 24+ and at least one authenticated provider CLI.
+Running from source requires Node.js 24+ and at least one authenticated provider CLI.
 
 ```bash
 git clone https://github.com/Crowie-s-r-o/CC-Relay.git
@@ -73,44 +69,7 @@ npm ci
 npm start
 ```
 
-Open [http://127.0.0.1:4768](http://127.0.0.1:4768). To run the Electron development shell instead, use `npm run desktop`.
-
-Before submitting a change, run:
-
-```bash
-npm test
-npm run release:check
-```
-
-Native packages are built on their target operating systems:
-
-```bash
-npm run desktop:build:mac
-npm run desktop:build:win
-```
-
-Public macOS and Windows installers still need trusted signing credentials. Passing simulated Windows tests is not proof of real Windows support.
-
-## Deploy a release
-
-From a clean `main` branch:
-
-```bash
-npm run deploy
-```
-
-That single command infers the Semantic Versioning bump from Conventional Commits, generates a compact AI changelog with Codex or Claude, updates both package manifests and `CHANGELOG.md`, runs release checks, all tests, and the dependency audit, creates the release commit and annotated tag, then atomically pushes both to GitHub. The tag triggers native builds and publishes the GitHub Release.
-
-Override the inferred bump or AI provider when needed:
-
-```bash
-npm run deploy -- patch
-npm run deploy -- minor --provider claude
-npm run deploy -- major --provider codex
-npm run deploy -- auto --dry-run
-```
-
-Read the [changelog](CHANGELOG.md), [release architecture](wiki/open-source-releases.md), and [desktop update contract](wiki/desktop-updates.md).
+Open [http://127.0.0.1:4768](http://127.0.0.1:4768), or use `npm run desktop` for the Electron shell. Before submitting a change, run `npm test` and `npm run release:check`. Native packages build on their target OS with `npm run desktop:build:mac` and `npm run desktop:build:win`; public installers still need trusted signing credentials.
 
 ## Contributing
 

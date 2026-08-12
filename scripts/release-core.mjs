@@ -1,43 +1,16 @@
+import {
+  changelogNotesSchema,
+  formatChangelogSections,
+  MAX_CHANGELOG_NOTE_LENGTH as MAX_NOTE_LENGTH,
+  normalizeChangelogNotes,
+} from '../src/changelog-notes.mjs';
+
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const RELEASE_TYPES = new Set(['major', 'minor', 'patch']);
-const SECTION_ORDER = [
-  ['added', 'Added'],
-  ['changed', 'Changed'],
-  ['fixed', 'Fixed'],
-  ['security', 'Security'],
-];
-const MAX_NOTE_LENGTH = 180;
-const MAX_NOTES = 8;
 const MAX_RELEASE_COMMITS = 100;
 
-export const releaseNotesSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    added: {
-      type: 'array',
-      maxItems: 4,
-      items: { type: 'string', minLength: 1, maxLength: MAX_NOTE_LENGTH },
-    },
-    changed: {
-      type: 'array',
-      maxItems: 4,
-      items: { type: 'string', minLength: 1, maxLength: MAX_NOTE_LENGTH },
-    },
-    fixed: {
-      type: 'array',
-      maxItems: 4,
-      items: { type: 'string', minLength: 1, maxLength: MAX_NOTE_LENGTH },
-    },
-    security: {
-      type: 'array',
-      maxItems: 4,
-      items: { type: 'string', minLength: 1, maxLength: MAX_NOTE_LENGTH },
-    },
-  },
-  required: ['added', 'changed', 'fixed', 'security'],
-};
+export const releaseNotesSchema = changelogNotesSchema;
 
 export function parseVersion(value) {
   const match = VERSION_PATTERN.exec(String(value || '').trim());
@@ -138,85 +111,18 @@ ${source}
 </release_source_json>`;
 }
 
-function extractJsonObject(output) {
-  const text = String(output || '').trim()
-    .replace(/^```(?:json)?\s*/i, '')
-    .replace(/\s*```$/, '');
-  const start = text.indexOf('{');
-  const end = text.lastIndexOf('}');
-  if (start === -1 || end < start) throw new Error('The AI response did not contain a JSON object.');
-  return JSON.parse(text.slice(start, end + 1));
-}
-
-function cleanNote(value) {
-  const source = String(value || '');
-  if (/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/.test(source)) {
-    throw new Error('AI release notes must not contain control characters.');
-  }
-  let text = source
-    .replace(/\u2014/g, ' - ')
-    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+)/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!text) return '';
-  if (
-    /(?:https?:\/\/|www\.)/i.test(text)
-    || /!?\[[^\]]*\]\([^)]*\)/.test(text)
-    || /<\/?[a-z!][^>]*>/i.test(text)
-  ) {
-    throw new Error('AI release notes must be plain text without links or HTML.');
-  }
-  if (!/[.!?)]$/.test(text)) text = `${text}.`;
-  if (text.length > MAX_NOTE_LENGTH) {
-    throw new Error(`AI release note exceeds ${MAX_NOTE_LENGTH} characters.`);
-  }
-  return text;
-}
-
 export function normalizeReleaseNotes(output) {
-  const parsed = typeof output === 'string' ? extractJsonObject(output) : output;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('AI release notes must be a JSON object.');
-  }
-  const allowed = new Set(SECTION_ORDER.map(([key]) => key));
-  const unexpected = Object.keys(parsed).filter((key) => !allowed.has(key));
-  if (unexpected.length > 0) {
-    throw new Error(`AI release notes contain unsupported sections: ${unexpected.join(', ')}`);
-  }
-
-  const normalized = {};
-  const seen = new Set();
-  let total = 0;
-  for (const [key] of SECTION_ORDER) {
-    if (!Array.isArray(parsed[key])) throw new Error(`AI release notes must include a ${key} array.`);
-    if (parsed[key].length > 4) throw new Error(`AI release notes include too many ${key} items.`);
-    normalized[key] = [];
-    for (const value of parsed[key]) {
-      if (typeof value !== 'string') throw new Error(`AI release note in ${key} is not text.`);
-      const note = cleanNote(value);
-      if (!note) continue;
-      const identity = note.toLocaleLowerCase();
-      if (seen.has(identity)) continue;
-      seen.add(identity);
-      normalized[key].push(note);
-      total += 1;
-    }
-  }
-  if (total === 0) throw new Error('The AI completed without any usable release notes.');
-  if (total > MAX_NOTES) throw new Error(`AI release notes exceed the ${MAX_NOTES}-item limit.`);
-  return normalized;
+  return normalizeChangelogNotes(output, {
+    collectionLabel: 'AI release notes',
+    itemLabel: 'AI release note',
+  });
 }
 
 export function formatChangelogEntry({ version, date, notes }) {
   parseVersion(version);
   if (!DATE_PATTERN.test(String(date || ''))) throw new Error(`Invalid release date: ${date}`);
   const normalized = normalizeReleaseNotes(notes);
-  const lines = [`## [${version}] - ${date}`];
-  for (const [key, title] of SECTION_ORDER) {
-    if (normalized[key].length === 0) continue;
-    lines.push('', `### ${title}`, '', ...normalized[key].map((item) => `- ${item}`));
-  }
-  return lines.join('\n');
+  return [`## [${version}] - ${date}`, '', formatChangelogSections(normalized)].join('\n');
 }
 
 function versionHeadingPattern(version) {

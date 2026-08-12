@@ -90,7 +90,6 @@ import {
   selectStandupTasks,
   StandupGenerationError,
   StandupGenerator,
-  validateStandupLength,
   validateStandupWindow,
 } from './standup-generator.mjs';
 
@@ -1015,8 +1014,7 @@ export const server = createServer(async (request, response) => {
           providerUsage: true,
           projectColors: true,
           aiStandupGeneration: true,
-          aiStandupConfiguration: true,
-          aiStandupAllTasks: true,
+          aiStandupChangelog: true,
           crossProcessLaunchOwnership: true,
           desktopUpdates: IS_DESKTOP,
         },
@@ -1194,7 +1192,6 @@ export const server = createServer(async (request, response) => {
       if (body.provider && !['codex', 'claude'].includes(body.provider)) {
         throw new StandupGenerationError('Choose Codex or Claude for standup generation.');
       }
-      const length = validateStandupLength(body.length);
       const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : null;
       if (threadId && threadId.length > 512) {
         throw new StandupGenerationError('The selected CC Relay identifier is invalid.');
@@ -1210,7 +1207,7 @@ export const server = createServer(async (request, response) => {
         end: window.end,
       });
       if (tasks.length === 0) {
-        throw new StandupGenerationError('No completed or failed work was recorded for that day and scope.');
+        throw new StandupGenerationError('No completed work was recorded for that day and scope.');
       }
       const includedTasks = tasks.slice(-MAX_STANDUP_SOURCE_TASKS);
       const omittedTaskCount = tasks.length - includedTasks.length;
@@ -1222,15 +1219,12 @@ export const server = createServer(async (request, response) => {
         date,
         projectName: project.name,
         scopeLabel: threadId ? 'This CC Relay' : 'All Relays',
-        length,
         omittedTaskCount,
       }), {
         preferredProvider,
         availability,
-        length,
         metadata: {
           projectPath: project.path,
-          length,
           taskCount: tasks.length,
           promptCount,
           responseCount,
@@ -1239,7 +1233,6 @@ export const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         ...generated,
         date,
-        length,
         taskCount: tasks.length,
         includedTaskCount: includedTasks.length,
         promptCount,

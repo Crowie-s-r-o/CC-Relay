@@ -36,7 +36,7 @@ test('standup source selection uses terminal outcome time and exclusive local da
     },
     {
       id: 2,
-      status: 'failed',
+      status: 'complete',
       created_at: localIso(2026, 6, 29, 8),
       finished_at: localIso(2026, 6, 29, 9),
     },
@@ -63,28 +63,41 @@ test('standup source selection uses terminal outcome time and exclusive local da
   assert.deepEqual(tasksForStandupDay(tasks, selectedDay).map((task) => task.id), [1, 2]);
 });
 
-test('AI standup output is split into tasks and blockers', () => {
+test('AI standup output is split into changelog categories', () => {
   const output = `
-- Task: Added AI standup generation and grounded it in saved responses.
-- Blocker: Signing credentials are unavailable.
+### Added
 
-Ignored preamble
+- Added AI standup generation.
+
+### Changed
+
+- Grounded standups in saved responses.
+
+### Fixed
+
+- Fixed date boundary handling.
 `;
   assert.deepEqual(standupSections(output), {
-    tasks: ['Added AI standup generation and grounded it in saved responses.'],
-    blockers: ['Signing credentials are unavailable.'],
+    added: ['Added AI standup generation.'],
+    changed: ['Grounded standups in saved responses.'],
+    fixed: ['Fixed date boundary handling.'],
+    security: [],
   });
   assert.deepEqual(standupBullets(output), [
-    'Added AI standup generation and grounded it in saved responses.',
-    'Blocker: Signing credentials are unavailable.',
+    'Added AI standup generation.',
+    'Grounded standups in saved responses.',
+    'Fixed date boundary handling.',
   ]);
 });
 
-test('standup clipboard text uses section labels without bullet prefixes', () => {
+test('standup clipboard text is categorized CHANGELOG Markdown', () => {
   const text = standupCopyText({
-    tasks: ['Implemented date-gated generation.'],
-    blockers: [],
+    added: ['Added date-gated generation.'],
+    changed: [],
+    fixed: ['Fixed local-day boundaries.'],
+    security: [],
   });
-  assert.equal(text, 'Tasks\nImplemented date-gated generation.\n\nBlockers\nNone');
-  assert.doesNotMatch(text, /^-\s/m);
+  assert.equal(text, '### Added\n\n- Added date-gated generation.\n\n### Fixed\n\n- Fixed local-day boundaries.');
+  assert.match(text, /^-\s/m);
+  assert.doesNotMatch(text, /### Changed|### Security/);
 });

@@ -661,12 +661,8 @@ test('a duplicate resolving to a finished task is not a silent success', () => {
 test('a background provider probe reads as checking, never as unavailable', () => {
   // Both providers are probed after listen, so the first status answers pending: true.
   assert.match(server, /pending: true/);
-  assert.match(composerApp, /const providersChecking = !relayReady && \['codex', 'claude'\]\.some/);
-  assert.match(composerApp, /elements\.codexStatus\.dataset\.state = relayReady \? 'online' : providersChecking \? 'checking' : 'offline'/);
-  assert.match(composerApp, /providersChecking \? 'Checking CC Relay' : 'CC Relay unavailable'/);
-  // The neutral checking dot needs no override; only online and offline recolor it.
-  assert.match(composer, /id="codex-status"[^>]*data-state="checking"/);
-  assert.doesNotMatch(style, /\.connection-pill\[data-state="checking"\]/);
+  assert.doesNotMatch(composer, /id="codex-status"/);
+  assert.doesNotMatch(composerApp, /elements\.codexStatus/);
 
   // Plan council readiness must not assert an unavailable CLI before the probe answers.
   const issueStart = composerApp.indexOf('function claudePlanIssue()');

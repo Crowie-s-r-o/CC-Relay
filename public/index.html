@@ -39,17 +39,6 @@
           <span id="header-position-icon" class="header-position-icon" aria-hidden="true">↓</span>
           <span id="header-position-label">Bottom</span>
         </button>
-        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Use dark mode" title="Use dark mode">
-          <span class="theme-toggle-track" aria-hidden="true">
-            <span class="theme-toggle-stars">·</span>
-            <span class="theme-toggle-thumb"></span>
-          </span>
-          <span id="theme-toggle-label">Dark</span>
-        </button>
-        <span id="codex-status" class="connection-pill" data-state="checking">
-          <span class="live-dot" aria-hidden="true"></span>
-          <span id="codex-status-label">Checking CC Relay</span>
-        </span>
         <section id="provider-usage" class="provider-usage" aria-label="Provider subscription usage" aria-live="polite" aria-busy="true">
           <div class="provider-usage-meter" data-usage-key="claude-five-hour" data-provider="claude" data-level="checking">
             <span>Claude 5h</span>
@@ -72,6 +61,13 @@
             <span class="provider-usage-track" role="progressbar" aria-label="Codex weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
           </div>
         </section>
+        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Use dark mode" title="Use dark mode">
+          <span class="theme-toggle-track" aria-hidden="true">
+            <span class="theme-toggle-stars">·</span>
+            <span class="theme-toggle-thumb"></span>
+          </span>
+          <span id="theme-toggle-label">Dark</span>
+        </button>
       </div>
     </header>
 
@@ -385,47 +381,50 @@
               <div class="terminal-settings-header">
                 <div>
                   <h2 id="connection-help-title">Terminal settings</h2>
-                  <p id="connection-help-copy">Start Codex with this command. A terminal already running plain Codex must be restarted.</p>
+                  <p id="connection-help-copy">Window layout and completion alerts for the selected project.</p>
                 </div>
                 <button id="terminal-settings-close" class="terminal-settings-close" type="button" aria-label="Close terminal settings">×</button>
               </div>
-              <div id="connection-command-row" class="command-row">
-              <code id="launch-command">codex --dangerously-bypass-approvals-and-sandbox --cd . --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false</code>
-              <button id="copy-command-button" class="button compact" type="button">Copy</button>
-              </div>
-              <div class="terminal-layout-settings" aria-label="Terminal window layout">
-                <div class="terminal-layout-heading">
-                  <span>Window layout</span>
-                  <label class="terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked> Arrange in a grid</label>
-                </div>
-                <label class="terminal-background-toggle"><input id="terminal-launch-background" type="checkbox" checked> Open new terminals minimized</label>
-                <label><span>Columns</span><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"></label>
-                <label><span>Rows</span><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"></label>
-                <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
-                <div class="terminal-layout-footer">
-                  <small id="terminal-layout-status" role="status">Only the window CC Relay opens is minimized. Other Terminal windows are untouched. Grid launches use the next available cell.</small>
-                  <button id="terminal-layout-apply-all" class="button compact" type="button">Apply to all projects</button>
-                </div>
-              </div>
-              <div class="completion-alert-settings" aria-label="Task completion alerts">
-                <div class="completion-alert-heading">
-                  <span>Completion alert</span>
-                  <button id="completion-alert-preview" class="button compact" type="button">Test</button>
-                </div>
-                <label for="completion-sound">
-                  <span>Sound</span>
-                  <select id="completion-sound">
-                    <option value="none">Silent</option>
-                    <option value="chime" selected>Gentle chime</option>
-                    <option value="bell">Bright bell</option>
-                    <option value="pulse">Digital pulse</option>
-                  </select>
-                </label>
-                <label class="completion-speech-toggle">
-                  <input id="completion-speech" type="checkbox">
-                  <span><strong>Speak project and task word</strong><small>For example: “Relay. Add.”</small></span>
-                </label>
-                <small id="completion-alert-status" role="status">Plays when a task finishes.</small>
+              <div class="terminal-settings-body">
+                <section class="terminal-settings-section" aria-label="Terminal window layout">
+                  <div class="terminal-settings-section-head terminal-layout-heading">
+                    <span>Window layout</span>
+                    <label class="terminal-settings-switch terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked><span>Arrange in a grid</span></label>
+                  </div>
+                  <div class="terminal-layout-settings">
+                    <label><span>Columns</span><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"></label>
+                    <label><span>Rows</span><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"></label>
+                    <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
+                  </div>
+                  <label class="terminal-settings-switch terminal-settings-switch-row terminal-background-toggle">
+                    <input id="terminal-launch-background" type="checkbox" checked>
+                    <span><strong>Open new terminals minimized</strong><small>Only the window CC Relay opens is minimized. Other Terminal windows are untouched.</small></span>
+                  </label>
+                  <div class="terminal-layout-footer">
+                    <small id="terminal-layout-status" role="status">Grid launches use the next available cell.</small>
+                    <button id="terminal-layout-apply-all" class="button compact" type="button">Apply to all projects</button>
+                  </div>
+                </section>
+                <section class="terminal-settings-section completion-alert-settings" aria-label="Task completion alerts">
+                  <div class="terminal-settings-section-head completion-alert-heading">
+                    <span>Completion alert</span>
+                    <button id="completion-alert-preview" class="button compact" type="button">Test</button>
+                  </div>
+                  <label for="completion-sound">
+                    <span>Sound</span>
+                    <select id="completion-sound">
+                      <option value="none">Silent</option>
+                      <option value="chime" selected>Gentle chime</option>
+                      <option value="bell">Bright bell</option>
+                      <option value="pulse">Digital pulse</option>
+                    </select>
+                  </label>
+                  <label class="terminal-settings-switch terminal-settings-switch-row completion-speech-toggle">
+                    <input id="completion-speech" type="checkbox">
+                    <span><strong>Speak project and task word</strong><small>For example: “Relay. Add.”</small></span>
+                  </label>
+                  <small id="completion-alert-status" role="status">Plays when a task finishes.</small>
+                </section>
               </div>
             </div>
           </dialog>
@@ -767,7 +766,7 @@
         <div class="terminal-settings-header">
           <div>
             <h2 id="standup-title">Daily standup</h2>
-            <p id="standup-subtitle">Select a workday to generate an AI standup from saved prompts and responses.</p>
+            <p id="standup-subtitle">Select a workday to generate a CHANGELOG-style standup from saved prompts and responses.</p>
           </div>
           <button id="standup-close" class="terminal-settings-close" type="button" aria-label="Close daily standup">×</button>
         </div>
@@ -776,15 +775,6 @@
             <label class="standup-date-field" for="standup-date">
               <span>Workday</span>
               <input id="standup-date" type="date">
-            </label>
-            <label class="standup-length-field" for="standup-length">
-              <span>Length</span>
-              <select id="standup-length">
-                <option value="all" selected>All tasks</option>
-                <option value="short">Short</option>
-                <option value="standard">Standard</option>
-                <option value="detailed">Detailed</option>
-              </select>
             </label>
             <div class="standup-scope">
               <span id="standup-scope-label">Selected Launchpad</span>
@@ -802,29 +792,12 @@
           <section id="standup-sheet" class="standup-sheet" aria-labelledby="standup-date-label">
             <div class="standup-sheet-heading">
               <span>
-                <small>AI standup</small>
+                <small>Daily changelog</small>
                 <strong id="standup-date-label">Select a workday</strong>
               </span>
-              <small id="standup-source-note">AI synthesis from recorded prompts and responses</small>
+              <small id="standup-source-note">Added, Changed, Fixed, and Security from recorded work</small>
             </div>
-            <div id="standup-results" class="standup-results" hidden>
-              <section class="standup-result-group" data-kind="task" aria-labelledby="standup-tasks-title">
-                <div class="standup-result-heading">
-                  <span id="standup-tasks-title">Tasks</span>
-                  <small id="standup-task-count">0</small>
-                </div>
-                <ul id="standup-task-list" class="standup-list"></ul>
-                <p id="standup-task-empty" class="standup-group-empty" hidden>No completed work identified.</p>
-              </section>
-              <section class="standup-result-group" data-kind="blocker" aria-labelledby="standup-blockers-title">
-                <div class="standup-result-heading">
-                  <span id="standup-blockers-title">Blockers</span>
-                  <small id="standup-blocker-count">0</small>
-                </div>
-                <ul id="standup-blocker-list" class="standup-list"></ul>
-                <p id="standup-blocker-empty" class="standup-group-empty" hidden>No blockers identified.</p>
-              </section>
-            </div>
+            <div id="standup-results" class="standup-results" hidden></div>
             <ul id="standup-loading-list" class="standup-list" hidden></ul>
             <div id="standup-empty" class="standup-empty" hidden>
               <span aria-hidden="true">○</span>
@@ -836,8 +809,8 @@
         </div>
         <div class="standup-actions">
           <button id="standup-cancel" class="button compact" type="button">Close</button>
-          <button id="standup-generate" class="button compact" type="button">Generate standup</button>
-          <button id="standup-copy" class="button primary compact" type="button" disabled>Copy standup</button>
+          <button id="standup-generate" class="button compact" type="button">Generate changelog</button>
+          <button id="standup-copy" class="button primary compact" type="button" disabled>Copy changelog</button>
         </div>
       </div>
     </dialog>

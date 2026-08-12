@@ -9715,20 +9715,18 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
 
 .standup-controls {
   display: grid;
-  grid-template-columns: minmax(170px, 210px) minmax(120px, 150px) minmax(0, 1fr);
+  grid-template-columns: minmax(170px, 210px) minmax(0, 1fr);
   gap: 12px;
   align-items: end;
   margin-bottom: 10px;
 }
 
-.standup-date-field,
-.standup-length-field {
+.standup-date-field {
   display: grid;
   gap: 6px;
 }
 
 .standup-date-field span,
-.standup-length-field span,
 .standup-scope span,
 .standup-sheet-heading small,
 .standup-generator-route small {
@@ -9740,8 +9738,7 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   text-transform: uppercase;
 }
 
-.standup-date-field input,
-.standup-length-field select {
+.standup-date-field input {
   width: 100%;
   height: 36px;
   min-width: 0;
@@ -9755,19 +9752,12 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   font-weight: 700;
 }
 
-.standup-length-field select {
-  padding-right: 28px;
-  cursor: pointer;
-}
-
-.standup-date-field input:focus-visible,
-.standup-length-field select:focus-visible {
+.standup-date-field input:focus-visible {
   outline: 2px solid #6daff4;
   outline-offset: 1px;
 }
 
-.standup-date-field input:disabled,
-.standup-length-field select:disabled {
+.standup-date-field input:disabled {
   color: #8b94a4;
   background: #f1f3f7;
   cursor: progress;
@@ -9916,7 +9906,15 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   background: #fff;
 }
 
-.standup-list li[data-status="blocker"] .standup-item-marker {
+.standup-list li[data-status="changed"] .standup-item-marker {
+  border-color: #6d4bd1;
+}
+
+.standup-list li[data-status="fixed"] .standup-item-marker {
+  border-color: #19745c;
+}
+
+.standup-list li[data-status="security"] .standup-item-marker {
   border-color: var(--danger);
 }
 
@@ -9973,12 +9971,30 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   content: "";
 }
 
-.standup-result-group[data-kind="blocker"] .standup-result-heading {
+.standup-result-group[data-kind="changed"] .standup-result-heading {
+  color: #5f43b9;
+  background: #f8f5ff;
+}
+
+.standup-result-group[data-kind="changed"] .standup-result-heading span::before {
+  background: #6d4bd1;
+}
+
+.standup-result-group[data-kind="fixed"] .standup-result-heading {
+  color: #17644f;
+  background: #f3fbf8;
+}
+
+.standup-result-group[data-kind="fixed"] .standup-result-heading span::before {
+  background: #19745c;
+}
+
+.standup-result-group[data-kind="security"] .standup-result-heading {
   color: #8f2f3b;
   background: #fff8f8;
 }
 
-.standup-result-group[data-kind="blocker"] .standup-result-heading span::before {
+.standup-result-group[data-kind="security"] .standup-result-heading span::before {
   background: var(--danger);
 }
 
@@ -11424,8 +11440,7 @@ html[data-theme="dark"] .planner-step-title,
 html[data-theme="dark"] .planner-step-prompt,
 html[data-theme="dark"] .turbo-council-step select,
 html[data-theme="dark"] .agent-tab-pool-input,
-html[data-theme="dark"] .standup-date-field input,
-html[data-theme="dark"] .standup-length-field select {
+html[data-theme="dark"] .standup-date-field input {
   border-color: var(--app-border);
   color: var(--app-text);
   background: var(--app-control);
@@ -12109,9 +12124,46 @@ html[data-theme="dark"] .standup-result-heading small {
   background: var(--app-well);
 }
 
-html[data-theme="dark"] .standup-result-group[data-kind="blocker"] .standup-result-heading {
+html[data-theme="dark"] .standup-result-group[data-kind="changed"] .standup-result-heading {
+  color: var(--app-violet);
+  background: color-mix(in srgb, var(--app-violet) 8%, var(--app-panel));
+}
+
+html[data-theme="dark"] .standup-list li[data-status="changed"] .standup-item-marker {
+  border-color: var(--app-violet);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .standup-result-group[data-kind="changed"] .standup-result-heading span::before {
+  background: var(--app-violet);
+}
+
+html[data-theme="dark"] .standup-result-group[data-kind="fixed"] .standup-result-heading {
+  color: var(--app-teal);
+  background: color-mix(in srgb, var(--app-teal) 8%, var(--app-panel));
+}
+
+html[data-theme="dark"] .standup-list li[data-status="fixed"] .standup-item-marker {
+  border-color: var(--app-teal);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .standup-result-group[data-kind="fixed"] .standup-result-heading span::before {
+  background: var(--app-teal);
+}
+
+html[data-theme="dark"] .standup-result-group[data-kind="security"] .standup-result-heading {
   color: var(--app-red);
   background: color-mix(in srgb, var(--app-red) 8%, var(--app-panel));
+}
+
+html[data-theme="dark"] .standup-list li[data-status="security"] .standup-item-marker {
+  border-color: var(--app-red);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .standup-result-group[data-kind="security"] .standup-result-heading span::before {
+  background: var(--app-red);
 }
 
 html[data-theme="dark"] .standup-loading-line {
@@ -14354,16 +14406,12 @@ html[data-theme="dark"] .about-footer strong {
 }
 
 .provider-usage-meter {
-  --provider-usage-accent: var(--signal);
+  --provider-usage-accent: #2f855a;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-content: center;
   gap: 3px 4px;
   min-width: 0;
-}
-
-.provider-usage-meter[data-provider="claude"] {
-  --provider-usage-accent: var(--claude);
 }
 
 .provider-usage-meter > span:first-child {
@@ -14403,7 +14451,11 @@ html[data-theme="dark"] .about-footer strong {
 }
 
 .provider-usage-meter[data-level="warning"] {
-  --provider-usage-accent: #a86b00;
+  --provider-usage-accent: #c58b00;
+}
+
+.provider-usage-meter[data-level="elevated"] {
+  --provider-usage-accent: #dd6b20;
 }
 
 .provider-usage-meter[data-level="critical"] {
@@ -14425,15 +14477,15 @@ html[data-theme="dark"] .provider-usage {
 }
 
 html[data-theme="dark"] .provider-usage-meter {
-  --provider-usage-accent: var(--app-blue);
-}
-
-html[data-theme="dark"] .provider-usage-meter[data-provider="claude"] {
-  --provider-usage-accent: var(--app-orange);
+  --provider-usage-accent: var(--app-green);
 }
 
 html[data-theme="dark"] .provider-usage-meter[data-level="warning"] {
   --provider-usage-accent: var(--app-amber);
+}
+
+html[data-theme="dark"] .provider-usage-meter[data-level="elevated"] {
+  --provider-usage-accent: var(--app-orange);
 }
 
 html[data-theme="dark"] .provider-usage-meter[data-level="critical"] {

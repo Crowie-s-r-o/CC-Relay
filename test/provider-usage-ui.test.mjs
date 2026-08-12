@@ -11,7 +11,7 @@ const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8');
 
-test('header replaces the queue pause button with four accessible usage meters', () => {
+test('header places four accessible usage meters after the position control without an online pill', () => {
   assert.equal(PROVIDER_USAGE_METERS.length, 4);
   assert.equal((html.match(/data-usage-key=/g) || []).length, 4);
   for (const meter of PROVIDER_USAGE_METERS) {
@@ -19,6 +19,10 @@ test('header replaces the queue pause button with four accessible usage meters',
   }
   assert.doesNotMatch(html, /id="pause-button"/);
   assert.doesNotMatch(app, /pauseButton/);
+  assert.doesNotMatch(html, /id="codex-status"/);
+  assert.doesNotMatch(app, /codexStatus/);
+  assert.ok(html.indexOf('id="header-position-toggle"') < html.indexOf('id="provider-usage"'));
+  assert.ok(html.indexOf('id="provider-usage"') < html.indexOf('id="theme-toggle"'));
   assert.match(html, /role="progressbar"/);
   assert.match(app, /renderProviderUsage\(\)/);
   assert.match(server, /providerUsage: providerUsage\.current\(\)/);
@@ -29,13 +33,13 @@ test('header replaces the queue pause button with four accessible usage meters',
   assert.match(server, /pathname === '\/api\/queue\/resume'/);
 });
 
-test('usage meter presentation exposes warning, critical, stale, and unavailable states', () => {
+test('usage meter presentation exposes threshold, stale, and unavailable states', () => {
   const presentations = providerUsagePresentation({
     claude: {
       status: 'stale',
       fiveHour: { usedPercent: 12, resetLabel: '1:20am' },
       weekly: { usedPercent: 70, resetLabel: 'Thursday' },
-      fableWeekly: { usedPercent: 91, resetLabel: 'Thursday' },
+      fableWeekly: { usedPercent: 79, resetLabel: 'Thursday' },
     },
     codex: {
       status: 'unavailable',
@@ -48,12 +52,31 @@ test('usage meter presentation exposes warning, critical, stale, and unavailable
   assert.deepEqual(presentations.map(({ value, level }) => ({ value, level })), [
     { value: '12%', level: 'normal' },
     { value: '70%', level: 'warning' },
-    { value: '91%', level: 'critical' },
+    { value: '79%', level: 'elevated' },
     { value: '--', level: 'unavailable' },
   ]);
   assert.match(presentations[0].title, /Resets 1:20am/);
   assert.match(presentations[0].title, /Last known value/);
   assert.match(presentations[3].title, /unavailable/);
+});
+
+test('usage thresholds are green below 50, yellow from 50, orange from 75, and red from 90', () => {
+  const levelAt = (usedPercent) => providerUsagePresentation({
+    claude: {
+      status: 'ready',
+      fiveHour: { usedPercent },
+      weekly: { usedPercent },
+      fableWeekly: { usedPercent },
+    },
+    codex: { status: 'ready', weekly: { usedPercent } },
+  })[0].level;
+
+  assert.equal(levelAt(49), 'normal');
+  assert.equal(levelAt(50), 'warning');
+  assert.equal(levelAt(74), 'warning');
+  assert.equal(levelAt(75), 'elevated');
+  assert.equal(levelAt(89), 'elevated');
+  assert.equal(levelAt(90), 'critical');
 });
 
 test('Codex epoch reset times are formatted for the meter tooltip', () => {
@@ -84,9 +107,10 @@ test('an absent model-specific window settles as unavailable after Claude respon
   assert.equal(fable.value, '--');
 });
 
-test('usage strip has provider colors, semantic thresholds, dark mode, and mobile layout', () => {
-  assert.match(style, /\.provider-usage-meter\[data-provider="claude"\]/);
+test('usage strip has four semantic colors, dark mode, and mobile layout', () => {
+  assert.match(style, /\.provider-usage-meter \{[\s\S]*?--provider-usage-accent: #2f855a;/);
   assert.match(style, /\.provider-usage-meter\[data-level="warning"\]/);
+  assert.match(style, /\.provider-usage-meter\[data-level="elevated"\]/);
   assert.match(style, /\.provider-usage-meter\[data-level="critical"\]/);
   assert.match(style, /html\[data-theme="dark"\] \.provider-usage/);
   assert.match(style, /@media \(max-width: 760px\)[\s\S]*?\.provider-usage/);

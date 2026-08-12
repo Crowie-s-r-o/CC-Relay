@@ -52,7 +52,11 @@ export function providerUsageMeterPresentation(providerUsage, meter, {
 
   const reset = resetCopy(window, formatDate);
   const stale = provider?.status === 'stale';
-  const level = usedPercent >= 90 ? 'critical' : usedPercent >= 70 ? 'warning' : 'normal';
+  const level = usedPercent >= 90
+    ? 'critical'
+    : usedPercent >= 75
+      ? 'elevated'
+      : usedPercent >= 50 ? 'warning' : 'normal';
   return {
     key: meter.key,
     label: meter.label,

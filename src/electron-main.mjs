@@ -128,7 +128,7 @@ async function createSplashWindow(appIcon) {
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
-    show: false,
+    show: true,
     backgroundColor: '#0d0e11',
     title: `${PRODUCT_NAME} is starting`,
     ...(appIcon ? { icon: appIcon } : {}),
@@ -142,9 +142,8 @@ async function createSplashWindow(appIcon) {
   splashWindow.on('closed', () => {
     splashWindow = null;
   });
-  await splashWindow.loadFile(SPLASH_PATH);
-  splashWindow.show();
   desktopDiagnostic('desktop.splash.shown');
+  await splashWindow.loadFile(SPLASH_PATH);
 }
 
 function closeSplashWindow() {

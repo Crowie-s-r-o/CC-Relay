@@ -29,6 +29,9 @@ The pseudo-terminal output is held only in a bounded in-memory buffer. It is not
 
 This request keeps ChatGPT authentication inside the Codex app-server. CC Relay stores neither a token nor a usage history.
 
+> [!important]
+> `account/rateLimits/read` deliberately sends JSON-RPC `params: null`. The shared request diagnostic must therefore use optional access for `threadId`, `model`, and `effort`. Directly reading `params.threadId` throws before the WebSocket write, leaves Codex weekly usage unavailable, and later produces an unrelated request timeout. The regression test exercises the real request serializer with null params instead of mocking `request()`.
+
 ## Status contract
 
 The cached response has this shape:
@@ -56,14 +59,14 @@ Provider status is `checking`, `ready`, `stale`, or `unavailable`. A missing ind
 
 ## Header behavior
 
-`public/provider-usage.js` owns the pure presentation mapping. Normal values retain provider identity color. Values from 70 through 89 percent use warning amber, and values from 90 through 100 percent use critical red. The text percentage remains visible beside every bar, reset details live in its title, and stale values say **Last known value**.
+`public/provider-usage.js` owns the pure presentation mapping. Values below 50 percent are green, values from 50 through 74 percent are yellow, values from 75 through 89 percent are orange, and values from 90 through 100 percent are red. The text percentage remains visible beside every bar, reset details live in its title, and stale values say **Last known value**.
 
-The four-meter strip replaces the former header **Pause queue** button. Pause and resume endpoints, stored project pause state, and queue helper support remain in place; only the global header action is removed. See [[interface-layout]] and [[provider-installation-detection]].
+The four-meter strip replaces the former header **Pause queue** button and sits immediately after the **Top** or **Bottom** monitor-position control, before the theme control. The redundant **CC Relay online** pill is not rendered. Pause and resume endpoints, stored project pause state, and queue helper support remain in place; only the global header action is removed. See [[interface-layout]] and [[provider-installation-detection]].
 
 ## Verification
 
 - `test/provider-usage.test.mjs` covers ANSI parsing, latest-frame selection, session reuse, platform gating, exact Codex bucket selection, refresh deduplication, and stale preservation.
-- `test/provider-usage-ui.test.mjs` covers the four-meter contract, pause-button removal, thresholds, reset copy, absent windows, dark mode, and the mobile layout.
-- `test/codex-app-server.test.mjs` protects the authenticated rate-limit method and its null parameters.
+- `test/provider-usage-ui.test.mjs` covers the four-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy, absent windows, dark mode, and the mobile layout.
+- `test/codex-app-server.test.mjs` protects the authenticated rate-limit method and proves its null parameters pass through the actual request serializer.
 
 #relay #providers #usage #claude #codex #header

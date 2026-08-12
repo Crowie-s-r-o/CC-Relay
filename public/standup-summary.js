@@ -1,6 +1,13 @@
 import { periodRange } from './task-history.js';
 
-const STANDUP_STATUSES = new Set(['complete', 'failed']);
+const STANDUP_STATUSES = new Set(['complete']);
+
+export const STANDUP_CHANGELOG_SECTIONS = Object.freeze([
+  Object.freeze({ key: 'added', title: 'Added' }),
+  Object.freeze({ key: 'changed', title: 'Changed' }),
+  Object.freeze({ key: 'fixed', title: 'Fixed' }),
+  Object.freeze({ key: 'security', title: 'Security' }),
+]);
 
 function validTimestamp(value) {
   if (!value) return null;
@@ -57,67 +64,64 @@ function cleanStandupItem(value) {
     .trim();
 }
 
-function addStandupItem(sections, value, fallbackKind = 'task') {
-  let text = cleanStandupItem(value);
-  if (!text || /^(?:None|No (?:tasks?|blockers?)(?: identified| reported)?)\.?$/i.test(text)) return;
-  let kind = fallbackKind === 'blocker' ? 'blocker' : 'task';
-  const label = text.match(/^(Tasks?|Blockers?|Blocked)\s*:\s*(.*)$/i);
-  if (label) {
-    kind = /^Block/i.test(label[1]) ? 'blocker' : 'task';
-    text = cleanStandupItem(label[2]);
-  }
-  if (!text) return;
-  const list = kind === 'blocker' ? sections.blockers : sections.tasks;
-  if (!list.some((item) => item.toLocaleLowerCase() === text.toLocaleLowerCase())) list.push(text);
+export function emptyStandupSections() {
+  return Object.fromEntries(STANDUP_CHANGELOG_SECTIONS.map(({ key }) => [key, []]));
+}
+
+function sectionKey(value) {
+  const normalized = String(value || '').trim().toLocaleLowerCase();
+  return STANDUP_CHANGELOG_SECTIONS.find(({ key, title }) => (
+    key === normalized || title.toLocaleLowerCase() === normalized
+  ))?.key || null;
+}
+
+function addStandupItem(sections, key, value) {
+  const text = cleanStandupItem(value);
+  if (!key || !text) return;
+  const identity = text.toLocaleLowerCase();
+  const duplicate = STANDUP_CHANGELOG_SECTIONS.some(({ key: candidate }) => (
+    sections[candidate].some((item) => item.toLocaleLowerCase() === identity)
+  ));
+  if (!duplicate) sections[key].push(text);
 }
 
 export function standupSections(value) {
-  const sections = { tasks: [], blockers: [] };
+  const sections = emptyStandupSections();
   if (value && typeof value === 'object') {
-    const hasStructuredItems = Array.isArray(value.tasks) || Array.isArray(value.blockers);
+    const hasStructuredItems = STANDUP_CHANGELOG_SECTIONS.some(({ key }) => Array.isArray(value[key]));
     if (hasStructuredItems) {
-      for (const task of value.tasks || []) addStandupItem(sections, task, 'task');
-      for (const blocker of value.blockers || []) addStandupItem(sections, blocker, 'blocker');
+      for (const { key } of STANDUP_CHANGELOG_SECTIONS) {
+        for (const item of value[key] || []) addStandupItem(sections, key, item);
+      }
       return sections;
     }
     value = value.standup || value.copyText || '';
   }
 
-  let sectionKind = null;
+  let activeSection = null;
   for (const rawLine of String(value || '').split(/\r?\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
-    const section = line.match(/^#{0,6}\s*(Tasks?|Blockers?)\s*:?\s*$/i);
+    const section = line.match(/^#{0,6}\s*(Added|Changed|Fixed|Security)\s*:?\s*$/i);
     if (section) {
-      sectionKind = /^Block/i.test(section[1]) ? 'blocker' : 'task';
+      activeSection = sectionKey(section[1]);
       continue;
     }
     const bullet = line.match(/^(?:[-*+]|\d+[.)])\s+(.+)$/);
-    if (bullet) {
-      addStandupItem(sections, bullet[1], sectionKind || 'task');
-      continue;
-    }
-    if (/^(?:Tasks?|Blockers?|Blocked)\s*:/i.test(line)) {
-      addStandupItem(sections, line, sectionKind || 'task');
-      continue;
-    }
-    if (sectionKind && !/^#{1,6}\s+/.test(line)) addStandupItem(sections, line, sectionKind);
+    if (bullet && activeSection) addStandupItem(sections, activeSection, bullet[1]);
   }
   return sections;
 }
 
 export function standupCopyText(value) {
-  const { tasks, blockers } = standupSections(value);
-  return [
-    'Tasks',
-    ...(tasks.length > 0 ? tasks : ['None']),
-    '',
-    'Blockers',
-    ...(blockers.length > 0 ? blockers : ['None']),
-  ].join('\n');
+  const sections = standupSections(value);
+  return STANDUP_CHANGELOG_SECTIONS
+    .filter(({ key }) => sections[key].length > 0)
+    .map(({ key, title }) => `### ${title}\n\n${sections[key].map((item) => `- ${item}`).join('\n')}`)
+    .join('\n\n');
 }
 
-export function standupBullets(markdown) {
-  const { tasks, blockers } = standupSections(markdown);
-  return [...tasks, ...blockers.map((item) => `Blocker: ${item}`)];
+export function standupBullets(value) {
+  const sections = standupSections(value);
+  return STANDUP_CHANGELOG_SECTIONS.flatMap(({ key }) => sections[key]);
 }

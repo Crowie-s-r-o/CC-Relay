@@ -13,7 +13,25 @@ CC Relay's public home is `https://github.com/Crowie-s-r-o/CC-Relay`. The curren
 
 ## Public documentation contract
 
-The root [[../README|README]] is the compact public front door. It leads with the platform warning, latest-release download, and `docs/assets/cc-relay-overview.png`, then keeps the product loop, safety model, packaged setup, updates, development, and release operation concise. The selected image is the later `OnPaste.20260812-005444.png` attachment; the earlier screenshot was replaced and is not retained as a second repository asset.
+The root [[../README|README]] is the compact public front door. It leads with the platform warning, latest-release download, and `docs/assets/cc-relay-overview.png`, then keeps six numbered benefits, packaged setup, the product loop, a two-sentence safety model, development, contributing, and licensing concise. The selected image is the later `OnPaste.20260812-005444.png` attachment; the earlier screenshot was replaced and is not retained as a second repository asset.
+
+> [!important]
+> **August 12: the README no longer documents updates or release deployment.** The auto-update
+> matrix lives in [[desktop-updates]] and the `npm run deploy` contract lives in this page, so the
+> public front door does not repeat either. Safety collapsed to the caution callout plus one
+> sentence on loopback binding, CLI-held credentials, local task data, and proven terminal
+> ownership. **The loop** now sells the day-to-day experience: parallel projects, queue-on-capacity,
+> completion sound and Launchpad notifications, colorized output with the Messages filter, and a
+> fresh session per task that keeps context clean and can be continued later. Every claim there maps
+> to shipped behavior in [[task-completion-alerts]], [[launchpad-completion-notifications]],
+> [[claude-terminal-live-output]], and [[same-task-session-continuation]]; do not add a README claim
+> without a wiki page behind it.
+
+Release tooling asserts the README shape. `test/release-tooling.test.mjs` pins the platform warning,
+download link, image order, the six benefit lead sentences in order, the disposable-terminal wording,
+the MIT-retention sentence, and the **Get started** / **Development** split. `scripts/release-check.mjs`
+pins the PolyForm license sentence and forbids the phrase "open source". Trim the README against those
+checks, not around them.
 
 > [!important]
 > **Get started** is reserved for people running a packaged desktop release. It links to the latest GitHub Release, explains how to launch the macOS DMG or Windows Setup and Portable executables, and states the provider CLI prerequisite. Source checkout, Node.js, localhost, and Electron development commands belong only under **Development**.

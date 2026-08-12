@@ -1149,22 +1149,48 @@ test('fresh-thread persistence errors include missing and temporarily empty roll
 });
 
 test('rate-limit reads use the authenticated Codex app-server account endpoint', async () => {
-  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  const diagnostics = [];
   const requests = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    diagnostic: (event, fields) => diagnostics.push({ event, fields }),
+  });
   client.start = async () => client.status();
-  client.request = async (method, params, timeoutMs) => {
-    requests.push({ method, params, timeoutMs });
-    return { rateLimitsByLimitId: {} };
+  client.socket = {
+    readyState: 1,
+    send: (value) => {
+      const request = JSON.parse(value);
+      requests.push(request);
+      queueMicrotask(() => client.handleLine(JSON.stringify({
+        id: request.id,
+        result: { rateLimitsByLimitId: {} },
+      })));
+    },
+    close: () => {},
   };
 
-  const result = await client.readRateLimits();
+  try {
+    const result = await client.readRateLimits();
 
-  assert.deepEqual(result, { rateLimitsByLimitId: {} });
-  assert.deepEqual(requests, [{
-    method: 'account/rateLimits/read',
-    params: null,
-    timeoutMs: 10_000,
-  }]);
+    assert.deepEqual(result, { rateLimitsByLimitId: {} });
+    assert.deepEqual(requests, [{
+      id: 1,
+      method: 'account/rateLimits/read',
+      params: null,
+    }]);
+    assert.deepEqual(diagnostics.find(({ event }) => event === 'appserver.request.sent'), {
+      event: 'appserver.request.sent',
+      fields: {
+        id: 1,
+        method: 'account/rateLimits/read',
+        threadId: undefined,
+        model: undefined,
+        effort: undefined,
+      },
+    });
+  } finally {
+    client.close();
+  }
 });
 
 test('app-server listening output exposes its dynamic WebSocket endpoint', () => {
