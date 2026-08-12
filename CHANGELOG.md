@@ -2,6 +2,19 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.3] - 2026-08-12
+
+### Added
+
+- Added provider usage monitoring.
+- Added branded startup and About experiences.
+- Added layout copying and desktop zoom controls.
+- Added DMG release support.
+
+### Changed
+
+- Improved the desktop update experience.
+
 ## [0.2.2] - 2026-08-12
 
 ### Added
