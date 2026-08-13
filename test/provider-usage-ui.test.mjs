@@ -14,6 +14,7 @@ const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8
 test('header places four accessible usage meters after the position control without an online pill', () => {
   assert.equal(PROVIDER_USAGE_METERS.length, 4);
   assert.equal((html.match(/data-usage-key=/g) || []).length, 4);
+  assert.equal((html.match(/class="provider-usage-reset"/g) || []).length, 4);
   for (const meter of PROVIDER_USAGE_METERS) {
     assert.match(html, new RegExp(`data-usage-key="${meter.key}"`));
   }
@@ -58,6 +59,43 @@ test('usage meter presentation exposes threshold, stale, and unavailable states'
   assert.match(presentations[0].title, /Resets 1:20am/);
   assert.match(presentations[0].title, /Last known value/);
   assert.match(presentations[3].title, /unavailable/);
+  assert.equal(presentations[3].countdown, '');
+});
+
+test('reset countdowns use hours and minutes for 5-hour usage and days and hours otherwise', () => {
+  const now = Date.parse('2026-08-13T00:30:00Z');
+  const presentations = providerUsagePresentation({
+    claude: {
+      status: 'ready',
+      fiveHour: { usedPercent: 12, resetLabel: '4:45am (UTC)' },
+      weekly: { usedPercent: 70, resetLabel: 'Aug 15 at 2pm (UTC)' },
+      fableWeekly: { usedPercent: 79, resetLabel: 'Aug 14 at 2pm (UTC)' },
+    },
+    codex: {
+      status: 'ready',
+      weekly: { usedPercent: 6, resetsAt: Date.parse('2026-08-16T14:00:00Z') / 1_000 },
+    },
+  }, { now });
+
+  assert.deepEqual(presentations.map(({ countdown }) => countdown), [
+    '4h 15m',
+    '2d 14h',
+    '1d 14h',
+    '3d 14h',
+  ]);
+  assert.equal(presentations[0].countdownLabel, 'Resets in 4 hours and 15 minutes');
+  assert.equal(presentations[1].countdownLabel, 'Resets in 2 days and 14 hours');
+});
+
+test('a time-only Claude reset uses its timezone and rolls into the next day', () => {
+  const [fiveHour] = providerUsagePresentation({
+    claude: {
+      status: 'ready',
+      fiveHour: { usedPercent: 12, resetLabel: '1:20am (Europe/Bratislava)' },
+    },
+  }, { now: Date.parse('2026-08-12T21:00:00Z') });
+
+  assert.equal(fiveHour.countdown, '2h 20m');
 });
 
 test('usage thresholds are green below 50, yellow from 50, orange from 75, and red from 90', () => {
@@ -113,6 +151,7 @@ test('usage strip has four semantic colors, dark mode, and mobile layout', () =>
   assert.match(style, /\.provider-usage-meter\[data-level="elevated"\]/);
   assert.match(style, /\.provider-usage-meter\[data-level="critical"\]/);
   assert.match(style, /html\[data-theme="dark"\] \.provider-usage/);
+  assert.match(style, /\.provider-usage-reset/);
   assert.match(style, /@media \(max-width: 760px\)[\s\S]*?\.provider-usage/);
   const baseTrack = style.indexOf('.provider-usage-track i {', style.indexOf('Subscription runway'));
   const reducedMotion = style.lastIndexOf('@media (prefers-reduced-motion: reduce)');

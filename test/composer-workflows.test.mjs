@@ -742,7 +742,7 @@ test('switching projects restores each project selected task', () => {
 });
 
 test('Task Activity keeps every continuation in the selected task and conversation', () => {
-  const continuationStart = composerApp.indexOf('async function submitTaskContinuation');
+  const continuationStart = composerApp.indexOf('async function dispatchTaskContinuation');
   const continuationEnd = composerApp.indexOf('async function deleteTask', continuationStart);
   const continuationSource = composerApp.slice(continuationStart, continuationEnd);
   const followUpRouteStart = server.indexOf('(?:continue|follow-up)');
@@ -755,13 +755,17 @@ test('Task Activity keeps every continuation in the selected task and conversati
   assert.match(composerApp, /continuationSubmission\(sourceTask, prompt/);
   assert.match(continuationSource, /const body = await api\(request\.path/);
   assert.match(continuationSource, /sourceTask\.provider === 'claude' && sourceTask\.status === 'running'/);
-  assert.match(continuationSource, /timeoutMs: 120_000/);
+  assert.match(continuationSource, /timeoutMs: outbox \? 210_000 : 120_000/);
   assert.match(continuationSource, /may already be queued in Claude/);
   assert.match(continuationSource, /const runningSteeringAvailable = sourceTask\?\.status === 'running'/);
   assert.match(continuationSource, /!resumableSession && !runningSteeringAvailable/);
   assert.match(continuationSource, /taskDirectFollowUp === true/);
   assert.match(composerApp, /supportsTaskSteering: state\.status\?\.capabilities\?\.taskSteering === true/);
   assert.match(composerApp, /supportsClaudeTaskSteering: state\.status\?\.capabilities\?\.claudeTaskSteering === true/);
+  assert.match(composerApp, /supportsClaudeSteerOutbox: state\.status\?\.capabilities\?\.claudeSteerOutbox === true/);
+  assert.match(continuationSource, /const operation = dispatchTaskContinuation\(sourceTask, prompt, request/);
+  assert.match(continuationSource, /operation\.catch\(\(\) => \{\}\)/);
+  assert.match(continuationSource, /elements\.continuationInput\.focus\(\)/);
   assert.match(continuationSource, /continuationDispatchOutcome\(\{ ok: true, \.\.\.body, prompt \}\)/);
   // A response confirming neither route is still not a delivery, so it keeps the draft.
   assert.equal(continuationDispatchOutcome({ ok: true }).clearComposer, false);
@@ -780,6 +784,7 @@ test('Task Activity keeps every continuation in the selected task and conversati
   assert.match(server, /taskFollowUpAttachments: true/);
   assert.match(server, /taskSteering: true/);
   assert.match(server, /claudeTaskSteering: CLAUDE_TASK_STEERING/);
+  assert.match(server, /claudeSteerOutbox: CLAUDE_TASK_STEERING/);
   assert.match(server, /if \(error\.deliveryUncertain === true\)/);
   assert.match(server, /Unconfirmed live-update reference images/);
   assert.match(server, /type: 'claude\/steer-uncertain'/);
@@ -799,6 +804,7 @@ test('Task Activity keeps every continuation in the selected task and conversati
   assert.match(composerApp, /normalizeTaskPrompts\(task, prompts\)/);
   assert.match(composerApp, /elements\.promptSection\.open = promptHistory\.length > 1/);
   assert.match(server, /sourceTask\.status === 'running'/);
-  assert.match(server, /claudeExecution\.steer\(task\.id, prompt, storedAttachments\)/);
+  assert.match(server, /claudeExecution\.steer\(task\.id, prompt, storedAttachments, \{/);
+  assert.match(server, /flushComposer: flushComposer === true/);
   assert.match(server, /Your follow-up was not queued/);
 });

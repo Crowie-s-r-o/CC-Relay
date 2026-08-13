@@ -4,15 +4,38 @@ export function continuationPresentation({
   supportsDirectFollowUp,
   supportsTaskSteering,
   supportsClaudeTaskSteering,
+  supportsClaudeSteerOutbox = false,
   sessionConnected,
   resumableSession = false,
   busy,
   taskRunning,
   provider,
   submitting,
+  pendingCount = 0,
   prompt,
 }) {
   const hasPrompt = Boolean(String(prompt || '').trim());
+  const steeringAvailable = taskRunning && (
+    provider === 'codex'
+      ? supportsTaskSteering
+      : provider === 'claude' && supportsClaudeTaskSteering
+  );
+  const reliableClaudeSteering = steeringAvailable
+    && provider === 'claude'
+    && supportsClaudeSteerOutbox;
+  if (reliableClaudeSteering) {
+    const waiting = Math.max(0, Number(pendingCount) || 0);
+    return {
+      state: waiting > 0 ? 'sending' : 'steering',
+      label: waiting > 0 ? `${waiting} sending` : 'Updates current',
+      buttonLabel: 'Update turn',
+      hint: waiting > 0
+        ? `${waiting} update${waiting === 1 ? '' : 's'} being delivered. Keep typing and send the next one whenever it is ready.`
+        : 'Updates are delivered in order. If Claude has a stable native draft, Relay sends it first instead of blocking this composer.',
+      inputDisabled: false,
+      sendDisabled: !hasPrompt,
+    };
+  }
   if (submitting) {
     return {
       state: 'sending',
@@ -25,11 +48,6 @@ export function continuationPresentation({
       sendDisabled: true,
     };
   }
-  const steeringAvailable = taskRunning && (
-    provider === 'codex'
-      ? supportsTaskSteering
-      : provider === 'claude' && supportsClaudeTaskSteering
-  );
   if (steeringAvailable) {
     return {
       state: 'steering',
@@ -134,6 +152,26 @@ export function isUnconfirmedDraft(entry) {
 export function draftInputValue(entry) {
   if (isUnconfirmedDraft(entry)) return '';
   return typeof entry === 'string' ? entry : '';
+}
+
+/** Select the oldest failed send only when it cannot replace newer task-scoped work. */
+export function continuationRetryRestore({
+  draft = '',
+  attachments = [],
+  waiting = [],
+} = {}) {
+  const retries = Array.isArray(waiting) ? waiting : [];
+  if (
+    draftInputValue(draft).trim()
+    || (Array.isArray(attachments) && attachments.length > 0)
+    || retries.length === 0
+  ) {
+    return { entry: null, waiting: [...retries] };
+  }
+  return {
+    entry: retries[0],
+    waiting: retries.slice(1),
+  };
 }
 
 /** The retained words, or an empty string when there is nothing held for recovery. */
@@ -251,6 +289,7 @@ export function continuationSubmission(task, prompt, {
   supportsFollowUpAttachments,
   supportsTaskSteering,
   supportsClaudeTaskSteering,
+  supportsClaudeSteerOutbox = false,
   attachments = [],
 } = {}) {
   const value = typeof prompt === 'string' ? prompt.trim() : '';
@@ -273,7 +312,13 @@ export function continuationSubmission(task, prompt, {
     }
     return {
       path: `/api/tasks/${task.id}/steer`,
-      body: { prompt: value, ...(attachments.length > 0 ? { attachments } : {}) },
+      body: {
+        prompt: value,
+        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(task.provider === 'claude' && supportsClaudeSteerOutbox
+          ? { flushComposer: true }
+          : {}),
+      },
     };
   }
   if (!supportsDirectFollowUp) {

@@ -61,12 +61,17 @@ Provider status is `checking`, `ready`, `stale`, or `unavailable`. A missing ind
 
 `public/provider-usage.js` owns the pure presentation mapping. Values below 50 percent are green, values from 50 through 74 percent are yellow, values from 75 through 89 percent are orange, and values from 90 through 100 percent are red. The text percentage remains visible beside every bar, reset details live in its title, and stale values say **Last known value**.
 
+Each meter also shows a live reset countdown below its bar. The five-hour Claude window uses hours and minutes, such as `2h 20m`; the three weekly windows use days and hours, such as `3d 14h`. Codex supplies an epoch timestamp directly. Claude supplies localized English reset copy, so the pure presentation helper parses the known time-only and `Mon DD at time` forms with their IANA timezone suffix. If a future Claude version returns an unknown label shape, the exact reset remains in the tooltip and the countdown stays blank rather than guessing. The normal two-second visible-page status render keeps the countdown current without adding a timer or another provider request.
+
+> [!note]
+> Keep the countdown units tied to the window type. The five-hour meter is an operational clock where minutes matter; weekly meters remain compact by rounding remaining time up to whole hours.
+
 The four-meter strip replaces the former header **Pause queue** button and sits immediately after the **Top** or **Bottom** monitor-position control, before the theme control. The redundant **CC Relay online** pill is not rendered. Pause and resume endpoints, stored project pause state, and queue helper support remain in place; only the global header action is removed. See [[interface-layout]] and [[provider-installation-detection]].
 
 ## Verification
 
 - `test/provider-usage.test.mjs` covers ANSI parsing, latest-frame selection, session reuse, platform gating, exact Codex bucket selection, refresh deduplication, and stale preservation.
-- `test/provider-usage-ui.test.mjs` covers the four-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy, absent windows, dark mode, and the mobile layout.
+- `test/provider-usage-ui.test.mjs` covers the four-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units, timezone-aware Claude labels, absent windows, dark mode, and the mobile layout.
 - `test/codex-app-server.test.mjs` protects the authenticated rate-limit method and proves its null parameters pass through the actual request serializer.
 
 #relay #providers #usage #claude #codex #header

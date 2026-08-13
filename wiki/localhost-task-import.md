@@ -1,51 +1,49 @@
 ---
 name: Localhost Task Import
-description: Safe, idempotent transfer of finished localhost tasks into the CC Relay desktop history.
+description: Removed desktop feature that copied finished localhost tasks into the CC Relay desktop history, and the schema it left behind.
 type: architecture
 ---
 
 # Localhost Task Import
 
-The desktop app exposes **Import localhost** in the task queue heading. A standalone localhost backend registers its absolute `relay.sqlite` path in the already shared `relay-config.sqlite`. The desktop backend reads that registration and copies eligible task history into its own database.
+> [!warning] Removed on August 13, 2026
+> The **Import localhost** action, its `POST /api/tasks/import-localhost` endpoint, the `localhost-task-database` shared-configuration registration, and `RelayDatabase.importTaskHistory()` were all removed. Desktop and localhost histories are now independent with no transfer path. This page is kept because the schema the feature created still exists.
 
-## Ownership boundary
+## What remains
+
+The `tasks` table keeps `import_source`, `import_task_id`, and the partial unique index `idx_tasks_import_origin`. Rows imported before removal keep their origin columns and their remapped `continued_from_task_id` links, so existing desktop history is unchanged. Nothing writes those columns any more.
 
 > [!important]
-> The import copies only terminal outcomes: `complete`, `failed`, `interrupted`, and `cancelled`. It never copies `queued` or `running` rows. This preserves [[shared-project-configuration|the scheduler isolation boundary]] and prevents desktop and localhost from dispatching the same work.
-
-Imported tasks receive new desktop-local IDs. Their source database path and source task ID form a unique origin key, so repeating the import refreshes existing copies instead of creating duplicates. `continued_from_task_id` links are remapped to the corresponding desktop-local task IDs.
-
-Task events and task artifact directories are copied with each imported row. This keeps prompts, responses, results, logs, and image attachments inspectable in Task Activity. Source submission IDs are not copied because idempotency keys belong to the scheduler that accepted the original request.
+> Do not drop these columns or the index without an explicit migration. Existing persistent task rows keep their legacy behavior.
 
 > [!note]
-> Active localhost tasks remain visible only in localhost until they reach a terminal outcome and the user imports again. The import is an explicit snapshot, not a live shared queue.
+> Existing installs still carry a `localhost-task-database` row in their shared `relay-config.sqlite`. Nothing writes or reads it any more. It is harmless and is left in place rather than migrated away.
 
-## Discovery
+## What the feature did
 
-Standalone startup writes `localhost-task-database` into the shared project configuration store. Desktop startup is marked with `--relay-desktop`, so it never replaces the localhost registration with its own database path.
+The desktop task queue heading exposed **Import localhost**. A standalone localhost backend registered its absolute `relay.sqlite` path in the shared `relay-config.sqlite`, and the desktop backend copied eligible history out of it.
 
-If no source is registered, the desktop button remains disabled and instructs the user to start localhost CC Relay once. When several localhost checkouts use the same shared configuration, the most recently started localhost backend is the registered source.
+The import copied only terminal outcomes: `complete`, `failed`, `interrupted`, and `cancelled`. It never copied `queued` or `running` rows, which preserved [[shared-project-configuration|the scheduler isolation boundary]]. Imported tasks received new desktop-local IDs keyed by source database path plus source task ID, so repeats refreshed instead of duplicating. Task events and task artifact directories came along; source submission IDs did not, because idempotency keys belong to the scheduler that accepted the original request.
 
-## Interface
+## Queue interface
 
-Queue cards use a pale tint derived from the project canvas instead of a white surface. The operational queue adds date-ledger dividers labeled **Today** and **Past**. Dividers follow the existing task order, so task priority, drag behavior, and scheduler ordering do not change.
+Queue cards use a pale tint derived from the project canvas instead of a white surface, and the operational queue has date-ledger dividers labeled **Today** and **Past**. Both shipped alongside the import feature and both survive its removal. Dividers follow the existing task order, so task priority, drag behavior, and scheduler ordering do not change. Coverage moved from the deleted `test/task-import-ui.test.mjs` into `test/queue-ledger-ui.test.mjs`.
 
-## Implementation
+## Removal surface
 
-- `src/database.mjs`
-- `src/server.mjs`
-- `src/electron-main.mjs`
-- `public/index.html`
-- `public/app.js`
-- `public/style.css`
-- `test/database.test.mjs`
+- `public/index.html` — the button and the `#task-import-status` live region
+- `public/app.js` — element handles, `state.importingTasks`, the `renderTasks()` block, the click handler
+- `public/style.css` — `.task-import-status` rules in both the light and dark blocks
+- `src/server.mjs` — the endpoint, the `taskHistoryImport` status payload, the `localhostTaskImport` capability flag, `localhostTaskDatabasePath()`, the standalone registration write, and the now-unused `cpSync` import
+- `src/database.mjs` — `importTaskHistory()`, `IMPORTABLE_TASK_COLUMNS`, `IMPORTABLE_TASK_STATUSES`, and the now-unused `existsSync` import
+- `test/task-import-ui.test.mjs` — deleted; `test/queue-ledger-ui.test.mjs` replaces it and asserts the feature stays gone while the schema stays present
+- `test/desktop-startup.test.mjs` — took over the `--relay-desktop` flag assertion the deleted test used to own
 
 ## Validation
 
-- The dedicated database regression proves first import, repeat refresh, active-task skipping, event copying, and continuation-link remapping.
-- All 819 repository tests passed on July 30, 2026.
-- Browser-based visual inspection was unavailable in the non-interactive environment, so the interface was validated through syntax, static UI coverage, and the complete regression suite.
+- All 1436 repository tests passed on August 13, 2026, along with `npm run release:check` and `git diff --check`.
+- The queue heading is a plain flex row with a 12px gap, so removing one control narrows the row without any other layout effect.
 
 See [[task-history]], [[shared-project-configuration]], and [[project-workspaces]].
 
-#relay #tasks #desktop #localhost #import #sqlite
+#relay #tasks #desktop #localhost #import #sqlite #removed

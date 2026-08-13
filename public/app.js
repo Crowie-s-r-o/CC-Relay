@@ -16,6 +16,10 @@ import {
   subAgentEntryState,
 } from './event-stream.js';
 import { taskDurationLabel, formatElapsedDuration, taskLifecycleDates } from './task-time.js';
+import {
+  refreshActivityOverviewDurations,
+  taskActivityOverview,
+} from './task-activity-overview.js';
 import { clipboardImageFiles } from './clipboard-images.js';
 import {
   PROJECT_COLOR_COUNT,
@@ -37,12 +41,19 @@ import {
   supportedClaudeModelCatalog,
 } from './claude-model-selection.js';
 import { idleExecutionThreadId, runningDirectTask, selectedExecutionProvider, selectedWorkflowMode } from './task-routing.js';
-import { activityBuckets, isFinishedTaskStatus, periodRange, shiftPeriod, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
+import { activityBuckets, isFinishedTaskStatus, periodRange, shiftPeriod, sortOperationalTasks, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
+import {
+  TASK_SEARCH_DEBOUNCE_MS,
+  taskSearchActive,
+  taskSearchMatchMarkup,
+  tasksForSearchResults,
+} from './task-search.js';
 import {
   dateFromLocalInput,
   emptyStandupSections,
   localDateInputValue,
   STANDUP_CHANGELOG_SECTIONS,
+  standupCopyHtml,
   standupCopyText,
   standupSections,
   tasksForStandupDay,
@@ -86,6 +97,7 @@ import {
 import {
   continuationDispatchOutcome,
   continuationPresentation,
+  continuationRetryRestore,
   continuationSubmission,
   draftInputValue,
   unconfirmedDraft,
@@ -179,6 +191,9 @@ const MAX_TURBO_WORKERS = 8;
 const MAX_POOL_TURBO_WORKERS = MAX_PROJECT_INSTANCES - 1;
 
 const API_TIMEOUT_MS = 20_000;
+const RUNNING_TASK_LAYOUT_DEFAULTS = Object.freeze({ rows: 1, width: 286 });
+const RUNNING_TASK_ROW_OPTIONS = new Set([1, 2, 3]);
+const RUNNING_TASK_WIDTH_OPTIONS = new Set([230, 286, 360]);
 // Task creation carries image data, so it gets a wider budget than a status read.
 const TASK_SUBMIT_TIMEOUT_MS = 45_000;
 const textSelectionGuard = createTextSelectionGuard({
@@ -298,6 +313,23 @@ function cachedCompletionAlertPreferences() {
   });
 }
 
+function normalizeRunningTaskLayout(value) {
+  const rows = Number(value?.rows);
+  const width = Number(value?.width);
+  return {
+    rows: RUNNING_TASK_ROW_OPTIONS.has(rows) ? rows : RUNNING_TASK_LAYOUT_DEFAULTS.rows,
+    width: RUNNING_TASK_WIDTH_OPTIONS.has(width) ? width : RUNNING_TASK_LAYOUT_DEFAULTS.width,
+  };
+}
+
+function cachedRunningTaskLayout() {
+  try {
+    return normalizeRunningTaskLayout(JSON.parse(localStorage.getItem('relay.runningTaskLayout') || '{}'));
+  } catch {
+    return { ...RUNNING_TASK_LAYOUT_DEFAULTS };
+  }
+}
+
 const state = {
   tasks: [],
   runningTasks: [],
@@ -309,6 +341,13 @@ const state = {
   historyPeriod: ['day', 'week', 'month'].includes(localStorage.getItem('relay.historyPeriod'))
     ? localStorage.getItem('relay.historyPeriod') : 'week',
   historyAnchor: new Date(),
+  taskSearchQuery: '',
+  taskSearchResults: [],
+  taskSearchTotal: 0,
+  taskSearchPending: false,
+  taskSearchError: '',
+  taskSearchTimer: null,
+  taskSearchSequence: 0,
   standupDate: '',
   standupChanges: emptyStandupSections(),
   standupClipboardText: '',
@@ -347,6 +386,7 @@ const state = {
   projectCompletionNotifications: new ProjectCompletionNotifications(localStorage),
   completionAlerts: new CompletionAlerts(),
   completionAlertPreferences: cachedCompletionAlertPreferences(),
+  runningTaskLayout: cachedRunningTaskLayout(),
   reorderPending: false,
   loadPromise: null,
   taskLoadSequence: 0,
@@ -359,7 +399,6 @@ const state = {
   projectColorTargetId: null,
   projectColorDraft: null,
   projectColorSaving: false,
-  importingTasks: false,
   prioritySubmit: false,
   draggedTaskId: null,
   queueDrag: null,
@@ -391,6 +430,8 @@ const state = {
   continuationDrafts: new Map(),
   continuationAttachments: new Map(),
   continuationSubmitting: false,
+  continuationSteerPending: new Map(),
+  continuationRetryDrafts: new Map(),
   planExecutionSubmitting: false,
   editingTaskId: null,
   taskEditMode: null,
@@ -565,6 +606,11 @@ const elements = {
   appHeader: document.querySelector('.app-header'),
   taskViewButtons: [...document.querySelectorAll('[data-task-view]')],
   queueSummary: document.querySelector('#queue-summary'),
+  taskSearch: document.querySelector('#task-search'),
+  taskSearchInput: document.querySelector('#task-search-input'),
+  taskSearchClear: document.querySelector('#task-search-clear'),
+  taskSearchShortcut: document.querySelector('#task-search-shortcut'),
+  taskSearchStatus: document.querySelector('#task-search-status'),
   taskList: document.querySelector('#task-list'),
   historyLedger: document.querySelector('#history-ledger'),
   historyPeriodButtons: [...document.querySelectorAll('[data-history-period]')],
@@ -576,9 +622,7 @@ const elements = {
   historyMetrics: document.querySelector('#history-metrics'),
   historyActivity: document.querySelector('#history-activity'),
   standupButton: document.querySelector('#standup-button'),
-  importTasksButton: document.querySelector('#import-tasks-button'),
   clearTaskNotificationsButton: document.querySelector('#clear-task-notifications-button'),
-  taskImportStatus: document.querySelector('#task-import-status'),
   standupModal: document.querySelector('#standup-modal'),
   standupSubtitle: document.querySelector('#standup-subtitle'),
   standupClose: document.querySelector('#standup-close'),
@@ -639,6 +683,8 @@ const elements = {
   detailEvents: document.querySelector('#detail-events'),
   eventSessionState: document.querySelector('#event-session-state'),
   eventSummary: document.querySelector('#event-summary'),
+  eventOverview: document.querySelector('#event-overview'),
+  eventOverviewBody: document.querySelector('#event-overview-body'),
   eventMetrics: document.querySelector('#event-metrics'),
   termRelay: document.querySelector('#term-relay'),
   termProvider: document.querySelector('#term-provider'),
@@ -725,6 +771,9 @@ const elements = {
   plannerDetail: document.querySelector('#planner-detail'),
   plannerMessage: document.querySelector('#planner-message'),
   headerRunningTasks: document.querySelector('#header-running-tasks'),
+  runningTaskSettings: document.querySelector('#running-task-settings'),
+  runningTaskRows: document.querySelector('#running-task-rows'),
+  runningTaskWidth: document.querySelector('#running-task-width'),
   projectList: document.querySelector('#project-list'),
   projectColorModal: document.querySelector('#project-color-modal'),
   projectColorSubtitle: document.querySelector('#project-color-subtitle'),
@@ -959,6 +1008,7 @@ async function api(path, options = {}) {
      * ordinary failure, and no caller should have to read error copy to tell them apart.
      */
     if (body.deliveryUncertain === true) failure.deliveryUncertain = true;
+    if (body.composerBlocked === true) failure.composerBlocked = true;
     throw failure;
   }
   return body;
@@ -972,6 +1022,7 @@ function uiPreferencesPayload() {
     },
     terminalHeight: state.terminalHeight == null ? null : Math.round(state.terminalHeight),
     headerPosition: currentHeaderPosition(),
+    runningTaskLayout: state.runningTaskLayout,
     completionAlerts: state.completionAlertPreferences,
   };
 }
@@ -981,6 +1032,10 @@ function cacheUiPreferences(preferences = uiPreferencesPayload()) {
   if (preferences.terminalHeight == null) localStorage.removeItem('relay.terminalHeight');
   else localStorage.setItem('relay.terminalHeight', String(preferences.terminalHeight));
   localStorage.setItem('relay.headerPosition', preferences.headerPosition);
+  localStorage.setItem(
+    'relay.runningTaskLayout',
+    JSON.stringify(normalizeRunningTaskLayout(preferences.runningTaskLayout)),
+  );
   const completionAlerts = normalizeCompletionAlertPreferences(preferences.completionAlerts);
   localStorage.setItem('relay.completionSound', completionAlerts.sound);
   localStorage.setItem('relay.completionSpeech', String(completionAlerts.speak));
@@ -995,6 +1050,16 @@ function setCompletionAlertPreferences(value, { persist = true } = {}) {
   state.completionAlertPreferences = normalizeCompletionAlertPreferences(value);
   renderCompletionAlertSettings();
   if (persist) queueUiPreferencesSave();
+}
+
+function setRunningTaskLayout(value, { persist = true } = {}) {
+  state.runningTaskLayout = normalizeRunningTaskLayout(value);
+  document.documentElement.dataset.runningTaskRows = String(state.runningTaskLayout.rows);
+  document.documentElement.dataset.runningTaskWidth = String(state.runningTaskLayout.width);
+  elements.runningTaskRows.value = String(state.runningTaskLayout.rows);
+  elements.runningTaskWidth.value = String(state.runningTaskLayout.width);
+  if (persist) queueUiPreferencesSave();
+  requestAnimationFrame(syncHeaderHeight);
 }
 
 function queueUiPreferencesSave() {
@@ -1028,6 +1093,7 @@ async function restoreUiPreferences() {
     };
     state.terminalHeight = preferences.terminalHeight;
     setHeaderPosition(preferences.headerPosition, { persist: false });
+    setRunningTaskLayout(preferences.runningTaskLayout, { persist: false });
     setCompletionAlertPreferences(preferences.completionAlerts, { persist: false });
     cacheUiPreferences(preferences);
     applyPanelWidths();
@@ -1221,6 +1287,13 @@ function selectProject(path, { persist = true } = {}) {
   if (persist) persistActiveProject(state.activeProjectPath);
   restoreProjectComposerState(state.activeProjectPath);
   state.parallelTaskIds.clear();
+  if (taskSearchActive(state.taskSearchQuery)) {
+    state.taskSearchResults = [];
+    state.taskSearchTotal = 0;
+    state.taskSearchPending = true;
+    state.taskSearchError = '';
+    scheduleTaskSearch(0);
+  }
   elements.taskDetail.hidden = true;
   elements.emptyDetail.hidden = false;
   selectMode(state.taskMode);
@@ -2890,6 +2963,50 @@ function resizeContinuationInput() {
   elements.continuationInput.style.height = `${Math.min(elements.continuationInput.scrollHeight, 92)}px`;
 }
 
+function reliableClaudeSteering(task) {
+  return task?.provider === 'claude'
+    && task?.status === 'running'
+    && state.status?.capabilities?.claudeTaskSteering === true
+    && state.status?.capabilities?.claudeSteerOutbox === true;
+}
+
+function continuationSteerPendingCount(taskId) {
+  return Math.max(0, Number(state.continuationSteerPending.get(taskId)) || 0);
+}
+
+function adjustContinuationSteerPending(taskId, change) {
+  const next = Math.max(0, continuationSteerPendingCount(taskId) + change);
+  if (next > 0) state.continuationSteerPending.set(taskId, next);
+  else state.continuationSteerPending.delete(taskId);
+  return next;
+}
+
+function retainContinuationRetry(taskId, entry) {
+  const waiting = state.continuationRetryDrafts.get(taskId) || [];
+  waiting.push(entry);
+  state.continuationRetryDrafts.set(taskId, waiting);
+}
+
+function restoreContinuationRetry(taskId) {
+  const restore = continuationRetryRestore({
+    draft: state.continuationDrafts.get(taskId),
+    attachments: state.continuationAttachments.get(taskId),
+    waiting: state.continuationRetryDrafts.get(taskId),
+  });
+  const { entry } = restore;
+  if (!entry) return false;
+  if (restore.waiting.length > 0) {
+    state.continuationRetryDrafts.set(taskId, restore.waiting);
+  } else {
+    state.continuationRetryDrafts.delete(taskId);
+  }
+  state.continuationDrafts.set(taskId, entry.prompt);
+  if (entry.attachments.length > 0) {
+    state.continuationAttachments.set(taskId, entry.attachments);
+  }
+  return true;
+}
+
 function renderTaskContinuation(task, { taskChanged = false } = {}) {
   const direct = task?.mode === 'execute' && ['codex', 'claude'].includes(task.provider);
   const manualSession = isManualSessionTask(task);
@@ -2902,7 +3019,12 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   elements.continuationInput.placeholder = manualSession
     ? 'Send the next command or request to this terminal...'
     : 'Ask a follow-up in this terminal...';
-  if (taskChanged || elements.continuationMessage.dataset.taskId !== String(task.id)) {
+  const retryRestored = restoreContinuationRetry(task.id);
+  if (
+    retryRestored
+    || taskChanged
+    || elements.continuationMessage.dataset.taskId !== String(task.id)
+  ) {
     // A draft held after an unconfirmed delivery deliberately rehydrates as nothing. The
     // words remain recoverable from the map; putting them back here would resurrect a
     // message the provider may already be running.
@@ -2915,6 +3037,7 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   const supportsDirectFollowUp = state.status?.capabilities?.taskDirectFollowUp === true;
   const supportsTaskSteering = state.status?.capabilities?.taskSteering === true;
   const supportsClaudeTaskSteering = state.status?.capabilities?.claudeTaskSteering === true;
+  const supportsClaudeSteerOutbox = state.status?.capabilities?.claudeSteerOutbox === true;
   const resumableSession = task.terminal_lifecycle === 'disposable'
     && state.status?.capabilities?.resumableDisposableSessions === true
     && Boolean(task.thread_id)
@@ -2931,12 +3054,14 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
     supportsDirectFollowUp,
     supportsTaskSteering,
     supportsClaudeTaskSteering,
+    supportsClaudeSteerOutbox,
     sessionConnected: Boolean(session),
     resumableSession,
     busy,
     taskRunning: task.status === 'running',
     provider: task.provider,
     submitting,
+    pendingCount: continuationSteerPendingCount(task.id),
     prompt: elements.continuationInput.value,
   });
   const relay = taskRelayLabel(task);
@@ -3034,6 +3159,7 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
   // A turn that is no longer running owns no live sub-agents, however its last notification
   // landed, so the active count clears with the turn instead of stranding a number.
   const stats = eventStreamStats(grouped, { turnEnded: task.status !== 'running' });
+  const overview = taskActivityOverview(grouped, task);
   state.selectedTaskEvents = events;
   state.selectedTaskForEvents = task;
   state.visibleEventEntries = visible;
@@ -3061,15 +3187,17 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
   elements.eventSummary.title = `${visible.length} of ${grouped.length} signals · ${events.length} raw events`;
   renderTerminalStatusBar(task);
   elements.eventMetrics.innerHTML = `
+    ${overview.runtimeMetric}
+    ${stats.plan ? `<span class="has-plan"><b>${stats.plan.done}/${stats.plan.total}</b><small>plan steps</small></span>` : ''}
+    ${stats.agents ? `<span class="has-agents"><b>${stats.agents}</b><small>sub-agents</small></span>` : ''}
+    ${stats.running ? `<span class="is-running"><b>${stats.running}</b><small>active</small></span>` : ''}
     <span><b>${stats.thinkingTokens.toLocaleString()}</b><small>thinking tokens</small></span>
     <span><b>${stats.commands}</b><small>commands</small></span>
     <span><b>${stats.files}</b><small>file changes</small></span>
     <span><b>${stats.messages}</b><small>messages</small></span>
     <span class="${stats.errors ? 'has-errors' : ''}"><b>${stats.errors}</b><small>errors</small></span>
-    ${stats.plan ? `<span class="has-plan"><b>${stats.plan.done}/${stats.plan.total}</b><small>plan steps</small></span>` : ''}
-    ${stats.agents ? `<span class="has-agents"><b>${stats.agents}</b><small>sub-agents</small></span>` : ''}
-    ${stats.running ? `<span class="is-running"><b>${stats.running}</b><small>active</small></span>` : ''}
   `;
+  elements.eventOverviewBody.innerHTML = overview.body;
   elements.copyEventsButton.disabled = visible.length === 0;
   elements.detailEvents.innerHTML = visible.length === 0
     ? `<div class="events-empty"><span aria-hidden="true">⌁</span><strong>No ${escapeHtml(state.eventFilter)} activity yet</strong><small>New matching signals will appear here.</small></div>`
@@ -3258,11 +3386,143 @@ function historyDateHeading(value) {
   }).format(new Date(value));
 }
 
+function taskSearchSupported() {
+  return state.status?.capabilities?.taskFullTextSearch === true;
+}
+
+function taskSearchMatches() {
+  return new Map(state.taskSearchResults.map((result) => [Number(result.taskId), result.match]));
+}
+
+function renderTaskSearch() {
+  const active = taskSearchActive(state.taskSearchQuery);
+  const supported = taskSearchSupported();
+  const statusKnown = Boolean(state.status);
+  elements.taskSearchInput.disabled = !supported || !state.activeProjectPath;
+  elements.taskSearchInput.placeholder = !state.activeProjectPath
+    ? 'Select a project to search tasks'
+    : !statusKnown
+      ? 'Loading task search'
+      : supported
+        ? 'Search every command and response'
+        : 'Restart CC Relay to search tasks';
+  if (document.activeElement !== elements.taskSearchInput
+    && elements.taskSearchInput.value !== state.taskSearchQuery) {
+    elements.taskSearchInput.value = state.taskSearchQuery;
+  }
+  elements.taskSearchClear.hidden = !active;
+  elements.taskSearchShortcut.textContent = active ? 'Esc' : '/';
+  elements.taskSearch.dataset.state = state.taskSearchError
+    ? 'error'
+    : state.taskSearchPending
+      ? 'searching'
+      : active ? 'active' : 'idle';
+  if (state.taskSearchPending) {
+    elements.taskSearchStatus.textContent = 'Searching all saved conversations';
+  } else if (state.taskSearchError) {
+    elements.taskSearchStatus.textContent = state.taskSearchError;
+  } else if (active) {
+    const shown = state.taskSearchResults.length;
+    elements.taskSearchStatus.textContent = state.taskSearchTotal > shown
+      ? `${shown} of ${state.taskSearchTotal} matches`
+      : `${state.taskSearchTotal} match${state.taskSearchTotal === 1 ? '' : 'es'} · all dates`;
+  } else {
+    elements.taskSearchStatus.textContent = '';
+  }
+}
+
+function resetTaskSearchResults() {
+  state.taskSearchResults = [];
+  state.taskSearchTotal = 0;
+  state.taskSearchPending = false;
+  state.taskSearchError = '';
+}
+
+async function runTaskSearch() {
+  if (state.taskSearchTimer !== null) {
+    window.clearTimeout(state.taskSearchTimer);
+    state.taskSearchTimer = null;
+  }
+  const query = state.taskSearchQuery.trim();
+  const projectPath = state.activeProjectPath;
+  if (!query) {
+    resetTaskSearchResults();
+    renderStatus();
+    renderTasks();
+    return;
+  }
+  if (!taskSearchSupported() || !projectPath) {
+    state.taskSearchPending = false;
+    state.taskSearchError = taskSearchSupported()
+      ? 'Select a project to search tasks.'
+      : 'Restart CC Relay to activate task search.';
+    renderStatus();
+    renderTasks();
+    return;
+  }
+
+  const sequence = ++state.taskSearchSequence;
+  state.taskSearchPending = true;
+  state.taskSearchError = '';
+  state.taskSearchResults = [];
+  state.taskSearchTotal = 0;
+  renderStatus();
+  renderTasks();
+  try {
+    const body = await api(`/api/tasks/search?projectPath=${encodeURIComponent(projectPath)}&query=${encodeURIComponent(query)}`);
+    const searchInputSelection = document.activeElement === elements.taskSearchInput
+      && elements.taskSearchInput.selectionEnd > elements.taskSearchInput.selectionStart;
+    if (!searchInputSelection) await textSelectionGuard.waitForClear();
+    if (
+      sequence !== state.taskSearchSequence
+      || query !== state.taskSearchQuery.trim()
+      || !sameProjectPath(projectPath, state.activeProjectPath)
+    ) return;
+    state.taskSearchResults = Array.isArray(body.results) ? body.results : [];
+    state.taskSearchTotal = Number(body.total) || 0;
+  } catch (error) {
+    if (sequence !== state.taskSearchSequence) return;
+    state.taskSearchError = `Search failed: ${error.message}`;
+  } finally {
+    if (sequence === state.taskSearchSequence) {
+      state.taskSearchPending = false;
+      renderStatus();
+      renderTasks();
+    }
+  }
+}
+
+function scheduleTaskSearch(delay = TASK_SEARCH_DEBOUNCE_MS) {
+  if (state.taskSearchTimer !== null) window.clearTimeout(state.taskSearchTimer);
+  state.taskSearchTimer = window.setTimeout(() => {
+    state.taskSearchTimer = null;
+    void runTaskSearch();
+  }, delay);
+}
+
+function clearTaskSearch({ focus = false, render = true } = {}) {
+  if (state.taskSearchTimer !== null) {
+    window.clearTimeout(state.taskSearchTimer);
+    state.taskSearchTimer = null;
+  }
+  state.taskSearchSequence += 1;
+  state.taskSearchQuery = '';
+  resetTaskSearchResults();
+  elements.taskSearchInput.value = '';
+  if (render) {
+    renderStatus();
+    renderTasks();
+  }
+  if (focus && !elements.taskSearchInput.disabled) elements.taskSearchInput.focus();
+}
+
 function renderHistoryLedger(scopedTasks, visibleTasks) {
-  const historyActive = state.taskView === 'history';
+  const searching = taskSearchActive(state.taskSearchQuery);
+  const historyActive = state.taskView === 'history' && !searching;
   elements.historyLedger.hidden = !historyActive;
   for (const button of elements.taskViewButtons) {
     button.setAttribute('aria-pressed', String(button.dataset.taskView === state.taskView));
+    button.disabled = searching;
   }
   if (!historyActive) return;
 
@@ -3542,9 +3802,21 @@ async function copyStandup() {
   }
   const itemCount = standupItemCount();
   try {
-    await navigator.clipboard.writeText(state.standupClipboardText);
+    const clipboardHtml = standupCopyHtml(state.standupChanges);
+    if (typeof navigator.clipboard.write === 'function' && typeof window.ClipboardItem === 'function') {
+      try {
+        await navigator.clipboard.write([new window.ClipboardItem({
+          'text/plain': new Blob([state.standupClipboardText], { type: 'text/plain' }),
+          'text/html': new Blob([clipboardHtml], { type: 'text/html' }),
+        })]);
+      } catch {
+        await navigator.clipboard.writeText(state.standupClipboardText);
+      }
+    } else {
+      await navigator.clipboard.writeText(state.standupClipboardText);
+    }
     elements.standupCopy.textContent = 'Copied';
-    elements.standupCopyStatus.textContent = `${itemCount} categorized changelog bullet${itemCount === 1 ? '' : 's'} copied as Markdown.`;
+    elements.standupCopyStatus.textContent = `${itemCount} categorized changelog bullet${itemCount === 1 ? '' : 's'} copied with chat formatting.`;
   } catch {
     elements.standupCopy.textContent = 'Copy failed';
     elements.standupCopyStatus.textContent = 'Clipboard access failed. Keep this window focused and try again.';
@@ -4530,9 +4802,16 @@ function renderProviderUsage() {
     if (!meter) continue;
     const value = meter.querySelector('strong');
     const track = meter.querySelector('.provider-usage-track');
+    const reset = meter.querySelector('.provider-usage-reset');
     meter.dataset.level = presentation.level;
     meter.title = presentation.title;
     value.textContent = presentation.value;
+    reset.textContent = presentation.countdown ? `in ${presentation.countdown}` : '';
+    if (presentation.countdownLabel) {
+      reset.setAttribute('aria-label', presentation.countdownLabel);
+    } else {
+      reset.removeAttribute('aria-label');
+    }
     if (presentation.usedPercent === null) {
       checking ||= presentation.level === 'checking';
       track.style.removeProperty('--provider-usage-value');
@@ -4605,7 +4884,13 @@ function renderStatus() {
 
   renderHeaderRunningTasks();
 
-  if (state.taskView === 'history') {
+  if (taskSearchActive(state.taskSearchQuery)) {
+    elements.queueSummary.textContent = state.taskSearchPending
+      ? 'Searching every saved command and response'
+      : state.taskSearchError
+        ? state.taskSearchError
+        : `${state.taskSearchTotal} matching task${state.taskSearchTotal === 1 ? '' : 's'} across all dates`;
+  } else if (state.taskView === 'history') {
     const historyCount = tasksInPeriod(scopedTasks, state.historyPeriod, state.historyAnchor).length;
     elements.queueSummary.textContent = `${historyCount} task${historyCount === 1 ? '' : 's'} in selected ${state.historyPeriod}`;
   } else {
@@ -4626,6 +4911,7 @@ function renderStatus() {
 }
 
 function renderTasks() {
+  renderTaskSearch();
   const standupSupported = standupGenerationSupported();
   elements.standupButton.disabled = !state.activeProjectPath || !standupSupported;
   elements.standupButton.title = !state.activeProjectPath
@@ -4633,79 +4919,91 @@ function renderTasks() {
     : standupSupported
       ? 'Generate a date-selected AI standup from saved prompts and responses'
       : 'Restart CC Relay to activate configured AI standup generation';
-  const taskImport = state.status?.taskHistoryImport;
-  elements.importTasksButton.hidden = taskImport?.desktop !== true;
-  elements.importTasksButton.disabled = state.importingTasks || taskImport?.available !== true;
-  elements.importTasksButton.textContent = state.importingTasks ? 'Importing' : 'Import localhost';
-  elements.importTasksButton.title = taskImport?.available === true
-    ? 'Copy finished localhost tasks and their activity into the desktop app'
-    : 'Start localhost CC Relay once to make its finished tasks available';
   const unreadCount = state.projectCompletionNotifications.count(state.activeProjectPath);
   elements.clearTaskNotificationsButton.hidden = unreadCount === 0;
-  elements.clearTaskNotificationsButton.textContent = `Clear new · ${unreadCount}`;
+  elements.clearTaskNotificationsButton.textContent = `Mark reviewed · ${unreadCount}`;
   elements.clearTaskNotificationsButton.setAttribute(
     'aria-label',
-    `Mark all ${unreadCount} new task${unreadCount === 1 ? '' : 's'} in this project as viewed`,
+    `Mark all ${unreadCount} ready-for-review task${unreadCount === 1 ? '' : 's'} in this project as reviewed`,
   );
-  elements.clearTaskNotificationsButton.title = 'Mark every new completed task in this project as viewed';
+  elements.clearTaskNotificationsButton.title = 'Mark every ready-for-review task in this project as reviewed';
   if (elements.standupModal.open) renderStandup();
   if (state.queueDrag) {
     return;
   }
   const scopedTasks = projectTasks();
-  const visibleTasks = state.taskView === 'history'
+  const searching = taskSearchActive(state.taskSearchQuery);
+  const visibleTasks = searching
+    ? tasksForSearchResults(scopedTasks, state.taskSearchResults)
+    : state.taskView === 'history'
     ? tasksInPeriod(scopedTasks, state.historyPeriod, state.historyAnchor)
       .sort((left, right) => new Date(right.created_at) - new Date(left.created_at))
-    : [...scopedTasks].sort((left, right) => {
-      const statusRank = (task) => task.status === 'running' ? 0 : task.status === 'open' ? 1 : task.status === 'queued' ? 2 : 3;
-      const rankDifference = statusRank(left) - statusRank(right);
-      if (rankDifference !== 0) return rankDifference;
-      if (left.status === 'queued' && right.status === 'queued') {
-        return left.position - right.position || left.id - right.id;
-      }
-      return right.id - left.id;
+    : sortOperationalTasks(scopedTasks, {
+      isReadyForReview: (task) => state.projectCompletionNotifications.includes(task.repo_path, task.id),
     });
   renderHistoryLedger(scopedTasks, visibleTasks);
   if (visibleTasks.length === 0) {
     state.parallelTaskIds.clear();
     renderParallelBatchBar();
+    const emptyTitle = searching
+      ? state.taskSearchPending ? 'Searching conversations' : state.taskSearchError ? 'Search unavailable' : 'No matching tasks'
+      : state.taskView === 'history' ? 'No tasks in this period' : 'The queue is clear';
+    const emptyMessage = searching
+      ? state.taskSearchPending
+        ? 'Checking every saved command and response in this project.'
+        : state.taskSearchError
+          ? 'Clear the search or try again after Relay is available.'
+          : 'Try fewer words, a task number, or text from the response you remember.'
+      : state.taskView === 'history'
+        ? 'Choose another date or a wider period.'
+        : state.activeProjectPath
+          ? `No tasks in ${escapeHtml(workspaceName(state.activeProjectPath))} yet.`
+          : 'Choose a terminal and add the first prompt.';
     elements.taskList.innerHTML = `
       <div class="queue-empty">
         <span aria-hidden="true">00</span>
-        <strong>${state.taskView === 'history' ? 'No tasks in this period' : 'The queue is clear'}</strong>
-        <p>${state.taskView === 'history' ? 'Choose another date or a wider period.' : state.activeProjectPath ? `No tasks in ${escapeHtml(workspaceName(state.activeProjectPath))} yet.` : 'Choose a terminal and add the first prompt.'}</p>
+        <strong>${emptyTitle}</strong>
+        <p>${emptyMessage}</p>
       </div>
     `;
     return;
   }
 
-  const historyActive = state.taskView === 'history';
-  const queuedIds = historyActive ? [] : visibleTasks.filter((task) => task.status === 'queued').map((task) => task.id);
+  const historyActive = state.taskView === 'history' && !searching;
+  const operationalQueue = !historyActive && !searching;
+  const searchMatches = taskSearchMatches();
+  const queuedIds = operationalQueue ? visibleTasks.filter((task) => task.status === 'queued').map((task) => task.id) : [];
   // Reordering applies to every queued task; batching applies only to direct
   // execute work, so the batch selection is pruned against its own narrower set.
-  const batchableIds = historyActive ? [] : visibleTasks
+  const batchableIds = operationalQueue ? visibleTasks
     .filter((task) => (
       task.status === 'queued'
       && (task.mode || 'execute') === 'execute'
       && task.terminal_lifecycle !== 'disposable'
     ))
-    .map((task) => task.id);
+    .map((task) => task.id) : [];
   state.parallelTaskIds = new Set([...state.parallelTaskIds].filter((id) => batchableIds.includes(id)));
   renderParallelBatchBar();
   let previousHistoryDate = '';
-  let previousQueuePeriod = '';
+  let previousQueueSection = '';
   elements.taskList.innerHTML = visibleTasks.map((task) => {
+    const unread = state.projectCompletionNotifications.includes(task.repo_path, task.id);
     const historyDate = historyActive ? new Date(task.created_at).toDateString() : '';
-    const queuePeriod = historyActive
+    const queuePeriod = historyActive || searching
       ? ''
       : new Date(task.created_at).toDateString() === new Date().toDateString() ? 'today' : 'past';
+    const queueSection = operationalQueue
+      ? task.status === 'running' ? 'running' : unread ? 'review' : queuePeriod
+      : '';
     const dateHeading = historyActive && historyDate !== previousHistoryDate
       ? `<div class="history-date-heading"><span>${escapeHtml(historyDateHeading(task.created_at))}</span><i></i></div>`
-      : !historyActive && queuePeriod !== previousQueuePeriod
-        ? `<div class="queue-date-heading" data-period="${queuePeriod}"><span>${queuePeriod === 'today' ? 'Today' : 'Past'}</span><i></i></div>`
+      : operationalQueue && queueSection !== previousQueueSection && queueSection === 'review'
+        ? '<div class="queue-date-heading queue-review-heading" data-period="review"><span>Ready for review</span><i></i></div>'
+      : operationalQueue && queueSection !== previousQueueSection && queueSection !== 'running'
+        ? `<div class="queue-date-heading" data-period="${queueSection}"><span>${queueSection === 'today' ? 'Today' : 'Past'}</span><i></i></div>`
         : '';
     previousHistoryDate = historyDate;
-    previousQueuePeriod = queuePeriod;
+    previousQueueSection = queueSection;
     const queueIndex = queuedIds.indexOf(task.id);
     const queued = queueIndex !== -1;
     /*
@@ -4722,7 +5020,7 @@ function renderTasks() {
       && task.terminal_lifecycle !== 'disposable';
     const turboMarker = turboPlanMarker(task);
     const turboPlanner = task.mode === 'turbo' ? turboPlannerIdentity(task) : null;
-    const assignable = queued
+    const assignable = queued && operationalQueue
       && task.mode === 'execute'
       && task.terminal_lifecycle !== 'disposable'
       && (
@@ -4734,7 +5032,7 @@ function renderTasks() {
       && sameProjectPath(thread.cwd, task.repo_path)
       && thread.id !== task.thread_id
     )) : [];
-    const reorderable = queued && !historyActive && Boolean(state.activeProjectPath);
+    const reorderable = queued && operationalQueue && Boolean(state.activeProjectPath);
     // A session task outlives its own run, so the card carries the live terminal state as
     // a word. Colour reinforces it; it never carries the meaning alone.
     const sessionCard = isDirectSessionTask(task);
@@ -4746,7 +5044,13 @@ function renderTasks() {
     const renameable = queued
       && task.mode !== 'breakdown'
       && taskNamingSupported();
-    const unread = state.projectCompletionNotifications.includes(task.repo_path, task.id);
+    const searchMatch = searchMatches.get(task.id);
+    const searchMatchCard = searchMatch ? `
+      <div class="task-search-match" data-source="${escapeHtml(searchMatch.source)}">
+        <span>${escapeHtml(searchMatch.label)}</span>
+        <p>${taskSearchMatchMarkup(searchMatch)}</p>
+      </div>
+    ` : '';
     const reorderControls = reorderable ? `
       <span class="queue-reorder" aria-label="Reorder queued task">
         <button type="button" data-move="up" aria-label="Move task ${task.id} up" ${queueIndex === 0 ? 'disabled' : ''}>↑</button>
@@ -4761,10 +5065,11 @@ function renderTasks() {
         data-status="${escapeHtml(task.status)}"
         data-mode="${escapeHtml(task.mode || 'execute')}"
         data-unread="${unread}"
+        ${searchMatch ? 'data-search-result="true"' : ''}
         ${sessionCard ? `data-session="true" data-session-state="${escapeHtml(sessionState)}"` : ''}
         ${manualSessionCard ? 'data-manual-completion="true"' : ''}
         tabindex="0"
-        aria-label="Task ${task.id}, ${escapeHtml(displayName)}, ${escapeHtml(task.status)}${manualSessionCard ? ', terminal session with manual completion' : sessionCard ? ', retained session' : ''}${sessionCard ? `, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', not viewed' : ''}${queued ? ', draggable queue item' : ''}"
+        aria-label="Task ${task.id}, ${escapeHtml(displayName)}, ${escapeHtml(task.status)}${manualSessionCard ? ', terminal session with manual completion' : sessionCard ? ', retained session' : ''}${sessionCard ? `, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', ready for review' : ''}${queued ? ', draggable queue item' : ''}"
       >
         ${manualSessionCard ? `
           <div class="task-session-modebar">
@@ -4779,7 +5084,7 @@ function renderTasks() {
             ${agentBadgeMarkup(task, 'task-agent-icon')}
             <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
             ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>${manualSessionCard ? 'Terminal' : 'Session'} · ${escapeHtml(sessionWord)}</span>` : ''}
-            ${unread ? '<span class="task-unread-marker">New</span>' : ''}
+            ${unread && !operationalQueue ? '<span class="task-unread-marker">Ready for review</span>' : ''}
             ${task.continued_from_task_id ? `<span class="task-parent-link">↳ #${String(task.continued_from_task_id).padStart(3, '0')}</span>` : ''}
           </span>
           <span class="task-top-actions">
@@ -4791,6 +5096,7 @@ function renderTasks() {
           </span>
         </div>
         <h3 class="task-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</h3>
+        ${searchMatchCard}
         ${taskHasCustomName(task) ? `<p class="task-prompt">${escapeHtml(task.prompt)}</p>` : ''}
         ${turboFleetMarkup(task)}
         ${state.assigningTaskId === task.id ? `
@@ -4860,7 +5166,7 @@ function renderTasks() {
       renderParallelBatchBar();
     });
 
-    if (card.dataset.status === 'queued' && !historyActive && state.activeProjectPath) {
+    if (card.dataset.status === 'queued' && operationalQueue && state.activeProjectPath) {
       const grip = card.querySelector('.drag-grip');
       grip?.addEventListener('dragstart', (event) => {
         if (state.reorderPending || state.queueDrag) {
@@ -5041,7 +5347,9 @@ function renderParallelBatchBar() {
   const selectedThread = state.threads.find(
     (thread) => thread.id === state.selectedThreadId && threadProvider(thread) === 'codex',
   );
-  elements.parallelBatchBar.hidden = state.taskView === 'history' || selectedCount === 0;
+  elements.parallelBatchBar.hidden = state.taskView === 'history'
+    || taskSearchActive(state.taskSearchQuery)
+    || selectedCount === 0;
   elements.parallelSelectionCount.textContent = `${selectedCount} selected`;
   elements.parallelSessionSelect.textContent = selectedThread
     ? `${workspaceName(selectedThread.cwd)} · ${selectedThread.title}`
@@ -5105,6 +5413,7 @@ function refreshTaskDurations() {
   if (selected && elements.termDuration) {
     const fresh = tasksById.get(selected.id) || selected;
     elements.termDuration.textContent = terminalDurationLabel(fresh);
+    refreshActivityOverviewDurations(elements.eventOverview);
   }
 }
 
@@ -6768,6 +7077,7 @@ async function executeReviewedPlan(sourceTask) {
       model: body.task.model || execution.model,
       effort: body.task.effort || execution.effort,
     }, { source: 'task', taskId: body.task.id });
+    clearTaskSearch({ render: false });
     state.taskView = 'queue';
     state.selectedTaskId = body.task.id;
     state.parallelTaskIds.clear();
@@ -6793,50 +7103,15 @@ async function taskAction(taskId, action, body = null) {
   }
 }
 
-async function submitTaskContinuation(event) {
-  event.preventDefault();
-  const sourceTask = state.selectedTaskForEvents;
-  const prompt = elements.continuationInput.value.trim();
-  const resumableSession = sourceTask?.terminal_lifecycle === 'disposable'
-    && state.status?.capabilities?.resumableDisposableSessions === true
-    && Boolean(sourceTask.thread_id)
-    && sourceTask.status !== 'running';
-  const runningSteeringAvailable = sourceTask?.status === 'running' && (
-    sourceTask.provider === 'codex'
-      ? state.status?.capabilities?.taskSteering === true
-      : sourceTask.provider === 'claude'
-        && state.status?.capabilities?.claudeTaskSteering === true
-  );
-  if (
-    !sourceTask
-    || !prompt
-    || state.continuationSubmitting
-    || (!taskContinuationSession(sourceTask) && !resumableSession && !runningSteeringAvailable)
-  ) return;
-  let request;
-  try {
-    const attachments = state.continuationAttachments.get(sourceTask.id) || [];
-    request = continuationSubmission(sourceTask, prompt, {
-      supportsDirectFollowUp: state.status?.capabilities?.taskDirectFollowUp === true,
-      supportsFollowUpAttachments: state.status?.capabilities?.taskFollowUpAttachments === true,
-      supportsTaskSteering: state.status?.capabilities?.taskSteering === true,
-      supportsClaudeTaskSteering: state.status?.capabilities?.claudeTaskSteering === true,
-      attachments: attachments.map((attachment) => ({
-        name: attachment.name,
-        mimeType: attachment.mimeType,
-        data: attachment.data,
-      })),
-    });
-  } catch (error) {
-    elements.continuationMessage.dataset.kind = 'error';
-    elements.continuationMessage.textContent = error.message;
-    renderTaskContinuation(sourceTask);
-    return;
-  }
-  state.continuationDrafts.set(sourceTask.id, elements.continuationInput.value);
-  state.continuationSubmitting = true;
-  elements.continuationMessage.dataset.kind = 'hint';
-  renderTaskContinuation(sourceTask);
+async function dispatchTaskContinuation(
+  sourceTask,
+  prompt,
+  request,
+  {
+    outbox = false,
+    submittedAttachments = [],
+  } = {},
+) {
   let outcome;
   try {
     const body = await api(request.path, {
@@ -6844,10 +7119,10 @@ async function submitTaskContinuation(event) {
       body: JSON.stringify(request.body),
       ...(sourceTask.provider === 'claude' && sourceTask.status === 'running'
         ? {
-            // The terminal executor can spend up to 80 seconds recovering an exact held paste.
-            // Keep the browser attached beyond that backend bound so it receives the authoritative
-            // delivered or deliveryUncertain outcome instead of presenting an early retry trap.
-            timeoutMs: 120_000,
+            // Flushing one stable native draft and then delivering this update can consume two
+            // bounded 80 second recovery windows. Keep the browser attached past both so an
+            // authoritative outcome always wins over an early retry trap.
+            timeoutMs: outbox ? 210_000 : 120_000,
             timeoutMessage: (seconds) => `CC Relay did not confirm the Claude live update within ${seconds} seconds. It may already be queued in Claude, so check Task Activity before sending it again.`,
           }
         : {}),
@@ -6862,6 +7137,32 @@ async function submitTaskContinuation(event) {
       prompt,
     });
   }
+
+  if (outbox) {
+    adjustContinuationSteerPending(sourceTask.id, -1);
+    if (!outcome.clearComposer) {
+      retainContinuationRetry(sourceTask.id, {
+        prompt,
+        attachments: submittedAttachments,
+      });
+    }
+    if (state.selectedTaskForEvents?.id === sourceTask.id) {
+      const restored = restoreContinuationRetry(sourceTask.id);
+      if (restored) {
+        elements.continuationInput.value = draftInputValue(
+          state.continuationDrafts.get(sourceTask.id),
+        );
+        elements.continuationAttachmentInput.value = '';
+      }
+      elements.continuationMessage.dataset.kind = outcome.kind;
+      elements.continuationMessage.textContent = outcome.message;
+      elements.continuationMessage.title = outcome.detail || outcome.message;
+      renderTaskContinuation(sourceTask);
+    }
+    if (outcome.refresh) await load({ fresh: true });
+    return outcome;
+  }
+
   state.continuationSubmitting = false;
   if (outcome.clearComposer) {
     /*
@@ -6896,6 +7197,86 @@ async function submitTaskContinuation(event) {
     renderTaskContinuation(sourceTask);
   }
   if (outcome.refresh) await load({ fresh: true });
+  return outcome;
+}
+
+async function submitTaskContinuation(event) {
+  event.preventDefault();
+  const sourceTask = state.selectedTaskForEvents;
+  const prompt = elements.continuationInput.value.trim();
+  const resumableSession = sourceTask?.terminal_lifecycle === 'disposable'
+    && state.status?.capabilities?.resumableDisposableSessions === true
+    && Boolean(sourceTask.thread_id)
+    && sourceTask.status !== 'running';
+  const runningSteeringAvailable = sourceTask?.status === 'running' && (
+    sourceTask.provider === 'codex'
+      ? state.status?.capabilities?.taskSteering === true
+      : sourceTask.provider === 'claude'
+        && state.status?.capabilities?.claudeTaskSteering === true
+  );
+  const outbox = reliableClaudeSteering(sourceTask);
+  if (
+    !sourceTask
+    || !prompt
+    || (state.continuationSubmitting && !outbox)
+    || (!taskContinuationSession(sourceTask) && !resumableSession && !runningSteeringAvailable)
+  ) return;
+  let request;
+  const attachments = state.continuationAttachments.get(sourceTask.id) || [];
+  const submittedAttachments = [...attachments];
+  try {
+    request = continuationSubmission(sourceTask, prompt, {
+      supportsDirectFollowUp: state.status?.capabilities?.taskDirectFollowUp === true,
+      supportsFollowUpAttachments: state.status?.capabilities?.taskFollowUpAttachments === true,
+      supportsTaskSteering: state.status?.capabilities?.taskSteering === true,
+      supportsClaudeTaskSteering: state.status?.capabilities?.claudeTaskSteering === true,
+      supportsClaudeSteerOutbox: state.status?.capabilities?.claudeSteerOutbox === true,
+      attachments: attachments.map((attachment) => ({
+        name: attachment.name,
+        mimeType: attachment.mimeType,
+        data: attachment.data,
+      })),
+    });
+  } catch (error) {
+    elements.continuationMessage.dataset.kind = 'error';
+    elements.continuationMessage.textContent = error.message;
+    renderTaskContinuation(sourceTask);
+    return;
+  }
+
+  if (outbox) {
+    // Capture this message and immediately release the visible composer. Delivery is serialized
+    // per task by the active watcher, so typing can continue while earlier updates still resolve.
+    state.continuationDrafts.delete(sourceTask.id);
+    state.continuationAttachments.delete(sourceTask.id);
+    elements.continuationInput.value = '';
+    elements.continuationAttachmentInput.value = '';
+    adjustContinuationSteerPending(sourceTask.id, 1);
+    elements.continuationMessage.dataset.kind = 'hint';
+    renderTaskContinuation(sourceTask);
+    elements.continuationInput.focus();
+
+    // Hand every update to the backend immediately. The active Claude watcher owns the ordered
+    // steering tail, so a second local request is accepted by the task before the first finishes
+    // its terminal recovery instead of living only in this browser tab.
+    const operation = dispatchTaskContinuation(sourceTask, prompt, request, {
+      outbox: true,
+      submittedAttachments,
+    });
+    // The delivery function converts provider failures into visible outcomes. This final handler
+    // covers only an unexpected renderer exception and prevents a detached outbox promise from
+    // becoming an unhandled rejection while the operator continues typing.
+    operation.catch(() => {});
+    return;
+  }
+
+  state.continuationDrafts.set(sourceTask.id, elements.continuationInput.value);
+  state.continuationSubmitting = true;
+  elements.continuationMessage.dataset.kind = 'hint';
+  renderTaskContinuation(sourceTask);
+  await dispatchTaskContinuation(sourceTask, prompt, request, {
+    submittedAttachments,
+  });
 }
 
 async function deleteTask(taskId) {
@@ -8365,6 +8746,7 @@ elements.plannerDetail.addEventListener('click', (event) => {
   if (open && open.dataset.openTask) {
     const taskId = Number(open.dataset.openTask);
     closePlanner();
+    clearTaskSearch({ render: false });
     state.taskView = 'queue';
     localStorage.setItem('relay.taskView', state.taskView);
     renderTasks();
@@ -8739,6 +9121,7 @@ elements.form.addEventListener('submit', async (event) => {
    */
   if (duplicateSubmission && isFinishedTaskStatus(createdTask.status)) {
     state.pendingSubmission = null;
+    clearTaskSearch({ render: false });
     state.taskView = 'queue';
     state.selectedTaskId = createdTask.id;
     localStorage.setItem('relay.taskView', state.taskView);
@@ -8768,6 +9151,7 @@ elements.form.addEventListener('submit', async (event) => {
       renderExecutionControls();
     }
   }
+  clearTaskSearch({ render: false });
   state.taskView = 'queue';
   state.selectedTaskId = createdTask.id;
   state.pendingSubmission = null;
@@ -8803,36 +9187,44 @@ elements.clearTaskNotificationsButton.addEventListener('click', () => {
   if (!cleared) return;
   renderProjects();
   renderTasks();
-  elements.queueSummary.textContent = `${cleared} task${cleared === 1 ? '' : 's'} marked as viewed`;
+  elements.queueSummary.textContent = `${cleared} task${cleared === 1 ? '' : 's'} marked as reviewed`;
 });
-elements.importTasksButton.addEventListener('click', async () => {
-  if (state.importingTasks) return;
-  state.importingTasks = true;
-  elements.taskImportStatus.hidden = false;
-  elements.taskImportStatus.dataset.state = 'working';
-  elements.taskImportStatus.textContent = 'Importing finished localhost tasks.';
+elements.taskSearchInput.addEventListener('input', () => {
+  state.taskSearchSequence += 1;
+  state.taskSearchQuery = elements.taskSearchInput.value.slice(0, 200);
+  state.taskSearchResults = [];
+  state.taskSearchTotal = 0;
+  state.taskSearchError = '';
+  state.taskSearchPending = taskSearchActive(state.taskSearchQuery);
+  renderStatus();
   renderTasks();
-  try {
-    const result = await api('/api/tasks/import-localhost', {
-      method: 'POST',
-      body: '{}',
-      timeoutMs: 60_000,
-    });
-    await load({ fresh: true });
-    elements.taskImportStatus.dataset.state = 'success';
-    elements.taskImportStatus.textContent = result.imported > 0
-      ? `Imported ${result.imported} task${result.imported === 1 ? '' : 's'}. ${result.updated} existing import${result.updated === 1 ? '' : 's'} refreshed.`
-      : `Localhost tasks are up to date. ${result.updated} import${result.updated === 1 ? '' : 's'} refreshed.`;
-    if (result.skippedActive > 0) {
-      elements.taskImportStatus.textContent += ` ${result.skippedActive} active task${result.skippedActive === 1 ? '' : 's'} stayed in localhost.`;
-    }
-  } catch (error) {
-    elements.taskImportStatus.dataset.state = 'error';
-    elements.taskImportStatus.textContent = error.message;
-  } finally {
-    state.importingTasks = false;
-    renderTasks();
+  scheduleTaskSearch();
+});
+elements.taskSearchInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && taskSearchActive(state.taskSearchQuery)) {
+    event.preventDefault();
+    clearTaskSearch({ focus: true });
+  } else if (event.key === 'Enter' && taskSearchActive(state.taskSearchQuery)) {
+    event.preventDefault();
+    scheduleTaskSearch(0);
   }
+});
+elements.taskSearchClear.addEventListener('click', () => {
+  clearTaskSearch({ focus: true });
+});
+document.addEventListener('keydown', (event) => {
+  if (
+    event.key !== '/'
+    || event.metaKey
+    || event.ctrlKey
+    || event.altKey
+    || event.target?.closest?.('input, textarea, select, [contenteditable="true"]')
+    || document.querySelector('dialog[open]')
+    || elements.taskSearchInput.disabled
+  ) return;
+  event.preventDefault();
+  elements.taskSearchInput.focus();
+  elements.taskSearchInput.select();
 });
 elements.standupClose.addEventListener('click', closeStandup);
 elements.standupCancel.addEventListener('click', closeStandup);
@@ -9525,6 +9917,18 @@ elements.themeToggle.addEventListener('click', () => {
 elements.headerPositionToggle.addEventListener('click', () => {
   setHeaderPosition(currentHeaderPosition() === 'bottom' ? 'top' : 'bottom');
 });
+elements.runningTaskRows.addEventListener('change', () => {
+  setRunningTaskLayout({
+    ...state.runningTaskLayout,
+    rows: Number(elements.runningTaskRows.value),
+  });
+});
+elements.runningTaskWidth.addEventListener('change', () => {
+  setRunningTaskLayout({
+    ...state.runningTaskLayout,
+    width: Number(elements.runningTaskWidth.value),
+  });
+});
 elements.aboutButton.addEventListener('click', () => {
   if (!elements.aboutModal.open) elements.aboutModal.showModal();
 });
@@ -9539,6 +9943,7 @@ if ('ResizeObserver' in window) {
   new ResizeObserver(syncHeaderHeight).observe(elements.appHeader);
 }
 syncHeaderHeight();
+setRunningTaskLayout(state.runningTaskLayout, { persist: false });
 
 elements.headerRunningTasks.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-running-task-id]');
@@ -9552,6 +9957,7 @@ elements.headerRunningTasks.addEventListener('click', async (event) => {
   if (project) {
     selectProject(project.path);
   }
+  clearTaskSearch({ render: false });
   state.taskView = 'queue';
   localStorage.setItem('relay.taskView', state.taskView);
   renderStatus();

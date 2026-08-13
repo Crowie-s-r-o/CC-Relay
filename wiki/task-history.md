@@ -6,6 +6,8 @@ type: architecture
 
 # Task History Persistence
 
+Task-list search is documented separately in [[task-search]]. It uses the same project boundary and canonical prompt and response extraction described here, and deliberately searches beyond the currently selected History period without changing that saved display preference.
+
 CC Relay stores tasks, outcomes, and task events in the local SQLite database. Desktop builds keep the database under Electron's stable per-user application data directory, while `npm start` uses `.data/relay.sqlite` in the repository.
 
 The apparent loss of older tasks after project workspace support was introduced was a presentation issue, not data loss. The queue list filtered tasks by the active project's exact working-directory path. Tasks created from a parent workspace therefore disappeared when a nested project was selected.
@@ -32,7 +34,7 @@ Every task card begins its footer metadata with the assigned CC Relay. Connected
 > [!important]
 > Do not duplicate task records into browser storage. SQLite remains the source of truth for prompts, status, results, events, and restart recovery. Browser storage holds only the display preference.
 
-The desktop app can copy finished localhost rows into its own SQLite database through **Import localhost**. Imported origins are unique by source database and source task ID, so subsequent imports refresh the same desktop rows. Active work is excluded to preserve scheduler ownership. See [[localhost-task-import]].
+The desktop app used to copy finished localhost rows into its own SQLite database through **Import localhost**. That action was removed on August 13, 2026, so desktop and localhost histories are now independent with no transfer path. Rows imported before removal keep their origin columns and stay in desktop history. See [[localhost-task-import]].
 
 ## Date ledger and statistics
 
@@ -44,6 +46,11 @@ Every task card now has a dedicated lifecycle row with **Started** and **Complet
 > This presentation reuses the existing SQLite `started_at` and `finished_at` fields. It does not add a second browser-side date source or infer lifecycle dates from task creation, events, duration, or status.
 
 After any successful composer submission, CC Relay switches to **Queue**, selects the newly created task card, and opens that task in Task Activity. This applies equally to Execute, Plan council, Turbo, normal Enter, and **Run now** submissions. Project-wide visibility ensures idle routing to another CC Relay cannot hide the new task.
+
+Task card selection and completion review are deliberately independent visual states. Selection owns the complete project-colored outline and tinted card surface. An unviewed completion uses a rose left rail, while the operational Queue collects every such card under one rose **Ready for review** divider directly below running work. Search and History preserve their own result order, so an unviewed card there carries an individual **Ready for review** badge. The unread card background rule is limited to `:not(.selected)` so it cannot replace the stronger selection treatment. Opening the task acknowledges only that completion and immediately returns it to its normal Today or Past position. **Mark reviewed** remains the explicit project-wide bulk acknowledgement.
+
+> [!note]
+> The review divider is the Queue view's non-color cue. Keeping the repeated badge out of that already-grouped view prevents the longer label from crowding compact task metadata. The rose rail and accessible card label still identify each member of the group, and light and dark themes use matching review colors.
 
 Task Activity selection is remembered independently for each Launchpad during the current browser session. Switching from Alpha to Beta and back reopens Alpha's previously selected task instead of discarding the selection. Restoration is bounded by the incoming project's normalized exact path, and missing or deleted tasks fall back to the existing running-task recovery or the empty detail state. This state is intentionally not persisted across an application restart. See [[project-workspaces]].
 
@@ -234,7 +241,12 @@ Queue status exposes both the backward-compatible `activeTaskId` and the complet
 
 ## Task list ordering
 
-The operational Queue view groups running tasks first, queued tasks second, and terminal outcomes last. Queued cards follow ascending execution `position` from top to bottom: the oldest or manually promoted task is at the top, and a normal new task appended with Enter appears at the bottom of the queued block. This visual order matches FIFO execution. Ctrl+Enter remains the explicit **Run now** exception because its priority position is placed below the current minimum queued position, so it may appear at the top. Finished, failed, interrupted, and cancelled tasks remain ordered newest first by task ID instead of retaining their obsolete queue positions.
+The operational Queue view ranks running tasks first, completed tasks awaiting review second, open retained sessions third, queued work fourth, and other terminal outcomes last. Queued cards follow ascending execution `position` from top to bottom: the oldest or manually promoted task is at the top, and a normal task appended with Enter appears at the bottom of the queued block. This visual order preserves FIFO execution inside the queued group. Ctrl+Enter remains the explicit **Run now** exception because its priority position is placed below the current minimum queued position, so it may appear at the top of that group. Review-ready and other terminal outcomes remain newest first by task ID instead of retaining obsolete queue positions.
+
+`sortOperationalTasks()` in `public/task-history.js` owns this presentation order and accepts a review-state predicate from the renderer. It returns a copy so rendering cannot mutate the API snapshot. `public/app.js` calls it only for the unfiltered Queue view; History remains date ordered and task search remains relevance ordered. When Task Activity acknowledges a completion, the same predicate becomes false on the rerender and the card leaves the review block without changing SQLite task state or queue position.
+
+> [!important]
+> Review priority is a browser presentation state, not scheduler priority. It must never change queued task positions, FIFO barriers, provider capacity, or persisted task status.
 
 > [!important]
 > Apply `position` ordering only to queued rows. A completed task's position describes where it once waited and must not determine history recency.

@@ -590,12 +590,23 @@ export function classifyClaudeScreen(text) {
   return statusRow || claudeComposerContent(text).found ? 'composer' : 'unknown';
 }
 
-// What Claude's collapsed-paste placeholder must report for THIS prompt: the pasted line count
-// minus one. Verified on a live paste that rendered `[Pasted text #2 +11 lines]` for twelve lines.
-// The raw prompt is the right input even though injection pastes the sanitized form:
-// sanitizeInjectedPrompt only removes ESC bytes in place and can never add or drop a line.
+// What Claude's collapsed-paste placeholder must report for one complete prompt form: the pasted
+// line count minus one. Verified on a live paste that rendered `[Pasted text #2 +11 lines]` for
+// twelve lines. claudeComposerState adds Claude's complete attachment-rewritten bodies when image
+// paths are present, because converting a path into a chip also removes that line from the widget.
 export function expectedPastePlaceholderLines(prompt) {
   return Math.max(0, String(prompt ?? '').split(/\r?\n/).length - 1);
+}
+
+function composerPromptForms(prompt, attachmentPaths) {
+  const forms = new Set([String(prompt ?? '')]);
+  const rewritten = attachmentRewrittenPromptForms(prompt, attachmentPaths);
+  for (const body of rewritten.bodies) forms.add(body);
+  return {
+    chipCount: rewritten.chipCount,
+    raw: String(prompt ?? ''),
+    values: [...forms],
+  };
 }
 
 function stripWhitespace(value) {
@@ -617,7 +628,7 @@ function promptComposerAnchor(prompt) {
 // 'empty'      the paste is provably gone, so re-delivering it is the only recovery,
 // 'junk'       some other unsubmitted text is in the way,
 // 'unreadable' the composer box was not recognized, so nothing was proved either way.
-export function claudeComposerState(screenText, prompt) {
+export function claudeComposerState(screenText, prompt, { attachmentPaths = [] } = {}) {
   const composer = claudeComposerContent(screenText);
   if (!composer.found) return 'unreadable';
   const normalized = composer.text.replace(/\s+/g, ' ').trim();
@@ -627,19 +638,42 @@ export function claudeComposerState(screenText, prompt) {
   const placeholder = CLAUDE_PASTE_PLACEHOLDER_PATTERN.exec(composer.text);
   if (placeholder) {
     // The placeholder is the primary held signal for any prompt of four or more lines, which is
-    // every real CC Relay prompt. Its line count identifies WHICH paste is being held, so a
+    // every normal CC Relay prompt. Its line count identifies WHICH paste is being held, so a
     // foreign paste sitting in the composer is not mistaken for this turn's prompt and submitted.
-    const expected = expectedPastePlaceholderLines(prompt);
-    // A one to three line paste never collapses, so a placeholder against a short prompt is
-    // provably somebody else's text no matter what count it reports.
-    if (expected + 1 < CLAUDE_PASTE_COLLAPSE_MIN_LINES) return 'junk';
-    // One line of tolerance absorbs a trailing-newline difference in how the count is derived.
-    return Math.abs(Number(placeholder[2]) - expected) <= 1 ? 'held' : 'junk';
+    //
+    // Attachment-bearing prompts have two valid complete shapes while the composer settles. The
+    // raw paste still contains its absolute image path. Claude then turns each path into an image
+    // chip, removes the path line, and collapses blank lines before drawing the final paste widget.
+    // Task 713 visibly held `[Image #3][Pasted text #4 +3 lines]` for a six-line raw paste whose
+    // complete rewritten body had four lines. Comparing only with the raw `+5` classified that
+    // exact update as junk and sent zero guarded submit actions.
+    const forms = composerPromptForms(prompt, attachmentPaths);
+    const rawExpected = expectedPastePlaceholderLines(forms.raw);
+    const rewrittenExpected = forms.values
+      .slice(1)
+      .map((value) => expectedPastePlaceholderLines(value));
+    const reported = Number(placeholder[2]);
+    const rawHeld = rawExpected + 1 >= CLAUDE_PASTE_COLLAPSE_MIN_LINES
+      && Math.abs(reported - rawExpected) <= 1;
+    if (rawHeld) return 'held';
+
+    // A rewritten line count is only valid once Claude also displays the exact number of image
+    // chips derived from this prompt. This keeps the added alternative narrower than line-count
+    // agreement alone. Chip numbering is session-cumulative, so only the count is contractual.
+    const visibleChipCount = composer.text.match(new RegExp(CLAUDE_IMAGE_CHIP_PATTERN.source, 'g'))?.length || 0;
+    const rewrittenHeld = forms.chipCount > 0
+      && visibleChipCount === forms.chipCount
+      && rewrittenExpected.some((expected) => (
+        expected + 1 >= CLAUDE_PASTE_COLLAPSE_MIN_LINES
+        && Math.abs(reported - expected) <= 1
+      ));
+    return rewrittenHeld ? 'held' : 'junk';
   }
   // A one to three line paste renders literally, so its first line is the anchor. Attachment
   // chips render before it and are tolerated because the check is a containment test.
-  const anchor = promptComposerAnchor(prompt);
-  if (anchor && normalized.includes(anchor)) return 'held';
+  const promptForms = composerPromptForms(prompt, attachmentPaths).values;
+  const anchors = [...new Set(promptForms.map(promptComposerAnchor).filter(Boolean))];
+  if (anchors.some((anchor) => normalized.includes(anchor))) return 'held';
   // Claude Code word-wraps the literal rendering, so joining the rows reproduces the original
   // spacing and the containment test above normally succeeds. A single unbroken token longer than
   // the composer width is the exception: it is hard-wrapped at the column boundary with no space,
@@ -650,11 +684,12 @@ export function claudeComposerState(screenText, prompt) {
   // mostly whitespace would otherwise degenerate towards the empty string, which every composer
   // contains. Only a long unbroken token can reach this branch, and such an anchor is always the
   // full forty characters.
-  const strippedAnchor = stripWhitespace(anchor);
-  if (
-    strippedAnchor.length >= CLAUDE_COMPOSER_MIN_STRIPPED_ANCHOR_CHARS
-    && stripWhitespace(normalized).includes(strippedAnchor)
-  ) {
+  const strippedComposer = stripWhitespace(normalized);
+  if (anchors.some((anchor) => {
+    const strippedAnchor = stripWhitespace(anchor);
+    return strippedAnchor.length >= CLAUDE_COMPOSER_MIN_STRIPPED_ANCHOR_CHARS
+      && strippedComposer.includes(strippedAnchor);
+  })) {
     return 'held';
   }
   if (CLAUDE_COMPOSER_EMPTY_PLACEHOLDER_PATTERNS.some((pattern) => pattern.test(normalized))) {
@@ -1713,6 +1748,9 @@ export class ClaudeTerminalExecutor {
 
   async deliverActiveSteer(task, active, terminal, request) {
     const sessionName = task.thread_name || task.thread_id;
+    const attachmentPaths = Array.isArray(request.attachmentPaths)
+      ? request.attachmentPaths
+      : taskAttachmentPaths({ attachments: request.attachments });
     const fail = (message, { uncertain = false } = {}) => {
       const error = new ClaudeExecutionError(
         message,
@@ -1725,6 +1763,7 @@ export class ClaudeTerminalExecutor {
       // that was never confirmed can be explained from relay-diagnostics.jsonl without the
       // terminal, which is what made the text-only held-paste defect expensive to find.
       error.submitAttempts = request.submitAttempts;
+      error.blockingComposerSubmitAttempts = request.blockingComposerSubmitAttempts || 0;
       error.composerStates = [...request.composerStates];
       return error;
     };
@@ -1763,7 +1802,9 @@ export class ClaudeTerminalExecutor {
     if (!verified?.session || !verified?.terminal) {
       throw fail(`CC Relay could not resolve the exact ${sessionName} terminal. Your live update was not sent.`);
     }
-    if (verified.session.rawStatus !== 'busy') {
+    if (!(request.flushComposer
+      ? ['busy', 'idle'].includes(verified.session.rawStatus)
+      : verified.session.rawStatus === 'busy')) {
       throw fail('That Claude turn is no longer working. Send the message again as a normal continuation after the task finishes.');
     }
     let activeTerminal = verified.terminal;
@@ -1777,17 +1818,162 @@ export class ClaudeTerminalExecutor {
       );
     }
     const composer = claudeComposerContent(screen.text);
-    if (!composer.found || composer.text.trim()) {
-      throw fail(
-        `The ${sessionName} Claude composer already contains unsent text. CC Relay did not overwrite or submit it.`,
-      );
+    if (!composer.found) {
+      throw fail(`CC Relay could not read the ${sessionName} Claude composer. Your live update was not sent.`);
+    }
+    if (composer.text.trim()) {
+      if (!request.flushComposer) {
+        throw fail(
+          `The ${sessionName} Claude composer already contains unsent text. CC Relay did not overwrite or submit it.`,
+        );
+      }
+
+      /*
+       * A running Claude session can already hold a draft when the operator sends through Relay.
+       * The old path rejected every later update forever. The reliable path treats the action as
+       * an ordered send: wait until the existing draft is stable, submit it first, then inject the
+       * requested update. It never clears or types over the draft, and every Return is still tied
+       * to the exact owned terminal and a positively visible nonempty composer.
+       *
+       * The existing draft can itself be this request, for example after an earlier renderer lost
+       * its response. While its visible shape matches this prompt, let the normal hook and
+       * transcript correlators acknowledge it. Exact evidence returns without a second injection.
+       */
+      const initialComposerState = claudeComposerState(screen.text, request.deliveredPrompt, {
+        attachmentPaths,
+      });
+      request.blockingComposerState = initialComposerState;
+      request.evidenceEligible = initialComposerState === 'held';
+      const visibleDraftMatchesRawRequest = request.attachments.length === 0
+        && normalizedMessageText(composer.text) === normalizedMessageText(request.value);
+      if (visibleDraftMatchesRawRequest) {
+        // The native draft may predate Relay and therefore omit the appended non-interactive
+        // notice. Once this exact visible text is the draft Relay submits, its exact hook or
+        // transcript record proves the user's requested update without a decorated duplicate.
+        request.acceptedPrompts.push(request.value);
+        request.evidenceEligible = true;
+      }
+      acceptanceDeadlineAt = this.now() + this.steerAcceptanceTimeoutMs;
+      let lastComposerText = composer.text;
+      let stableReads = 1;
+      let composerCleared = false;
+
+      while (
+        acceptanceRemainingMs() > 0
+        && request.blockingComposerSubmitAttempts < this.maxSubmitAttempts
+      ) {
+        await waitWithinAcceptance(this.screenSettleMs);
+        if (accepted()) return request.result();
+
+        try {
+          verified = await this.verifyTerminalIdentity(task, active, activeTerminal);
+        } catch (error) {
+          throw fail(
+            `CC Relay could not re-verify the ${sessionName} terminal while sending its existing draft. The requested live update was not typed. ${error.message}`,
+            {
+              uncertain: request.evidenceEligible
+                && request.blockingComposerSubmitAttempts > 0,
+            },
+          );
+        }
+        if (
+          !verified?.session
+          || !verified?.terminal
+          || !['busy', 'idle'].includes(verified.session.rawStatus)
+          || active.cancelRequested
+        ) {
+          break;
+        }
+        activeTerminal = verified.terminal;
+
+        const blockingScreen = await this.inspectTerminalScreen(activeTerminal.terminalWindowId);
+        if (accepted()) return request.result();
+        if (!blockingScreen.ok || blockingScreen.classification !== 'composer') {
+          stableReads = 0;
+          continue;
+        }
+        const blockingComposer = claudeComposerContent(blockingScreen.text);
+        if (!blockingComposer.found) {
+          stableReads = 0;
+          continue;
+        }
+        if (!blockingComposer.text.trim()) {
+          composerCleared = true;
+          break;
+        }
+
+        if (blockingComposer.text === lastComposerText) {
+          stableReads += 1;
+        } else {
+          lastComposerText = blockingComposer.text;
+          stableReads = 1;
+        }
+        // Never submit while the operator is still changing the native draft. Two identical
+        // snapshots separated by screenSettleMs are the positive stability proof.
+        if (stableReads < 2) continue;
+        if (acceptanceRemainingMs() < this.steerSubmitConfirmMs) break;
+
+        request.blockingComposerSubmitAttempts += 1;
+        try {
+          await this.submit(activeTerminal.terminalWindowId);
+        } catch (error) {
+          await waitWithinAcceptance(acceptanceRemainingMs());
+          if (accepted()) return request.result();
+          throw fail(
+            `CC Relay could not confirm the submit action for the existing draft in ${sessionName}: ${error.message}. The requested live update was not typed.`,
+            {
+              uncertain: request.evidenceEligible,
+            },
+          );
+        }
+        stableReads = 0;
+        await waitWithinAcceptance(this.submitRetryMs);
+        if (accepted()) return request.result();
+      }
+
+      if (!composerCleared) {
+        const after = await this.inspectTerminalScreen(activeTerminal.terminalWindowId);
+        const afterComposer = after.ok && after.classification === 'composer'
+          ? claudeComposerContent(after.text)
+          : { found: false, text: '' };
+        composerCleared = afterComposer.found && !afterComposer.text.trim();
+      }
+
+      if (!composerCleared) {
+        const error = fail(
+          `The ${sessionName} Claude composer still contains its earlier draft after ${request.blockingComposerSubmitAttempts} guarded submit action${request.blockingComposerSubmitAttempts === 1 ? '' : 's'}. The requested live update was not typed.`,
+          {
+            uncertain: request.evidenceEligible
+              && request.blockingComposerSubmitAttempts > 0,
+          },
+        );
+        error.composerBlocked = true;
+        throw error;
+      }
+
+      // If the submitted native draft had this request's visible shape, reserve one full evidence
+      // window before injecting. Queue records were measured to arrive inside 8.3 seconds; the
+      // production confirmation margin is 15 seconds. An exact match returns above and avoids a
+      // duplicate, while a different draft produces no match and lets this request continue.
+      if (request.evidenceEligible) {
+        await waitWithinAcceptance(this.steerSubmitConfirmMs);
+        if (accepted()) return request.result();
+      }
+      request.evidenceEligible = false;
+      acceptanceDeadlineAt = null;
     }
 
     // Re-prove the process and busy state after the screen read. If the original turn settles
     // during this gap, the message must use the normal continuation path instead of silently
     // becoming an unmanaged new turn.
     verified = await this.verifyTerminalIdentity(task, active, activeTerminal);
-    if (!verified?.session || !verified?.terminal || verified.session.rawStatus !== 'busy') {
+    if (
+      !verified?.session
+      || !verified?.terminal
+      || !(request.flushComposer
+        ? ['busy', 'idle'].includes(verified.session.rawStatus)
+        : verified.session.rawStatus === 'busy')
+    ) {
       throw fail('That Claude turn finished before CC Relay could type the live update. Send it again as a normal continuation.');
     }
     activeTerminal = verified.terminal;
@@ -1852,7 +2038,7 @@ export class ClaudeTerminalExecutor {
       if (accepted()) return request.result();
       if (active.cancelRequested) break;
       lastComposerState = heldScreen.ok && heldScreen.classification === 'composer'
-        ? claudeComposerState(heldScreen.text, request.deliveredPrompt)
+        ? claudeComposerState(heldScreen.text, request.deliveredPrompt, { attachmentPaths })
         : 'unreadable';
       // Every classification the schedule acted on, in order, so the next incident is diagnosable
       // from relay-diagnostics.jsonl alone without reading the terminal.
@@ -1964,7 +2150,8 @@ export class ClaudeTerminalExecutor {
     // task with attachments) permanently without submission evidence. These are complete derived
     // forms of the same prompt, so accepting them adds no partial-match surface. The chip count is
     // 0 for a text-only prompt, which keeps raw equality as the only accepted form there.
-    const rewrittenForms = attachmentRewrittenPromptForms(prompt, taskAttachmentPaths(task));
+    const promptAttachmentPaths = taskAttachmentPaths(task);
+    const rewrittenForms = attachmentRewrittenPromptForms(prompt, promptAttachmentPaths);
     // Raw evidence is checked first so the reported value always names the form that actually
     // arrived, which makes the rewrite path observable in live diagnostics.
     const promptEvidence = (value, rawEvidence, rewrittenEvidence) => {
@@ -2198,7 +2385,12 @@ export class ClaudeTerminalExecutor {
       if (active.steer === submitSteer) active.steer = null;
       for (const request of pendingSteers) {
         if (!request.closedError && !request.acknowledged) {
-          request.closedError = request.injectionStarted
+          const requestMayHaveReachedClaude = request.injectionStarted
+            || (
+              request.evidenceEligible
+              && request.blockingComposerSubmitAttempts > 0
+            );
+          request.closedError = requestMayHaveReachedClaude
             ? new ClaudeExecutionError(
               'The Claude turn ended while CC Relay was confirming the live update. The message may already be queued in Claude, so it was not sent again.',
               { deliveryUncertain: true, retryable: false },
@@ -2227,9 +2419,9 @@ export class ClaudeTerminalExecutor {
       const normalizedPromptId = typeof promptId === 'string' ? promptId.trim() : '';
       if (normalizedPromptId && consumedSteerPromptIds.has(normalizedPromptId)) return null;
       for (const request of pendingSteers) {
-        if (!request.injectionStarted || request.acknowledged) continue;
+        if (!(request.injectionStarted || request.evidenceEligible) || request.acknowledged) continue;
         let evidence = null;
-        if (submittedPromptMatches(value, [request.deliveredPrompt])) {
+        if (submittedPromptMatches(value, request.acceptedPrompts)) {
           evidence = rawEvidence;
         } else if (submittedRewrittenPromptMatches(value, request.rewrittenForms)) {
           evidence = rewrittenEvidence;
@@ -2267,7 +2459,7 @@ export class ClaudeTerminalExecutor {
     const matchingUnanchoredSteer = (value) => (
       value
         ? [...unanchoredSteers].find((request) => (
-          submittedPromptMatches(value, [request.deliveredPrompt])
+          submittedPromptMatches(value, request.acceptedPrompts)
           || submittedRewrittenPromptMatches(value, request.rewrittenForms)
         ))
         : undefined
@@ -2296,7 +2488,7 @@ export class ClaudeTerminalExecutor {
       idleObservations = 0;
     };
 
-    const submitSteer = (value, attachments = []) => {
+    const submitSteer = (value, attachments = [], { flushComposer = false } = {}) => {
       if (!promptSubmitted) {
         throw new ClaudeExecutionError(
           'Claude has not accepted the original turn yet. Try the live update again after it starts working. Your message was not queued.',
@@ -2310,6 +2502,7 @@ export class ClaudeTerminalExecutor {
         );
       }
       const steeringAttachments = Array.isArray(attachments) ? attachments : [];
+      const attachmentPaths = taskAttachmentPaths({ attachments: steeringAttachments });
       const deliveredPrompt = taskPrompt({
         prompt: value,
         attachments: steeringAttachments,
@@ -2322,12 +2515,14 @@ export class ClaudeTerminalExecutor {
       const request = {
         value,
         attachments: steeringAttachments,
+        attachmentPaths,
         deliveredPrompt,
+        acceptedPrompts: [deliveredPrompt],
         // A live update is delivered into a session that has already consumed chips, so its own
         // rewritten form is numbered from wherever the session had reached. Same rule, same helper.
         rewrittenForms: attachmentRewrittenPromptForms(
           deliveredPrompt,
-          taskAttachmentPaths({ attachments: steeringAttachments }),
+          attachmentPaths,
         ),
         clientUserMessageId,
         acknowledgement,
@@ -2335,6 +2530,13 @@ export class ClaudeTerminalExecutor {
         acknowledged: false,
         evidence: null,
         injectionStarted: false,
+        // Opt-in from the current renderer. It turns Update turn into an ordered send when the
+        // native composer already has a stable draft, while older clients retain fail-closed
+        // draft protection.
+        flushComposer: flushComposer === true,
+        evidenceEligible: false,
+        blockingComposerState: null,
+        blockingComposerSubmitAttempts: 0,
         submitAttempted: false,
         submitAttempts: 0,
         // Ordered composer classification for every recovery pass that ran, so a held update that
@@ -2350,6 +2552,12 @@ export class ClaudeTerminalExecutor {
           promptSubmissionEvidence: request.evidence,
           submitAttempted: request.submitAttempted,
           submitAttempts: request.submitAttempts,
+          ...(request.blockingComposerSubmitAttempts > 0
+            ? {
+                blockingComposerState: request.blockingComposerState,
+                blockingComposerSubmitAttempts: request.blockingComposerSubmitAttempts,
+              }
+            : {}),
           composerStates: [...request.composerStates],
         }),
       };
@@ -3295,7 +3503,9 @@ export class ClaudeTerminalExecutor {
             await this.waitForTranscriptOrPoll(source, reader.offset, this.pollMs);
             continue;
           }
-          let composer = screen.ok ? claudeComposerState(screen.text, prompt) : 'unreadable';
+          let composer = screen.ok
+            ? claudeComposerState(screen.text, prompt, { attachmentPaths: promptAttachmentPaths })
+            : 'unreadable';
           if (composer === 'held') {
             // Positive proof that this exact paste reached the composer, latched for the rest of
             // the turn. Everything the empty-composer branch below decides depends on it.
@@ -3355,7 +3565,9 @@ export class ClaudeTerminalExecutor {
               await this.waitForTranscriptOrPoll(source, reader.offset, this.pollMs);
               continue;
             }
-            composer = claudeComposerState(cleared.text, prompt);
+            composer = claudeComposerState(cleared.text, prompt, {
+              attachmentPaths: promptAttachmentPaths,
+            });
             if (composer === 'held') screens.pasteSeenHeld = true;
             if (composer === 'junk') {
               // Still occupied. Burning the remaining attempts against it would only risk

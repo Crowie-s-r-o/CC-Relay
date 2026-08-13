@@ -16,6 +16,8 @@ tags:
 > [!important]
 > Task Activity renders one named **Sub-agent** row per Claude or Codex worker. The row carries its role or model, launch brief, and live lifecycle state. The summary counts workers that are still active.
 
+The expanded-by-default [[task-activity-overview]] repeats the operator-facing worker ledger above the terminal filters, with live workers first, per-worker elapsed time, assignment briefs, and explicit lifecycle states. The full signal row remains the lossless detail and copy surface.
+
 ## Provider signals
 
 Claude exposes a worker launch as an `mcpToolCall` with `subAgent: true`. A background launch remains active after the launch call returns and resolves only when the matching `claude/agent-finished` notification arrives. Launch and finish records fold by tool use ID.
@@ -48,6 +50,6 @@ The complete repository suite passes 1,081 tests. The focused collaboration suit
 > [!warning]
 > Restart CC Relay and rebuild the desktop bundle after current tasks finish to activate renderer and app-server changes. Do not replace the running bundle while provider turns are active.
 
-See also [[claude-terminal-visibility]], [[claude-background-sub-agent-completion]], [[terminal-markdown]], and [[provider-plan-and-goal-visibility]] for the plan checklist and Codex goal rows that share this stream.
+See also [[task-activity-overview]], [[claude-terminal-visibility]], [[claude-background-sub-agent-completion]], [[terminal-markdown]], and [[provider-plan-and-goal-visibility]] for the plan checklist and Codex goal rows that share this stream.
 
 #relay #terminal #sub-agent #codex #claude

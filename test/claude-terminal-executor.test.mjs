@@ -1081,6 +1081,38 @@ test('held-paste verification follows the verified collapse threshold', () => {
   assert.equal(claudeComposerState(frameWith('[Image #1] [Image #2]'), lines(9)), 'held');
 });
 
+test('task 713: an attachment-rewritten paste is held at its rewritten line count', () => {
+  const imagePath = '/repo/.data/tasks/713/attachments/02.png';
+  const prompt = taskPrompt({
+    prompt: 'Apply the attached follow-up while Claude is still working.',
+    attachments: [{ name: 'follow-up.png', path: imagePath }],
+  });
+  const forms = attachmentRewrittenPromptForms(prompt, [imagePath]);
+
+  // This is the exact geometry from task 713: six raw lines become a four-line body after Claude
+  // turns the path into an image chip and collapses blank lines. The visible widget therefore says
+  // +3, not the raw prompt's +5.
+  assert.equal(expectedPastePlaceholderLines(prompt), 5);
+  assert.equal(forms.chipCount, 1);
+  assert.ok(forms.bodies.some((body) => expectedPastePlaceholderLines(body) === 3));
+  const frame = heldPasteFrame(prompt, {
+    chips: '[Image #3]',
+    counter: 4,
+    renderedPaste: forms.bodies.find((body) => expectedPastePlaceholderLines(body) === 3),
+  });
+  assert.match(frame, /\[Image #3\]\[Pasted text #4 \+3 lines\]/);
+
+  // Attachment paths are required to derive the alternative. Without them, or with the wrong
+  // chip count, the same line count remains foreign text and never earns a Return.
+  assert.equal(claudeComposerState(frame, prompt), 'junk');
+  assert.equal(claudeComposerState(frame, prompt, { attachmentPaths: [imagePath] }), 'held');
+  const wrongChips = frame.replace('[Image #3]', '[Image #3] [Image #4]');
+  assert.equal(
+    claudeComposerState(wrongChips, prompt, { attachmentPaths: [imagePath] }),
+    'junk',
+  );
+});
+
 test('the folder trust prompt is its own classification, never a composer', () => {
   // Byte-exact from the captured pty frame. Same chrome and same select widget as the picker.
   const trust = [
@@ -1460,9 +1492,17 @@ const composerFrame = (content = '', {
 // to hide by emitting only the first non-empty line on a single row. Every text-only live steer is
 // exactly that shape, because taskPrompt() appends the non-interactive notice after a blank line
 // and keeps the paste under the collapse threshold. See [[claude-steer-text-hold-reliability]].
-const heldPasteFrame = (pasted, { chips = '', counter = 5, columns = null } = {}) => {
+const heldPasteFrame = (pasted, {
+  chips = '',
+  counter = 5,
+  columns = null,
+  renderedPaste = null,
+} = {}) => {
   // The terminal consumes the bracketed paste markers, so they never appear on screen.
-  const text = String(pasted ?? '')
+  // For an image prompt, Claude can also rewrite the complete pasted body before rendering the
+  // widget. `renderedPaste` models that observed form while `pasted` remains the exact injected
+  // value against which Relay must correlate delivery.
+  const text = String(renderedPaste ?? pasted ?? '')
     .split(`${ESC}[200~`).join('')
     .split(`${ESC}[201~`).join('');
   const lines = text.split(/\r?\n/);
@@ -2561,6 +2601,162 @@ test('a running terminal turn accepts an exact live update without creating anot
   assert.match(io.stderr.join('\n'), /accepted the live update.*could not record/i);
 });
 
+test('a native draft equal to the raw live update is accepted without decorated reinjection', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const active = { cancelRequested: false };
+  const rawUpdate = 'Send the native draft exactly once.';
+  const injections = [];
+  const submitted = [];
+  let originalInjected = false;
+  let nativeDraftVisible = false;
+  let finalReady = false;
+  let steerPromise = null;
+  let steerOutcome = null;
+  const sessions = {
+    readConnectedSession: async () => ({
+      id: SESSION_ID,
+      provider: 'claude',
+      source: 'Claude interactive',
+      cwd: '/repo',
+      rawStatus: originalInjected && !finalReady ? 'busy' : 'idle',
+      pid: PID,
+    }),
+  };
+  const io = collect();
+  const onEvent = (entry) => {
+    io.onEvent(entry);
+    if (entry.event.type !== 'claude/started' || steerPromise) return;
+    nativeDraftVisible = true;
+    steerPromise = active.steer(rawUpdate, [], { flushComposer: true })
+      .then((outcome) => {
+        steerOutcome = outcome;
+        fake.append(assistant('end_turn', [text('Handled the native draft once.')], 'raw-steer'));
+        finalReady = true;
+      });
+  };
+  const { executor } = makeExecutor({
+    sessions,
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    openTranscript: () => fake.source,
+    readScreen: async () => ({
+      ok: true,
+      reason: 'read',
+      text: nativeDraftVisible ? composerFrame(rawUpdate) : EMPTY_COMPOSER_FRAME,
+    }),
+    inject: async (windowId, value) => {
+      injections.push({ windowId, value });
+      if (!originalInjected) {
+        originalInjected = true;
+        fake.append(userPrompt(value, 'original-prompt'));
+      }
+    },
+    submit: async (windowId) => {
+      submitted.push(windowId);
+      nativeDraftVisible = false;
+      fake.append(userPrompt(rawUpdate, 'raw-steer'));
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    pollMs: 2,
+    screenSettleMs: 1,
+    submitRetryMs: 1,
+    steerSubmitNudgeMs: 2,
+    steerAcceptanceTimeoutMs: 100,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    active,
+    { id: SESSION_ID },
+    TERMINAL,
+    { onEvent, onStderr: io.onStderr },
+  );
+  await steerPromise;
+
+  assert.equal(outcome.finalResponse, 'Handled the native draft once.');
+  assert.equal(injections.length, 1);
+  assert.deepEqual(submitted, [WINDOW_ID]);
+  assert.equal(steerOutcome.promptSubmissionEvidence, 'transcript-prompt');
+  assert.equal(steerOutcome.blockingComposerSubmitAttempts, 1);
+});
+
+test('multiple live updates are accepted immediately and delivered by the backend in order', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const active = { cancelRequested: false };
+  const injections = [];
+  let originalInjected = false;
+  let finalReady = false;
+  let steerPromises = null;
+  let steerOutcomes = null;
+  const sessions = {
+    readConnectedSession: async () => ({
+      id: SESSION_ID,
+      provider: 'claude',
+      source: 'Claude interactive',
+      cwd: '/repo',
+      rawStatus: originalInjected && !finalReady ? 'busy' : 'idle',
+      pid: PID,
+    }),
+  };
+  const io = collect();
+  const onEvent = (entry) => {
+    io.onEvent(entry);
+    if (entry.event.type !== 'claude/started' || steerPromises) return;
+    const first = active.steer('First live update.', [], { flushComposer: true });
+    const second = active.steer('Second live update.', [], { flushComposer: true });
+    steerPromises = Promise.all([first, second]).then((outcomes) => {
+      steerOutcomes = outcomes;
+      fake.append(assistant('end_turn', [text('Applied both live updates in order.')]));
+      finalReady = true;
+    });
+  };
+  const { executor } = makeExecutor({
+    sessions,
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    openTranscript: () => fake.source,
+    readScreen: async () => ({ ok: true, reason: 'read', text: EMPTY_COMPOSER_FRAME }),
+    inject: async (windowId, value) => {
+      injections.push({ windowId, value });
+      if (!originalInjected) {
+        originalInjected = true;
+        fake.append(userPrompt(value, 'original-prompt'));
+        return;
+      }
+      fake.append(userPrompt(value, `steer-prompt-${injections.length - 1}`));
+    },
+    now: Date.now,
+    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    pollMs: 2,
+    steerSubmitNudgeMs: 20,
+    steerAcceptanceTimeoutMs: 100,
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    active,
+    { id: SESSION_ID },
+    TERMINAL,
+    { onEvent, onStderr: io.onStderr },
+  );
+  await steerPromises;
+
+  assert.equal(outcome.finalResponse, 'Applied both live updates in order.');
+  assert.match(injections[1].value, /^First live update\./);
+  assert.match(injections[2].value, /^Second live update\./);
+  assert.deepEqual(
+    steerOutcomes.map((entry) => entry.clientUserMessageId),
+    ['relay-steer-7-1', 'relay-steer-7-2'],
+  );
+  assert.deepEqual(
+    io.events
+      .filter((entry) => entry.event.item?.clientId?.startsWith('relay-steer-'))
+      .map((entry) => entry.message),
+    ['First live update.', 'Second live update.'],
+  );
+});
+
 test('a held live update receives one guarded submit and exact transcript confirmation', async () => {
   const fake = fakeTranscript();
   fake.append({ type: 'mode' });
@@ -2647,6 +2843,10 @@ test('task 129: an image live update retries its exact held paste after the firs
     name: 'new-modal.png',
     path: '/repo/.data/tasks/129/attachments/new-modal.png',
   }];
+  const rewrittenHeldBody = (value) => attachmentRewrittenPromptForms(
+    value,
+    [liveAttachments[0].path],
+  ).bodies.find((body) => expectedPastePlaceholderLines(body) === 3);
   const sessions = {
     readConnectedSession: async () => ({
       id: SESSION_ID,
@@ -2679,7 +2879,14 @@ test('task 129: an image live update retries its exact held paste after the firs
       reason: 'read',
       text: injections.length < 2
         ? EMPTY_COMPOSER_FRAME
-        : heldPasteFrame(injections[1].value, { chips: '[Image #2]', counter: 3 }),
+        : heldPasteFrame(injections[1].value, {
+            chips: '[Image #2]',
+            counter: 3,
+            // Task 713 exposed the missing realism in this older task 129 fixture. Claude removes
+            // the attachment path before drawing the widget, so the held body is +3 rather than
+            // the raw prompt's +5. Recovery must classify the rendered form, not the source paste.
+            renderedPaste: rewrittenHeldBody(injections[1].value),
+          }),
     }),
     inject: async (windowId, value) => {
       injections.push({ windowId, value });
@@ -2720,6 +2927,8 @@ test('task 129: an image live update retries its exact held paste after the firs
 
   assert.equal(outcome.finalResponse, 'Applied the additional modal design.');
   assert.equal(injections.length, 2);
+  assert.equal(expectedPastePlaceholderLines(injections[1].value), 5);
+  assert.equal(expectedPastePlaceholderLines(rewrittenHeldBody(injections[1].value)), 3);
   assert.deepEqual(submits, [WINDOW_ID, WINDOW_ID]);
   assert.equal(steerOutcome.submitAttempted, true);
   assert.equal(steerOutcome.submitAttempts, 2);
@@ -2732,12 +2941,19 @@ function unacknowledgedSteerRequest(deliveredPrompt) {
     releaseAcknowledgement = resolve;
   });
   const request = {
+    value: deliveredPrompt,
+    attachments: [],
     deliveredPrompt,
+    acceptedPrompts: [deliveredPrompt],
     acknowledged: false,
     closedError: null,
     acknowledgement,
     releaseAcknowledgement,
     injectionStarted: false,
+    flushComposer: false,
+    evidenceEligible: false,
+    blockingComposerState: null,
+    blockingComposerSubmitAttempts: 0,
     submitAttempted: false,
     submitAttempts: 0,
     composerStates: [],
@@ -3956,6 +4172,219 @@ test('a live Claude update never overwrites text already in the native composer'
   );
 });
 
+test('the reliable steer path submits a stable native draft across an active idle boundary before injecting the requested update', async () => {
+  const deliveredPrompt = taskPrompt({
+    prompt: 'Send this after the native draft.',
+    attachments: [],
+  });
+  const request = unacknowledgedSteerRequest(deliveredPrompt);
+  request.flushComposer = true;
+  request.result = () => ({
+    blockingComposerState: request.blockingComposerState,
+    blockingComposerSubmitAttempts: request.blockingComposerSubmitAttempts,
+  });
+  let nativeDraftVisible = true;
+  const injected = [];
+  const submitted = [];
+  const { executor } = makeExecutor({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: 'idle',
+        pid: PID,
+      }),
+    },
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    readScreen: async () => ({
+      ok: true,
+      reason: 'read',
+      text: nativeDraftVisible ? JUNK_COMPOSER_FRAME : EMPTY_COMPOSER_FRAME,
+    }),
+    submit: async (windowId) => {
+      submitted.push(windowId);
+      nativeDraftVisible = false;
+    },
+    inject: async (windowId, value) => {
+      injected.push({ windowId, value });
+      request.acknowledged = true;
+      request.evidence = 'test-exact-prompt';
+      request.releaseAcknowledgement();
+    },
+    screenSettleMs: 1,
+    steerSubmitNudgeMs: 1,
+    steerAcceptanceTimeoutMs: 100,
+    submitRetryMs: 1,
+  });
+
+  const outcome = await executor.deliverActiveSteer(
+    baseTask,
+    { cancelRequested: false },
+    TERMINAL,
+    request,
+  );
+
+  assert.deepEqual(submitted, [WINDOW_ID]);
+  assert.deepEqual(injected, [{ windowId: WINDOW_ID, value: deliveredPrompt }]);
+  assert.equal(outcome.blockingComposerState, 'junk');
+  assert.equal(outcome.blockingComposerSubmitAttempts, 1);
+});
+
+test('the reliable steer path keeps a requested update retryable when the earlier draft cannot be submitted', async () => {
+  const deliveredPrompt = taskPrompt({ prompt: 'Keep this update recoverable.', attachments: [] });
+  const request = unacknowledgedSteerRequest(deliveredPrompt);
+  request.flushComposer = true;
+  const injected = [];
+  const submitted = [];
+  const { executor } = makeExecutor({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: 'busy',
+        pid: PID,
+      }),
+    },
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    readScreen: async () => ({
+      ok: true,
+      reason: 'read',
+      text: JUNK_COMPOSER_FRAME,
+    }),
+    submit: async (windowId) => submitted.push(windowId),
+    inject: async (windowId, value) => injected.push({ windowId, value }),
+    screenSettleMs: 1,
+    steerAcceptanceTimeoutMs: 100,
+    submitRetryMs: 1,
+    maxSubmitAttempts: 2,
+  });
+
+  await assert.rejects(
+    executor.deliverActiveSteer(baseTask, { cancelRequested: false }, TERMINAL, request),
+    (error) => {
+      assert.equal(error.deliveryUncertain, false);
+      assert.equal(error.composerBlocked, true);
+      assert.equal(error.blockingComposerSubmitAttempts, 2);
+      assert.match(error.message, /requested live update was not typed/i);
+      return true;
+    },
+  );
+
+  assert.deepEqual(submitted, [WINDOW_ID, WINDOW_ID]);
+  assert.deepEqual(injected, []);
+});
+
+test('the reliable steer path waits for a changing native draft to become stable', async () => {
+  const deliveredPrompt = taskPrompt({ prompt: 'Follow the changing draft.', attachments: [] });
+  const request = unacknowledgedSteerRequest(deliveredPrompt);
+  request.flushComposer = true;
+  let screenRead = 0;
+  let nativeDraftVisible = true;
+  const submitted = [];
+  const frames = [
+    composerFrame('draft version one'),
+    composerFrame('draft version two'),
+    composerFrame('draft version two'),
+  ];
+  const { executor } = makeExecutor({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: 'busy',
+        pid: PID,
+      }),
+    },
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    readScreen: async () => {
+      const text = nativeDraftVisible
+        ? frames[Math.min(screenRead, frames.length - 1)]
+        : EMPTY_COMPOSER_FRAME;
+      screenRead += 1;
+      return { ok: true, reason: 'read', text };
+    },
+    submit: async (windowId) => {
+      submitted.push({ windowId, screenRead });
+      nativeDraftVisible = false;
+    },
+    inject: async () => {
+      request.acknowledged = true;
+      request.evidence = 'test-exact-prompt';
+      request.releaseAcknowledgement();
+    },
+    screenSettleMs: 1,
+    steerSubmitNudgeMs: 1,
+    steerAcceptanceTimeoutMs: 100,
+    submitRetryMs: 1,
+  });
+
+  await executor.deliverActiveSteer(baseTask, { cancelRequested: false }, TERMINAL, request);
+
+  assert.deepEqual(submitted, [{ windowId: WINDOW_ID, screenRead: 3 }]);
+});
+
+test('a matching decorated native draft is confirmed without injecting the same update again', async () => {
+  const deliveredPrompt = taskPrompt({ prompt: 'Do not duplicate this held update.', attachments: [] });
+  const request = unacknowledgedSteerRequest(deliveredPrompt);
+  request.flushComposer = true;
+  request.result = () => ({
+    promptSubmissionEvidence: request.evidence,
+    blockingComposerSubmitAttempts: request.blockingComposerSubmitAttempts,
+  });
+  let nativeDraftVisible = true;
+  const injected = [];
+  const submitted = [];
+  const { executor } = makeExecutor({
+    sessions: {
+      readConnectedSession: async () => ({
+        id: SESSION_ID,
+        provider: 'claude',
+        source: 'Claude interactive',
+        cwd: '/repo',
+        rawStatus: 'busy',
+        pid: PID,
+      }),
+    },
+    resolveTerminal: async () => ({ ...TERMINAL }),
+    readScreen: async () => ({
+      ok: true,
+      reason: 'read',
+      text: nativeDraftVisible
+        ? heldPasteFrame(deliveredPrompt, { columns: 78 })
+        : EMPTY_COMPOSER_FRAME,
+    }),
+    submit: async (windowId) => {
+      submitted.push(windowId);
+      nativeDraftVisible = false;
+      request.acknowledged = true;
+      request.evidence = 'transcript-prompt';
+      request.releaseAcknowledgement();
+    },
+    inject: async (windowId, value) => injected.push({ windowId, value }),
+    screenSettleMs: 1,
+    steerAcceptanceTimeoutMs: 100,
+    submitRetryMs: 1,
+  });
+
+  const outcome = await executor.deliverActiveSteer(
+    baseTask,
+    { cancelRequested: false },
+    TERMINAL,
+    request,
+  );
+
+  assert.deepEqual(submitted, [WINDOW_ID]);
+  assert.deepEqual(injected, []);
+  assert.equal(outcome.promptSubmissionEvidence, 'transcript-prompt');
+  assert.equal(outcome.blockingComposerSubmitAttempts, 1);
+});
+
 test('terminal transcript activity wakes the mirror before the normal status poll timeout', async () => {
   const fake = fakeTranscript();
   fake.append({ type: 'mode' });
@@ -4736,6 +5165,63 @@ test('a stalled large paste receives one guarded submit action and then complete
     io.events.some((entry) => /sent one separate submit action/i.test(entry.message)),
     true,
   );
+});
+
+test('an image continuation submits its rewritten held paste without clearing or re-injecting it', async () => {
+  const imagePath = '/repo/.data/tasks/713/attachments/02.png';
+  const task = {
+    ...baseTask,
+    prompt: 'Apply this attached follow-up.',
+    attachments: [{ name: 'follow-up.png', path: imagePath }],
+  };
+  const prompt = deliveredPrompt(task);
+  const forms = attachmentRewrittenPromptForms(prompt, [imagePath]);
+  const renderedBody = forms.bodies.find((body) => expectedPastePlaceholderLines(body) === 3);
+  assert.equal(expectedPastePlaceholderLines(prompt), 5);
+  assert.ok(renderedBody);
+
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const sessions = sessionSteps([{ status: 'idle' }], fake);
+  const submits = [];
+  let harness = null;
+  harness = makeExecutor({
+    sessions,
+    openTranscript: () => fake.source,
+    readScreen: async () => ({
+      ok: true,
+      reason: 'read',
+      text: harness.injected.length === 0
+        ? EMPTY_COMPOSER_FRAME
+        : heldPasteFrame(prompt, {
+            chips: '[Image #3]',
+            counter: 4,
+            renderedPaste: renderedBody,
+          }),
+    }),
+    submit: async (windowId) => {
+      submits.push(windowId);
+      fake.append({
+        ...imagePromptRecord(`[Image #3]${renderedBody}`),
+        promptId: 'image-continuation',
+      });
+      fake.append(assistant('end_turn', [text('Applied the attached continuation.')]));
+    },
+    submissionTimeoutMs: 6000,
+  });
+
+  const outcome = await harness.executor.runTurn(
+    task,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    collect(),
+  );
+
+  assert.equal(outcome.finalResponse, 'Applied the attached continuation.');
+  assert.deepEqual(submits, [WINDOW_ID]);
+  assert.equal(harness.injected.length, 1);
+  assert.deepEqual(harness.keys, []);
 });
 
 test('task 364: a fresh conversation with no transcript receives the guarded submit action', async () => {

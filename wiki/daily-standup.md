@@ -90,6 +90,8 @@ The prompt asks for every distinct confirmed fact supported by the evidence and 
 
 The API returns the categorized arrays plus `standup` and `copyText`. Both text fields contain the same ready-to-paste changelog Markdown. The browser reconstructs clipboard text from the normalized arrays, so provider formatting cannot alter headings or bullet markers.
 
+The Copy action also writes an escaped `text/html` clipboard representation with bold category labels and semantic lists. Rich chat composers use that representation instead of showing literal `###` and `-` markers, while plain-text destinations retain the canonical Markdown fallback. If the richer Clipboard API is unavailable or rejects the write, the browser retries with `writeText`.
+
 ## Provider isolation
 
 Provider isolation is deliberate:
@@ -128,7 +130,7 @@ The modal provides:
 - **Regenerate changelog** after success;
 - only populated Added, Changed, Fixed, and Security sections with counts;
 - actual provider and source-coverage metadata; and
-- **Copy changelog**, which writes categorized Markdown headings and bullet points.
+- **Copy changelog**, which writes chat-friendly rich formatting with categorized Markdown as its plain-text fallback.
 
 Every generated sentence enters the DOM through `escapeHtml`. Clipboard failure stays inside the modal and leaves the generated changelog visible.
 
@@ -175,7 +177,7 @@ The endpoint validates the pinned project, optional Relay id length, provider, l
 - `test/standup-ui.test.mjs`
 - `test/release-tooling.test.mjs`
 
-Focused tests cover local dates, daylight-saving day lengths, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
+Focused tests cover local dates, daylight-saving day lengths, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, escaped rich-chat clipboard HTML and its plain-text fallback, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
 
 See [[daily-standup-review]] for the historical review of the retired length-configurable implementation.
 

@@ -16,6 +16,8 @@ tags:
 > [!important]
 > Task Activity renders one **Plan** checklist row per provider board and one **Goal** row per Codex thread that carries a goal, mirroring the Codex TUI "Updated Plan" block. Both providers publish the complete plan on every revision, so the newest event for a fold key is the whole truth unless it says otherwise. A finished, failed, or cancelled task may never render a live step or a live goal.
 
+The newest revised plan also appears in the expanded-by-default [[task-activity-overview]] above the terminal filters. That manifest exposes every current step and its lifecycle state without requiring the operator to find the folded plan row in scrollback. Historical turn plans remain in the activity log.
+
 ## Codex plan and goal notifications
 
 The app-server emits `turn/plan/updated` carrying the **full** plan every revision, never a delta. Steps arrive as `{ step, status }` with status `pending`, `inProgress`, or `completed`, alongside a nullable `explanation`. No feature flag is required: `codex features list` reports `goals` as `stable` and enabled on Codex CLI 0.147.0.
@@ -84,6 +86,6 @@ The complete repository suite passes 1,395 tests with zero failures. That figure
 > [!warning]
 > CC Relay must be restarted and the desktop bundle rebuilt before these backend and renderer changes take effect. The packaged app runs `src/` from `app.asar`, frozen at build time, so an installed bundle keeps executing the code it was packaged with no matter what the working tree says. See [[desktop-packaging-review]] and [[packaged-renderer-startup]].
 
-See also [[provider-sub-agent-visibility]], [[terminal-markdown]], [[claude-terminal-live-output]], and [[non-interactive-relay-prompts]].
+See also [[task-activity-overview]], [[provider-sub-agent-visibility]], [[terminal-markdown]], [[claude-terminal-live-output]], and [[non-interactive-relay-prompts]].
 
 #relay #terminal #plan #goal #codex #claude

@@ -46,6 +46,8 @@ The task row keeps its original `prompt` unchanged. Every accepted finished-turn
 
 `submitTaskContinuation()` accepts only `steered` or `followUpStarted`. It has no `continuationQueued` branch and never assigns `state.selectedTaskId` from the response. Its post-write refresh is forced fresh so it cannot join an older in-flight snapshot. Task Activity therefore stays on the source task while its status changes from a historical outcome to running and its new prompt appears immediately.
 
+For a running interactive Claude task advertising `claudeSteerOutbox`, submission does not take the global continuation lock. Each update and its attachments are captured immediately, the visible composer is released for the next message, and the active watcher serializes terminal delivery. A definite failure is restored only when doing so cannot overwrite newer task-scoped text. See [[claude-live-steer-outbox]].
+
 ## Files
 
 - `src/queue.mjs`

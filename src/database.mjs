@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ProjectConfigStore } from './project-config-store.mjs';
+import { titleFromPrompt } from './task-title.mjs';
 import { parseUiPreferences, UI_PREFERENCES_SETTING } from './ui-preferences.mjs';
 
 const TASK_FIELDS = new Set([
@@ -40,51 +41,6 @@ const TASK_FIELDS = new Set([
   'result',
   'error',
   'exit_code',
-]);
-
-const IMPORTABLE_TASK_COLUMNS = [
-  'title',
-  'prompt',
-  'repo_path',
-  'thread_id',
-  'thread_name',
-  'thread_source',
-  'provider',
-  'model',
-  'effort',
-  'mode',
-  'author_provider',
-  'author_thread_id',
-  'author_thread_name',
-  'author_thread_source',
-  'author_model',
-  'author_effort',
-  'reviewer_provider',
-  'reviewer_model',
-  'reviewer_effort',
-  'terminal_lifecycle',
-  'keep_terminal_open',
-  'manual_completion',
-  'terminal_layout_json',
-  'turbo_json',
-  'attachments_json',
-  'prefer_idle_terminal',
-  'status',
-  'position',
-  'created_at',
-  'started_at',
-  'finished_at',
-  'session_id',
-  'result',
-  'error',
-  'exit_code',
-];
-
-const IMPORTABLE_TASK_STATUSES = new Set([
-  'complete',
-  'failed',
-  'interrupted',
-  'cancelled',
 ]);
 
 function now() {
@@ -162,6 +118,17 @@ function assistantResponseText(payload) {
     return payload.text.trim();
   }
   return '';
+}
+
+function normalizedTaskProjectPath(path) {
+  return String(path || '').replace(/[\\/]+$/u, '').replaceAll('\\', '/');
+}
+
+function appendUniqueText(values, seen, value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text || seen.has(text)) return;
+  seen.add(text);
+  values.push(text);
 }
 
 function normalizeBreakdown(row) {
@@ -631,130 +598,6 @@ export class RelayDatabase {
     `).all().map(normalizeTask);
   }
 
-  importTaskHistory(sourceFilePath) {
-    const sourcePath = resolve(sourceFilePath || '');
-    if (!sourceFilePath || !existsSync(sourcePath)) {
-      throw new Error('The localhost task database is not available. Start localhost CC Relay once, then try again.');
-    }
-    if (sourcePath === this.databasePath) {
-      throw new Error('The localhost and desktop task databases are already the same file.');
-    }
-
-    const source = new DatabaseSync(sourcePath, { readOnly: true });
-    try {
-      const sourceTables = source.prepare(`
-        SELECT name FROM sqlite_master WHERE type = 'table'
-      `).all().map((row) => row.name);
-      if (!sourceTables.includes('tasks')) {
-        throw new Error('The selected localhost database does not contain CC Relay tasks.');
-      }
-
-      const sourceColumns = new Set(
-        source.prepare('PRAGMA table_info(tasks)').all().map((column) => column.name),
-      );
-      const taskColumns = IMPORTABLE_TASK_COLUMNS.filter((column) => sourceColumns.has(column));
-      const sourceRows = source.prepare(`
-        SELECT id, continued_from_task_id, ${taskColumns.join(', ')}
-        FROM tasks
-        WHERE status IN ('complete', 'failed', 'interrupted', 'cancelled')
-        ORDER BY id ASC
-      `).all();
-      const sourceEventColumns = sourceTables.includes('events')
-        ? new Set(source.prepare('PRAGMA table_info(events)').all().map((column) => column.name))
-        : new Set();
-      const canImportEvents = ['task_id', 'kind', 'message', 'payload', 'created_at']
-        .every((column) => sourceEventColumns.has(column));
-      const originToLocal = new Map();
-      let imported = 0;
-      let updated = 0;
-
-      this.database.exec('BEGIN IMMEDIATE');
-      try {
-        for (const sourceTask of sourceRows) {
-          if (!IMPORTABLE_TASK_STATUSES.has(sourceTask.status)) continue;
-          const existing = this.database.prepare(`
-            SELECT id FROM tasks WHERE import_source = ? AND import_task_id = ?
-          `).get(sourcePath, sourceTask.id);
-          let localTaskId;
-          if (existing) {
-            const assignments = taskColumns.map((column) => `${column} = ?`).join(', ');
-            this.database.prepare(`
-              UPDATE tasks SET ${assignments}, submission_id = NULL
-              WHERE id = ?
-            `).run(...taskColumns.map((column) => sourceTask[column]), existing.id);
-            localTaskId = Number(existing.id);
-            updated += 1;
-          } else {
-            const placeholders = taskColumns.map(() => '?').join(', ');
-            const result = this.database.prepare(`
-              INSERT INTO tasks (
-                ${taskColumns.join(', ')}, submission_id, import_source, import_task_id
-              ) VALUES (${placeholders}, NULL, ?, ?)
-            `).run(
-              ...taskColumns.map((column) => sourceTask[column]),
-              sourcePath,
-              sourceTask.id,
-            );
-            localTaskId = Number(result.lastInsertRowid);
-            imported += 1;
-          }
-          originToLocal.set(Number(sourceTask.id), localTaskId);
-
-          if (canImportEvents) {
-            this.database.prepare('DELETE FROM events WHERE task_id = ?').run(localTaskId);
-            const events = source.prepare(`
-              SELECT kind, message, payload, created_at
-              FROM events
-              WHERE task_id = ?
-              ORDER BY id ASC
-            `).all(sourceTask.id);
-            const insertEvent = this.database.prepare(`
-              INSERT INTO events (task_id, kind, message, payload, created_at)
-              VALUES (?, ?, ?, ?, ?)
-            `);
-            for (const event of events) {
-              insertEvent.run(
-                localTaskId,
-                event.kind,
-                event.message,
-                event.payload,
-                event.created_at,
-              );
-            }
-          }
-        }
-
-        for (const sourceTask of sourceRows) {
-          const localTaskId = originToLocal.get(Number(sourceTask.id));
-          if (!localTaskId) continue;
-          const localParentId = originToLocal.get(Number(sourceTask.continued_from_task_id)) || null;
-          this.database.prepare(`
-            UPDATE tasks SET continued_from_task_id = ? WHERE id = ?
-          `).run(localParentId, localTaskId);
-        }
-        this.database.exec('COMMIT');
-      } catch (error) {
-        this.database.exec('ROLLBACK');
-        throw error;
-      }
-
-      return {
-        imported,
-        updated,
-        skippedActive: Number(source.prepare(`
-          SELECT COUNT(*) AS value FROM tasks WHERE status IN ('queued', 'running', 'open')
-        `).get().value),
-        tasks: [...originToLocal].map(([sourceTaskId, taskId]) => ({
-          sourceTaskId,
-          taskId,
-        })),
-        sourcePath,
-      };
-    } finally {
-      source.close();
-    }
-  }
-
   nextQueuedTask() {
     return normalizeTask(this.database.prepare(`
       SELECT * FROM tasks
@@ -1042,6 +885,76 @@ export class RelayDatabase {
       });
     }
     return responses;
+  }
+
+  listTaskSearchDocuments(repoPath) {
+    const normalizedPath = normalizedTaskProjectPath(repoPath);
+    if (!normalizedPath) return [];
+    const tasks = this.listTasks().filter(
+      (task) => normalizedTaskProjectPath(task.repo_path) === normalizedPath,
+    );
+    if (!tasks.length) return [];
+
+    const documents = new Map(tasks.map((task) => {
+      const commandSeen = new Set();
+      const responseSeen = new Set();
+      const commands = [];
+      const responses = [];
+      appendUniqueText(commands, commandSeen, task.prompt);
+      return [task.id, {
+        taskId: task.id,
+        title: task.title === titleFromPrompt(task.prompt) ? '' : task.title,
+        commands,
+        responses,
+        responseFallbacks: [task.result, task.error],
+        commandSeen,
+        responseSeen,
+      }];
+    }));
+
+    const taskIds = [...documents.keys()];
+    for (let offset = 0; offset < taskIds.length; offset += 500) {
+      const chunk = taskIds.slice(offset, offset + 500);
+      const placeholders = chunk.map(() => '?').join(', ');
+      const events = this.database.prepare(`
+        SELECT task_id, payload
+        FROM events
+        WHERE payload IS NOT NULL AND task_id IN (${placeholders})
+        ORDER BY task_id ASC, id ASC
+      `).all(...chunk);
+      for (const event of events) {
+        const document = documents.get(event.task_id);
+        if (!document) continue;
+        let payload;
+        try {
+          payload = JSON.parse(event.payload);
+        } catch {
+          continue;
+        }
+        const item = payload?.item;
+        if (relayPromptMarker(item)) {
+          appendUniqueText(document.commands, document.commandSeen, userMessageText(item));
+        }
+        appendUniqueText(
+          document.responses,
+          document.responseSeen,
+          assistantResponseText(payload),
+        );
+      }
+    }
+
+    for (const document of documents.values()) {
+      for (const fallback of document.responseFallbacks) {
+        appendUniqueText(document.responses, document.responseSeen, fallback);
+      }
+    }
+
+    return [...documents.values()].map(({
+      commandSeen,
+      responseSeen,
+      responseFallbacks,
+      ...document
+    }) => document);
   }
 
   deleteTask(id) {

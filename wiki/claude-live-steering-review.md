@@ -12,7 +12,7 @@ type: review
 
 A running direct Claude task can now accept a message from the existing **Continue session** dock. The message stays in the same task and conversation, is delivered only to the exact active interactive terminal turn, and never falls back to queue creation or a headless second execution.
 
-The terminal path fails closed before typing unless CC Relay proves the task, session, workspace, window, tty, process, busy state, visible composer, and empty native draft. After typing, only the exact `UserPromptSubmit` hook or exact transcript prompt record confirms delivery. An ambiguous Apple Event is never retried automatically.
+The terminal path fails closed before typing unless CC Relay proves the task, session, workspace, window, tty, process, active watcher state, and visible composer. The capability-gated outbox can now send a stable native draft before the requested update; legacy clients still require an empty native draft. After typing, only exact hook, transcript, or queue evidence confirms delivery. An ambiguous Apple Event is never retried automatically.
 
 ### Quality Panel (RAG)
 
@@ -47,8 +47,8 @@ The terminal path fails closed before typing unless CC Relay proves the task, se
 2. `continuationSubmission()` selects `POST /api/tasks/:id/steer`. It never selects a task-creation route.
 3. The server validates a running direct Claude task and stages only the new image attachments.
 4. `ClaudeExecutionRunner.steer()` resolves only `activeByTask.get(taskId)` and rejects preparing or headless work.
-5. `deliverActiveSteer()` re-proves the exact interactive session and terminal identity, requires Claude to be busy, reads the current viewport, and requires an empty composer.
-6. CC Relay bracket-pastes the decorated message. If exact evidence does not arrive within six seconds, it sends one separate Return only when the same terminal is still busy and visibly holds that exact paste.
+5. `deliverActiveSteer()` re-proves the exact interactive session and terminal identity, requires the active watcher to own a busy or brief idle boundary, and reads the current viewport.
+6. A capability-gated request sends a stable preexisting native draft first. Relay then bracket-pastes the decorated message and uses the bounded held-paste schedule only when the same terminal visibly holds the exact paste.
 7. The active watcher accepts only an exact prompt hook or transcript record, advances the current prompt identifier, clears any earlier final boundary, and emits one Claude `userMessage` event.
 8. The server commits staged images after confirmed delivery. A definite rejection discards them. An uncertain post-injection result retains them because Claude may already have received their paths and records a `claude/steer-uncertain` warning in Task Activity.
 
@@ -57,7 +57,7 @@ The terminal path fails closed before typing unless CC Relay proves the task, se
 > [!important]
 > A live Claude update is never converted into queued work, never starts another process, and is never retried after ambiguous terminal delivery.
 
-- A native composer draft is never cleared, overwritten, or submitted by live steering.
+- Legacy live steering never clears, overwrites, or submits a native composer draft. The capability-gated outbox never clears or overwrites it, but submits a stable draft before delivering the next update.
 - A late `Stop` hook from the earlier prompt cannot complete the newer prompt.
 - Pending updates prevent normal idle finalization and are serialized in request order.
 - A turn that closes before injection reports that nothing was queued.
@@ -95,5 +95,14 @@ Live steering now receives the bounded multi-attempt policy documented in
 held paste, an empty or foreign composer receives nothing, and the renderer timeout exceeds the
 backend recovery bound. This supersedes this review's one-guarded-Return and 25-second performance
 statements without changing its exact-evidence or no-queue contract.
+
+## August 13 nonblocking outbox addendum
+
+Task 697 proved that preserving a nonempty native composer without a transition created a permanent
+operator lock: four later Relay sends all failed before their first action. The capability-gated
+outbox documented in [[claude-live-steer-outbox]] now keeps the Relay textarea enabled during every
+pending send and turns a stable native draft plus a new Relay message into one ordered delivery
+sequence. This supersedes the original empty-composer requirement for opted-in clients. Exact
+terminal identity, bounded actions, delivery uncertainty, and the no-queue contract remain.
 
 #relay #review #claude #continuation #steering #terminal #no-queue

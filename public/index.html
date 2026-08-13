@@ -14,6 +14,16 @@
         document.documentElement.dataset.theme = theme;
         document.documentElement.dataset.headerPosition =
           localStorage.getItem('relay.headerPosition') === 'bottom' ? 'bottom' : 'top';
+        try {
+          const runningTaskLayout = JSON.parse(localStorage.getItem('relay.runningTaskLayout') || '{}');
+          document.documentElement.dataset.runningTaskRows = [1, 2, 3].includes(runningTaskLayout.rows)
+            ? String(runningTaskLayout.rows) : '1';
+          document.documentElement.dataset.runningTaskWidth = [230, 286, 360].includes(runningTaskLayout.width)
+            ? String(runningTaskLayout.width) : '286';
+        } catch {
+          document.documentElement.dataset.runningTaskRows = '1';
+          document.documentElement.dataset.runningTaskWidth = '286';
+        }
       })();
     </script>
     <link rel="stylesheet" href="/style.css">
@@ -27,8 +37,32 @@
           <p>AI work, one task at a time</p>
         </div>
       </button>
-      <div id="header-running-tasks" class="header-running-tasks" aria-label="Running tasks across all projects" aria-live="polite">
-        <div class="header-running-empty"><i aria-hidden="true"></i><span>No tasks running</span></div>
+      <div class="header-running-monitor">
+        <div id="header-running-tasks" class="header-running-tasks" aria-label="Running tasks across all projects" aria-live="polite">
+          <div class="header-running-empty"><i aria-hidden="true"></i><span>No tasks running</span></div>
+        </div>
+        <details id="running-task-settings" class="running-task-settings">
+          <summary aria-label="Configure running tasks" title="Configure running tasks">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.1 13a7.7 7.7 0 0 0 0-2l2-1.5-2-3.4-2.4 1a8 8 0 0 0-1.7-1L14.7 3h-4l-.4 3a8 8 0 0 0-1.7 1L6.2 6.1l-2 3.4 2 1.5a7.7 7.7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.4 3h4l.4-3a8 8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5ZM12.7 15.5a3.6 3.6 0 1 1 0-7.1 3.6 3.6 0 0 1 0 7.1Z"/></svg>
+          </summary>
+          <div class="running-task-settings-popover">
+            <strong>Running tasks</strong>
+            <label for="running-task-rows">Rows
+              <select id="running-task-rows">
+                <option value="1">1 row</option>
+                <option value="2">2 rows</option>
+                <option value="3">3 rows</option>
+              </select>
+            </label>
+            <label for="running-task-width">Card width
+              <select id="running-task-width">
+                <option value="230">Compact</option>
+                <option value="286">Default</option>
+                <option value="360">Wide</option>
+              </select>
+            </label>
+          </div>
+        </details>
       </div>
       <div class="header-actions">
         <button id="desktop-update-indicator" class="desktop-update-indicator" type="button" aria-haspopup="dialog" aria-controls="desktop-update-modal" data-state="hidden" hidden>
@@ -44,21 +78,25 @@
             <span>Claude 5h</span>
             <strong>--</strong>
             <span class="provider-usage-track" role="progressbar" aria-label="Claude 5-hour usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
           </div>
           <div class="provider-usage-meter" data-usage-key="claude-weekly" data-provider="claude" data-level="checking">
             <span>Claude week</span>
             <strong>--</strong>
             <span class="provider-usage-track" role="progressbar" aria-label="Claude weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
           </div>
           <div class="provider-usage-meter" data-usage-key="claude-fable" data-provider="claude" data-level="checking">
             <span>Fable week</span>
             <strong>--</strong>
             <span class="provider-usage-track" role="progressbar" aria-label="Claude Fable weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
           </div>
           <div class="provider-usage-meter" data-usage-key="codex-weekly" data-provider="codex" data-level="checking">
             <span>Codex week</span>
             <strong>--</strong>
             <span class="provider-usage-track" role="progressbar" aria-label="Codex weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
           </div>
         </section>
         <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Use dark mode" title="Use dark mode">
@@ -491,12 +529,21 @@
               <button type="button" data-task-view="queue" aria-pressed="true">Queue</button>
               <button type="button" data-task-view="history" aria-pressed="false">History</button>
             </div>
-            <button id="import-tasks-button" class="queue-heading-button import-tasks-button" type="button" hidden>Import localhost</button>
             <button id="standup-button" class="queue-heading-button standup-button" type="button" aria-haspopup="dialog" aria-controls="standup-modal" disabled>Standup</button>
-            <button id="clear-task-notifications-button" class="queue-heading-button clear-task-notifications-button" type="button" hidden>Clear new</button>
+            <button id="clear-task-notifications-button" class="queue-heading-button clear-task-notifications-button" type="button" hidden>Mark reviewed</button>
           </div>
         </div>
-        <p id="task-import-status" class="task-import-status" role="status" aria-live="polite" hidden></p>
+        <div id="task-search" class="task-search" role="search" data-state="idle">
+          <label class="sr-only" for="task-search-input">Search task commands and responses</label>
+          <span class="task-search-glyph" aria-hidden="true">
+            <svg viewBox="0 0 20 20" focusable="false"><circle cx="8.5" cy="8.5" r="5.5"></circle><path d="m12.5 12.5 4 4"></path></svg>
+          </span>
+          <input id="task-search-input" type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Search every command and response" aria-describedby="task-search-hint task-search-status" disabled>
+          <kbd id="task-search-shortcut" aria-hidden="true">/</kbd>
+          <button id="task-search-clear" class="task-search-clear" type="button" aria-label="Clear task search" hidden>Clear</button>
+          <span id="task-search-status" class="task-search-status" role="status" aria-live="polite"></span>
+          <span id="task-search-hint" class="sr-only">Searches all saved tasks in the selected project. Press slash to focus search and Escape to clear it.</span>
+        </div>
         <section id="history-ledger" class="history-ledger" aria-label="Task history statistics" hidden>
           <div class="history-toolbar">
             <div class="history-period-tabs" role="group" aria-label="History period">
@@ -703,7 +750,17 @@
           <div id="terminal-height-resizer" class="terminal-height-resizer" role="separator" aria-label="Resize task details and terminal" aria-orientation="horizontal" tabindex="0"><span aria-hidden="true"></span></div>
 
           <section class="detail-section events-section" aria-label="Terminal output">
-            <div id="event-metrics" class="event-metrics" aria-label="Execution summary"></div>
+            <details id="event-overview" class="event-overview" open>
+              <summary class="event-overview-summary">
+                <span id="event-metrics" class="event-metrics" aria-label="Execution summary"></span>
+                <span class="event-overview-toggle">
+                  <span class="event-overview-toggle-open">Minimize</span>
+                  <span class="event-overview-toggle-closed">Show details</span>
+                  <i aria-hidden="true">⌃</i>
+                </span>
+              </summary>
+              <div id="event-overview-body" class="event-overview-body"></div>
+            </details>
             <div class="event-toolbar">
               <div id="event-filters" class="event-filters" role="group" aria-label="Filter terminal output">
                 <button type="button" data-event-filter="highlights" aria-pressed="false">Highlights</button>

@@ -1,6 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { activityBuckets, periodRange, shiftPeriod, taskHistoryStats, tasksForScope, tasksInPeriod } from '../public/task-history.js';
+import {
+  activityBuckets,
+  periodRange,
+  shiftPeriod,
+  sortOperationalTasks,
+  taskHistoryStats,
+  tasksForScope,
+  tasksInPeriod,
+} from '../public/task-history.js';
 
 function localIso(year, month, day, hour = 12) {
   return new Date(year, month, day, hour).toISOString();
@@ -69,4 +77,34 @@ test('task scope always includes every relay in the selected project', () => {
     [1, 2],
   );
   assert.deepEqual(tasksForScope(tasks, { projectPath: null }), []);
+});
+
+test('operational tasks put review-ready completions directly after running work', () => {
+  const tasks = [
+    { id: 12, status: 'complete' },
+    { id: 3, status: 'queued', position: 2 },
+    { id: 8, status: 'complete' },
+    { id: 5, status: 'running' },
+    { id: 4, status: 'queued', position: 1 },
+    { id: 9, status: 'open' },
+    { id: 6, status: 'complete' },
+    { id: 11, status: 'running' },
+  ];
+  const readyTaskIds = new Set([6, 8]);
+
+  assert.deepEqual(
+    sortOperationalTasks(tasks, {
+      isReadyForReview: (task) => readyTaskIds.has(task.id),
+    }).map((task) => task.id),
+    [11, 5, 8, 6, 9, 4, 3, 12],
+  );
+  assert.deepEqual(tasks.map((task) => task.id), [12, 3, 8, 5, 4, 9, 6, 11]);
+
+  readyTaskIds.delete(8);
+  assert.deepEqual(
+    sortOperationalTasks(tasks, {
+      isReadyForReview: (task) => readyTaskIds.has(task.id),
+    }).map((task) => task.id),
+    [11, 5, 6, 9, 4, 3, 12, 8],
+  );
 });

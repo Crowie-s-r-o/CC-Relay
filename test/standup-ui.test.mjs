@@ -37,8 +37,9 @@ test('task queue exposes one date-driven, CHANGELOG-style AI standup dialog', as
   assert.match(app, /body\.changed/);
   assert.match(app, /body\.fixed/);
   assert.match(app, /body\.security/);
+  assert.match(app, /'text\/html': new Blob\(\[clipboardHtml\]/);
   assert.match(app, /navigator\.clipboard\.writeText\(state\.standupClipboardText\)/);
-  assert.match(app, /copied as Markdown/);
+  assert.match(app, /copied with chat formatting/);
   assert.match(app, /capabilities\?\.aiStandupGeneration === true/);
   assert.match(app, /capabilities\?\.aiStandupChangelog === true/);
   assert.doesNotMatch(app, /aiStandupConfiguration|aiStandupAllTasks/);

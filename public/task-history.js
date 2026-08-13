@@ -18,6 +18,32 @@ export function tasksForScope(tasks, { projectPath = null } = {}) {
   return tasks.filter((task) => normalizedProjectPath(task.repo_path) === normalizedProjectPath(projectPath));
 }
 
+function operationalTaskRank(task, readyForReview) {
+  if (task.status === 'running') return 0;
+  if (task.status === 'complete' && readyForReview) return 1;
+  if (task.status === 'open') return 2;
+  if (task.status === 'queued') return 3;
+  return 4;
+}
+
+/**
+ * Order the operational queue without changing History or search results.
+ * Completed tasks awaiting review stay directly below live work until the
+ * operator opens them and the notification store acknowledges the review.
+ */
+export function sortOperationalTasks(tasks, { isReadyForReview = () => false } = {}) {
+  return [...tasks].sort((left, right) => {
+    const leftRank = operationalTaskRank(left, isReadyForReview(left));
+    const rightRank = operationalTaskRank(right, isReadyForReview(right));
+    const rankDifference = leftRank - rightRank;
+    if (rankDifference !== 0) return rankDifference;
+    if (left.status === 'queued' && right.status === 'queued') {
+      return left.position - right.position || left.id - right.id;
+    }
+    return right.id - left.id;
+  });
+}
+
 function validPeriod(period) {
   return PERIODS.has(period) ? period : 'week';
 }

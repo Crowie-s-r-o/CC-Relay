@@ -14,17 +14,26 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
     panelWidths: { composer: 581.8, queue: 499.2 },
     terminalHeight: 700.6,
     headerPosition: 'bottom',
+    runningTaskLayout: { rows: 3, width: 360 },
     completionAlerts: { sound: 'bell', speak: true },
   }), {
     panelWidths: { composer: 582, queue: 499 },
     terminalHeight: 701,
     headerPosition: 'bottom',
+    runningTaskLayout: { rows: 3, width: 360 },
     completionAlerts: { sound: 'bell', speak: true },
   });
   assert.equal(normalizeUiPreferences({ panelWidths: { composer: 399, queue: 500 } }), null);
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
   })?.completionAlerts, { sound: 'chime', speak: false });
+  assert.deepEqual(normalizeUiPreferences({
+    panelWidths: { composer: 580, queue: 500 },
+  })?.runningTaskLayout, { rows: 1, width: 286 });
+  assert.deepEqual(normalizeUiPreferences({
+    panelWidths: { composer: 580, queue: 500 },
+    runningTaskLayout: { rows: 8, width: 999 },
+  })?.runningTaskLayout, { rows: 1, width: 286 });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
     completionAlerts: { sound: 'invalid', speak: 'yes' },
@@ -40,6 +49,7 @@ test('UI preferences persist in durable shared configuration', () => {
     panelWidths: { composer: 640, queue: 460 },
     terminalHeight: 720,
     headerPosition: 'bottom',
+    runningTaskLayout: { rows: 2, width: 230 },
     completionAlerts: { sound: 'pulse', speak: false },
   });
   let database = new RelayDatabase(databasePath, { projectConfigPath: configPath });
@@ -59,6 +69,7 @@ test('renderer restores and saves layout through the durable preferences API', (
   assert.match(app, /api\('\/api\/ui-preferences'\)/);
   assert.match(app, /method: 'PATCH',[\s\S]*?body: JSON\.stringify\(uiPreferencesPayload\(\)\)/);
   assert.match(app, /setHeaderPosition\(preferences\.headerPosition, \{ persist: false \}\)/);
+  assert.match(app, /setRunningTaskLayout\(preferences\.runningTaskLayout, \{ persist: false \}\)/);
   assert.match(app, /const uiPreferencesReady = restoreUiPreferences\(\)/);
   assert.match(app, /uiPreferencesReady\.then\(\(\) => load\(\)\)/);
   assert.match(server, /request\.method === 'GET' && pathname === '\/api\/ui-preferences'/);

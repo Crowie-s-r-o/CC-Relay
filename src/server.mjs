@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { cpSync, existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -66,6 +66,7 @@ import {
   submissionSessionProvider,
 } from './session-resolution.mjs';
 import { buildSessionFollowUp } from './task-continuation.mjs';
+import { searchTaskDocuments } from './task-search.mjs';
 import { TerminalCloseCoordinator } from './terminal-close-coordinator.mjs';
 import { retainedSessionTaskForThread } from './terminal-control.mjs';
 import { TerminalLaunchCoordinator } from './terminal-launch-coordinator.mjs';
@@ -104,7 +105,6 @@ const HOST = DEFAULT_RELAY_HOST;
 const PORT = relayPortFromArgs();
 const CODEX_PORT = relayCodexPortFromArgs();
 const IS_DESKTOP = process.argv.includes('--relay-desktop');
-const LOCALHOST_TASK_DATABASE_SETTING = 'localhost-task-database';
 const PLAN_COUNCIL_TERMINAL_EXECUTION = process.platform === 'darwin';
 const CLAUDE_TASK_STEERING = PLAN_COUNCIL_TERMINAL_EXECUTION;
 // The connection helper hands the user a command to paste into their own terminal, so it has to
@@ -125,9 +125,6 @@ const claudeHookBridge = new ClaudeHookBridge({
 const database = new RelayDatabase(join(DATA_ROOT, 'relay.sqlite'), {
   projectConfigPath: join(CONFIG_ROOT, 'relay-config.sqlite'),
 });
-if (!IS_DESKTOP) {
-  database.projectConfig.setSetting(LOCALHOST_TASK_DATABASE_SETTING, database.databasePath);
-}
 // The desktop app and a standalone `node src/server.mjs` can run at the same time and both
 // discover the same live Codex and Claude sessions. Launch ownership used to be per-process and
 // in memory only, so either backend could adopt and then close a terminal the other one owned.
@@ -139,11 +136,6 @@ const launchOwnership = new LaunchOwnershipRegistry({
   dataRoot: DATA_ROOT,
 });
 const artifacts = new ArtifactStore(join(DATA_ROOT, 'tasks'));
-function localhostTaskDatabasePath() {
-  const sourcePath = database.projectConfig.setting(LOCALHOST_TASK_DATABASE_SETTING);
-  if (!sourcePath || sourcePath === database.databasePath || !existsSync(sourcePath)) return null;
-  return sourcePath;
-}
 const codexAppServer = new CodexAppServer({
   diagnostic,
   publicEndpoint: `ws://${HOST}:${CODEX_PORT}`,
@@ -302,7 +294,7 @@ const queue = new TaskQueue({
   terminalPool: disposableTerminalPool,
 });
 
-async function steerRunningTask(task, prompt, attachments) {
+async function steerRunningTask(task, prompt, attachments, { flushComposer = false } = {}) {
   const storedAttachments = queue.stageTaskAttachments(task.id, attachments);
   let steered;
   try {
@@ -310,7 +302,9 @@ async function steerRunningTask(task, prompt, attachments) {
       if (!CLAUDE_TASK_STEERING) {
         throw new Error('Claude live updates require an interactive macOS terminal. Your message was not queued.');
       }
-      steered = await claudeExecution.steer(task.id, prompt, storedAttachments);
+      steered = await claudeExecution.steer(task.id, prompt, storedAttachments, {
+        flushComposer: flushComposer === true,
+      });
     } else {
       steered = await codexAppServer.steer(task.id, prompt, storedAttachments);
     }
@@ -990,6 +984,7 @@ export const server = createServer(async (request, response) => {
           parallelCodexBatch: true,
           taskContinuation: true,
           taskDirectFollowUp: true,
+          taskFullTextSearch: true,
           taskFollowUpAttachments: true,
           queuedTaskEditing: true,
           queuedTaskNaming: true,
@@ -998,6 +993,7 @@ export const server = createServer(async (request, response) => {
           queuedClaudeAssignment: true,
           taskSteering: true,
           claudeTaskSteering: CLAUDE_TASK_STEERING,
+          claudeSteerOutbox: CLAUDE_TASK_STEERING,
           turboExecution: true,
           planner: true,
           plannerV2: true,
@@ -1009,7 +1005,6 @@ export const server = createServer(async (request, response) => {
           liveTerminalRetention: true,
           manualSessionTasks: true,
           sharedProjectConfig: true,
-          localhostTaskImport: true,
           projectTerminalSettings: true,
           providerUsage: true,
           projectColors: true,
@@ -1025,10 +1020,6 @@ export const server = createServer(async (request, response) => {
         // Terminal ownership stays correct either way; this only lets the interface say so.
         dualBackendDetected: launchOwnership.dualBackendDetected(),
         projectConfig: { file: database.projectConfigPath },
-        taskHistoryImport: {
-          desktop: IS_DESKTOP,
-          available: IS_DESKTOP && Boolean(localhostTaskDatabasePath()),
-        },
       });
       return;
     }
@@ -1117,6 +1108,20 @@ export const server = createServer(async (request, response) => {
       throw new Error(`Unsupported AI provider: ${provider}`);
     }
 
+    if (request.method === 'GET' && pathname === '/api/tasks/search') {
+      const requestedPath = url.searchParams.get('projectPath')?.trim() || '';
+      if (!requestedPath) {
+        throw new Error('Select a Launchpad project before searching tasks.');
+      }
+      const query = url.searchParams.get('query')?.trim().slice(0, 200) || '';
+      const search = searchTaskDocuments(
+        database.listTaskSearchDocuments(resolve(requestedPath)),
+        query,
+      );
+      sendJson(response, 200, search);
+      return;
+    }
+
     if (request.method === 'GET' && pathname === '/api/tasks') {
       const tasks = database.listTasks().map((task) => {
         if (task.mode !== 'turbo') return task;
@@ -1136,41 +1141,6 @@ export const server = createServer(async (request, response) => {
         };
       });
       sendJson(response, 200, { tasks });
-      return;
-    }
-
-    if (request.method === 'POST' && pathname === '/api/tasks/import-localhost') {
-      if (!IS_DESKTOP) {
-        sendError(response, 409, 'Task import is available in the desktop app.');
-        return;
-      }
-      const sourcePath = localhostTaskDatabasePath();
-      if (!sourcePath) {
-        sendError(
-          response,
-          409,
-          'No localhost task database is registered. Start localhost CC Relay once, then try again.',
-        );
-        return;
-      }
-      const result = database.importTaskHistory(sourcePath);
-      const sourceTaskRoot = join(dirname(sourcePath), 'tasks');
-      for (const task of result.tasks) {
-        const sourceDirectory = join(sourceTaskRoot, String(task.sourceTaskId));
-        if (!existsSync(sourceDirectory)) continue;
-        cpSync(sourceDirectory, artifacts.taskDirectory(task.taskId), {
-          recursive: true,
-          force: true,
-        });
-      }
-      diagnostic('api.task_history.imported', {
-        sourcePath,
-        imported: result.imported,
-        updated: result.updated,
-        skippedActive: result.skippedActive,
-      });
-      broadcast({ tasks: true });
-      sendJson(response, 200, result);
       return;
     }
 
@@ -2202,7 +2172,9 @@ export const server = createServer(async (request, response) => {
       if (task.status !== 'running') {
         throw new Error('That task is no longer running. Your message was not queued.');
       }
-      const steered = await steerRunningTask(task, prompt, attachments);
+      const steered = await steerRunningTask(task, prompt, attachments, {
+        flushComposer: body.flushComposer === true,
+      });
       sendJson(response, 200, {
         task: database.getTask(task.id),
         steered: true,
@@ -2227,7 +2199,9 @@ export const server = createServer(async (request, response) => {
         throw new Error('This terminal session task is complete and cannot accept more messages.');
       }
       if (sourceTask.status === 'running') {
-        const steered = await steerRunningTask(sourceTask, prompt, attachments);
+        const steered = await steerRunningTask(sourceTask, prompt, attachments, {
+          flushComposer: body.flushComposer === true,
+        });
         sendJson(response, 200, {
           task: database.getTask(sourceTask.id),
           steered: true,
@@ -2731,7 +2705,10 @@ export const server = createServer(async (request, response) => {
       response,
       statusCode,
       error.message || 'Request failed.',
-      error.deliveryUncertain === true ? { deliveryUncertain: true } : {},
+      {
+        ...(error.deliveryUncertain === true ? { deliveryUncertain: true } : {}),
+        ...(error.composerBlocked === true ? { composerBlocked: true } : {}),
+      },
     );
   }
 });

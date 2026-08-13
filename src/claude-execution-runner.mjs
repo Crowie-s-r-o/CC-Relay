@@ -35,6 +35,16 @@ export class ClaudeExecutionError extends Error {
 const MISSING_CONVERSATION = /No conversation found with session ID:\s*([^\s]+)/i;
 const SESSION_ID_IN_USE = /Session ID\s+([^\s]+)\s+is already in use/i;
 const CLAUDE_BACKGROUND_TERMINATION_PATTERN = /background tasks? still running[^\n]*terminating/i;
+const CLAUDE_API_ERROR_RESPONSE = /^API\s+Error\s*:/i;
+
+// Claude's interactive terminal can finish an overloaded or otherwise failed provider request
+// with an exit-zero turn whose only final assistant text starts with `API Error:`. That text is a
+// provider failure, not a task result. Match only the effective final response at its beginning so
+// a successful report that merely discusses an API error is not poisoned by historical wording.
+export function claudeApiErrorResponse(value) {
+  const text = typeof value === 'string' ? value.trim() : '';
+  return CLAUDE_API_ERROR_RESPONSE.test(text) ? text : null;
+}
 
 export const CLAUDE_PRINT_BACKGROUND_WAIT_ENV = 'CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS';
 
@@ -1307,6 +1317,23 @@ export class ClaudeExecutionRunner {
       const outcome = terminal
         ? await this.terminalExecutor.runTurn(task, active, session, terminal, { onEvent, onStderr })
         : await this.runHeadless(task, active, { onEvent, onStderr });
+      const apiError = claudeApiErrorResponse(outcome.finalResponse);
+      if (apiError) {
+        const terminalTurn = active.executionMode === 'terminal';
+        const retryGuidance = terminalTurn
+          ? ' CC Relay will not retry automatically because this terminal turn was already submitted. Retry manually after the provider recovers.'
+          : '';
+        throw new ClaudeExecutionError(
+          `Claude returned a provider API error instead of completing the task: ${apiError}${retryGuidance}`,
+          {
+            exitCode: outcome.exitCode,
+            // Headless Claude already classifies stream-reported provider failures as transient.
+            // A terminal turn has crossed the submission boundary, so the no-replay safety rule
+            // remains in force even when its final text identifies a provider failure.
+            retryable: !terminalTurn,
+          },
+        );
+      }
       onEvent({
         event: {
           type: 'claude/completed',
@@ -1437,7 +1464,7 @@ export class ClaudeExecutionRunner {
     return outcome;
   }
 
-  async steer(taskId, prompt, attachments = []) {
+  async steer(taskId, prompt, attachments = [], options = {}) {
     const value = typeof prompt === 'string' ? prompt.trim() : '';
     if (!value) {
       throw new ClaudeExecutionError('Write a follow-up before sending it.', { retryable: false });
@@ -1460,9 +1487,10 @@ export class ClaudeExecutionRunner {
       taskId,
       threadId: active.sessionId,
       attachmentCount: attachments.length,
+      flushComposer: options.flushComposer === true,
     });
     try {
-      const outcome = await active.steer(value, attachments);
+      const outcome = await active.steer(value, attachments, options);
       this.diagnostic('task.claude.steer.completed', outcome);
       return outcome;
     } catch (error) {
@@ -1478,6 +1506,9 @@ export class ClaudeExecutionRunner {
         // example a live update rejected before deliverActiveSteer runs because the turn had
         // already closed.
         submitAttempts: Number.isInteger(error.submitAttempts) ? error.submitAttempts : null,
+        blockingComposerSubmitAttempts: Number.isInteger(error.blockingComposerSubmitAttempts)
+          ? error.blockingComposerSubmitAttempts
+          : null,
         composerStates: Array.isArray(error.composerStates) ? error.composerStates : null,
         error: error.message,
       });

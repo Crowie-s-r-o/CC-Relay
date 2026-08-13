@@ -87,6 +87,15 @@ would have confused two distinct user messages.
 > stop the schedule outright are the foreign-draft one below it and the acceptance bound. The
 > original text is left in place because this is an incident record.
 
+> [!note] Fixture correction, 2026-08-13
+> Task 713 showed that the Task 129 integration test did not reproduce the terminal shape cited by
+> this page. The fixture derived its placeholder from the six-line injected source and therefore
+> drew `+5 lines`, while Claude had already removed the attachment path and drawn the real four-line
+> rewritten body as `+3 lines`. The production classifier also compared only with the raw `+5`, so
+> Task 713 classified its exact image update as junk and sent zero actions. The fixture now renders
+> the complete attachment-rewritten body, and the classifier accepts that alternative only with the
+> exact derived image-chip count. See [[claude-image-composer-rewrite-submit]].
+
 ## Files
 
 - `src/claude-terminal-executor.mjs`
@@ -107,7 +116,8 @@ would have confused two distinct user messages.
 The executor suite now pins these cases:
 
 - Task 129's image chip and collapsed-paste shape ignores the first action, crosses from busy to
-  idle, succeeds on the second action, and anchors through the cumulative image rewrite.
+  idle, succeeds on the second action, and anchors through the cumulative image rewrite. The
+  terminal fixture now draws the observed `+3` rewritten body rather than the raw `+5` source.
 - A composer that becomes empty after one action receives no second Return when evidence is absent.
 - A paste that remains held exhausts the configured action limit exactly, then reports uncertainty.
 - The existing native-draft test still sends zero actions for foreign text.

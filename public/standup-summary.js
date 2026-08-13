@@ -1,4 +1,5 @@
 import { periodRange } from './task-history.js';
+import { escapeHtml } from './escape-html.js';
 
 const STANDUP_STATUSES = new Set(['complete']);
 
@@ -119,6 +120,18 @@ export function standupCopyText(value) {
     .filter(({ key }) => sections[key].length > 0)
     .map(({ key, title }) => `### ${title}\n\n${sections[key].map((item) => `- ${item}`).join('\n')}`)
     .join('\n\n');
+}
+
+export function standupCopyHtml(value) {
+  const sections = standupSections(value);
+  return STANDUP_CHANGELOG_SECTIONS
+    .filter(({ key }) => sections[key].length > 0)
+    .map(({ key, title }) => (
+      `<div><p><strong>${escapeHtml(title)}</strong></p><ul>${sections[key]
+        .map((item) => `<li>${escapeHtml(item)}</li>`)
+        .join('')}</ul></div>`
+    ))
+    .join('');
 }
 
 export function standupBullets(value) {

@@ -23,7 +23,7 @@ Task rows, events, plans, plan runs, task artifacts, and queue pause state remai
 
 Terminal launch ownership is the one exception. Each backend still owns its own launches, but it now publishes a claim for each one into this same shared file so the other backend can see it, because per-process ownership let two live backends adopt and then close each other's terminals. See [[dual-backend-ownership-guard]].
 
-Finished localhost task history can be copied explicitly into the desktop database through **Import localhost**. This is an idempotent snapshot import, not a shared live task database. Queued and running rows are never copied, so scheduler ownership remains isolated. See [[localhost-task-import]].
+Finished localhost task history could once be copied explicitly into the desktop database through **Import localhost**. That action and its `localhost-task-database` registration were removed on August 13, 2026. Task databases were never shared live, and scheduler ownership stays isolated per backend. See [[localhost-task-import]].
 
 > [!important]
 > Every terminal setting is stored on its own project row. Sharing the configuration database between localhost and desktop does not permit Alpha to inherit Beta's retention, idle-routing, grid, monitor, or background-launch choice. See [[project-terminal-settings]].

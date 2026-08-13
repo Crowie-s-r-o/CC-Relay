@@ -70,68 +70,6 @@ test('database persists tasks in queue order and records events', () => {
   }
 });
 
-test('desktop history import copies finished localhost tasks idempotently and skips active work', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'relay-task-import-'));
-  const sourcePath = join(directory, 'localhost', 'relay.sqlite');
-  const destinationPath = join(directory, 'desktop', 'relay.sqlite');
-  const source = new RelayDatabase(sourcePath);
-  const destination = new RelayDatabase(destinationPath);
-  try {
-    const parent = source.createTask({
-      title: 'Finished parent',
-      prompt: 'Ship the parent',
-      thread: { id: 'source-one', title: 'Source one', source: 'cli', cwd: '/repo' },
-    });
-    source.updateTask(parent.id, {
-      status: 'complete',
-      result: 'Parent shipped',
-      finished_at: new Date().toISOString(),
-    });
-    source.addEvent(parent.id, 'assistant', 'Finished response', { type: 'result' });
-
-    const child = source.createTask({
-      title: 'Failed follow-up',
-      prompt: 'Inspect the follow-up',
-      thread: { id: 'source-one', title: 'Source one', source: 'cli', cwd: '/repo' },
-      continuedFromTaskId: parent.id,
-    });
-    source.updateTask(child.id, {
-      status: 'failed',
-      error: 'Follow-up failed',
-      finished_at: new Date().toISOString(),
-    });
-    source.createTask({
-      title: 'Still queued',
-      prompt: 'Do not import this',
-      thread: { id: 'source-two', title: 'Source two', source: 'cli', cwd: '/repo' },
-    });
-
-    const firstImport = destination.importTaskHistory(sourcePath);
-    assert.equal(firstImport.imported, 2);
-    assert.equal(firstImport.updated, 0);
-    assert.equal(firstImport.skippedActive, 1);
-
-    const imported = destination.listTasks();
-    const importedParent = imported.find((task) => task.import_task_id === parent.id);
-    const importedChild = imported.find((task) => task.import_task_id === child.id);
-    assert.equal(imported.length, 2);
-    assert.equal(importedParent.result, 'Parent shipped');
-    assert.equal(importedChild.continued_from_task_id, importedParent.id);
-    assert.equal(destination.listEvents(importedParent.id).at(-1).message, 'Finished response');
-
-    source.updateTask(parent.id, { result: 'Parent shipped and verified' });
-    const secondImport = destination.importTaskHistory(sourcePath);
-    assert.equal(secondImport.imported, 0);
-    assert.equal(secondImport.updated, 2);
-    assert.equal(destination.listTasks().length, 2);
-    assert.equal(destination.getTask(importedParent.id).result, 'Parent shipped and verified');
-  } finally {
-    destination.close();
-    source.close();
-    rmSync(directory, { recursive: true, force: true });
-  }
-});
-
 test('database persists one unique submission ID per task', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-submission-id-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));

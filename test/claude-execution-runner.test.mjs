@@ -7,6 +7,7 @@ import {
   backgroundWorkSummary,
   CLAUDE_PRINT_BACKGROUND_WAIT_ENV,
   ClaudeExecutionRunner,
+  claudeApiErrorResponse,
   claudePrintEnv,
   consumeClaudeStreamMessage,
   liveSubAgents,
@@ -76,6 +77,17 @@ const TURN_DURATION_PENDING = JSON.parse(readFileSync(
 function turnContext() {
   return { cwd: '/tmp/repo', tools: new Map(), finalResponse: '', sessionId: 'one', error: null };
 }
+
+test('Claude API error response detection is anchored to the effective final response', () => {
+  const overloaded = 'API Error: 529 Overloaded. This is a server-side issue, usually temporary.';
+  assert.equal(claudeApiErrorResponse(overloaded), overloaded);
+  assert.equal(claudeApiErrorResponse(`  ${overloaded}\n`), overloaded);
+  assert.equal(
+    claudeApiErrorResponse('Investigated the API Error: 529 response and fixed the retry path.'),
+    null,
+  );
+  assert.equal(claudeApiErrorResponse(null), null);
+});
 
 test('Claude sub-agent launches carry agent metadata on the mcpToolCall envelope', () => {
   const context = turnContext();
@@ -675,6 +687,86 @@ test('headless Claude succeeds after its tracked agent finishes and the authorit
   const outcome = await execution;
   assert.equal(outcome.finalResponse, 'Consolidated response.');
   assert.equal(events.some((entry) => entry.event.type === 'claude/completed'), true);
+});
+
+test('headless Claude treats an exit-zero API error response as a failed transient outcome', async () => {
+  let child = null;
+  const events = [];
+  const runner = new ClaudeExecutionRunner({
+    platform: 'linux',
+    spawnProcess: () => {
+      child = controlledClaudeProcess('claude-api-overload-headless');
+      return child;
+    },
+    sessions: { readConnectedSession: async () => ({ rawStatus: 'idle' }) },
+  });
+  const execution = runner.run({
+    id: 94,
+    thread_id: 'claude-api-overload-headless',
+    thread_name: 'headless-overload',
+    repo_path: '/tmp/repo',
+    prompt: 'Implement everything.',
+    provider: 'claude',
+    attachments: [],
+  }, {
+    onEvent: (event) => events.push(event),
+    onStderr: () => {},
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  child.complete('API Error: 529 Overloaded. This is a server-side issue, usually temporary.');
+
+  await assert.rejects(execution, (error) => {
+    assert.equal(error.retryable, true);
+    assert.equal(error.exitCode, 0);
+    assert.match(error.message, /provider API error/i);
+    assert.match(error.message, /529 Overloaded/);
+    return true;
+  });
+  assert.equal(events.some((entry) => entry.event.type === 'claude/completed'), false);
+});
+
+test('terminal Claude treats an API error response as failed without automatic replay', async () => {
+  const events = [];
+  const runner = new ClaudeExecutionRunner({
+    platform: 'darwin',
+    sessions: {
+      readConnectedSession: async () => ({
+        id: 'claude-api-overload-terminal',
+        rawStatus: 'idle',
+      }),
+    },
+    resolveTerminal: async () => ({ terminalWindowId: 529 }),
+    terminalExecutor: {
+      maxPromptBytes: 1_000_000,
+      runTurn: async () => ({
+        finalResponse: 'API Error: 529 Overloaded. This is a server-side issue, usually temporary.',
+        sessionId: 'claude-api-overload-terminal',
+        reportedSessionId: 'claude-api-overload-terminal',
+        exitCode: 0,
+      }),
+    },
+  });
+
+  await assert.rejects(runner.run({
+    id: 95,
+    thread_id: 'claude-api-overload-terminal',
+    thread_name: 'terminal-overload',
+    repo_path: '/tmp/repo',
+    prompt: 'Implement everything.',
+    provider: 'claude',
+    attachments: [],
+  }, {
+    onEvent: (event) => events.push(event),
+    onStderr: () => {},
+  }), (error) => {
+    assert.equal(error.retryable, false);
+    assert.equal(error.exitCode, 0);
+    assert.match(error.message, /provider API error/i);
+    assert.match(error.message, /will not retry automatically/i);
+    return true;
+  });
+  assert.equal(events.some((entry) => entry.event.type === 'claude/completed'), false);
 });
 
 test('headless spawn receives the approved unlimited background wait environment', async () => {
@@ -1386,8 +1478,8 @@ test('a live Claude update delegates only to the exact active interactive turn',
     diagnostic: (event, details) => diagnostics.push({ event, details }),
     terminalExecutor: {
       runTurn: async (runningTask, active) => {
-        active.steer = async (prompt, attachments) => {
-          received = { taskId: runningTask.id, prompt, attachments };
+        active.steer = async (prompt, attachments, options) => {
+          received = { taskId: runningTask.id, prompt, attachments, options };
           return {
             taskId: runningTask.id,
             threadId: runningTask.thread_id,
@@ -1409,12 +1501,15 @@ test('a live Claude update delegates only to the exact active interactive turn',
   const runPromise = runner.run(task, { onEvent: () => {}, onStderr: () => {} });
   await new Promise((resolve) => setImmediate(resolve));
   const attachments = [{ path: '/tmp/repo/live.png' }];
-  const outcome = await runner.steer(task.id, 'Use the new direction.', attachments);
+  const outcome = await runner.steer(task.id, 'Use the new direction.', attachments, {
+    flushComposer: true,
+  });
 
   assert.deepEqual(received, {
     taskId: task.id,
     prompt: 'Use the new direction.',
     attachments,
+    options: { flushComposer: true },
   });
   assert.equal(outcome.threadId, task.thread_id);
   assert.equal(diagnostics.some(({ event }) => event === 'task.claude.steer.completed'), true);

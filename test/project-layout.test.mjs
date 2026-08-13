@@ -10,13 +10,26 @@ test('desktop Launchpad uses one compact horizontal card row without vertical cl
   assert.match(style, /\.project-list \{\s*grid-area: list;\s*display: flex;[\s\S]*?padding-block: 2px;\s*overflow-x: auto;\s*overflow-y: hidden;/);
   assert.match(style, /\.project-chip \{\s*display: grid;\s*flex: 0 0 176px;[\s\S]*?grid-template-areas: "head activity close";\s*grid-template-columns: minmax\(0, 1fr\) auto 16px;[\s\S]*?height: 30px;/);
   assert.match(style, /@media \(min-width: 1345px\) \{[\s\S]*?\.app-header \{\s*height: 58px;[\s\S]*?\.project-dock \{\s*height: 44px;\s*min-height: 44px;/);
-  assert.match(style, /\.workspace \{\s*height: calc\(100vh - 102px\)/);
+  assert.match(style, /\.workspace \{\s*height: calc\(100vh - var\(--app-header-height, 58px\) - 44px\)/);
   const selectedStyle = style.slice(
     style.indexOf('.project-chip[class*="project-color-"].selected {'),
     style.indexOf('.project-chip[class*="project-color-"].selected:hover {'),
   );
   assert.doesNotMatch(selectedStyle, /transform:/);
   assert.doesNotMatch(selectedStyle, /0 0 0/);
+});
+
+test('running-task monitor exposes durable row and card-width controls', () => {
+  assert.match(markup, /id="running-task-settings" class="running-task-settings"/);
+  assert.match(markup, /summary aria-label="Configure running tasks"/);
+  assert.match(markup, /id="running-task-rows"[\s\S]*?<option value="1">1 row<\/option>[\s\S]*?<option value="3">3 rows<\/option>/);
+  assert.match(markup, /id="running-task-width"[\s\S]*?<option value="230">Compact<\/option>[\s\S]*?<option value="286">Default<\/option>[\s\S]*?<option value="360">Wide<\/option>/);
+  assert.match(style, /\.header-running-tasks \{[\s\S]*?grid-auto-columns: var\(--running-task-width, 286px\);[\s\S]*?grid-template-rows: repeat\(var\(--running-task-rows, 1\), 44px\);/);
+  assert.match(style, /html\[data-running-task-rows="2"\] \.app-header \{\s*height: 109px;\s*min-height: 109px;/);
+  assert.match(style, /html\[data-running-task-rows="3"\] \.app-header \{\s*height: 160px;\s*min-height: 160px;/);
+  assert.match(app, /'relay\.runningTaskLayout',[\s\S]*?JSON\.stringify\(normalizeRunningTaskLayout\(preferences\.runningTaskLayout\)\)/);
+  assert.match(app, /elements\.runningTaskRows\.addEventListener\('change'/);
+  assert.match(app, /elements\.runningTaskWidth\.addEventListener\('change'/);
 });
 
 test('Launchpad exposes one add-project action without launching a terminal', () => {
@@ -50,14 +63,19 @@ test('narrow project cards preserve the far-right close column', () => {
   assert.match(style, /\.project-unpin \{\s*grid-area: close;/);
 });
 
-test('task activity identifies new completions and can clear the current project', () => {
-  assert.match(markup, /id="clear-task-notifications-button"[\s\S]*?>Clear new<\/button>/);
+test('task activity identifies review-ready completions and can clear the current project', () => {
+  assert.match(markup, /id="clear-task-notifications-button"[\s\S]*?>Mark reviewed<\/button>/);
   assert.match(app, /projectCompletionNotifications\.includes\(task\.repo_path, task\.id\)/);
   assert.match(app, /class="task-card [^"]*\$\{unread \? 'task-card-unread' : ''\}/);
-  assert.match(app, /<span class="task-unread-marker">New<\/span>/);
+  assert.match(app, /unread && !operationalQueue \? '<span class="task-unread-marker">Ready for review<\/span>'/);
+  assert.match(app, /Mark reviewed · \$\{unreadCount\}/);
   assert.match(app, /projectCompletionNotifications\.acknowledgeProject\(state\.activeProjectPath\)/);
-  assert.match(style, /\.task-card-unread \{[\s\S]*?var\(--project-accent/);
+  assert.match(style, /\.task-card-unread:not\(\.selected\) \{[\s\S]*?background: color-mix\(in srgb, #d43f62 4%, #f8faf9\);/);
+  assert.match(style, /\.task-card-unread::before \{[\s\S]*?width: 4px;[\s\S]*?background: #d43f62;/);
   assert.match(style, /\.task-unread-marker \{[\s\S]*?text-transform: uppercase;/);
+  assert.match(style, /html\[data-theme="dark"\] \.task-card-unread:not\(\.selected\)/);
+  assert.match(style, /html\[data-theme="dark"\] \.clear-task-notifications-button \{[\s\S]*?color: #ff91aa;/);
+  assert.doesNotMatch(style, /(?:^|\n)\.task-card-unread \{[\s\S]*?(?:border-color|background):/);
 });
 
 test('task queue header controls remain readable at compact desktop density', () => {

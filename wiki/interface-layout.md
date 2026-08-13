@@ -47,7 +47,10 @@ The center of the application header is a global monitoring rail, not a connecti
 
 Each compact card shows the task number, project, CC Relay or Claude session, live duration, prompt, and latest recorded agent response. `src/running-task-feed.mjs` selects only Codex `agentMessage` and Claude `claude/message` events, so command output, tool protocol, and hidden reasoning never replace the response preview. A task without an agent message says **Waiting for the first agent response**. Clicking a card selects its pinned project when available, returns to Queue, and opens the task's complete Task Activity view.
 
-The rail scrolls horizontally instead of compressing or dropping running tasks. Its empty state is the single neutral **No tasks running** message. A running card inherits the deterministic eight-color identity or persisted custom color of its project for its flat surface tint, mixed-color outline, live dot, task-number chip, project name, focus ring, and hover tint. It has no directional accent edge or gradient. The CC Relay name remains neutral so project ownership and execution ownership stay separate. Codex response ownership remains blue, and only Claude response ownership uses the reserved orange. At 1344px and below the rail moves to its own full-width header row; narrow cards remain horizontally scrollable.
+The rail scrolls horizontally instead of compressing or dropping running tasks. A small cog at its right edge opens global layout controls for one, two, or three rows and Compact 230px, Default 286px, or Wide 360px cards. One row and Default width remain the defaults. Multi-row layouts fill down before adding the next horizontal column, so every choice preserves the existing horizontal scroll model. The header grows by the exact 44px card row and 7px gap budget, and `.workspace` subtracts the measured `--app-header-height` instead of assuming the old fixed 58px header. Its empty state is the single neutral **No tasks running** message. A running card inherits the deterministic eight-color identity or persisted custom color of its project for its flat surface tint, mixed-color outline, live dot, task-number chip, project name, focus ring, and hover tint. It has no directional accent edge or gradient. The CC Relay name remains neutral so project ownership and execution ownership stay separate. Codex response ownership remains blue, and only Claude response ownership uses the reserved orange. At 1344px and below the rail moves to its own full-width header row; narrow cards remain horizontally scrollable.
+
+> [!important]
+> Running-task rows and card width belong to the global durable `ui-layout-preferences` record, not a Launchpad project. Keep the browser cache, first-paint data attributes, backend normalization, and settings controls synchronized when adding another supported choice. The cog stays outside `#header-running-tasks`, so live feed rerenders cannot close or replace its controls.
 
 ## Provider subscription runway
 
@@ -61,7 +64,7 @@ The header no longer exposes queue pause or resume. Project pause state and back
 
 The task activity console renders as a realistic terminal on a near-black Tokyo Night background rather than a card ledger. Its palette is defined through `--term-*` variables scoped to `.events-section`, so the dark surface and syntax colors never leak into the rest of the light app, and semantic failure still reads as red. Its hierarchy is:
 
-1. A slim metrics strip (thinking tokens, commands, file changes, messages, errors, active work)
+1. An expanded-by-default execution manifest (runtime, current plan steps, sub-agent assignments, and compact telemetry)
 2. A filter toolbar (Highlights, Commands, Messages, All) with Copy log
 3. The scrollback: one numbered line per grouped signal
 4. The follow-up input prompt line
@@ -75,7 +78,7 @@ The right task inspector is a three-row grid: a compact operational header, a ho
 
 The task header is intentionally dense: reduced inspector padding, a 20px task title, inline compact metadata, a smaller action button, and tighter Prompt and Result sections. The execution terminal should receive as much vertical room as possible without hiding task context.
 
-The terminal has no title header. Runtime state lives in the slim metrics strip, the compact filter toolbar, and the tmux status bar. Scrollback lines use a small left gutter line number and dense monospace type. This is intentionally an information-dense monitoring surface rather than a presentation card.
+The terminal has no title header. Runtime state lives in the collapsible execution manifest, the compact filter toolbar, and the tmux status bar. The manifest starts expanded, shows the current plan and each worker's assignment, state, and elapsed time, and minimizes to its counters through a native disclosure. Scrollback lines use a small left gutter line number and dense monospace type. This is intentionally an information-dense monitoring surface rather than a presentation card. See [[task-activity-overview]].
 
 Direct tasks place a compact **Continue session** command dock below the event scrollback, styled as the shell input prompt line with a green `❯` caret and the near-black terminal surface. Its context line names the conversation, provider, model, and effort. A finished disposable task shows **Resume available** even after its terminal has closed. Sending keeps the selected task ID, relaunches its saved conversation when needed, and never creates queue work. **Conversation busy** prevents two turns from owning the same saved conversation. The multiline `textarea` expands only to 92px, Enter sends, and Shift+Enter adds a line. It remains editable while submission is unavailable and is disabled only during an active request. Codex uses blue and Claude uses its reserved orange identity accent. The dock is hidden for Plan council and Turbo.
 

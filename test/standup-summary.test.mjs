@@ -4,6 +4,7 @@ import {
   dateFromLocalInput,
   localDateInputValue,
   standupBullets,
+  standupCopyHtml,
   standupCopyText,
   standupSections,
   tasksForStandupDay,
@@ -100,4 +101,19 @@ test('standup clipboard text is categorized CHANGELOG Markdown', () => {
   assert.equal(text, '### Added\n\n- Added date-gated generation.\n\n### Fixed\n\n- Fixed local-day boundaries.');
   assert.match(text, /^-\s/m);
   assert.doesNotMatch(text, /### Changed|### Security/);
+});
+
+test('standup clipboard HTML uses portable chat headings and lists', () => {
+  const html = standupCopyHtml({
+    added: ['Added <safe> chat formatting.'],
+    changed: [],
+    fixed: ['Fixed copied headings.'],
+    security: [],
+  });
+  assert.equal(
+    html,
+    '<div><p><strong>Added</strong></p><ul><li>Added &lt;safe&gt; chat formatting.</li></ul></div>'
+      + '<div><p><strong>Fixed</strong></p><ul><li>Fixed copied headings.</li></ul></div>',
+  );
+  assert.doesNotMatch(html, /<strong>Changed|<strong>Security/);
 });

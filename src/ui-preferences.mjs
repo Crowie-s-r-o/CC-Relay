@@ -1,6 +1,8 @@
 export const UI_PREFERENCES_SETTING = 'ui-layout-preferences';
 
 const COMPLETION_SOUNDS = new Set(['none', 'chime', 'bell', 'pulse']);
+const RUNNING_TASK_ROWS = new Set([1, 2, 3]);
+const RUNNING_TASK_WIDTHS = new Set([230, 286, 360]);
 
 function boundedNumber(value, minimum, maximum) {
   const number = Number(value);
@@ -21,11 +23,18 @@ export function normalizeUiPreferences(value) {
       : 'chime',
     speak: value.completionAlerts?.speak === true,
   };
+  const requestedRunningTaskRows = Number(value.runningTaskLayout?.rows);
+  const requestedRunningTaskWidth = Number(value.runningTaskLayout?.width);
+  const runningTaskLayout = {
+    rows: RUNNING_TASK_ROWS.has(requestedRunningTaskRows) ? requestedRunningTaskRows : 1,
+    width: RUNNING_TASK_WIDTHS.has(requestedRunningTaskWidth) ? requestedRunningTaskWidth : 286,
+  };
   if (composer == null || queue == null) return null;
   return {
     panelWidths: { composer, queue },
     terminalHeight,
     headerPosition,
+    runningTaskLayout,
     completionAlerts,
   };
 }

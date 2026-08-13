@@ -9,11 +9,11 @@ type: design
 CC Relay uses a high-density desktop shell that keeps monitoring and project selection visible without taking space from active work.
 
 > [!important]
-> The wide-screen vertical budget is header `58px`, Launchpad `44px`, `.workspace height: calc(100vh - 102px)`, and the legacy bounded `.task-list height: calc(100vh - 202px)`. Move these values as one set.
+> The one-row wide-screen vertical budget is header `58px` and Launchpad `44px`. Two task rows make the header `109px`; three make it `160px`. `.workspace` subtracts the measured `--app-header-height` plus `44px`, while the legacy bounded `.task-list` calculation remains separate. Keep these values synchronized with the 44px task card and 7px row gap.
 
 ## Header
 
-- The brand mark is `28px`, header actions are `32px`, and the global running-task cards are `286px` wide.
+- The brand mark is `28px`, header actions are `32px`, and global running-task cards default to `286px` wide. The monitor cog can switch cards to `230px` or `360px` and expand the rail to two or three 44px rows.
 - A running card still exposes metadata, prompt, and latest response, but uses tighter type and a `9px` radius.
 - The empty running state remains a content-sized chip.
 - At and below `1344px`, the running rail may wrap to its own row.
@@ -67,7 +67,7 @@ The complete `npm test` suite passes with 763 tests.
 
 ## Queue header control readability
 
-The Queue, History, Import localhost, and Standup controls keep their compact 30px
+The Queue, History, and Standup controls keep their compact 30px
 geometry, but their JetBrains Mono labels use `10px` text instead of `8px`. This matches the
 surrounding compact header actions without forcing another queue header row.
 

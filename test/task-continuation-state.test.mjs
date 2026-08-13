@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import {
   continuationDispatchOutcome,
   continuationPresentation,
+  continuationRetryRestore,
   continuationSubmission,
   draftInputValue,
   unconfirmedDraft,
@@ -226,6 +227,88 @@ test('a running Claude task sends a live update through the same no-queue route'
   });
 });
 
+test('the Claude live outbox never locks the composer behind an earlier send', () => {
+  const runningTask = {
+    ...sourceTask,
+    provider: 'claude',
+    status: 'running',
+  };
+  const presentation = continuationPresentation({
+    supportsDirectFollowUp: true,
+    supportsClaudeTaskSteering: true,
+    supportsClaudeSteerOutbox: true,
+    sessionConnected: true,
+    busy: true,
+    taskRunning: true,
+    provider: 'claude',
+    submitting: true,
+    pendingCount: 2,
+    prompt: 'Send another update now',
+  });
+
+  assert.deepEqual(presentation, {
+    state: 'sending',
+    label: '2 sending',
+    buttonLabel: 'Update turn',
+    hint: '2 updates being delivered. Keep typing and send the next one whenever it is ready.',
+    inputDisabled: false,
+    sendDisabled: false,
+  });
+  assert.deepEqual(continuationSubmission(runningTask, 'Send another update now', {
+    supportsClaudeTaskSteering: true,
+    supportsClaudeSteerOutbox: true,
+  }), {
+    path: '/api/tasks/42/steer',
+    body: {
+      prompt: 'Send another update now',
+      flushComposer: true,
+    },
+  });
+});
+
+test('the reliable Claude outbox stays capability gated for mixed versions', () => {
+  const runningTask = {
+    ...sourceTask,
+    provider: 'claude',
+    status: 'running',
+  };
+  assert.deepEqual(continuationSubmission(runningTask, 'Use the legacy safe path', {
+    supportsClaudeTaskSteering: true,
+    supportsClaudeSteerOutbox: false,
+  }), {
+    path: '/api/tasks/42/steer',
+    body: { prompt: 'Use the legacy safe path' },
+  });
+});
+
+test('failed outbox sends restore in order without replacing newer task work', () => {
+  const first = { prompt: 'First failed update', attachments: [] };
+  const second = { prompt: 'Second failed update', attachments: [{ name: 'proof.png' }] };
+
+  assert.deepEqual(continuationRetryRestore({
+    draft: 'Newer text still being edited',
+    waiting: [first, second],
+  }), {
+    entry: null,
+    waiting: [first, second],
+  });
+  assert.deepEqual(continuationRetryRestore({
+    attachments: [{ name: 'newer.png' }],
+    waiting: [first, second],
+  }), {
+    entry: null,
+    waiting: [first, second],
+  });
+  assert.deepEqual(continuationRetryRestore({
+    draft: '',
+    attachments: [],
+    waiting: [first, second],
+  }), {
+    entry: first,
+    waiting: [second],
+  });
+});
+
 test('a running Claude task remains steerable during a transient session-list miss', () => {
   assert.equal(continuationPresentation({
     supportsDirectFollowUp: true,
@@ -412,7 +495,7 @@ test('typing replaces a retained copy with an ordinary editable draft', () => {
 });
 
 test('a sticky warning never suppresses the next dispatch outcome', () => {
-  const dispatchStart = composerApp.indexOf('async function submitTaskContinuation');
+  const dispatchStart = composerApp.indexOf('async function dispatchTaskContinuation');
   const dispatch = composerApp.slice(dispatchStart, composerApp.indexOf('async function deleteTask', dispatchStart));
 
   // Stickiness guards only the hint write inside the render, never a new outcome.
@@ -460,7 +543,7 @@ test('a response that confirms nothing keeps the draft and never reads as delive
 });
 
 test('the continuation dispatch path clears exactly what the outcome decides', () => {
-  const dispatchStart = composerApp.indexOf('async function submitTaskContinuation');
+  const dispatchStart = composerApp.indexOf('async function dispatchTaskContinuation');
   const dispatchEnd = composerApp.indexOf('async function deleteTask', dispatchStart);
   const dispatch = composerApp.slice(dispatchStart, dispatchEnd);
 
@@ -476,6 +559,32 @@ test('the continuation dispatch path clears exactly what the outcome decides', (
   assert.match(dispatch, /elements\.continuationMessage\.dataset\.kind = outcome\.kind/);
   // The composer must never be emptied for a task the user switched to mid-request.
   assert.match(dispatch, /if \(state\.selectedTaskForEvents\?\.id === sourceTask\.id\) \{\s*elements\.continuationInput\.value = ''/);
+});
+
+test('the Claude outbox captures each send without waiting or clearing newer typing', () => {
+  const submitStart = composerApp.indexOf('async function submitTaskContinuation');
+  const submitEnd = composerApp.indexOf('async function deleteTask', submitStart);
+  const submit = composerApp.slice(submitStart, submitEnd);
+  const outboxStart = submit.indexOf('if (outbox) {');
+  const outboxEnd = submit.indexOf('\n  state.continuationDrafts.set(', outboxStart);
+  const outbox = submit.slice(outboxStart, outboxEnd);
+  const dispatchStart = composerApp.indexOf('async function dispatchTaskContinuation');
+  const dispatchEnd = composerApp.indexOf('\n  state.continuationSubmitting = false;', dispatchStart);
+  const outboxOutcome = composerApp.slice(dispatchStart, dispatchEnd);
+
+  assert.ok(outboxStart >= 0 && outboxEnd > outboxStart);
+  assert.match(outbox, /state\.continuationDrafts\.delete\(sourceTask\.id\)/);
+  assert.match(outbox, /state\.continuationAttachments\.delete\(sourceTask\.id\)/);
+  assert.match(outbox, /elements\.continuationInput\.value = ''/);
+  assert.match(outbox, /adjustContinuationSteerPending\(sourceTask\.id, 1\)/);
+  assert.match(outbox, /const operation = dispatchTaskContinuation\(sourceTask, prompt, request/);
+  assert.match(outbox, /operation\.catch\(\(\) => \{\}\)/);
+  assert.doesNotMatch(outbox, /await dispatchTaskContinuation/);
+  assert.match(outboxOutcome, /adjustContinuationSteerPending\(sourceTask\.id, -1\)/);
+  assert.match(outboxOutcome, /retainContinuationRetry\(sourceTask\.id/);
+  assert.doesNotMatch(outboxOutcome, /continuationInput\.value = ''/);
+  assert.match(composerApp, /const retryRestored = restoreContinuationRetry\(task\.id\)/);
+  assert.match(composerApp, /retryRestored\s*\|\| taskChanged/);
 });
 
 test('an unconfirmed delivery notice survives the periodic refresh and reaches the client', () => {

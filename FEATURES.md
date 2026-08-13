@@ -11,6 +11,7 @@ CC Relay is designed to make AI development work easier to control:
 - Pin projects and set separate maximum Codex and Claude instances for each one.
 - Queue prompts instead of waiting for one task to finish before preparing the next.
 - Give tasks recognizable names and rename them without replacing queued work.
+- Search every saved task command and assistant response inside the selected project.
 - Choose the provider, model, and reasoning effort without keeping a target terminal open.
 - Launch a fresh provider terminal only when a queued task receives capacity.
 - Optionally keep final task terminal sessions open, with an independent saved choice for every project.
@@ -99,11 +100,13 @@ Pin frequently used folders and treat each one as a workspace. A project card sc
 
 Tasks are stored in SQLite and survive restarts. Each project owns its queue order, pause state, FIFO barriers, and provider limits. Waiting tasks can be reordered. Disposable tasks are not assigned manually because the pool creates their terminal when they start. Legacy persistent tasks retain compatible reassignment support.
 
+The task-list search checks task names, original commands, every accepted Relay follow-up, every saved Codex and Claude response, final results, and recorded errors. Search is case, accent, and punctuation insensitive, supports quoted phrases and task numbers, and ranks the strongest evidence first. Matching cards show a highlighted command or response excerpt. Search spans all dates in the selected project; filtered results stay inspectable but do not expose reorder, assignment, or parallel-batch controls.
+
 Task names are optional and fall back to a compact form of the request. A waiting task can be
 renamed in place while its task ID, prompt, position, routing, workflow configuration, and images
 remain unchanged.
 
-Task Activity includes a compact continuation dock for direct tasks. A follow-up always reuses the selected task row and saved conversation. While a direct task is running, Codex and interactive Claude accept exact active-turn updates without creating queue work. After a task finishes, CC Relay uses a live retained session immediately, or reserves a free provider slot, relaunches the saved conversation, and sends the next turn without creating a task. If no slot is free, submission stays on the finished task and asks the user to try again. The Prompts disclosure above the event rail lists the original request and every accepted follow-up.
+Task Activity includes a compact continuation dock for direct tasks. A follow-up always reuses the selected task row and saved conversation. While a direct task is running, Codex and interactive Claude accept exact active-turn updates without creating queue work. Running Claude keeps the dock editable while earlier updates are being delivered, captures every send in order, and sends a stable native Claude draft before the next Relay update instead of blocking the operator. Attachment-bearing updates remain recognizable after Claude converts their path lines into cumulative image chips and shortens the collapsed paste, so the guarded submit schedule does not leave them waiting for manual Enter. After a task finishes, CC Relay uses a live retained session immediately, or reserves a free provider slot, relaunches the saved conversation, and sends the next turn without creating a task. If no slot is free, submission stays on the finished task and asks the user to try again. The Prompts disclosure above the event rail lists the original request and every accepted follow-up.
 
 Retrying a failed, cancelled, or interrupted automatic Execute task opens its execution settings first. The executor, model, and effort can change before the task returns to the queue. Keeping the same executor preserves the saved conversation when available. Switching between Codex and Claude starts a fresh provider conversation while preserving the task ID, request, images, and queue history.
 
