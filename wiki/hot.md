@@ -6,6 +6,19 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 13: every task run in a git repository now has a per-task Changes preview.** Task detail
+> gains a capability-gated **Changes** action that opens a changed-file tree with status letters and
+> per-file line counts beside a side-by-side before and after diff on the Tokyo Night terminal
+> surface. A working-tree baseline is snapshotted through a temporary git index when the task
+> starts; the live diff then follows the working tree every 3 seconds with a server render
+> signature preserving scroll, selection, and collapse state, and a terminal outcome freezes the
+> diff against the captured end tree. Snapshots never touch the user's index, worktree, refs, or
+> HEAD, and legacy task rows simply show no button. The focused diff suites pass 58 of 58, the
+> complete suite passes 1,531 of 1,531, `release:check` is green for v0.2.9, and `git diff --check`
+> is clean. Restart CC Relay and rebuild the desktop bundle to activate it. See
+> [[task-diff-preview]].
+
 > [!important]
 > **August 13: deploy now recovers an unpublished release suffix automatically.** A rerun after an
 > authorization failure compares reachable local SemVer tags with stable GitHub Releases, validates

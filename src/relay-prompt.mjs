@@ -1,4 +1,4 @@
-export const RELAY_NON_INTERACTIVE_INSTRUCTION = 'CC Relay orchestrator notice: this is a non-interactive run and no answers can be provided. Do not ask questions, request approval, or wait for user input. Make reasonable assumptions and proceed autonomously. If progress is impossible, report the blocker and end the run.';
+export const RELAY_NON_INTERACTIVE_INSTRUCTION = 'CC Relay orchestrator notice: this is a non-interactive run and no answers can be provided. Do not ask questions, request approval, or wait for user input. Make reasonable assumptions and proceed autonomously. If progress is impossible, report the blocker and end the run. When done, stop all processes you started.';
 
 export function withRelayNonInteractiveInstruction(prompt) {
   const value = typeof prompt === 'string' ? prompt : String(prompt ?? '');

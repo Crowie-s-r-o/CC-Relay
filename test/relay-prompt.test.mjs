@@ -13,6 +13,7 @@ test('CC Relay delivery appends the non-interactive instruction without changing
     `Implement the requested change.\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`,
   );
   assert.match(delivered, /Do not ask questions, request approval, or wait for user input/);
+  assert.match(delivered, /When done, stop all processes you started\./);
 });
 
 test('CC Relay delivery does not duplicate an existing non-interactive instruction', () => {

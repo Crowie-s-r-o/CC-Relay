@@ -679,9 +679,9 @@ const queuedCommandAttachment = (prompt) => ({
   sessionId: '917fd23a-6943-4ba5-8e52-77e411cfc92b',
   version: '2.1.220',
 });
-// Task 85's third live update, rebuilt through the real builder. The recorded `content` was 433
-// bytes and this reproduces it exactly, which is what proves the queue record carries the injected
-// text with no framing of its own.
+// Task 85's third live update, rebuilt through the real builder. Its recorded `content` was 433
+// bytes before the 43-byte process-cleanup suffix was added. The current 476-byte form still proves
+// the queue record carries the injected text with no framing of its own.
 const QUEUED_STEER_PROMPT = taskPrompt({
   prompt: 'also when I send a message to running claude through the cc relay it sends it but it leaves it also in the input like it failed to send why? - fix this as well',
   attachments: [],
@@ -694,8 +694,7 @@ const QUEUED_TASK_NOTIFICATION = '<task-notification>\n'
   + '</task-notification>';
 
 test('a queued live update is recorded as a queue-operation carrying the delivered text', () => {
-  // Byte identity with the capture: 433 recorded bytes, rebuilt by the real taskPrompt() builder.
-  assert.equal(Buffer.byteLength(QUEUED_STEER_PROMPT, 'utf8'), 433);
+  assert.equal(Buffer.byteLength(QUEUED_STEER_PROMPT, 'utf8'), 476);
   // Why three live updates timed out: the user-record channel cannot see this record at all.
   assert.equal(userPromptRecordText(queueEnqueue(QUEUED_STEER_PROMPT)), '');
   assert.equal(userPromptRecordText(queuedCommandAttachment(QUEUED_STEER_PROMPT)), '');
@@ -938,8 +937,8 @@ test('the status row family recognizes every composer state, including a held pa
 //
 // This is THE shape the old classifier could not read. A single-line follow-up message becomes a
 // THREE line paste once taskPrompt() appends the non-interactive notice after a blank line, three
-// lines are under the collapse threshold, so the text renders literally and word-wraps over four
-// rows. That puts the caret nine non-empty lines above the bottom of the screen, past the former
+// lines are under the collapse threshold, so the text renders literally and word-wraps over five
+// rows. That puts the caret ten non-empty lines above the bottom of the screen, past the former
 // CLAUDE_COMPOSER_MAX_TAIL_DEPTH of 8, so claudeComposerContent() reported found:false and the
 // whole guarded submit schedule classified it as 'unreadable' and sent nothing at all.
 const LIVE_TEXT_STEER_CAPTURE = [
@@ -951,7 +950,8 @@ const LIVE_TEXT_STEER_CAPTURE = [
   '  CC Relay orchestrator notice: this is a non-interactive run and no answers',
   '  can be provided. Do not ask questions, request approval, or wait for user',
   '  input. Make reasonable assumptions and proceed autonomously. If progress is',
-  '  impossible, report the blocker and end the run.',
+  '  impossible, report the blocker and end the run. When done, stop all',
+  '  processes you started.',
   '────────────────────────────────────────────────────────────────────────────────',
   '  dev@host:/private/tmp/probe-cwd',
   '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
@@ -991,7 +991,8 @@ test('a text-only live steer is recognized in its captured multi-row composer fr
   const emptied = LIVE_TEXT_STEER_CAPTURE
     .split('\n')
     .filter((line) => !line.startsWith('  CC Relay orchestrator') && !line.startsWith('  can be')
-      && !line.startsWith('  input.') && !line.startsWith('  impossible,'))
+      && !line.startsWith('  input.') && !line.startsWith('  impossible,')
+      && !line.startsWith('  processes you started.'))
     .join('\n')
     .replace('❯ also fix the spacing in the header', '❯ ');
   assert.equal(claudeComposerState(emptied, delivered), 'empty');

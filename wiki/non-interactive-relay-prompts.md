@@ -1,6 +1,6 @@
 ---
 name: Non-interactive CC Relay Prompts
-description: Delivery-time instruction that prevents CC Relay-launched Codex and Claude turns from waiting for user answers.
+description: Delivery-time instructions that keep CC Relay-launched turns non-interactive and require process cleanup.
 type: behavior
 ---
 
@@ -8,6 +8,7 @@ type: behavior
 
 > [!important]
 > Every prompt CC Relay delivers to Codex or Claude now ends with a short orchestrator notice that no answers can be provided. The provider must not ask questions, request approval, or wait for input. It should make reasonable assumptions and continue autonomously, or report a blocker and end the run when progress is impossible.
+> Its final cleanup sentence is: `When done, stop all processes you started.`
 
 ## Delivery contract
 
@@ -41,11 +42,11 @@ The notice is preventive guidance, not a new provider state machine. Existing qu
 - `test/claude-execution-runner.test.mjs`
 - `test/claude-runner.test.mjs`
 
-The full Node suite passes 763 tests. Focused coverage proves direct Codex delivery, live Codex steering, Claude Execute delivery with attachments, fresh Claude initialization, isolated Claude planning stages, and idempotent decoration.
+The full Node suite passes 1,531 tests. Focused coverage proves direct Codex delivery, live Codex steering, Claude Execute delivery with attachments, fresh Claude initialization, isolated Claude planning stages, process cleanup guidance, and idempotent decoration.
 
 > [!note]
 > This is backend behavior. A running CC Relay process must be restarted normally before newly dispatched turns receive the notice.
 
 See [[task-history]], [[same-task-session-continuation]], [[claude-terminal-input]], and [[terminal-input-attention]].
 
-#relay #prompts #non-interactive #claude #codex
+#relay #prompts #non-interactive #claude #codex #process-cleanup

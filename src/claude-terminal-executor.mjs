@@ -383,16 +383,17 @@ export const CLAUDE_IMAGE_CHIP_PATTERN = /\[Image #\d+\]/;
 // It is deliberately NOT the bound for a boxed composer. A paste of one to three lines never
 // collapses (see CLAUDE_PASTE_COLLAPSE_MIN_LINES) and renders its text literally, word-wrapped
 // across as many rows as it needs, so the caret sits arbitrarily far above the bottom. Every live
-// steer is exactly that shape: taskPrompt() appends the 272 character non-interactive notice after
+// steer is exactly that shape: taskPrompt() appends the 315 character non-interactive notice after
 // a blank line, so a single-line follow-up message is a THREE line paste that always renders
-// literally over four or more rows. Captured on Claude Code 2.1.224 through a private pty:
+// literally over five or more rows. Based on a Claude Code 2.1.224 private pty capture:
 //
 //   ──────────────────────────────────────  <- opening rule
-//   ❯ also fix the spacing in the header    <- caret, depth 9 at 80 columns
+//   ❯ also fix the spacing in the header    <- caret, depth 10 at 80 columns
 //     CC Relay orchestrator notice: this is a non-interactive run and no answers
 //     can be provided. Do not ask questions, request approval, or wait for user
 //     input. Make reasonable assumptions and proceed autonomously. If progress is
-//     impossible, report the blocker and end the run.
+//     impossible, report the blocker and end the run. When done, stop all
+//     processes you started.
 //   ──────────────────────────────────────  <- closing rule
 //     user@host:/path
 //     ⏵⏵ bypass permissions on (shift+tab to cycle)
