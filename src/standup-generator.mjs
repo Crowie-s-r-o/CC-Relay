@@ -11,7 +11,6 @@ import {
   changelogNotesSchema,
   formatChangelogSections,
   MAX_CHANGELOG_NOTE_LENGTH,
-  MAX_CHANGELOG_NOTES,
   normalizeChangelogNotes,
 } from './changelog-notes.mjs';
 import { claudeFailureMessage } from './claude-runner.mjs';
@@ -176,7 +175,7 @@ ${context}
 Output requirements:
 - Return only one JSON object with exactly these array properties:
   {"added":[],"changed":[],"fixed":[],"security":[]}
-- Produce between 2 and ${MAX_CHANGELOG_NOTES} bullets total unless the evidence supports only one.
+- Include every distinct confirmed fact supported by the evidence. There is no item-count limit.
 - Use Added for new capabilities, Changed for improvements or behavior changes, Fixed for resolved defects, and Security for material security hardening.
 - Put each confirmed fact in the most specific section and do not repeat it.
 - Synthesize related tasks, retries, and follow-ups instead of mechanically emitting one item per task.

@@ -65,7 +65,7 @@ Automatic version intent is deterministic:
 3. Require the latest reachable SemVer tag to match the package version.
 4. Collect commits and changed-file evidence since the latest tag.
 5. Generate structured release notes through an isolated local subscription CLI.
-6. Normalize the notes to one to eight short, deduplicated facts.
+6. Normalize every supported note into short, deduplicated facts without an item-count limit.
 7. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` together.
 8. Run `release:check`, the complete test suite, and `npm audit --audit-level=high`.
 9. Create `chore(release): vX.Y.Z` and an annotated `vX.Y.Z` tag.
@@ -82,10 +82,13 @@ Release notes require AI on every release, but no API key or project environment
 - Both run in a temporary directory and receive only bounded commit and changed-file data. At most the newest 100 commits are included, with an explicit omitted count when a release range is larger.
 - The prompt labels every history string as untrusted data.
 - Provider diagnostics stay buffered on successful generation, so the terminal never echoes the bounded source prompt.
-- Deterministic code rejects unknown sections, non-text values, control characters, links, HTML, overlong items, empty results, duplicate facts, and more than eight bullets.
+- Deterministic code rejects unknown sections, non-text values, control characters, links, HTML, overlong items, and empty results, while deduplicating repeated facts. It does not reject a valid result because of its item count.
 - Provider failure stops the release without a deterministic fake changelog.
 
 `src/changelog-notes.mjs` owns the shared schema, normalization, section ordering, and Markdown formatting for deploy and [[daily-standup]]. Changes to those constraints must keep release and in-app output aligned.
+
+> [!note]
+> As of 2026-08-13, the shared JSON Schema and normalizer have no total or per-section item limit. Provider output remains bounded by the surrounding runner, and every individual fact still has the 180-character limit and plain-text validation.
 
 This invocation follows the official Codex non-interactive pattern and reuses the user's saved CLI authentication. See [[daily-standup]] for the similar isolated provider pattern used inside the application.
 

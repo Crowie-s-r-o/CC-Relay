@@ -1,6 +1,6 @@
 ---
 name: Daily Standup
-description: How CC Relay turns completed saved conversations into a date-selected changelog with the same categories and limits as deploy.
+description: How CC Relay turns completed saved conversations into a date-selected changelog with the same categories and validation as deploy.
 type: architecture
 tags:
   - relay
@@ -59,7 +59,7 @@ This keeps generation grounded in actual saved conversations, including the one-
 
 ## Shared changelog contract
 
-`src/changelog-notes.mjs` is the shared deterministic boundary for Standup and `scripts/deploy.mjs`. Both use the same section order, JSON Schema, sentence limit, item limit, deduplication, plain-text validation, and Markdown formatter.
+`src/changelog-notes.mjs` is the shared deterministic boundary for Standup and `scripts/deploy.mjs`. Both use the same section order, JSON Schema, sentence limit, deduplication, plain-text validation, and Markdown formatter.
 
 The provider must return exactly this structured shape:
 
@@ -74,8 +74,7 @@ The provider must return exactly this structured shape:
 
 Deterministic normalization then enforces:
 
-- one through eight usable facts total;
-- at most four facts in any section;
+- one or more usable facts, with no item-count limit;
 - one plain sentence of at most 180 characters per fact;
 - global case-insensitive deduplication across sections;
 - no control characters, links, Markdown links, or HTML;
@@ -84,7 +83,10 @@ Deterministic normalization then enforces:
 - omission of empty sections; and
 - `###` headings with `- ` Markdown bullets.
 
-The prompt asks for two through eight facts unless the saved evidence supports only one. Related tasks, retries, and follow-ups are synthesized instead of being emitted mechanically. A request or attempt is omitted unless a saved response or final outcome confirms it as completed.
+The prompt asks for every distinct confirmed fact supported by the evidence and explicitly states that there is no item-count limit. Related tasks, retries, and follow-ups are synthesized instead of being emitted mechanically. A request or attempt is omitted unless a saved response or final outcome confirms it as completed.
+
+> [!important]
+> Standup must not fail because the provider returned more than eight facts or more than four facts in one section. Item-count constraints are absent from both the provider JSON Schema and deterministic normalization. The 180-character per-fact and 2 MB provider-output safety bounds remain.
 
 The API returns the categorized arrays plus `standup` and `copyText`. Both text fields contain the same ready-to-paste changelog Markdown. The browser reconstructs clipboard text from the normalized arrays, so provider formatting cannot alter headings or bullet markers.
 
@@ -109,7 +111,7 @@ Generation is intentionally bounded:
 - Individual text and the complete recorded-work source are progressively shortened to keep the source under 120,000 characters.
 - Provider stdout is capped at 2 MB.
 - A provider run times out after 120 seconds.
-- Normalized output is capped at eight facts, four per section, and 180 characters per fact.
+- Each normalized fact is capped at 180 characters, but the number of facts and facts per section is not capped.
 - Only one standup generation may run at a time. A concurrent request receives HTTP 409.
 
 No standup is cached or persisted. **Regenerate changelog** always starts a fresh isolated synthesis from current saved data.
@@ -173,7 +175,7 @@ The endpoint validates the pinned project, optional Relay id length, provider, l
 - `test/standup-ui.test.mjs`
 - `test/release-tooling.test.mjs`
 
-Focused tests cover local dates, daylight-saving day lengths, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, prompt-injection framing, category semantics, shared deploy limits, cross-section deduplication, ready-to-paste Markdown, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
+Focused tests cover local dates, daylight-saving day lengths, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
 
 See [[daily-standup-review]] for the historical review of the retired length-configurable implementation.
 

@@ -98,7 +98,7 @@ Return only one JSON object with exactly these array properties:
 {"added":[],"changed":[],"fixed":[],"security":[]}
 
 Rules:
-- Produce between 2 and 8 bullets total unless the evidence supports only one.
+- Include every distinct confirmed fact supported by the evidence. There is no item-count limit.
 - Put each fact in the most specific section and do not repeat it.
 - Describe user-visible outcomes, important developer-facing changes, and material security fixes.
 - Keep every bullet to one plain sentence of at most ${MAX_NOTE_LENGTH} characters.

@@ -108,7 +108,7 @@ test('standup prompt grounds synthesis in every saved prompt, response, and outc
   assert.match(prompt, /"added":\[\],"changed":\[\],"fixed":\[\],"security":\[\]/);
   assert.match(prompt, /Use Added for new capabilities, Changed for improvements or behavior changes, Fixed for resolved defects/);
   assert.match(prompt, /one short, plain sentence of at most 180 characters/);
-  assert.match(prompt, /between 2 and 8 bullets total/);
+  assert.match(prompt, /There is no item-count limit/);
 });
 
 test('standup prompt requests one compact categorized changelog', () => {
@@ -169,7 +169,7 @@ test('generated output is normalized into deploy-style changelog Markdown', () =
   );
 });
 
-test('standup notes share deploy limits and deduplicate facts across categories', () => {
+test('standup notes accept any item count and deduplicate facts across categories', () => {
   const output = normalizeStandupOutput({
     added: ['Added categorized notes.', 'Added categorized notes.'],
     changed: ['Added categorized notes.', 'Improved the copy format.'],
@@ -178,18 +178,17 @@ test('standup notes share deploy limits and deduplicate facts across categories'
   });
   assert.deepEqual(output.added, ['Added categorized notes.']);
   assert.deepEqual(output.changed, ['Improved the copy format.']);
-  assert.throws(() => normalizeStandupOutput({
-    added: Array.from({ length: 5 }, (_, index) => `Added item ${index}.`),
-    changed: [],
-    fixed: [],
-    security: [],
-  }), /too many added items/);
-  assert.throws(() => normalizeStandupOutput({
-    added: ['A1', 'A2', 'A3'],
-    changed: ['C1', 'C2'],
-    fixed: ['F1', 'F2'],
-    security: ['S1', 'S2'],
-  }), /8-item limit/);
+  const manyNotes = normalizeStandupOutput({
+    added: Array.from({ length: 12 }, (_, index) => `Added item ${index}.`),
+    changed: Array.from({ length: 9 }, (_, index) => `Changed item ${index}.`),
+    fixed: Array.from({ length: 7 }, (_, index) => `Fixed item ${index}.`),
+    security: Array.from({ length: 5 }, (_, index) => `Hardened item ${index}.`),
+  });
+  assert.equal(manyNotes.added.length, 12);
+  assert.equal(manyNotes.changed.length, 9);
+  assert.equal(manyNotes.fixed.length, 7);
+  assert.equal(manyNotes.security.length, 5);
+  assert.equal(manyNotes.standup.match(/^- /gm).length, 33);
   assert.throws(() => normalizeStandupOutput({
     added: ['x'.repeat(180)],
     changed: [],

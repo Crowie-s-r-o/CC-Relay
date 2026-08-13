@@ -6,14 +6,12 @@ export const CHANGELOG_SECTION_ORDER = Object.freeze([
 ]);
 
 export const MAX_CHANGELOG_NOTE_LENGTH = 180;
-export const MAX_CHANGELOG_NOTES = 8;
 
 export const changelogNotesSchema = {
   type: 'object',
   additionalProperties: false,
   properties: Object.fromEntries(CHANGELOG_SECTION_ORDER.map(([key]) => [key, {
     type: 'array',
-    maxItems: 4,
     items: {
       type: 'string',
       minLength: 1,
@@ -74,10 +72,8 @@ export function normalizeChangelogNotes(output, {
 
   const normalized = {};
   const seen = new Set();
-  let total = 0;
   for (const [key] of CHANGELOG_SECTION_ORDER) {
     if (!Array.isArray(parsed[key])) throw new Error(`${collectionLabel} must include a ${key} array.`);
-    if (parsed[key].length > 4) throw new Error(`${collectionLabel} include too many ${key} items.`);
     normalized[key] = [];
     for (const value of parsed[key]) {
       if (typeof value !== 'string') throw new Error(`${itemLabel} in ${key} is not text.`);
@@ -87,13 +83,9 @@ export function normalizeChangelogNotes(output, {
       if (seen.has(identity)) continue;
       seen.add(identity);
       normalized[key].push(note);
-      total += 1;
     }
   }
-  if (total === 0) throw new Error(`The AI completed without any usable ${itemLabel.replace(/^AI\s+/i, '').replace(/\s+note$/, ' notes')}.`);
-  if (total > MAX_CHANGELOG_NOTES) {
-    throw new Error(`${collectionLabel} exceed the ${MAX_CHANGELOG_NOTES}-item limit.`);
-  }
+  if (seen.size === 0) throw new Error(`The AI completed without any usable ${itemLabel.replace(/^AI\s+/i, '').replace(/\s+note$/, ' notes')}.`);
   return normalized;
 }
 
