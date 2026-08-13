@@ -706,6 +706,9 @@ export class RelayDatabase {
   // How many other tasks ran in the same working tree while this one held it. A git diff cannot
   // attribute a change to a task, so the diff preview uses this to say when what it shows may
   // include another task's edits. Timestamps are ISO UTC, so string order is time order.
+  // A missing finished_at only holds the tree open while the row is still live. A crashed or
+  // legacy row left terminal without an end time would otherwise overlap every later window in
+  // that project forever, which would make the shared tree warning permanent and meaningless.
   countOverlappingRepoTasks(repoPath, { excludeTaskId = null, from = null, to = null } = {}) {
     if (typeof repoPath !== 'string' || !repoPath) return 0;
     const windowStart = typeof from === 'string' && from ? from : '';
@@ -719,7 +722,6 @@ export class RelayDatabase {
         AND started_at <= ?
         AND (
           status IN ('running', 'open')
-          OR finished_at IS NULL
           OR finished_at >= ?
         )
     `).get(repoPath, excludeTaskId, windowEnd, windowStart);

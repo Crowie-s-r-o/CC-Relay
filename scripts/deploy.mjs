@@ -18,16 +18,20 @@ import {
 import {
   buildReleasePrompt,
   changelogEntryForVersion,
-  compareVersions,
   formatChangelogEntry,
   inferReleaseType,
   localCalendarDate,
   nextVersion,
+  normalizeReleaseTags,
   normalizeReleaseNotes,
   parseVersion,
+  pendingReleaseTags,
   prependChangelog,
   releaseNotesSchema,
   releasePublishStatus,
+  releaseRecoveryRefspecs,
+  releaseTagsFromPublishedReleases,
+  releaseTagsFromRemoteRefs,
   selectReleaseWorkflowRun,
 } from './release-core.mjs';
 
@@ -51,8 +55,9 @@ Examples:
   npm run deploy -- minor --provider claude
   npm run deploy -- patch --dry-run
 
-Deploy waits for GitHub Actions to publish the release and fails if it does not.
-Pass --no-watch to stop right after the atomic push.`;
+Deploy first recovers any validated unpublished local releases in version order.
+It waits for GitHub Actions to publish each release and fails if publication does not complete.
+Pass --no-watch to stop after a normal release push; pending-release recovery requires watching.`;
 }
 
 function parseArguments(argv) {
@@ -159,11 +164,81 @@ function parseCommits(range) {
 }
 
 function releaseTags() {
-  return gitText(['tag', '--merged', 'HEAD', '--list', 'v*'])
+  return normalizeReleaseTags(gitText(['tag', '--merged', 'HEAD', '--list', 'v*'])
     .split(/\r?\n/)
-    .map((tag) => tag.trim())
-    .filter((tag) => /^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(tag))
-    .sort((left, right) => compareVersions(left.slice(1), right.slice(1)));
+    .map((tag) => tag.trim()));
+}
+
+function remoteReleaseTags() {
+  return releaseTagsFromRemoteRefs(gitText(['ls-remote', '--tags', '--refs', 'origin']));
+}
+
+function gitIsAncestor(ancestor, descendant) {
+  return git(['merge-base', '--is-ancestor', ancestor, descendant], { allowFailure: true }).status === 0;
+}
+
+function releaseJsonAt(tag, path) {
+  try {
+    return JSON.parse(gitText(['show', `${tag}:${path}`]));
+  } catch (error) {
+    throw new Error(`Pending release ${tag} has invalid ${path}: ${error.message}`);
+  }
+}
+
+function pendingReleaseRecords(tags) {
+  const firstParentCommits = new Set(gitText(['rev-list', '--first-parent', 'HEAD'])
+    .split(/\r?\n/)
+    .map((sha) => sha.trim())
+    .filter(Boolean));
+  const records = tags.map((tag) => {
+    const type = gitText(['cat-file', '-t', `refs/tags/${tag}`]).trim();
+    if (type !== 'tag') {
+      throw new Error(`Pending release ${tag} must be an annotated tag, found ${type || 'unknown'}.`);
+    }
+    const sha = gitText(['rev-parse', `${tag}^{commit}`]).trim();
+    if (!firstParentCommits.has(sha)) {
+      throw new Error(`Pending release ${tag} is not on local main's first-parent history.`);
+    }
+    const subject = gitText(['show', '-s', '--format=%s', sha]).trim();
+    if (subject !== `chore(release): ${tag}`) {
+      throw new Error(`Pending release ${tag} points to an unexpected commit: ${subject || sha}.`);
+    }
+
+    const version = tag.slice(1);
+    const manifest = releaseJsonAt(tag, 'package.json');
+    const lockfile = releaseJsonAt(tag, 'package-lock.json');
+    if (
+      manifest.version !== version
+      || lockfile.version !== version
+      || lockfile.packages?.['']?.version !== version
+    ) {
+      throw new Error(`Pending release ${tag} has inconsistent package versions.`);
+    }
+    const changelog = gitText(['show', `${tag}:CHANGELOG.md`]);
+    changelogEntryForVersion(changelog, version);
+    return { tag, sha, advanceMain: false };
+  });
+
+  for (let index = 1; index < records.length; index += 1) {
+    if (!gitIsAncestor(records[index - 1].sha, records[index].sha)) {
+      throw new Error(
+        `Pending release ${records[index].tag} does not follow ${records[index - 1].tag} on main.`,
+      );
+    }
+  }
+
+  let remoteMain = gitText(['rev-parse', 'origin/main']).trim();
+  for (const record of records) {
+    if (gitIsAncestor(remoteMain, record.sha)) {
+      record.advanceMain = remoteMain !== record.sha;
+      remoteMain = record.sha;
+      continue;
+    }
+    if (!gitIsAncestor(record.sha, remoteMain)) {
+      throw new Error(`Pending release ${record.tag} diverges from origin/main.`);
+    }
+  }
+  return records;
 }
 
 function assertReleaseRepository() {
@@ -362,6 +437,12 @@ function releaseWatchAvailable() {
   return String(repository?.full_name || '') === RELEASE_REPOSITORY;
 }
 
+function publishedReleaseTags() {
+  const releases = ghJson(`repos/${RELEASE_REPOSITORY}/releases?per_page=100`);
+  if (!Array.isArray(releases)) return null;
+  return releaseTagsFromPublishedReleases(releases);
+}
+
 function delay(milliseconds) {
   return new Promise((resolvePromise) => {
     setTimeout(resolvePromise, milliseconds);
@@ -395,6 +476,76 @@ async function watchReleasePublication(tag, sha) {
     ok: false,
     message: `Timed out waiting for the GitHub Release for ${tag}. Inspect https://github.com/${RELEASE_REPOSITORY}/actions`,
   };
+}
+
+async function recoverPendingReleases(localTags, options) {
+  const remoteTags = remoteReleaseTags();
+  const missingRemoteTags = pendingReleaseTags({
+    localTags,
+    publishedTags: remoteTags,
+  });
+  if (!releaseWatchAvailable()) {
+    if (missingRemoteTags.length > 0) {
+      throw new Error(
+        `Found pending local releases ${missingRemoteTags.join(', ')}, but the GitHub CLI could not read ${RELEASE_REPOSITORY}. Restore GitHub access, then rerun npm run deploy.`,
+      );
+    }
+    return { pendingTags: [], recoveredTags: [] };
+  }
+
+  const publishedTags = publishedReleaseTags();
+  if (!publishedTags) {
+    throw new Error(`Could not inspect published releases for ${RELEASE_REPOSITORY}. Rerun npm run deploy.`);
+  }
+  const latestPublished = publishedTags.at(-1) || null;
+  if (latestPublished && !localTags.includes(latestPublished)) {
+    throw new Error(`Latest published release ${latestPublished} is not reachable from local main.`);
+  }
+
+  const pendingTags = pendingReleaseTags({ localTags, publishedTags });
+  if (pendingTags.length === 0) return { pendingTags, recoveredTags: [] };
+
+  const records = pendingReleaseRecords(pendingTags);
+  console.log(`Found ${pendingTags.length} pending release${pendingTags.length === 1 ? '' : 's'} after ${latestPublished || 'the empty release history'}: ${pendingTags.join(', ')}`);
+  if (options.dryRun) {
+    console.log('Dry run: pending releases would be published in the order shown above.');
+    return { pendingTags, recoveredTags: [] };
+  }
+  if (!options.watch) {
+    throw new Error('Pending release recovery requires publication watching. Rerun without --no-watch.');
+  }
+
+  const remoteTagSet = new Set(remoteTags);
+  const recoveredTags = [];
+  for (const record of records) {
+    const refspecs = releaseRecoveryRefspecs({
+      ...record,
+      remoteTagPresent: remoteTagSet.has(record.tag),
+    });
+
+    if (refspecs.length > 0) {
+      console.log(`Recovering ${record.tag} with an atomic push...`);
+      try {
+        git(['push', '--atomic', 'origin', ...refspecs], { inherit: true });
+      } catch (error) {
+        throw new Error(
+          `Pending release ${record.tag} is valid, but GitHub push failed: ${error.message}. Fix GitHub access, then rerun npm run deploy; completed releases will be skipped.`,
+        );
+      }
+      remoteTagSet.add(record.tag);
+    } else {
+      console.log(`${record.tag} is already pushed; resuming its publication watch.`);
+    }
+
+    console.log(`Waiting for GitHub Actions to build and publish ${record.tag}...`);
+    const outcome = await watchReleasePublication(record.tag, record.sha);
+    if (!outcome.ok) {
+      throw new Error(`${outcome.message}\nRecovery stopped at ${record.tag}; later pending releases were not pushed.`);
+    }
+    console.log(outcome.message);
+    recoveredTags.push(record.tag);
+  }
+  return { pendingTags, recoveredTags };
 }
 
 function writeJson(path, value) {
@@ -435,13 +586,25 @@ async function main() {
     throw new Error('package.json and package-lock.json versions do not match.');
   }
 
-  const latestTag = releaseTags().at(-1) || null;
+  const localTags = releaseTags();
+  const latestTag = localTags.at(-1) || null;
   if (latestTag && latestTag.slice(1) !== currentVersion) {
     throw new Error(`Latest tag ${latestTag} does not match package version ${currentVersion}.`);
   }
+  const recovery = await recoverPendingReleases(localTags, options);
   const range = latestTag ? `${latestTag}..HEAD` : 'HEAD';
   const commits = parseCommits(range);
-  if (commits.length === 0) throw new Error(`There are no commits to release after ${latestTag}.`);
+  if (commits.length === 0) {
+    if (recovery.pendingTags.length > 0) {
+      if (options.dryRun) {
+        console.log('\nDry run complete. No files, commits, tags, or remotes were changed.');
+      } else {
+        console.log(`Recovered ${recovery.recoveredTags.join(', ')}. There are no new commits to release.`);
+      }
+      return;
+    }
+    throw new Error(`There are no commits to release after ${latestTag}.`);
+  }
   const releaseType = options.releaseType === 'auto'
     ? inferReleaseType(commits)
     : options.releaseType;
@@ -492,7 +655,7 @@ async function main() {
     git(['push', '--atomic', 'origin', 'main', tag], { inherit: true });
   } catch (error) {
     throw new Error(
-      `The local release commit and ${tag} are valid, but GitHub push failed: ${error.message}. Retry with git push --atomic origin main ${tag}`,
+      `The local release commit and ${tag} are valid, but GitHub push failed: ${error.message}. Fix GitHub access, then rerun npm run deploy; it will recover every pending release in order.`,
     );
   }
 

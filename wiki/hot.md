@@ -6,6 +6,18 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 13: deploy now recovers an unpublished release suffix automatically.** A rerun after an
+> authorization failure compares reachable local SemVer tags with stable GitHub Releases, validates
+> every pending annotated tag and its package, lockfile, changelog, release-commit, and ancestry
+> invariants before any write, then publishes oldest first and waits for each exact Release. A tag
+> that reached GitHub but has not finished publishing resumes its watch, and completed versions are
+> skipped on another retry. Recovery rejects `--no-watch`, exits successfully if there are no newer
+> commits, and otherwise continues into the normal release flow. The current recovered suffix will
+> be v0.2.7, v0.2.8, and v0.2.9 once `pkelemen` regains GitHub write access. Focused release tests
+> pass 12 of 12, the complete suite passes 1,531 of 1,531, and `release:check` is green for v0.2.9.
+> See [[open-source-releases]] and [[desktop-updates]].
+
 > [!note]
 > **August 13: completion speech is now aligned and configurable.** Terminal settings places sound
 > and voice in matching full-width rows. Voice can announce any combination of project name, task

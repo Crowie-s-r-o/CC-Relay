@@ -11,11 +11,16 @@ import {
   inferReleaseType,
   localCalendarDate,
   nextVersion,
+  normalizeReleaseTags,
   normalizeReleaseNotes,
   parseVersion,
+  pendingReleaseTags,
   prependChangelog,
   releasePublishStatus,
   releaseNotesSchema,
+  releaseRecoveryRefspecs,
+  releaseTagsFromPublishedReleases,
+  releaseTagsFromRemoteRefs,
   selectReleaseWorkflowRun,
 } from '../scripts/release-core.mjs';
 
@@ -31,6 +36,10 @@ test('npm run deploy owns versioning, verification, tags, and the atomic push', 
   assert.match(deploy, /git\(\['commit', '-m', `chore\(release\): \$\{tag\}`\]/);
   assert.match(deploy, /git\(\['tag', '-a', tag/);
   assert.match(deploy, /git\(\['push', '--atomic', 'origin', 'main', tag\]/);
+  assert.match(deploy, /recoverPendingReleases\(localTags, options\)/);
+  assert.match(deploy, /git\(\['push', '--atomic', 'origin', \.\.\.refspecs\]/);
+  assert.match(deploy, /Pending release recovery requires publication watching/);
+  assert.doesNotMatch(deploy, /Retry with git push --atomic/);
   assert.match(deploy, /watchReleasePublication\(tag, sha\)/);
   assert.match(deploy, /if \(!outcome\.ok\) \{/);
 });
@@ -114,6 +123,77 @@ test('semantic versions parse, compare, and bump without prerelease ambiguity', 
   assert.throws(() => parseVersion('v1.2.3'), /Invalid semantic version/);
   assert.throws(() => parseVersion('01.2.3'), /Invalid semantic version/);
   assert.throws(() => nextVersion('1.2.3', 'automatic'), /Invalid release type/);
+});
+
+test('release recovery selects the unpublished semantic-version suffix in order', () => {
+  assert.deepEqual(normalizeReleaseTags([
+    'v0.2.9',
+    'v0.2.7',
+    'v0.2.8',
+    'v0.2.8',
+    'v01.2.3',
+    'notes',
+  ]), ['v0.2.7', 'v0.2.8', 'v0.2.9']);
+
+  const remoteRefs = `aaaaaaaa refs/tags/v0.2.6
+bbbbbbbb refs/tags/v0.2.7
+cccccccc refs/tags/v0.2.7^{}
+dddddddd refs/tags/not-a-release
+`;
+  assert.deepEqual(releaseTagsFromRemoteRefs(remoteRefs), ['v0.2.6', 'v0.2.7']);
+  assert.deepEqual(releaseTagsFromPublishedReleases([
+    { tag_name: 'v0.2.8', draft: false, prerelease: false },
+    { tag_name: 'v0.3.0', draft: true, prerelease: false },
+    { tag_name: 'v0.4.0', draft: false, prerelease: true },
+    { tag_name: 'latest', draft: false, prerelease: false },
+  ]), ['v0.2.8']);
+
+  const localTags = ['v0.2.9', 'v0.2.6', 'v0.2.8', 'v0.2.7'];
+  assert.deepEqual(pendingReleaseTags({
+    localTags,
+    publishedTags: ['v0.2.5', 'v0.2.6'],
+  }), ['v0.2.7', 'v0.2.8', 'v0.2.9']);
+  assert.deepEqual(pendingReleaseTags({
+    localTags,
+    publishedTags: ['v0.2.8'],
+  }), ['v0.2.9']);
+  assert.deepEqual(pendingReleaseTags({
+    localTags: ['v0.1.1', 'v0.1.0'],
+    publishedTags: [],
+  }), ['v0.1.0', 'v0.1.1']);
+
+  const sha = 'a'.repeat(40);
+  assert.deepEqual(releaseRecoveryRefspecs({
+    tag: 'v0.2.7',
+    sha,
+    advanceMain: false,
+    remoteTagPresent: false,
+  }), ['refs/tags/v0.2.7:refs/tags/v0.2.7']);
+  assert.deepEqual(releaseRecoveryRefspecs({
+    tag: 'v0.2.8',
+    sha,
+    advanceMain: true,
+    remoteTagPresent: false,
+  }), [
+    `${sha}:refs/heads/main`,
+    'refs/tags/v0.2.8:refs/tags/v0.2.8',
+  ]);
+  assert.deepEqual(releaseRecoveryRefspecs({
+    tag: 'v0.2.8',
+    sha,
+    advanceMain: true,
+    remoteTagPresent: true,
+  }), [`${sha}:refs/heads/main`]);
+  assert.deepEqual(releaseRecoveryRefspecs({
+    tag: 'v0.2.8',
+    sha,
+    advanceMain: false,
+    remoteTagPresent: true,
+  }), []);
+  assert.throws(
+    () => releaseRecoveryRefspecs({ tag: 'latest', sha }),
+    /Invalid release tag/,
+  );
 });
 
 test('release dates follow the operator local calendar', () => {

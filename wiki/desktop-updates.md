@@ -70,7 +70,7 @@ Create a release from a clean `main` branch with:
 npm run deploy
 ```
 
-The local deploy command infers or accepts the Semantic Versioning bump, requires an isolated Codex or Claude CLI to generate compact notes, updates both package manifests and `CHANGELOG.md`, runs metadata checks, all tests, and the dependency audit, creates an annotated tag, then atomically pushes `main` and the tag. The resulting version contract remains:
+The local deploy command first recovers any validated local release suffix that GitHub has not published. It then infers or accepts the Semantic Versioning bump, requires an isolated Codex or Claude CLI to generate compact notes, updates both package manifests and `CHANGELOG.md`, runs metadata checks, all tests, and the dependency audit, creates an annotated tag, then atomically pushes `main` and the tag. The resulting version contract remains:
 
 ```text
 package.json version: 0.2.0
@@ -78,7 +78,14 @@ git tag:             v0.2.0
 ```
 
 > [!important]
-> Deploy does not stop at the push. It polls the GitHub REST API through the maintainer's `gh` credential, selects the desktop build run for the pushed tag by head SHA plus tag head branch, and exits non-zero with the failing run URL when GitHub publishes no release. Silence after a successful push used to mean the release page stayed empty; `npm run deploy` is now the only command a maintainer needs, and its exit status is the truth about whether a release exists. `--no-watch` returns the old push-and-stop behavior, and an unavailable or unauthenticated `gh` degrades to a printed release URL rather than a hard failure.
+> Deploy does not stop at the push. It polls the GitHub REST API through the maintainer's `gh` credential, selects the desktop build run for the pushed tag by head SHA plus tag head branch, and exits non-zero with the failing run URL when GitHub publishes no release. Silence after a successful push used to mean the release page stayed empty; `npm run deploy` is now the only command a maintainer needs, and its exit status is the truth about whether a release exists. For a normal new release, `--no-watch` returns the old push-and-stop behavior and an unavailable or unauthenticated `gh` degrades to a printed release URL. A recovery backlog is stricter because versions must remain ordered.
+
+> [!important]
+> A rerun after a rejected or partial push compares reachable local tags with stable GitHub Releases,
+> validates the complete unpublished suffix, and publishes it oldest first. A tag already on GitHub
+> resumes its publication watch. The next tag is not pushed until the current GitHub Release exists,
+> so workflow completion order cannot make an older version appear latest. Recovery requires the
+> normal watcher and rejects `--no-watch` before changing the remote.
 
 > [!important]
 > The desktop build workflow runs `npm test` on the macOS matrix entry only. CC Relay is validated on macOS, and the suite simulates Windows paths, shims, and `cmd.exe` invocation from POSIX, so 75 of those cases fail on a real Windows runner. Because the release job declares `needs: build`, a red Windows job silently skipped publication: that is exactly why `v0.2.0` was tagged and pushed with no GitHub Release. The Windows job remains packaging verification. Do not paper over a red job with `continue-on-error`; `fail_on_unmatched_files: true` would then trip on the missing installer.
@@ -111,8 +118,8 @@ Signing credentials are not stored in the repository. Production macOS releases 
 - `build/icon.png`: 1024px transparent Crowie source used for native application icons and the development Dock icon.
 - `electron-builder.yml`: native targets, artifact names, update metadata generation, and GitHub publisher.
 - `.github/workflows/build-desktop.yml`: native build matrix, tag/version guard, artifact upload, and GitHub release publishing.
-- `scripts/deploy.mjs`: clean-tree checks, version selection, isolated AI generation, verification, commit, tag, atomic push, and the GitHub Release watch that fails loudly when publication does not happen.
-- `scripts/release-core.mjs`: deterministic SemVer, changelog normalization, formatting, extraction helpers, and the pure workflow-run selection and publication-status decisions that deploy polls with.
+- `scripts/deploy.mjs`: clean-tree checks, ordered pending-release recovery, version selection, isolated AI generation, verification, commit, tag, atomic push, and the GitHub Release watch that fails loudly when publication does not happen.
+- `scripts/release-core.mjs`: deterministic SemVer, release-tag normalization and recovery selection, changelog normalization, formatting, extraction helpers, and the pure workflow-run selection and publication-status decisions that deploy polls with.
 - `scripts/release-check.mjs` and `scripts/release-notes.mjs`: CI metadata enforcement and GitHub Release body extraction.
 - `CHANGELOG.md`: canonical compact release history.
 - `package.json` and `package-lock.json`: app version and `electron-updater` dependency.
@@ -126,7 +133,7 @@ No renderer IPC, preload permission, writable update route, or environment varia
 - **Portable Windows build does not update:** expected. Download the latest portable artifact manually or install the NSIS build for automatic updates.
 - **No update after a tag:** confirm the tag is `vX.Y.Z`, the package version is `X.Y.Z`, and a stable GitHub Release exists. Windows automatic installation additionally requires `latest.yml`, its blockmap, and the NSIS installer. macOS discovery does not require `latest-mac.yml`.
 - **The tag is pushed but the Releases page is empty:** the desktop build workflow failed, so `needs: build` skipped the release job. Open the run that deploy names in its failure message. A tag whose run already failed cannot be recovered by re-running the workflow, because the dispatch uses the workflow file at that ref; release the fix under the next version instead of retagging.
-- **The atomic push fails with `Permission ... denied` and HTTP 403:** GitHub authenticated the named HTTPS user but that identity lacks effective write permission. The commit author and committer do not select the GitHub account used for a push; the credential-helper identity named in the remote error is authoritative. Confirm the active identity with `gh auth status -h github.com` and the repository grant with `gh repo view Crowie-s-r-o/CC-Relay --json viewerPermission`. A `READ` result requires the organization or repository owner to restore a direct or team `Write` grant. If GitHub already shows that grant, refresh the GitHub CLI credential and its organization SSO authorization before retrying. Atomic push failure leaves both the remote branch and tag unchanged, while the verified local release commit and annotated tag remain available for the exact retry documented by `deploy`.
+- **The atomic push fails with `Permission ... denied` and HTTP 403:** GitHub authenticated the named HTTPS user but that identity lacks effective write permission. The commit author and committer do not select the GitHub account used for a push; the credential-helper identity named in the remote error is authoritative. Confirm the active identity with `gh auth status -h github.com` and the repository grant with `gh repo view Crowie-s-r-o/CC-Relay --json viewerPermission`. A `READ` result requires the organization or repository owner to restore a direct or team `Write` grant. If GitHub already shows that grant, refresh the GitHub CLI credential and its organization SSO authorization. Do not recreate tags or push only the newest one. Rerun `npm run deploy`; it validates and publishes every pending release in order, skips completed releases on another retry, and continues with a new release only after the backlog is published. See [[open-source-releases]].
 - **macOS needs an update:** download the latest DMG from GitHub Releases and replace the installed application manually.
 - **Packaged startup reports that the `autoUpdater` named export is missing:** inspect `src/electron-main.mjs` and keep the CommonJS default-import interop described above.
 - **Signing reports that `CC Relay.app` could not be found, or packaging reports `ENOTEMPTY` for `dist/mac-arm64`:** confirm that only one `electron-builder` process is running and that no app is running from the output bundle. Concurrent builds share and replace the same `dist/mac-arm64` directory, so one build can remove the bundle while another signs it.

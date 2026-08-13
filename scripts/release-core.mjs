@@ -6,6 +6,7 @@ import {
 } from '../src/changelog-notes.mjs';
 
 const VERSION_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
+const RELEASE_TAG_PATTERN = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const RELEASE_TYPES = new Set(['major', 'minor', 'patch']);
 const MAX_RELEASE_COMMITS = 100;
@@ -36,6 +37,58 @@ export function compareVersions(left, right) {
   const a = typeof left === 'string' ? parseVersion(left) : left;
   const b = typeof right === 'string' ? parseVersion(right) : right;
   return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+export function normalizeReleaseTags(values) {
+  const tags = Array.isArray(values) ? values : [];
+  return [...new Set(tags
+    .map((tag) => String(tag || '').trim())
+    .filter((tag) => RELEASE_TAG_PATTERN.test(tag)))]
+    .sort((left, right) => compareVersions(left.slice(1), right.slice(1)));
+}
+
+export function releaseTagsFromRemoteRefs(output) {
+  return normalizeReleaseTags(String(output || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim().match(/^[0-9a-f]+\s+refs\/tags\/(v[^\s^]+)$/i)?.[1] || ''));
+}
+
+export function releaseTagsFromPublishedReleases(releases) {
+  const values = Array.isArray(releases) ? releases : [];
+  return normalizeReleaseTags(values
+    .filter((release) => release && !release.draft && !release.prerelease)
+    .map((release) => release.tag_name));
+}
+
+// Recovery starts after the highest stable GitHub Release, not after the highest remote tag.
+// This keeps a tag whose push succeeded but whose workflow is still running inside the recovery
+// suffix, while leaving intentionally skipped historical releases below the published baseline
+// alone.
+export function pendingReleaseTags({ localTags = [], publishedTags = [] } = {}) {
+  const local = normalizeReleaseTags(localTags);
+  const published = normalizeReleaseTags(publishedTags);
+  const latestPublished = published.at(-1) || null;
+  if (!latestPublished) return local;
+  return local.filter((tag) => compareVersions(tag.slice(1), latestPublished.slice(1)) > 0);
+}
+
+export function releaseRecoveryRefspecs({
+  tag,
+  sha,
+  advanceMain = false,
+  remoteTagPresent = false,
+} = {}) {
+  const normalizedTag = normalizeReleaseTags([tag]);
+  if (normalizedTag.length !== 1 || normalizedTag[0] !== tag) {
+    throw new Error(`Invalid release tag: ${tag}`);
+  }
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(String(sha || ''))) {
+    throw new Error(`Invalid release commit: ${sha}`);
+  }
+  const refspecs = [];
+  if (advanceMain) refspecs.push(`${sha}:refs/heads/main`);
+  if (!remoteTagPresent) refspecs.push(`refs/tags/${tag}:refs/tags/${tag}`);
+  return refspecs;
 }
 
 export function nextVersion(current, releaseType) {

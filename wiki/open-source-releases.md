@@ -63,15 +63,53 @@ Automatic version intent is deterministic:
 1. Require a clean `main` branch and the expected `origin` repository.
 2. Fetch `origin/main` and tags, then require the remote branch to be an ancestor of local `HEAD`.
 3. Require the latest reachable SemVer tag to match the package version.
-4. Collect commits and changed-file evidence since the latest tag.
-5. Generate structured release notes through an isolated local subscription CLI.
-6. Normalize every supported note into short, deduplicated facts without an item-count limit.
-7. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` together.
-8. Run `release:check`, the complete test suite, and `npm audit --audit-level=high`.
-9. Create `chore(release): vX.Y.Z` and an annotated `vX.Y.Z` tag.
-10. Push `main` and the tag with one atomic Git operation.
+4. Compare reachable local SemVer tags with stable GitHub Releases and recover any unpublished suffix.
+5. Collect commits and changed-file evidence since the latest tag.
+6. Generate structured release notes through an isolated local subscription CLI.
+7. Normalize every supported note into short, deduplicated facts without an item-count limit.
+8. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` together.
+9. Run `release:check`, the complete test suite, and `npm audit --audit-level=high`.
+10. Create `chore(release): vX.Y.Z` and an annotated `vX.Y.Z` tag.
+11. Push `main` and the tag with one atomic Git operation.
 
-The version files are restored if a gate fails before the release commit. If the commit and tag are valid but GitHub rejects the push, they remain locally so the operator can retry the exact atomic push without regenerating notes or changing the version.
+The version files are restored if a gate fails before the release commit. If the commit and tag are valid but GitHub rejects the push, they remain locally. After GitHub access is corrected, rerunning `npm run deploy` recovers that release and any older unpublished releases without regenerating notes or changing their versions.
+
+### Recovering a rejected atomic push
+
+> [!warning]
+> A GitHub `403` after the release commit and annotated tag exist is an authorization failure, not
+> a failed release gate. Do not amend the release commit, delete the tag, create a replacement tag,
+> or push the newest tag manually. Restore write access for the Git identity used by `origin`, then
+> rerun `npm run deploy`. The command performs the ordered recovery itself.
+
+The v0.2.9 deployment on 2026-08-13 established the diagnostic pattern and exposed an older release
+backlog. Local `main` and the annotated `v0.2.9` tag both resolved to release commit `94efe61`, all
+version files contained `0.2.9`, and the working tree was clean before this incident note. GitHub
+authenticated both HTTPS and direct SSH checks as `pkelemen`, and the repository API reported
+`viewerPermission: READ`, equivalent to `pull: true` with `push: false`. Changing transport therefore
+could not repair the failure. An organization owner must grant that account a repository or team
+role with write access, or the operator must authenticate Git as another account that already has
+write access.
+
+The remote latest release was still v0.2.6. `origin/main` was at the v0.2.7 release commit
+`7395c81`, but the remote had no v0.2.7 tag. The v0.2.8 commit and tag at `589c538` and the v0.2.9
+commit and tag at `94efe61` were also local-only. Pushing only `main` and `v0.2.9` would leave two
+versioned changelog entries without their intended releases.
+
+Recovery uses the highest stable GitHub Release as its baseline, not the highest remote tag. This is
+load bearing: a tag whose push succeeded but whose workflow is still running remains pending on the
+next invocation. The command validates every candidate before its first write: each must be an
+annotated tag reachable from `main`, point to an ordered `chore(release): vX.Y.Z` commit, and contain
+matching package, lockfile, and changelog versions. It then handles the suffix in ascending SemVer
+order. For each version it atomically advances `main` when needed, pushes the tag when missing, and
+waits for the exact GitHub Release before proceeding. A tag already on GitHub resumes its existing
+publication watch. Completed releases are skipped on another retry.
+
+> [!important]
+> Recovery preflights the complete suffix before changing the remote and requires normal publication
+> watching. `--no-watch` is rejected when pending releases exist. After recovery, deploy either exits
+> successfully when there are no new commits or continues through the normal release flow for commits
+> made after the newest recovered tag.
 
 ## AI generation boundary
 

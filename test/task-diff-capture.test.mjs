@@ -314,3 +314,35 @@ test('overlapping tasks in one project are counted for the shared tree warning',
     rmSync(directory, { recursive: true, force: true });
   }
 });
+
+test('a task left terminal without an end time stops overlapping every later window', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-diff-stale-'));
+  const { database, artifacts } = context(directory);
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { run() {}, cancel() { return false; } },
+  });
+
+  try {
+    queue.pause();
+    const crashed = queue.enqueue({ title: 'Crashed', prompt: 'One', thread: thread('relay-crashed', directory) });
+    const live = queue.enqueue({ title: 'Live', prompt: 'Two', thread: thread('relay-live', directory) });
+    const later = { excludeTaskId: null, from: '2026-08-13T12:00:00.000Z', to: '2026-08-13T13:00:00.000Z' };
+
+    // A crash or an older code path can leave a row terminal with no finished_at. Reading that
+    // as a run that never released the tree would mark every later diff in the project shared.
+    database.updateTask(crashed.id, { status: 'interrupted', started_at: '2026-08-13T09:00:00.000Z', finished_at: null });
+    assert.equal(database.countOverlappingRepoTasks(directory, later), 0, 'a terminal row with no end time does not reach a later window');
+
+    database.updateTask(live.id, { status: 'running', started_at: '2026-08-13T09:00:00.000Z', finished_at: null });
+    assert.equal(database.countOverlappingRepoTasks(directory, later), 1, 'a task that is still running holds the tree open');
+
+    // A terminal row is still counted through the window it actually recorded.
+    database.updateTask(crashed.id, { finished_at: '2026-08-13T12:30:00.000Z' });
+    assert.equal(database.countOverlappingRepoTasks(directory, later), 2, 'a terminal row counts when its recorded window overlaps');
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
