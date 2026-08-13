@@ -8,7 +8,8 @@ tags: [relay, ui, header, monitoring, accessibility]
 # Monitor bar position
 
 The complete CC Relay monitor bar can be placed at the top or bottom of the application. The
-control is part of the bar and always describes the available move, **Bottom** or **Top**.
+control lives inside the rightmost **Display** cog and always describes the available move,
+**Bottom** or **Top**.
 
 The preference is stored durably in shared application configuration as part of
 `ui-layout-preferences`. Browser `localStorage` under `relay.headerPosition` remains a first-paint

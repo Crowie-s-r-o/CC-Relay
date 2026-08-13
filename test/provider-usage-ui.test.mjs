@@ -11,7 +11,7 @@ const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8');
 
-test('header places four accessible usage meters after the position control without an online pill', () => {
+test('header places four accessible usage meters before the rightmost display cog', () => {
   assert.equal(PROVIDER_USAGE_METERS.length, 4);
   assert.deepEqual(PROVIDER_USAGE_METERS.map(({ label }) => label), [
     'Cla 5h',
@@ -29,8 +29,9 @@ test('header places four accessible usage meters after the position control with
   assert.doesNotMatch(app, /pauseButton/);
   assert.doesNotMatch(html, /id="codex-status"/);
   assert.doesNotMatch(app, /codexStatus/);
-  assert.ok(html.indexOf('id="header-position-toggle"') < html.indexOf('id="provider-usage"'));
-  assert.ok(html.indexOf('id="provider-usage"') < html.indexOf('id="theme-toggle"'));
+  assert.ok(html.indexOf('id="provider-usage"') < html.indexOf('id="display-settings"'));
+  assert.ok(html.indexOf('id="display-settings"') < html.indexOf('id="header-position-toggle"'));
+  assert.ok(html.indexOf('id="header-position-toggle"') < html.indexOf('id="theme-toggle"'));
   assert.match(html, /role="progressbar"/);
   assert.match(app, /renderProviderUsage\(\)/);
   assert.match(server, /providerUsage: providerUsage\.current\(\)/);

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import electronUpdater from 'electron-updater';
 import { desktopMenuRequired, desktopMenuTemplate } from './desktop-menu.mjs';
 import { createGitHubReleaseChecker } from './desktop-release-discovery.mjs';
+import { desktopRendererUrl, desktopTitlebarOptions } from './desktop-titlebar.mjs';
 import { desktopZoomDirectionForInput, nextDesktopZoomFactor } from './desktop-zoom.mjs';
 import { createDesktopUpdater } from './desktop-updater.mjs';
 import { DESKTOP_RELEASES_URL } from './desktop-update-status.mjs';
@@ -29,6 +30,7 @@ let relayShutdown = null;
 let quitting = false;
 let desktopDiagnostics = null;
 let publishDesktopUpdateState = null;
+let publishDesktopZoomState = null;
 let lastDesktopZoomAt = 0;
 
 function errorDetails(error) {
@@ -51,19 +53,27 @@ function desktopDiagnostic(event, details = {}) {
  * accelerator also reaches the renderer is not observable from tests, so instead of dropping one
  * path on that guess the sink collapses a single keystroke into a single step.
  */
-function applyDesktopZoom(direction) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+function applyDesktopZoom(direction, { deduplicate = true } = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
   const now = Number(process.hrtime.bigint() / 1000000n);
-  if (now - lastDesktopZoomAt < DESKTOP_ZOOM_REPEAT_MS) return;
-  lastDesktopZoomAt = now;
   const currentFactor = mainWindow.webContents.getZoomFactor();
+  if (deduplicate && now - lastDesktopZoomAt < DESKTOP_ZOOM_REPEAT_MS) {
+    publishDesktopZoomState?.(currentFactor);
+    return currentFactor;
+  }
+  if (deduplicate) lastDesktopZoomAt = now;
   const nextFactor = nextDesktopZoomFactor(direction, currentFactor);
-  if (nextFactor == null || nextFactor === currentFactor) return;
+  if (nextFactor == null || nextFactor === currentFactor) {
+    publishDesktopZoomState?.(currentFactor);
+    return currentFactor;
+  }
   mainWindow.webContents.setZoomFactor(nextFactor);
+  publishDesktopZoomState?.(nextFactor);
   desktopDiagnostic('desktop.window.zoom.changed', {
     factor: nextFactor,
     percent: Math.round(nextFactor * 100),
   });
+  return nextFactor;
 }
 
 function initializeDesktopDiagnostics(dataRoot) {
@@ -192,8 +202,12 @@ async function createWindow() {
   });
   const relay = await import('./server.mjs');
   const endpoint = await relay.serverReady;
+  const titlebarOptions = desktopTitlebarOptions(process.platform);
+  const rendererUrl = desktopRendererUrl(endpoint.url, process.platform);
   relayShutdown = relay.shutdown;
   publishDesktopUpdateState = relay.setDesktopUpdateState;
+  publishDesktopZoomState = relay.setDesktopZoomState;
+  relay.setDesktopZoomHandler((direction) => applyDesktopZoom(direction, { deduplicate: false }));
   publishDesktopUpdateState(desktopUpdater.status());
   desktopDiagnostic('desktop.server.ready', endpoint);
 
@@ -205,7 +219,7 @@ async function createWindow() {
     backgroundColor: '#dfe7e4',
     title: PRODUCT_NAME,
     show: false,
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
+    ...titlebarOptions,
     ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
       contextIsolation: true,
@@ -213,9 +227,11 @@ async function createWindow() {
       sandbox: true,
     },
   });
+  publishDesktopZoomState(mainWindow.webContents.getZoomFactor());
   desktopDiagnostic('desktop.window.created', {
     width: 1540,
     height: 980,
+    titleBarStyle: titlebarOptions.titleBarStyle || 'default',
   });
   if (desktopMenuRequired()) {
     /*
@@ -259,18 +275,18 @@ async function createWindow() {
     });
   });
   mainWindow.on('unresponsive', () => {
-    desktopDiagnostic('desktop.window.unresponsive', { url: endpoint.url });
+    desktopDiagnostic('desktop.window.unresponsive', { url: rendererUrl });
   });
   mainWindow.on('responsive', () => {
-    desktopDiagnostic('desktop.window.responsive', { url: endpoint.url });
+    desktopDiagnostic('desktop.window.responsive', { url: rendererUrl });
   });
   mainWindow.on('closed', () => {
-    desktopDiagnostic('desktop.window.closed', { url: endpoint.url });
+    desktopDiagnostic('desktop.window.closed', { url: rendererUrl });
     mainWindow = null;
   });
-  desktopDiagnostic('desktop.window.load.requested', { url: endpoint.url });
-  await mainWindow.loadURL(endpoint.url);
-  desktopDiagnostic('desktop.window.load.completed', { url: endpoint.url });
+  desktopDiagnostic('desktop.window.load.requested', { url: rendererUrl });
+  await mainWindow.loadURL(rendererUrl);
+  desktopDiagnostic('desktop.window.load.completed', { url: rendererUrl });
   mainWindow.show();
   mainWindow.focus();
   closeSplashWindow();

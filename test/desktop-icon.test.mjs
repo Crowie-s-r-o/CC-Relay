@@ -62,9 +62,11 @@ test('the macOS desktop title bar carries the Crowie lockup', () => {
   const style = readFileSync(join(projectRoot, 'public', 'style.css'), 'utf8');
   const titlebar = markup.match(/<div class="desktop-titlebar"[\s\S]*?<\/div>/)?.[0];
 
-  assert.match(main, /process\.platform === 'darwin' \? \{ titleBarStyle: 'hiddenInset' \} : \{\}/);
+  assert.match(main, /const titlebarOptions = desktopTitlebarOptions\(process\.platform\);/);
+  assert.match(main, /\.\.\.titlebarOptions,/);
   assert.match(markup, /navigator\.userAgent\.includes\('Electron\/'\)/);
   assert.match(markup, /navigator\.userAgent\.includes\('Macintosh'\)/);
+  assert.match(markup, /desktopTitlebarMode === 'hidden-inset-v1'/);
   assert.match(markup, /dataset\.desktopTitlebar = 'true'/);
   assert.ok(titlebar);
   assert.match(titlebar, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);

@@ -12,9 +12,11 @@
           ? savedTheme
           : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         document.documentElement.dataset.theme = theme;
+        const desktopTitlebarMode = new URLSearchParams(location.search).get('desktopTitlebar');
         if (
           navigator.userAgent.includes('Electron/')
           && navigator.userAgent.includes('Macintosh')
+          && desktopTitlebarMode === 'hidden-inset-v1'
         ) {
           document.documentElement.dataset.desktopTitlebar = 'true';
         }
@@ -49,30 +51,8 @@
       <div class="header-running-monitor">
         <div class="header-running-primary">
           <div id="header-running-tasks" class="header-running-tasks" aria-label="Running tasks across all projects" aria-live="polite">
-            <div class="header-running-empty"><i aria-hidden="true"></i><span>No tasks running</span></div>
+            <div class="header-running-empty"><span>No tasks running</span></div>
           </div>
-          <details id="running-task-settings" class="running-task-settings">
-            <summary aria-label="Configure running tasks" title="Configure running tasks">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.1 13a7.7 7.7 0 0 0 0-2l2-1.5-2-3.4-2.4 1a8 8 0 0 0-1.7-1L14.7 3h-4l-.4 3a8 8 0 0 0-1.7 1L6.2 6.1l-2 3.4 2 1.5a7.7 7.7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.4 3h4l.4-3a8 8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5ZM12.7 15.5a3.6 3.6 0 1 1 0-7.1 3.6 3.6 0 0 1 0 7.1Z"/></svg>
-            </summary>
-            <div class="running-task-settings-popover">
-              <strong>Running tasks</strong>
-              <label for="running-task-rows">Rows
-                <select id="running-task-rows">
-                  <option value="1">1 row</option>
-                  <option value="2">2 rows</option>
-                  <option value="3">3 rows</option>
-                </select>
-              </label>
-              <label for="running-task-width">Card width
-                <select id="running-task-width">
-                  <option value="230">Compact</option>
-                  <option value="286">Default</option>
-                  <option value="360">Wide</option>
-                </select>
-              </label>
-            </div>
-          </details>
         </div>
         <div id="header-running-extra-tasks" class="header-running-extra-tasks" aria-label="Additional running task rows" aria-live="polite"></div>
       </div>
@@ -80,10 +60,6 @@
         <button id="desktop-update-indicator" class="desktop-update-indicator" type="button" aria-haspopup="dialog" aria-controls="desktop-update-modal" data-state="hidden" hidden>
           <span class="desktop-update-dot" aria-hidden="true"></span>
           <span id="desktop-update-label">Update available</span>
-        </button>
-        <button id="header-position-toggle" class="header-position-toggle" type="button" aria-label="Move monitor bar to bottom" title="Move monitor bar to bottom" aria-pressed="false">
-          <span id="header-position-icon" class="header-position-icon" aria-hidden="true">↓</span>
-          <span id="header-position-label">Bottom</span>
         </button>
         <section id="provider-usage" class="provider-usage" aria-label="Provider subscription usage" aria-live="polite" aria-busy="true">
           <div class="provider-usage-meter" data-usage-key="claude-five-hour" data-provider="claude" data-level="checking">
@@ -111,13 +87,59 @@
             <small class="provider-usage-reset"></small>
           </div>
         </section>
-        <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Use dark mode" title="Use dark mode">
-          <span class="theme-toggle-track" aria-hidden="true">
-            <span class="theme-toggle-stars">·</span>
-            <span class="theme-toggle-thumb"></span>
-          </span>
-          <span id="theme-toggle-label">Dark</span>
-        </button>
+        <details id="display-settings" class="display-settings">
+          <summary aria-label="Open display settings" title="Display settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.1 13a7.7 7.7 0 0 0 0-2l2-1.5-2-3.4-2.4 1a8 8 0 0 0-1.7-1L14.7 3h-4l-.4 3a8 8 0 0 0-1.7 1L6.2 6.1l-2 3.4 2 1.5a7.7 7.7 0 0 0 0 2l-2 1.5 2 3.4 2.4-1a8 8 0 0 0 1.7 1l.4 3h4l.4-3a8 8 0 0 0 1.7-1l2.4 1 2-3.4-2-1.5ZM12.7 15.5a3.6 3.6 0 1 1 0-7.1 3.6 3.6 0 0 1 0 7.1Z"/></svg>
+          </summary>
+          <div class="display-settings-popover">
+            <strong>Display</strong>
+            <section class="display-settings-section" aria-labelledby="running-task-display-heading">
+              <span id="running-task-display-heading" class="display-settings-section-title">Running tasks</span>
+              <label for="running-task-rows">Rows
+                <select id="running-task-rows">
+                  <option value="1">1 row</option>
+                  <option value="2">2 rows</option>
+                  <option value="3">3 rows</option>
+                </select>
+              </label>
+              <label for="running-task-width">Card width
+                <select id="running-task-width">
+                  <option value="230">Compact</option>
+                  <option value="286">Default</option>
+                  <option value="360">Wide</option>
+                </select>
+              </label>
+            </section>
+            <section class="display-settings-section" aria-labelledby="application-display-heading">
+              <span id="application-display-heading" class="display-settings-section-title">Application</span>
+              <div class="display-settings-control">
+                <span>Monitor bar</span>
+                <button id="header-position-toggle" class="header-position-toggle" type="button" aria-label="Move monitor bar to bottom" title="Move monitor bar to bottom" aria-pressed="false">
+                  <span id="header-position-icon" class="header-position-icon" aria-hidden="true">↓</span>
+                  <span id="header-position-label">Bottom</span>
+                </button>
+              </div>
+              <div class="display-settings-control">
+                <span>Theme</span>
+                <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Use dark mode" title="Use dark mode">
+                  <span class="theme-toggle-track" aria-hidden="true">
+                    <span class="theme-toggle-stars">·</span>
+                    <span class="theme-toggle-thumb"></span>
+                  </span>
+                  <span id="theme-toggle-label">Dark</span>
+                </button>
+              </div>
+              <div id="desktop-zoom-controls" class="display-settings-control display-settings-zoom" hidden>
+                <span>Zoom</span>
+                <div class="display-settings-zoom-buttons" role="group" aria-label="Application zoom">
+                  <button id="desktop-zoom-out" type="button" aria-label="Zoom out" title="Zoom out">&minus;</button>
+                  <output id="desktop-zoom-level" aria-label="Current zoom level">100%</output>
+                  <button id="desktop-zoom-in" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+                </div>
+              </div>
+            </section>
+          </div>
+        </details>
       </div>
     </header>
 

@@ -42,6 +42,21 @@ export function nextDesktopZoomFactor(direction, currentFactor = 1) {
   return DESKTOP_ZOOM_FACTORS[nextIndex];
 }
 
+export function desktopZoomStatus(currentFactor) {
+  const factor = Math.round(Number(currentFactor) * 100) / 100;
+  if (
+    !Number.isFinite(factor)
+    || factor < DESKTOP_ZOOM_FACTORS[0]
+    || factor > DESKTOP_ZOOM_FACTORS.at(-1)
+  ) {
+    return null;
+  }
+  return {
+    factor,
+    percent: Math.round(factor * 100),
+  };
+}
+
 export function desktopZoomDirectionForInput(input) {
   if (input?.type !== 'keyDown' || (!input.meta && !input.control) || input.alt) return null;
   if (input.key === '0') return 'reset';

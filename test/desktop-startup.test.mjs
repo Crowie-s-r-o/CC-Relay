@@ -42,7 +42,8 @@ test('Electron binds its embedded CC Relay server to an available port', () => {
   assert.match(main, /'--relay-config-dir',\s+dataRoot/);
   assert.match(main, /'--relay-desktop',/);
   assert.match(main, /const endpoint = await relay\.serverReady;/);
-  assert.match(main, /mainWindow\.loadURL\(endpoint\.url\)/);
+  assert.match(main, /const rendererUrl = desktopRendererUrl\(endpoint\.url, process\.platform\);/);
+  assert.match(main, /mainWindow\.loadURL\(rendererUrl\)/);
   assert.doesNotMatch(main, /http:\/\/127\.0\.0\.1:4768/);
 });
 

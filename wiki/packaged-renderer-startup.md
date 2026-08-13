@@ -79,9 +79,33 @@ Verification for this regression:
 - Live `GET /api/status` confirmed automatic terminal pools and authenticated Codex and Claude CLIs
 - Live `/app.js` confirmed the corrected function was being served
 
+## Native title-bar pairing
+
+The macOS title bar crosses the main-process and renderer boundary. `hiddenInset` must be present
+when `BrowserWindow` is constructed, while the 36px drag region and centered Crowie mark live in
+the renderer. User-agent detection alone cannot prove those two halves came from the same build.
+
+The main process now adds `desktopTitlebar=hidden-inset-v1` to its loopback renderer URL only on
+macOS. The early `public/index.html` bootstrap requires that marker together with Electron and
+Macintosh identity before it enables the custom title-bar row. A newer renderer refreshed inside
+an older default-title window therefore keeps the native shell instead of stacking a second bar.
+
+> [!important]
+> Renderer refresh cannot change chrome on an existing BrowserWindow. A visible native `CC Relay`
+> title from an older installed bundle requires a rebuild and relaunch. Inspect the installed
+> `app.asar` version and live process start time before treating current source as the running app.
+
+Task 752 was reported from installed v0.2.10 while repository source was v0.2.12. An isolated
+Electron 43.4 macOS probe using `src/desktop-titlebar.mjs` showed native traffic lights and the
+centered Crowie mark in one bar with no visible product title. The 39 focused title-bar, startup,
+zoom, and layout checks passed. See [[brand-startup-and-about]].
+
 ## Files
 
 - `public/app.js`
+- `public/index.html`
+- `src/desktop-titlebar.mjs`
+- `src/electron-main.mjs`
 - `test/composer-workflows.test.mjs`
 - `dist/mac-arm64/CC Relay.app`
 - `dist/CC-Relay-0.1.0-mac-arm64.zip`

@@ -13,10 +13,10 @@ CC Relay uses a high-density desktop shell that keeps monitoring and project sel
 
 ## Header
 
-- The brand mark is `28px`, header actions are `32px`, and global running-task cards default to `286px` wide. The monitor cog can switch cards to `230px` or `360px` and expand the rail to two or three 44px rows.
+- The brand mark is `28px`, header actions are `32px`, and global running-task cards default to `286px` wide. The rightmost **Display** cog can switch cards to `230px` or `360px`, expand the rail to two or three 44px rows, move the monitor, change theme, and control whole-app zoom with a visible current percentage.
 - On wide multi-row layouts, row one stays between the brand and action cluster. Rows two and three span the complete padded header width, reclaiming the otherwise empty space below both fixed header regions.
 - A running card still exposes metadata, prompt, and latest response, but uses tighter type and a `9px` radius.
-- The empty running state remains a content-sized chip.
+- The empty running state occupies one standard running-card slot at the selected width and contains only **No tasks running**.
 - At and below `1344px`, the running rail may wrap to its own row.
 
 ## Launchpad

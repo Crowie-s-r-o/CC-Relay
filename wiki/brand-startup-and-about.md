@@ -82,9 +82,24 @@ controls remain native while the renderer owns a 36px drag region. That region c
 centered Crowie mark from `public/favicon.svg`. It deliberately omits the repeated product name.
 Light and dark themes give the title bar matching neutral surfaces and keep the mark legible.
 
-The desktop-only renderer state is set in the early `public/index.html` bootstrap when both the
-Electron and Macintosh user-agent tokens are present. Browser use and non-macOS Electron windows
-therefore retain their normal native chrome and do not render an extra title bar.
+The desktop-only renderer state is set in the early `public/index.html` bootstrap only when three
+facts agree: the user agent is Electron, the user agent is Macintosh, and the URL carries the
+versioned `desktopTitlebar=hidden-inset-v1` marker. `src/desktop-titlebar.mjs` gives the main process
+both the `hiddenInset` BrowserWindow option and that matching renderer URL. Browser use, non-macOS
+Electron windows, and an older Electron main process therefore retain their native chrome without
+rendering an extra title-bar row.
+
+> [!important]
+> BrowserWindow chrome is fixed when the window is created. Refreshing newer renderer files inside
+> an older default-title shell cannot retrofit `hiddenInset`. The versioned URL marker keeps that
+> split-version window from drawing a second title bar, but a rebuild and relaunch are still required
+> before the Crowie mark can replace the visible native product title.
+
+> [!note]
+> Task 752 exposed this boundary with the installed v0.2.10 app while the repository was already at
+> v0.2.12. The installed `app.asar` had neither the `hiddenInset` option nor title-bar markup. Treat
+> the installed bundle version and process start time as authoritative when a screenshot disagrees
+> with the current renderer source.
 
 > [!important]
 > Do not use `setRepresentedFilename()` to place this logo. That API declares that the window
@@ -96,6 +111,7 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 ## Files
 
 - `src/electron-main.mjs`
+- `src/desktop-titlebar.mjs`
 - `public/splash.html`
 - `public/splash.css`
 - `public/index.html`
@@ -103,9 +119,15 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 - `public/app.js`
 - `test/brand-experience.test.mjs`
 - `test/desktop-icon.test.mjs`
+- `test/desktop-titlebar.test.mjs`
 
 ## Verification
 
+- Versioned shell-marker revision: 39 focused title-bar, startup, zoom, and layout tests passed. An
+  isolated Electron 43.4 macOS window using the production option and URL helpers showed one 36px
+  title bar with native traffic lights and the centered Crowie mark, with no visible `CC Relay`
+  title. The temporary probe and its process were removed after capture. The complete suite passed
+  1,551 tests, `release:check` was green for v0.2.12, and `git diff --check` was clean.
 - Centered title-bar and fixed-shell revision: `node --test test/desktop-icon.test.mjs
   test/project-layout.test.mjs` passed 18 of 18.
 - Current complete suite: `npm test` passed 1,537 of 1,537.

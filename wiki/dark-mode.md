@@ -6,8 +6,9 @@ type: design
 
 # Dark Mode
 
-CC Relay has a locally persisted light and dark appearance. The header toggle writes `relay.theme`
-to browser `localStorage`; on a first visit, the app follows `prefers-color-scheme`. A small
+CC Relay has a locally persisted light and dark appearance. The theme toggle in the rightmost
+**Display** cog writes `relay.theme` to browser `localStorage`; on a first visit, the app follows
+`prefers-color-scheme`. A small
 initializer in `public/index.html` sets `data-theme` before the stylesheet loads so the initial
 frame does not flash the wrong appearance.
 
@@ -66,7 +67,7 @@ too, where the ledger is also dark.
 
 ## Implementation
 
-- `public/index.html` contains the pre-paint initializer and accessible header toggle.
+- `public/index.html` contains the pre-paint initializer and accessible display-cog toggle.
 - `public/app.js` applies, labels, and persists the theme.
 - `public/style.css` owns the final `html[data-theme="dark"]` cascade. The higher-specificity
   Result and Prompt disclosure rules must stay in that final cascade because their light surfaces

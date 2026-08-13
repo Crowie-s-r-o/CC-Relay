@@ -68,6 +68,11 @@ The accelerator set covers Command or Control with plus, equals, minus, zero, an
 
 Whole-page `webContents` zoom is intentional. The renderer still contains legacy pixel geometry and JavaScript-authored pixel sizes for persisted panel splits. Changing only the root font size would enlarge some text while leaving those surfaces behind. Native page zoom scales text, CSS geometry, terminal content, dialogs, and inline pixel sizes together. New or reshaped responsive UI should still prefer `em` units.
 
+The far-right **Display** cog exposes Zoom out, the current percentage, and Zoom in alongside monitor layout, monitor position, and theme. The renderer posts button actions to the loopback desktop route, which calls the same `nextDesktopZoomFactor` sink as native shortcuts. Electron publishes the initial and changed factor back into `/api/status`; the normal change broadcast keeps the percentage synchronized after cog buttons, application-menu actions, and keyboard shortcuts. A standalone browser does not advertise `desktopZoomControls`, so it hides the native-only zoom row instead of exposing a control that cannot work.
+
+> [!note]
+> Keep the percentage sourced from `webContents.getZoomFactor()` through desktop state. A renderer-only estimate becomes stale when Command or Control shortcuts or the macOS View menu owns the zoom change.
+
 ## Files and verification
 
 - `public/index.html`
@@ -76,12 +81,15 @@ Whole-page `webContents` zoom is intentional. The renderer still contains legacy
 - `src/electron-main.mjs`
 - `src/desktop-zoom.mjs`
 - `src/desktop-menu.mjs`
+- `src/server.mjs`
 - `test/task-detail-modal.test.mjs`
 - `test/desktop-zoom.test.mjs`
 
 August 12 verification for the single-owner zoom change: a live Electron probe built the real menu template, confirmed the accelerator list, and stepped the loaded window through 1.0, 1.25, the 0.5 floor, the 2.0 ceiling, and the reset. `test/desktop-zoom.test.mjs` covers the stepper, the direction parser, the menu template, and the pre-load handler registration. The full suite reports three unrelated `style.css` reduced-motion failures from concurrent in-flight work; every other test passes and `release:check` is green.
 
 An isolated live renderer verified the 84 percent split, modal interaction, council content, dark-theme contrast, and zero browser console warnings. Focused modal, Markdown, and dark-mode tests cover the larger full-record typography. After the compact task-name and execution-profile refinement, the complete repository suite passes 1,069 tests.
+
+August 14 verification for the display cog used an isolated real Electron window and desktop-mode loopback server. The cog was the final header control in dark and light themes with zero horizontal overflow. Its visible level moved from `100%` to `90%` after Zoom out and returned to `100%` after Zoom in while the popover stayed open. Focused display, position, theme, and Electron checks pass 48 of 48; the complete suite passes 1,551 tests, `release:check` is green for v0.2.12, and `git diff --check` is clean.
 
 See [[interface-layout]], [[plan-council]], [[session-tasks]], and [[compact-interface-density]].
 

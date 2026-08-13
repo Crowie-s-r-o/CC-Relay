@@ -1007,7 +1007,7 @@ summary:focus-visible,
 
 .execution-controls {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, calc(50% - 13px)) minmax(0, calc(50% + 7px));
   gap: 7px;
   margin-top: 7px;
 }
@@ -8848,10 +8848,6 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
 }
 
 .header-running-primary {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 26px;
-  align-items: center;
-  gap: 5px;
   min-width: 0;
 }
 
@@ -8889,29 +8885,24 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   background: #d6d1ef;
 }
 
-/* Empty state hugs its content and reads as a quiet status line, never a void. */
+/* Empty state keeps the running-card silhouette without implying live activity. */
 .header-running-empty {
-  display: inline-flex;
-  flex: 0 0 auto;
-  justify-self: start;
+  display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  color: #9199a8;
-  background: #f3f4f7;
+  padding: 4px 9px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--running) 22%, var(--line));
+  border-radius: 9px;
+  color: #737d90;
+  background: color-mix(in srgb, var(--running) 6%, #fff);
   font-family: var(--font-mono);
   font-size: 8px;
   font-weight: 600;
   letter-spacing: .11em;
+  line-height: 1.2;
+  text-align: left;
   text-transform: uppercase;
-}
-
-.header-running-empty i {
-  width: 5px;
-  height: 5px;
-  border: 1.5px solid #c3c9d5;
-  border-radius: 50%;
 }
 
 .header-running-task {
@@ -8930,52 +8921,55 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
-.running-task-settings {
+.display-settings {
   position: relative;
   z-index: 12;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
-.running-task-settings > summary {
+.display-settings > summary {
   display: grid;
-  width: 26px;
-  height: 26px;
+  width: 32px;
+  height: 32px;
   place-items: center;
-  border: 1px solid transparent;
-  border-radius: 7px;
+  border: 1px solid #dce3ee;
+  border-radius: 9px;
   color: #7e8798;
+  background: #f8faff;
   cursor: pointer;
   list-style: none;
 }
 
-.running-task-settings > summary::-webkit-details-marker {
+.display-settings > summary::-webkit-details-marker {
   display: none;
 }
 
-.running-task-settings > summary:hover,
-.running-task-settings[open] > summary {
-  border-color: #dce3ee;
+.display-settings > summary:hover,
+.display-settings[open] > summary {
+  border-color: #c9d2e3;
   color: #34415a;
-  background: #f5f7fb;
+  background: #fff;
 }
 
-.running-task-settings > summary:focus-visible {
+.display-settings > summary:focus-visible {
   outline: 3px solid rgb(79 95 246 / 25%);
   outline-offset: 2px;
 }
 
-.running-task-settings > summary svg {
+.display-settings > summary svg {
   width: 14px;
   height: 14px;
   fill: currentColor;
 }
 
-.running-task-settings-popover {
+.display-settings-popover {
   position: absolute;
   top: calc(100% + 7px);
   right: 0;
   display: grid;
-  width: 210px;
-  gap: 9px;
+  width: 238px;
+  gap: 10px;
   padding: 12px;
   border: 1px solid #d8e0ec;
   border-radius: 10px;
@@ -8984,11 +8978,34 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   box-shadow: 0 12px 32px rgb(35 48 76 / 18%);
 }
 
-.running-task-settings-popover strong {
+.display-settings-popover > strong {
   font-size: 12px;
 }
 
-.running-task-settings-popover label {
+.display-settings-section {
+  display: grid;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.display-settings-section + .display-settings-section {
+  padding-top: 10px;
+  border-top: 1px solid #e5eaf2;
+}
+
+.display-settings-section-title {
+  color: #8a94a6;
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.display-settings-section label,
+.display-settings-control {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 104px;
   align-items: center;
@@ -8998,7 +9015,7 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   font-weight: 700;
 }
 
-.running-task-settings-popover select {
+.display-settings-section select {
   min-width: 0;
   height: 28px;
   padding: 3px 24px 3px 7px;
@@ -9009,7 +9026,76 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   font: 600 10px var(--font-body);
 }
 
-html[data-header-position="bottom"] .running-task-settings-popover {
+.display-settings-control {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.display-settings-control > span:first-child {
+  color: #697489;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.display-settings-control .header-position-toggle,
+.display-settings-control .theme-toggle {
+  min-height: 28px;
+}
+
+.display-settings-zoom[hidden] {
+  display: none;
+}
+
+.display-settings-zoom-buttons {
+  display: inline-grid;
+  grid-template-columns: 32px 48px 32px;
+  overflow: hidden;
+  border: 1px solid #dce3ee;
+  border-radius: 7px;
+  background: #f8faff;
+}
+
+.display-settings-zoom-buttons button {
+  display: grid;
+  width: 32px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  color: #536078;
+  background: transparent;
+  font: 750 15px/1 var(--font-mono);
+  cursor: pointer;
+}
+
+.display-settings-zoom-buttons output {
+  display: grid;
+  height: 28px;
+  place-items: center;
+  border-right: 1px solid #dce3ee;
+  border-left: 1px solid #dce3ee;
+  color: #34415a;
+  background: #fff;
+  font: 750 9px/1 var(--font-mono);
+}
+
+.display-settings-zoom-buttons button:hover:not(:disabled) {
+  color: #293650;
+  background: #fff;
+}
+
+.display-settings-zoom-buttons button:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 3px solid rgb(79 95 246 / 25%);
+  outline-offset: -3px;
+}
+
+.display-settings-zoom-buttons button:disabled {
+  cursor: wait;
+  opacity: .55;
+}
+
+html[data-header-position="bottom"] .display-settings-popover {
   top: auto;
   bottom: calc(100% + 7px);
 }
@@ -9208,9 +9294,6 @@ html[data-running-task-width="360"] {
     margin: 1px 0 0;
   }
 
-  .header-running-empty {
-    align-self: flex-start;
-  }
 }
 
 @media (max-width: 760px) {
@@ -12363,12 +12446,9 @@ html[data-theme="dark"] .header-running-extra-tasks::-webkit-scrollbar-thumb {
 }
 
 html[data-theme="dark"] .header-running-empty {
+  border-color: color-mix(in srgb, var(--app-violet) 32%, var(--app-border));
   color: var(--app-text-muted);
-  background: var(--app-control);
-}
-
-html[data-theme="dark"] .header-running-empty i {
-  border-color: var(--app-text-muted);
+  background: color-mix(in srgb, var(--app-violet) 7%, var(--app-panel));
 }
 
 html[data-theme="dark"] .header-running-task {
@@ -12382,32 +12462,60 @@ html[data-theme="dark"] .header-running-task:hover {
   background: color-mix(in srgb, var(--project-accent, var(--app-violet)) 12%, var(--app-panel));
 }
 
-html[data-theme="dark"] .running-task-settings > summary {
+html[data-theme="dark"] .display-settings > summary {
+  border-color: var(--app-border);
   color: var(--app-text-muted);
-}
-
-html[data-theme="dark"] .running-task-settings > summary:hover,
-html[data-theme="dark"] .running-task-settings[open] > summary {
-  border-color: var(--app-border-strong);
-  color: var(--app-text);
   background: var(--app-control);
 }
 
-html[data-theme="dark"] .running-task-settings-popover {
+html[data-theme="dark"] .display-settings > summary:hover,
+html[data-theme="dark"] .display-settings[open] > summary {
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-blue) 10%, var(--app-control));
+}
+
+html[data-theme="dark"] .display-settings-popover {
   border-color: var(--app-border-strong);
   color: var(--app-text);
   background: var(--app-panel);
   box-shadow: 0 14px 38px rgb(0 0 0 / 38%);
 }
 
-html[data-theme="dark"] .running-task-settings-popover label {
+html[data-theme="dark"] .display-settings-section + .display-settings-section {
+  border-top-color: var(--app-border);
+}
+
+html[data-theme="dark"] .display-settings-section-title,
+html[data-theme="dark"] .display-settings-section label,
+html[data-theme="dark"] .display-settings-control > span:first-child {
   color: var(--app-text-muted);
 }
 
-html[data-theme="dark"] .running-task-settings-popover select {
+html[data-theme="dark"] .display-settings-section select {
   border-color: var(--app-border);
   color: var(--app-text-body);
   background-color: var(--app-control);
+}
+
+html[data-theme="dark"] .display-settings-zoom-buttons {
+  border-color: var(--app-border);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .display-settings-zoom-buttons button {
+  color: var(--app-text-body);
+}
+
+html[data-theme="dark"] .display-settings-zoom-buttons output {
+  border-color: var(--app-border);
+  color: var(--app-text);
+  background: var(--app-panel);
+}
+
+html[data-theme="dark"] .display-settings-zoom-buttons button:hover:not(:disabled) {
+  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-blue) 10%, var(--app-control));
 }
 
 html[data-theme="dark"] .header-running-meta,
@@ -13206,10 +13314,15 @@ html[data-theme="dark"] .task-card[class*="project-color-"]:not(.selected):hover
 
 /* The running chips sit on the near-black header, so they need their own
    raised surface and a secondary line that is not the dimmest tone available. */
+html[data-theme="dark"] .header-running-empty,
 html[data-theme="dark"] .header-running-task {
   border-color: color-mix(in srgb, var(--project-accent-dark, var(--app-violet)) 38%, var(--app-border));
   color: var(--app-text-body);
   background: color-mix(in srgb, var(--project-accent-dark, var(--app-violet)) 9%, var(--app-control));
+}
+
+html[data-theme="dark"] .header-running-empty {
+  color: #b4bac4;
 }
 
 html[data-theme="dark"] .header-running-task:hover {

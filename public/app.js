@@ -828,9 +828,13 @@ const elements = {
   headerRunningMonitor: document.querySelector('.header-running-monitor'),
   headerRunningTasks: document.querySelector('#header-running-tasks'),
   headerRunningExtraTasks: document.querySelector('#header-running-extra-tasks'),
-  runningTaskSettings: document.querySelector('#running-task-settings'),
+  displaySettings: document.querySelector('#display-settings'),
   runningTaskRows: document.querySelector('#running-task-rows'),
   runningTaskWidth: document.querySelector('#running-task-width'),
+  desktopZoomControls: document.querySelector('#desktop-zoom-controls'),
+  desktopZoomOut: document.querySelector('#desktop-zoom-out'),
+  desktopZoomLevel: document.querySelector('#desktop-zoom-level'),
+  desktopZoomIn: document.querySelector('#desktop-zoom-in'),
   projectList: document.querySelector('#project-list'),
   projectColorModal: document.querySelector('#project-color-modal'),
   projectColorSubtitle: document.querySelector('#project-color-subtitle'),
@@ -4826,7 +4830,6 @@ function renderHeaderRunningTasks() {
     elements.headerRunningTasks.dataset.signature = 'empty';
     elements.headerRunningTasks.innerHTML = `
       <div class="header-running-empty">
-        <i aria-hidden="true"></i>
         <span>No tasks running</span>
       </div>
     `;
@@ -5004,6 +5007,7 @@ function renderStatus() {
   }
   elements.desktopUpdateRelease.href = update.href;
   elements.desktopUpdateRelease.textContent = update.releaseLabel;
+  renderDesktopZoomControls();
   renderProviderUsage();
 
   renderHeaderRunningTasks();
@@ -10390,6 +10394,37 @@ elements.themeToggle.addEventListener('click', () => {
 });
 elements.headerPositionToggle.addEventListener('click', () => {
   setHeaderPosition(currentHeaderPosition() === 'bottom' ? 'top' : 'bottom');
+});
+function renderDesktopZoomControls() {
+  const supported = state.status?.capabilities?.desktopZoomControls === true;
+  elements.desktopZoomControls.hidden = !supported;
+  const percent = Number(state.status?.desktopZoom?.percent);
+  const label = supported && Number.isFinite(percent) ? `${percent}%` : '--';
+  elements.desktopZoomLevel.textContent = label;
+  elements.desktopZoomLevel.title = Number.isFinite(percent)
+    ? `Current zoom: ${percent}%`
+    : 'Current zoom is unavailable';
+}
+async function changeDesktopZoom(direction, button) {
+  button.disabled = true;
+  try {
+    const zoom = await api('/api/desktop/zoom', {
+      method: 'POST',
+      body: JSON.stringify({ direction }),
+    });
+    if (state.status) state.status.desktopZoom = zoom;
+    renderDesktopZoomControls();
+  } catch (error) {
+    console.warn('Could not change application zoom.', error);
+  } finally {
+    button.disabled = false;
+  }
+}
+elements.desktopZoomOut.addEventListener('click', () => {
+  changeDesktopZoom('out', elements.desktopZoomOut);
+});
+elements.desktopZoomIn.addEventListener('click', () => {
+  changeDesktopZoom('in', elements.desktopZoomIn);
 });
 elements.runningTaskRows.addEventListener('change', () => {
   setRunningTaskLayout({

@@ -21,6 +21,7 @@ import { readCodexRuntimeStatus } from './codex-runtime-status.mjs';
 import { RelayDatabase } from './database.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
 import { normalizeDesktopUpdateState } from './desktop-update-status.mjs';
+import { desktopZoomStatus } from './desktop-zoom.mjs';
 import {
   DisposableTerminalPool,
   disposableTerminalRequirements,
@@ -383,6 +384,8 @@ const terminalCloseCoordinator = new TerminalCloseCoordinator({
 });
 const sseClients = new Set();
 let desktopUpdateState = normalizeDesktopUpdateState({ status: 'unsupported' });
+let desktopZoomHandler = null;
+let desktopZoomState = null;
 const agentUpdates = new AgentUpdateCache({
   latestEventId: (taskId) => database.latestEventId(taskId),
   listEventsSince: (taskId, sinceId, limit) => database.listEventsSince(taskId, sinceId, limit),
@@ -883,6 +886,27 @@ export function setDesktopUpdateState(value = {}) {
   return true;
 }
 
+export function setDesktopZoomHandler(handler) {
+  if (!IS_DESKTOP || typeof handler !== 'function') return false;
+  desktopZoomHandler = handler;
+  return true;
+}
+
+export function setDesktopZoomState(value) {
+  if (!IS_DESKTOP) return false;
+  const nextState = desktopZoomStatus(value);
+  if (!nextState) return false;
+  if (
+    desktopZoomState?.factor === nextState.factor
+    && desktopZoomState?.percent === nextState.percent
+  ) {
+    return true;
+  }
+  desktopZoomState = nextState;
+  broadcast({ desktopZoom: true });
+  return true;
+}
+
 // Reconcile a plan breakdown against the terminal state of its linked queue task.
 // A breakdown runs as an ordinary `mode: breakdown` queue task on the chosen live
 // session; when it settles, its raw response is parsed into review-ready proposals
@@ -976,6 +1000,7 @@ export const server = createServer(async (request, response) => {
         claude: claudeRuntimeStatus,
         providerUsage: providerUsage.current(),
         desktopUpdate: desktopUpdateState,
+        desktopZoom: desktopZoomState,
         capabilities: {
           directClaudeExecution: true,
           parallelClaudeExecution: true,
@@ -1023,6 +1048,7 @@ export const server = createServer(async (request, response) => {
           aiStandupChangelog: true,
           crossProcessLaunchOwnership: true,
           desktopUpdates: IS_DESKTOP,
+          desktopZoomControls: IS_DESKTOP && typeof desktopZoomHandler === 'function',
         },
         taskCount: tasks.length,
         runningTasks: agentUpdates.feed(tasks),
@@ -1031,6 +1057,29 @@ export const server = createServer(async (request, response) => {
         // Terminal ownership stays correct either way; this only lets the interface say so.
         dualBackendDetected: launchOwnership.dualBackendDetected(),
         projectConfig: { file: database.projectConfigPath },
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/desktop/zoom') {
+      if (!IS_DESKTOP || typeof desktopZoomHandler !== 'function') {
+        sendError(response, 409, 'Desktop zoom controls are unavailable.');
+        return;
+      }
+      const body = await readJson(request, 1024);
+      if (body.direction !== 'in' && body.direction !== 'out') {
+        sendError(response, 400, 'Zoom direction must be in or out.');
+        return;
+      }
+      const factor = await desktopZoomHandler(body.direction);
+      if (!Number.isFinite(factor)) {
+        sendError(response, 409, 'The desktop window is unavailable.');
+        return;
+      }
+      setDesktopZoomState(factor);
+      sendJson(response, 200, {
+        factor,
+        percent: Math.round(factor * 100),
       });
       return;
     }

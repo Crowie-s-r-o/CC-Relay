@@ -19,14 +19,20 @@ test('desktop Launchpad uses one compact horizontal card row without vertical cl
   assert.doesNotMatch(selectedStyle, /0 0 0/);
 });
 
-test('running-task monitor exposes durable row and card-width controls', () => {
-  assert.match(markup, /class="header-running-primary"[\s\S]*?id="header-running-tasks"[\s\S]*?id="running-task-settings"/);
+test('rightmost display cog owns monitor layout and application controls', () => {
+  assert.match(markup, /class="header-running-primary"[\s\S]*?id="header-running-tasks"[\s\S]*?id="header-running-extra-tasks"/);
   assert.match(markup, /id="header-running-extra-tasks" class="header-running-extra-tasks"/);
-  assert.match(markup, /id="running-task-settings" class="running-task-settings"/);
-  assert.match(markup, /summary aria-label="Configure running tasks"/);
+  assert.match(markup, /class="header-actions"[\s\S]*?id="provider-usage"[\s\S]*?id="display-settings" class="display-settings"/);
+  assert.match(markup, /summary aria-label="Open display settings"/);
   assert.match(markup, /id="running-task-rows"[\s\S]*?<option value="1">1 row<\/option>[\s\S]*?<option value="3">3 rows<\/option>/);
   assert.match(markup, /id="running-task-width"[\s\S]*?<option value="230">Compact<\/option>[\s\S]*?<option value="286">Default<\/option>[\s\S]*?<option value="360">Wide<\/option>/);
+  assert.match(markup, /id="application-display-heading"[\s\S]*?id="header-position-toggle"[\s\S]*?id="theme-toggle"[\s\S]*?id="desktop-zoom-controls"/);
+  assert.match(markup, /id="desktop-zoom-out"[\s\S]*?aria-label="Zoom out"/);
+  assert.match(markup, /id="desktop-zoom-level"[\s\S]*?>100%<\/output>/);
+  assert.match(markup, /id="desktop-zoom-in"[\s\S]*?aria-label="Zoom in"/);
+  assert.ok(markup.indexOf('id="display-settings"') > markup.indexOf('id="provider-usage"'));
   assert.match(style, /\.header-running-tasks,\s*\.header-running-extra-tasks \{[\s\S]*?grid-auto-columns: var\(--running-task-width, 286px\);/);
+  assert.match(style, /\.display-settings \{[\s\S]*?margin-left: auto;/);
   assert.match(style, /\.header-running-tasks \{\s*grid-template-rows: 44px;/);
   assert.match(style, /html\[data-running-task-rows="3"\] \.header-running-extra-tasks \{\s*display: grid;\s*grid-template-rows: repeat\(2, 44px\);/);
   assert.match(style, /grid-template-columns: max-content minmax\(0, 1fr\) max-content;\s*column-gap: 18px;\s*row-gap: 7px;/);
@@ -38,6 +44,31 @@ test('running-task monitor exposes durable row and card-width controls', () => {
   assert.match(app, /'relay\.runningTaskLayout',[\s\S]*?JSON\.stringify\(normalizeRunningTaskLayout\(preferences\.runningTaskLayout\)\)/);
   assert.match(app, /elements\.runningTaskRows\.addEventListener\('change'/);
   assert.match(app, /elements\.runningTaskWidth\.addEventListener\('change'/);
+});
+
+test('empty running monitor uses one canonical task-card slot with text only', () => {
+  const emptyMarkupStart = markup.indexOf('<div class="header-running-empty">');
+  const emptyMarkup = markup.slice(emptyMarkupStart, markup.indexOf('</div>', emptyMarkupStart) + 6);
+  assert.match(
+    emptyMarkup,
+    /class="header-running-empty">\s*<span>No tasks running<\/span>\s*<\/div>/,
+  );
+  assert.match(
+    app,
+    /<div class="header-running-empty">\s*<span>No tasks running<\/span>\s*<\/div>/,
+  );
+  assert.doesNotMatch(emptyMarkup, /<i/);
+
+  const emptyStyle = style.slice(
+    style.indexOf('.header-running-empty {'),
+    style.indexOf('.header-running-task {'),
+  );
+  assert.match(emptyStyle, /min-width: 0;/);
+  assert.match(emptyStyle, /padding: 4px 9px;/);
+  assert.match(emptyStyle, /border: 1px solid color-mix\(in srgb, var\(--running\) 22%, var\(--line\)\);/);
+  assert.match(emptyStyle, /border-radius: 9px;/);
+  assert.match(emptyStyle, /background: color-mix\(in srgb, var\(--running\) 6%, #fff\);/);
+  assert.doesNotMatch(emptyStyle, /justify-self|border-radius: 999px/);
 });
 
 test('Launchpad exposes one add-project action without launching a terminal', () => {
@@ -117,6 +148,17 @@ test('desktop defaults widen the composer while keeping the queue compact', () =
   assert.match(app, /composerQueueResizer\.setAttribute\('aria-valuemin', '400'\)/);
   assert.match(app, /: 500;[\s\S]*?constrainPanelWidths\(state\.panelWidths\.composer, state\.panelWidths\.queue\)/);
   assert.match(app, /Task queue \$\{Math\.round\(state\.panelWidths\.queue\)\} pixels wide/);
+});
+
+test('execution settings give effort twenty more pixels than model', () => {
+  assert.match(
+    style,
+    /\.execution-controls \{\s*display: grid;\s*grid-template-columns: minmax\(0, calc\(50% - 13px\)\) minmax\(0, calc\(50% \+ 7px\)\);\s*gap: 7px;/,
+  );
+  assert.match(
+    style,
+    /@media \(max-width: 760px\) \{[\s\S]*?\.mode-tabs, \.execution-controls \{ grid-template-columns: 1fr; \}/,
+  );
 });
 
 test('responsive workspace skips the two-panel split view', () => {
