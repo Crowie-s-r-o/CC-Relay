@@ -40,20 +40,45 @@ or Past on the next render without changing the persisted task or its former que
 
 ## Persistence and first-use behavior
 
-`public/project-completion-notifications.js` owns the transition tracker. It persists unread task
-IDs and unfinished task observations in browser local storage under
-`relay.projectCompletionNotifications.v1`.
+Completion review state is owned by the task database. The additive `tasks.completion_reviewed`
+column defaults to reviewed for queued work and for rows created by an older schema. Every real
+transition from a non-complete status to `complete` sets it to unread in the same SQLite update.
+The task API exposes that state as `ready_for_review`, so a new renderer origin reconstructs the
+same Launchpad badges and Queue review block from durable task rows.
 
-- The first snapshot establishes a baseline and does not mark all historical completions unread.
-- A queued or running task observed before a reload can still become unread if it is complete on
-  the next page load.
-- A task completing while it is already the selected Task Activity item is considered checked.
-- Opening an unread completed task acknowledges it.
-- Retrying a completed task or deleting it removes any stale completion notification.
-- Storage parsing and writes fail open so notification state can never block queue refreshes.
+> [!important]
+> Do not move completion review ownership back to browser storage. Packaged Electron loads the
+> embedded server from a dynamically assigned loopback port, and the port is part of the browser
+> origin. An app restart or version installation can therefore select an origin with an empty
+> `localStorage` even though the task database is unchanged.
 
-`public/app.js` observes task snapshots after `/api/tasks` loads and acknowledges a task only after
-its detail request succeeds. `public/style.css` renders the count on the project initial, adds the
+The first durable-schema startup performs a one-time compatibility import. Before the first task
+snapshot, the renderer sends any unread task IDs still reachable under
+`relay.projectCompletionNotifications.v1` to the backend. SQLite restores matching completed rows
+and records a database migration marker, then the local record advances to version 2 and stops
+carrying unread IDs. A stale browser origin cannot repeat the import and resurrect work that was
+reviewed later. If an older dynamic origin is no longer reachable, its checked-versus-unchecked
+distinction cannot be inferred from the legacy task row, so existing completed rows remain the
+acknowledged migration baseline.
+
+- An unread task survives an app restart, a package upgrade, and a loopback port change.
+- Existing completed rows become a reviewed baseline when the column is added, preventing a full
+  historical backlog from appearing as new.
+- A task completing while it is already the selected Task Activity item is acknowledged through
+  the same backend review action.
+- Opening an unread completed task acknowledges only the exact `finished_at` outcome that was
+  opened. A delayed response cannot clear a newer completion of the same task.
+- **Mark reviewed** submits the exact visible task and completion pairs. Work that completes while
+  the request is in flight remains unread.
+- Repeating a write to the same completed outcome does not reopen review. A retry or continuation
+  clears the old state, and its next transition to complete opens a new review.
+- Deleting a task removes its review state with the task row.
+
+`public/project-completion-notifications.js` now projects durable task flags for the renderer and
+keeps only the unfinished-status baseline used to detect sound transitions in origin-local
+storage. Storage parsing and writes remain best effort and cannot block queue refreshes.
+`public/app.js` acknowledges a task only after its detail request succeeds. `public/style.css`
+renders the count on the project initial, adds the
 **Finished** project activity state, and gives review cards, the divider, and the bulk control a
 coordinated rose treatment in light and dark themes.
 Screen-reader copy includes the unchecked completion count, and unread task cards announce
@@ -63,10 +88,11 @@ Screen-reader copy includes the unchecked completion count, and unread task card
 This transition list drives [[task-completion-alerts]] independently of unread state, so a task
 already open in Task Activity can still sound while remaining acknowledged.
 
-Transition tests live in `test/project-completion-notifications.test.mjs`, ordering coverage lives
-in `test/task-history.test.mjs`, and the Launchpad and divider contracts live in
-`test/project-layout.test.mjs` and `test/queue-ledger-ui.test.mjs`. The complete repository suite
-passed 1,471 tests after the review block and terminology update.
+Transition and compatibility-import tests live in
+`test/project-completion-notifications.test.mjs`. SQLite reopen, additive-schema, exact-outcome
+race, API, and renderer startup coverage lives in `test/completion-review-persistence.test.mjs`.
+Ordering coverage lives in `test/task-history.test.mjs`, and the Launchpad and divider contracts
+live in `test/project-layout.test.mjs` and `test/queue-ledger-ui.test.mjs`.
 
 See [[project-workspaces]], [[task-history]], [[task-completion-alerts]], and
 [[compact-interface-density]].

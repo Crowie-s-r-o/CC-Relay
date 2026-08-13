@@ -103,7 +103,7 @@ test('skips unpackaged or otherwise ineligible builds', async () => {
   assert.equal(updater.checkCalls, 0);
 });
 
-test('derives release discovery for packaged builds and automatic installation for NSIS only', () => {
+test('derives automatic updates for packaged macOS and NSIS builds only', () => {
   const checkLatestRelease = async () => ({ version: '1.2.0' });
   const mac = harness({ eligible: undefined });
   mac.coordinator = createDesktopUpdater({
@@ -115,8 +115,9 @@ test('derives release discovery for packaged builds and automatic installation f
     intervalTimer: () => {},
   });
   assert.equal(mac.coordinator.start(), true);
-  assert.equal(mac.coordinator.status().automaticUpdate, false);
-  assert.equal(mac.updater.autoDownload, 'unset');
+  assert.equal(mac.coordinator.status().automaticUpdate, true);
+  assert.equal(mac.updater.autoDownload, true);
+  assert.equal(mac.updater.autoInstallOnAppQuit, true);
   const installed = harness({ eligible: undefined });
   installed.coordinator = createDesktopUpdater({
     updater: installed.updater,
@@ -128,6 +129,8 @@ test('derives release discovery for packaged builds and automatic installation f
   });
   assert.equal(installed.coordinator.start(), true);
   assert.equal(installed.coordinator.status().automaticUpdate, true);
+  assert.equal(installed.updater.autoDownload, true);
+  assert.equal(installed.updater.autoInstallOnAppQuit, true);
   const portable = harness({ eligible: undefined });
   portable.coordinator = createDesktopUpdater({
     updater: portable.updater,
@@ -143,12 +146,12 @@ test('derives release discovery for packaged builds and automatic installation f
   assert.equal(portable.updater.autoDownload, 'unset');
 });
 
-test('start is idempotent, configures manual update flow, and checks every five minutes', async () => {
+test('start is idempotent, configures automatic updates, and checks every five minutes', async () => {
   const { updater, coordinator, timers, intervals } = harness();
   assert.equal(coordinator.start(), true);
   assert.equal(coordinator.start(), false);
-  assert.equal(updater.autoDownload, false);
-  assert.equal(updater.autoInstallOnAppQuit, false);
+  assert.equal(updater.autoDownload, true);
+  assert.equal(updater.autoInstallOnAppQuit, true);
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, 25);
   assert.equal(intervals.length, 1);
@@ -177,7 +180,7 @@ test('runs a check without prompting when no update is available', async () => {
   assert.equal(states.at(-1).status, 'current');
 });
 
-test('discovers a manual macOS release without starting the automatic updater', async () => {
+test('discovers a manual portable release without starting the automatic updater', async () => {
   const { updater, coordinator, dialogs, states } = harness({
     automaticUpdate: false,
     checkLatestRelease: async () => ({ version: '1.2.0' }),
@@ -232,7 +235,7 @@ test('manual discovery keeps a known update visible after a later refresh failur
 });
 
 test('publishes a safe, queryable update lifecycle for the desktop UI', async () => {
-  const { updater, coordinator, states } = harness({ choices: [1, 1] });
+  const { updater, coordinator, dialogs, states } = harness({ choices: [1] });
   assert.equal(coordinator.status().status, 'unsupported');
   coordinator.start();
   assert.deepEqual(coordinator.status(), states.at(-1));
@@ -242,8 +245,9 @@ test('publishes a safe, queryable update lifecycle for the desktop UI', async ()
 
   updater.emit('update-available', { version: '1.2.0' });
   await flush();
-  assert.equal(states.at(-1).status, 'available');
+  assert.equal(states.at(-1).status, 'downloading');
   assert.equal(states.at(-1).latestVersion, '1.2.0');
+  assert.equal(dialogs.length, 0);
   assert.equal(
     states.at(-1).releaseUrl,
     'https://github.com/Crowie-s-r-o/CC-Relay/releases/tag/v1.2.0',
@@ -263,39 +267,33 @@ test('publishes a safe, queryable update lifecycle for the desktop UI', async ()
   assert.equal(states.at(-1).latestVersion, '1.2.0');
 });
 
-test('prompts for an available update and downloads only after acceptance', async () => {
-  const { updater, coordinator, dialogs } = harness({ choices: [0] });
+test('downloads available updates automatically without interrupting active work', async () => {
+  const { updater, coordinator, dialogs, logs, states } = harness();
   coordinator.start();
   updater.emit('update-available', { version: '1.2.0' });
   await flush();
-  assert.equal(dialogs.length, 1);
-  assert.match(dialogs[0].options.message, /1\.2\.0/);
-  assert.match(dialogs[0].options.message, /1\.0\.0/);
-  assert.deepEqual(dialogs[0].options.buttons, ['Download', 'Later']);
-  assert.equal(updater.downloadCalls, 1);
-});
-
-test('defers an available update when the user chooses Later', async () => {
-  const { updater, coordinator, dialogs } = harness({ choices: [1] });
-  coordinator.start();
-  updater.emit('update-available', { version: '1.2.0' });
-  await flush();
-  assert.equal(dialogs.length, 1);
+  assert.equal(updater.autoDownload, true);
+  assert.equal(updater.autoInstallOnAppQuit, true);
+  assert.equal(dialogs.length, 0);
   assert.equal(updater.downloadCalls, 0);
+  assert.equal(states.at(-1).status, 'downloading');
+  assert.equal(
+    logs.some((entry) => entry.level === 'info' && /automatically/.test(entry.message)),
+    true,
+  );
 });
 
-test('does not repeat the available prompt for the same release on recurring checks', async () => {
-  const { updater, coordinator, dialogs } = harness({ choices: [1, 1] });
+test('pauses recurring checks while an automatic download or installation is pending', async () => {
+  const { updater, coordinator, intervals } = harness({ choices: [1] });
   coordinator.start();
   updater.emit('update-available', { version: '1.2.0' });
+  intervals[0].callback();
   await flush();
-  updater.emit('update-available', { version: '1.2.0' });
+  assert.equal(updater.checkCalls, 0);
+  updater.emit('update-downloaded', { version: '1.2.0' });
+  intervals[0].callback();
   await flush();
-  assert.equal(dialogs.length, 1);
-
-  updater.emit('update-available', { version: '1.3.0' });
-  await flush();
-  assert.equal(dialogs.length, 2);
+  assert.equal(updater.checkCalls, 0);
 });
 
 test('prompts for a downloaded update and restarts only after acceptance', async () => {
@@ -303,7 +301,8 @@ test('prompts for a downloaded update and restarts only after acceptance', async
   accepted.coordinator.start();
   accepted.updater.emit('update-downloaded', { version: '1.2.0' });
   await flush();
-  assert.deepEqual(accepted.dialogs[0].options.buttons, ['Restart and install', 'Later']);
+  assert.deepEqual(accepted.dialogs[0].options.buttons, ['Restart and install', 'Install on quit']);
+  assert.match(accepted.dialogs[0].options.message, /install automatically when you quit/i);
   assert.equal(accepted.restartCalls.length, 1);
 
   const deferred = harness({ choices: [1] });
@@ -319,6 +318,7 @@ test('does not prompt when the main window is absent or destroyed', async () => 
   absent.updater.emit('update-available', { version: '1.2.0' });
   await flush();
   assert.equal(absent.dialogs.length, 0);
+  assert.equal(absent.coordinator.status().status, 'downloading');
   assert.equal(absent.updater.downloadCalls, 0);
 
   const destroyed = harness({ choices: [0] });
@@ -337,41 +337,41 @@ test('does not prompt when the main window is absent or destroyed', async () => 
   assert.equal(destroyed.restartCalls.length, 0);
 });
 
-test('prevents overlapping checks, downloads, and prompts', async () => {
+test('prevents overlapping checks, downloads, and restart prompts', async () => {
   let releaseCheck;
   const updater = new FakeUpdater();
   updater.checkForUpdates = () => new Promise((resolve) => { updater.checkCalls += 1; releaseCheck = resolve; });
-  let releaseDownload;
-  updater.downloadUpdate = () => new Promise((resolve) => { updater.downloadCalls += 1; releaseDownload = resolve; });
-  const { coordinator, timers, dialogs } = harness({ updater, choices: [0, 0] });
+  const { coordinator, timers, intervals, dialogs } = harness({ updater, choices: [1] });
   coordinator.start();
   timers[0].callback();
   timers[0].callback();
   assert.equal(updater.checkCalls, 1);
   updater.emit('update-available', { version: '1.2.0' });
-  updater.emit('update-available', { version: '1.2.0' });
+  intervals[0].callback();
+  await flush();
+  assert.equal(updater.checkCalls, 1);
+  updater.emit('update-downloaded', { version: '1.2.0' });
+  updater.emit('update-downloaded', { version: '1.2.0' });
   await flush();
   assert.equal(dialogs.length, 1);
-  assert.equal(updater.downloadCalls, 1);
-  updater.emit('update-available', { version: '1.2.0' });
-  await flush();
-  assert.equal(updater.downloadCalls, 1);
-  releaseDownload();
   releaseCheck();
   await flush();
 });
 
-test('logs rejected checks and downloads without error dialogs', async () => {
-  const { updater, coordinator, logs, dialogs } = harness({ choices: [0], runTimer: true });
+test('logs rejected checks and updater failures without error dialogs', async () => {
+  const { updater, coordinator, logs, dialogs } = harness({ runTimer: true });
   updater.checkForUpdates = async () => { throw new Error('check exploded'); };
   coordinator.start();
   await flush();
   assert.equal(dialogs.length, 0);
   assert.equal(logs.some((entry) => entry.level === 'error' && /check failed/.test(entry.message)), true);
 
-  updater.downloadUpdate = async () => { throw new Error('download exploded'); };
   updater.emit('update-available', { version: '1.2.0' });
+  updater.emit('error', new Error('download exploded'));
   await flush();
-  assert.equal(dialogs.length, 1);
-  assert.equal(logs.some((entry) => entry.level === 'error' && /download failed/.test(entry.message)), true);
+  assert.equal(dialogs.length, 0);
+  assert.equal(
+    logs.some((entry) => entry.level === 'error' && /reported an error/.test(entry.message)),
+    true,
+  );
 });

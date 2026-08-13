@@ -10,7 +10,7 @@ test('desktop Launchpad uses one compact horizontal card row without vertical cl
   assert.match(style, /\.project-list \{\s*grid-area: list;\s*display: flex;[\s\S]*?padding-block: 2px;\s*overflow-x: auto;\s*overflow-y: hidden;/);
   assert.match(style, /\.project-chip \{\s*display: grid;\s*flex: 0 0 176px;[\s\S]*?grid-template-areas: "head activity close";\s*grid-template-columns: minmax\(0, 1fr\) auto 16px;[\s\S]*?height: 30px;/);
   assert.match(style, /@media \(min-width: 1345px\) \{[\s\S]*?\.app-header \{\s*height: 58px;[\s\S]*?\.project-dock \{\s*height: 44px;\s*min-height: 44px;/);
-  assert.match(style, /\.workspace \{\s*height: calc\(100vh - var\(--app-header-height, 58px\) - 44px\)/);
+  assert.match(style, /\.workspace \{\s*height: calc\(100vh - var\(--desktop-titlebar-height\) - var\(--app-header-height, 58px\) - 44px\)/);
   const selectedStyle = style.slice(
     style.indexOf('.project-chip[class*="project-color-"].selected {'),
     style.indexOf('.project-chip[class*="project-color-"].selected:hover {'),
@@ -20,13 +20,21 @@ test('desktop Launchpad uses one compact horizontal card row without vertical cl
 });
 
 test('running-task monitor exposes durable row and card-width controls', () => {
+  assert.match(markup, /class="header-running-primary"[\s\S]*?id="header-running-tasks"[\s\S]*?id="running-task-settings"/);
+  assert.match(markup, /id="header-running-extra-tasks" class="header-running-extra-tasks"/);
   assert.match(markup, /id="running-task-settings" class="running-task-settings"/);
   assert.match(markup, /summary aria-label="Configure running tasks"/);
   assert.match(markup, /id="running-task-rows"[\s\S]*?<option value="1">1 row<\/option>[\s\S]*?<option value="3">3 rows<\/option>/);
   assert.match(markup, /id="running-task-width"[\s\S]*?<option value="230">Compact<\/option>[\s\S]*?<option value="286">Default<\/option>[\s\S]*?<option value="360">Wide<\/option>/);
-  assert.match(style, /\.header-running-tasks \{[\s\S]*?grid-auto-columns: var\(--running-task-width, 286px\);[\s\S]*?grid-template-rows: repeat\(var\(--running-task-rows, 1\), 44px\);/);
+  assert.match(style, /\.header-running-tasks,\s*\.header-running-extra-tasks \{[\s\S]*?grid-auto-columns: var\(--running-task-width, 286px\);/);
+  assert.match(style, /\.header-running-tasks \{\s*grid-template-rows: 44px;/);
+  assert.match(style, /html\[data-running-task-rows="3"\] \.header-running-extra-tasks \{\s*display: grid;\s*grid-template-rows: repeat\(2, 44px\);/);
+  assert.match(style, /grid-template-columns: max-content minmax\(0, 1fr\) max-content;\s*column-gap: 18px;\s*row-gap: 7px;/);
+  assert.match(style, /html\[data-running-task-rows="2"\] \.header-running-extra-tasks,\s*html\[data-running-task-rows="3"\] \.header-running-extra-tasks \{\s*grid-column: 1 \/ -1;\s*grid-row: 2 \/ -1;/);
   assert.match(style, /html\[data-running-task-rows="2"\] \.app-header \{\s*height: 109px;\s*min-height: 109px;/);
   assert.match(style, /html\[data-running-task-rows="3"\] \.app-header \{\s*height: 160px;\s*min-height: 160px;/);
+  assert.match(app, /runningTaskRailGroups\(\s*running,\s*state\.runningTaskLayout\.rows,\s*\)/);
+  assert.match(app, /elements\.headerRunningExtraTasks\.innerHTML = extraTasks\.map\(taskMarkup\)\.join\(''\)/);
   assert.match(app, /'relay\.runningTaskLayout',[\s\S]*?JSON\.stringify\(normalizeRunningTaskLayout\(preferences\.runningTaskLayout\)\)/);
   assert.match(app, /elements\.runningTaskRows\.addEventListener\('change'/);
   assert.match(app, /elements\.runningTaskWidth\.addEventListener\('change'/);
@@ -69,7 +77,8 @@ test('task activity identifies review-ready completions and can clear the curren
   assert.match(app, /class="task-card [^"]*\$\{unread \? 'task-card-unread' : ''\}/);
   assert.match(app, /unread && !operationalQueue \? '<span class="task-unread-marker">Ready for review<\/span>'/);
   assert.match(app, /Mark reviewed · \$\{unreadCount\}/);
-  assert.match(app, /projectCompletionNotifications\.acknowledgeProject\(state\.activeProjectPath\)/);
+  assert.match(app, /projectCompletionNotifications\.taskIds\(state\.activeProjectPath\)/);
+  assert.match(app, /api\('\/api\/tasks\/review-project'/);
   assert.match(style, /\.task-card-unread:not\(\.selected\) \{[\s\S]*?background: color-mix\(in srgb, #d43f62 4%, #f8faf9\);/);
   assert.match(style, /\.task-card-unread::before \{[\s\S]*?width: 4px;[\s\S]*?background: #d43f62;/);
   assert.match(style, /\.task-unread-marker \{[\s\S]*?text-transform: uppercase;/);
@@ -108,6 +117,19 @@ test('desktop defaults widen the composer while keeping the queue compact', () =
   assert.match(app, /composerQueueResizer\.setAttribute\('aria-valuemin', '400'\)/);
   assert.match(app, /: 500;[\s\S]*?constrainPanelWidths\(state\.panelWidths\.composer, state\.panelWidths\.queue\)/);
   assert.match(app, /Task queue \$\{Math\.round\(state\.panelWidths\.queue\)\} pixels wide/);
+});
+
+test('responsive workspace skips the two-panel split view', () => {
+  assert.match(
+    style,
+    /@media \(max-width: 1344px\) \{[\s\S]*?\.workspace \{\s*height: auto;\s*grid-template-columns: minmax\(300px, \.9fr\) minmax\(320px, 1fr\) minmax\(380px, 1\.25fr\);\s*gap: 12px;[\s\S]*?\.detail-panel \{ grid-column: auto; min-height: 0; \}/,
+  );
+  assert.match(
+    style,
+    /@media \(max-width: 1100px\) \{[\s\S]*?\.workspace \{ grid-template-columns: minmax\(0, 1fr\); \}[\s\S]*?\.detail-panel \{ grid-column: auto; \}/,
+  );
+  assert.doesNotMatch(style, /grid-template-columns: minmax\(380px, 1fr\) minmax\(420px, 1fr\)/);
+  assert.doesNotMatch(style, /grid-template-columns: minmax\(310px, 0\.85fr\) minmax\(360px, 1fr\)/);
 });
 
 test('task cards use the compact queue scan rhythm', () => {

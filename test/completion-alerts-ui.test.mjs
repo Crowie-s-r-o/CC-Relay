@@ -29,5 +29,5 @@ test('true completion transitions trigger the saved sound and optional voice', (
   assert.match(app, /completionSpeechText\([\s\S]*?state\.completionAlertPreferences/);
   assert.match(app, /localStorage\.setItem\('relay\.completionSpeechOptions'/);
   assert.match(app, /taskWords: elements\.completionSpeechWords\.value/);
-  assert.match(app, /const operations = \[uiPreferencesReady\.then\(\(\) => load\(\)\)\]/);
+  assert.match(app, /const operations = \[rendererStateReady\.then\(\(\) => load\(\)\)\]/);
 });

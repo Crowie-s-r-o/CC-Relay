@@ -38,7 +38,9 @@ export class ProjectCompletionNotifications {
     this.storageKey = storageKey;
     this.initialized = false;
     this.unread = new Map();
+    this.legacyUnread = new Map();
     this.previousStatuses = new Map();
+    this.reviewMigrationComplete = false;
     this.restore();
   }
 
@@ -46,14 +48,21 @@ export class ProjectCompletionNotifications {
     if (!this.storage) return;
     try {
       const saved = JSON.parse(this.storage.getItem(this.storageKey) || 'null');
-      if (!saved || saved.version !== 1) return;
+      if (!saved || ![1, 2].includes(saved.version)) return;
       this.initialized = saved.initialized === true;
-      this.unread = cloneProjectTaskMap(saved.unread);
       this.previousStatuses = cloneProjectTaskMap(saved.unfinished);
+      if (saved.version === 1) {
+        this.legacyUnread = cloneProjectTaskMap(saved.unread);
+        this.unread = cloneProjectTaskMap(saved.unread);
+      } else {
+        this.reviewMigrationComplete = true;
+      }
     } catch {
       this.initialized = false;
       this.unread = new Map();
+      this.legacyUnread = new Map();
       this.previousStatuses = new Map();
+      this.reviewMigrationComplete = false;
     }
   }
 
@@ -65,22 +74,35 @@ export class ProjectCompletionNotifications {
       if (pending.size) unfinished.set(path, pending);
     }
     try {
-      this.storage.setItem(this.storageKey, JSON.stringify({
-        version: 1,
+      const saved = {
+        version: this.reviewMigrationComplete ? 2 : 1,
         initialized: this.initialized,
-        unread: serializedProjectTaskMap(this.unread),
         unfinished: serializedProjectTaskMap(unfinished),
-      }));
+      };
+      if (!this.reviewMigrationComplete) {
+        saved.unread = serializedProjectTaskMap(this.legacyUnread);
+      }
+      this.storage.setItem(this.storageKey, JSON.stringify(saved));
     } catch {
       // Notifications are helpful but must never prevent the task list from refreshing.
     }
   }
 
+  pendingReviewMigrationTaskIds() {
+    return [...new Set([...this.legacyUnread.values()].flatMap((items) => [...items.keys()]))];
+  }
+
+  completeReviewMigration() {
+    this.reviewMigrationComplete = true;
+    this.legacyUnread = new Map();
+    this.persist();
+  }
+
   observe(tasks, { activeProjectPath = null, selectedTaskId = null } = {}) {
     const nextStatuses = new Map();
+    const nextUnread = new Map();
     const currentTaskIds = new Map();
     const completedTasks = [];
-    let changed = false;
     const activePath = normalizedProjectPath(activeProjectPath);
     const selectedId = Number(selectedTaskId);
 
@@ -100,38 +122,41 @@ export class ProjectCompletionNotifications {
         && previousStatus !== 'complete'
         && task.status === 'complete';
       if (justCompleted) completedTasks.push(task);
-      if (
-        justCompleted
-        && !activelyChecked
-      ) {
-        if (!this.unread.has(path)) this.unread.set(path, new Map());
-        if (!this.unread.get(path).has(id)) {
-          this.unread.get(path).set(id, true);
-          changed = true;
-        }
+      const hasDurableReviewState = Object.hasOwn(task, 'ready_for_review');
+      if (!hasDurableReviewState && justCompleted && !activelyChecked) {
+        if (!this.legacyUnread.has(path)) this.legacyUnread.set(path, new Map());
+        this.legacyUnread.get(path).set(id, true);
       }
-      if ((task.status !== 'complete' || activelyChecked) && this.remove(path, id, false)) {
-        changed = true;
+      if (task.status !== 'complete' || activelyChecked) {
+        this.removeLegacy(path, id);
+      }
+      const readyForReview = task.status === 'complete' && (
+        task.ready_for_review === true
+        || this.legacyUnread.get(path)?.has(id)
+        || (!hasDurableReviewState && this.unread.get(path)?.has(id))
+      );
+      if (readyForReview && !activelyChecked) {
+        if (!nextUnread.has(path)) nextUnread.set(path, new Map());
+        nextUnread.get(path).set(id, true);
       }
     }
 
-    for (const [path, items] of this.unread) {
+    for (const [path, items] of this.legacyUnread) {
       const existing = currentTaskIds.get(path) || new Set();
       for (const id of items.keys()) {
         if (!existing.has(id)) {
           items.delete(id);
-          changed = true;
         }
       }
-      if (!items.size) this.unread.delete(path);
+      if (!items.size) this.legacyUnread.delete(path);
     }
 
+    this.unread = nextUnread;
     this.previousStatuses = nextStatuses;
     if (!this.initialized) {
       this.initialized = true;
-      changed = true;
     }
-    if (changed || this.storage) this.persist();
+    this.persist();
     return completedTasks;
   }
 
@@ -145,6 +170,7 @@ export class ProjectCompletionNotifications {
     const count = this.unread.get(normalizedPath)?.size || 0;
     if (!count) return 0;
     this.unread.delete(normalizedPath);
+    this.legacyUnread.delete(normalizedPath);
     this.persist();
     return count;
   }
@@ -152,9 +178,19 @@ export class ProjectCompletionNotifications {
   remove(path, id, persist = true) {
     const normalizedPath = normalizedProjectPath(path);
     const items = this.unread.get(normalizedPath);
-    if (!items || !items.delete(Number(id))) return false;
-    if (!items.size) this.unread.delete(normalizedPath);
+    const removedUnread = items?.delete(Number(id)) || false;
+    if (items && !items.size) this.unread.delete(normalizedPath);
+    const removedLegacy = this.removeLegacy(normalizedPath, id);
+    if (!removedUnread && !removedLegacy) return false;
     if (persist) this.persist();
+    return true;
+  }
+
+  removeLegacy(path, id) {
+    const normalizedPath = normalizedProjectPath(path);
+    const items = this.legacyUnread.get(normalizedPath);
+    if (!items || !items.delete(Number(id))) return false;
+    if (!items.size) this.legacyUnread.delete(normalizedPath);
     return true;
   }
 
@@ -164,6 +200,10 @@ export class ProjectCompletionNotifications {
 
   includes(path, id) {
     return this.unread.get(normalizedProjectPath(path))?.has(Number(id)) || false;
+  }
+
+  taskIds(path) {
+    return [...(this.unread.get(normalizedProjectPath(path))?.keys() || [])];
   }
 
   latestTaskId(path) {

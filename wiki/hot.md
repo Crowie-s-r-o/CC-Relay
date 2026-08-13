@@ -6,6 +6,30 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 14: signed macOS and installed Windows builds now use the GitHub repository as an automatic update feed.** Updater-capable builds download a discovered release in the background, offer **Restart and install**, and otherwise install it on normal quit after Relay's graceful terminal and server shutdown. The macOS release now includes the desktop ZIP, ZIP blockmap, and `latest-mac.yml` beside the initial DMG; Windows portable remains manual. A real local v0.2.11 arm64 build produced a ZIP-selected feed, passed ZIP integrity and strict deep signature checks, and used the expected GitHub provider. The focused update and packaging set passes 48 tests, the complete suite passes 1,543 tests, `release:check` is green, and `git diff --check` is clean. Public v0.2.11 has no updater ZIP, so one final DMG install is unavoidable. Public CI macOS replacement also remains gated on configuring a stable signing identity. See [[desktop-updates]], [[desktop-update-discovery-review]], and [[open-source-releases]].
+
+> [!important]
+> **August 13: Ready for review state now survives desktop upgrades and restarts.** Completion
+> review ownership moved from port-scoped renderer `localStorage` into each task row in SQLite.
+> Every new transition to complete becomes durably unread, opening Task Activity or using
+> **Mark reviewed** persists acknowledgement, and both actions identify the exact completion so a
+> delayed request cannot hide a newer outcome. The additive migration baselines historical rows
+> as reviewed and imports still-reachable legacy unread IDs once before the first task snapshot.
+> Dynamic embedded ports and browser-origin changes can no longer erase the review stack. The
+> focused review suite passes 48 tests, the complete suite passes 1,544 tests, `release:check` is
+> green for v0.2.11, and `git diff --check` is clean. See
+> [[launchpad-completion-notifications]], [[task-history]], and [[desktop-updates]].
+
+> [!note]
+> **August 13: the responsive workspace no longer has a two-panel split state.** From 1101px through 1344px, Composer, Task queue, and Task activity stay together in one fluid row, with activity receiving the largest track. At 1100px and below they stack into one full-width lane. This keeps Task activity visible at common Electron zoom levels instead of placing it below a full-height Composer and Queue row. Isolated 1280 by 900 and 1024 by 900 Chrome previews confirmed both states, and the dedicated responsive contract passes. See [[interface-layout]], [[compact-interface-density]], and [[task-detail-modal-and-app-zoom]].
+
+> [!note]
+> **August 13: additional running-task rows now use the complete header width.** At wide desktop sizes the first task row remains between the CC Relay brand and header actions, while configured rows two and three span the full padded header below those fixed regions. Column-first task assignment, card widths, row heights, durable preferences, and compact breakpoints remain unchanged. The complete suite passes 1,537 tests and `release:check` is green. See [[interface-layout]], [[compact-interface-density]], and [[durable-ui-layout-preferences]].
+
+> [!note]
+> **August 13: provider runway labels and countdown readability were tightened.** The four visible labels are now **Cla 5h**, **Cla Week**, **Fable**, and **Cod Week**. Full provider and window names remain available to assistive technology, and the remaining-time countdown text increased from 7px to 9px. See [[provider-usage-monitor]] and [[interface-layout]].
+
 > [!note]
 > **August 13: every task run in a git repository now has a per-task Changes preview.** Task detail
 > gains a capability-gated **Changes** action that opens a changed-file tree with status letters and

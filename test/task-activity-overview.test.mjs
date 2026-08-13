@@ -210,7 +210,14 @@ test('the one-second refresh updates live overview durations without rebuilding 
 });
 
 test('the manifest has bounded scrolling, state cues, and a compact container layout', () => {
+  assert.match(style, /\.events-section \{[\s\S]*?container-type: size;/);
   assert.match(style, /\.event-overview-body \{[\s\S]*?max-height: min\(34vh, 320px\);[\s\S]*?overflow: auto;/);
+  assert.match(style, /\.activity-overview-plan \{[^}]*grid-template-rows: auto minmax\(0, 1fr\);[^}]*max-height: 25cqh;[^}]*overflow: hidden;/s);
+  assert.match(style, /\.activity-overview-plan > ol \{[^}]*min-height: 0;[^}]*overflow-y: auto;[^}]*overscroll-behavior: contain;/s);
+  assert.match(style, /\.activity-overview-plan > ol:focus-visible \{[^}]*outline: 2px solid var\(--term-blue\);/s);
+  assert.match(app, /const previousPlanScroller = resetDisclosures[\s\S]*?\.activity-overview-plan > ol/);
+  assert.match(app, /planScroller\.scrollTop = previousPlanScrollTop/);
+  assert.match(app, /if \(restorePlanFocus\) planScroller\.focus\(\{ preventScroll: true \}\);/);
   assert.match(style, /data-activity-state="running"[\s\S]*?color: var\(--term-cyan\)/);
   assert.match(style, /data-activity-state="unfinished"[\s\S]*?color: var\(--term-amber\)/);
   assert.match(style, /data-activity-state="attention"[\s\S]*?color: var\(--term-red\)/);

@@ -41,6 +41,7 @@
   --font-display: "Avenir Next", "Segoe UI", sans-serif;
   --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --desktop-titlebar-height: 0px;
   font-family: var(--font-body);
   color: var(--ink);
   background: var(--mist);
@@ -4089,9 +4090,9 @@ pre {
   overflow: hidden;
   color: var(--term-fg);
   font-family: var(--font-mono);
-  /* Query container so status-bar segments respond to the fixed detail-panel
-     width, not the viewport (the terminal lives in a ~418px column). */
-  container-type: inline-size;
+  /* Query container so the manifest responds to the terminal's rendered height
+     while status-bar segments still respond to its width, not the viewport. */
+  container-type: size;
   background:
     radial-gradient(1400px 900px at 82% -20%, rgb(122 162 247 / 6%), transparent 55%),
     radial-gradient(1000px 700px at -5% 120%, rgb(187 154 247 / 6%), transparent 55%),
@@ -4270,6 +4271,27 @@ pre {
   margin: 0;
   padding: 0;
   list-style: none;
+}
+
+.activity-overview-plan {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-self: start;
+  max-height: 25cqh;
+  overflow: hidden;
+}
+
+.activity-overview-plan > ol {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: #2a3350 transparent;
+  scrollbar-width: thin;
+}
+
+.activity-overview-plan > ol:focus-visible {
+  outline: 2px solid var(--term-blue);
+  outline-offset: -2px;
 }
 
 .activity-overview-item {
@@ -5162,13 +5184,6 @@ button.term-seg { border: 0; cursor: pointer; font: inherit; letter-spacing: inh
     height: calc(100vh - 330px);
   }
 
-  .workspace {
-    grid-template-columns: minmax(310px, 0.85fr) minmax(360px, 1fr);
-  }
-
-  .detail-panel {
-    grid-column: 1 / -1;
-  }
 }
 
 /* Compact task references and a flush, bottom-docked terminal. */
@@ -5599,7 +5614,7 @@ body {
 .project-dock-actions .button { min-height: 26px; padding: 4px 7px; border-radius: 7px; font-size: 9px; }
 
 .workspace {
-  height: calc(100vh - var(--app-header-height, 58px) - 44px); min-height: 0; padding: 12px 14px;
+  height: calc(100vh - var(--desktop-titlebar-height) - var(--app-header-height, 58px) - 44px); min-height: 0; padding: 12px 14px;
   grid-template-columns: var(--composer-width, 580px) 14px var(--queue-width, 500px) 14px minmax(420px, 1fr); gap: 0;
   background: var(--mist);
 }
@@ -5734,9 +5749,23 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
   .app-header { flex-wrap: wrap; padding: 9px 16px; }
   .header-status-strip { order: 3; width: 100%; }
   .project-dock { padding-inline: 16px; }
-  .workspace { height: auto; grid-template-columns: minmax(380px, 1fr) minmax(420px, 1fr); gap: 14px; }
+  /* Keep the complete operator surface visible until three genuinely usable
+     columns no longer fit. The former two-column stop hid Task activity below
+     a full-height Composer and Queue row at common desktop zoom levels. */
+  .workspace {
+    height: auto;
+    grid-template-columns: minmax(300px, .9fr) minmax(320px, 1fr) minmax(380px, 1.25fr);
+    gap: 12px;
+  }
   .workspace-resizer { display: none; }
-  .detail-panel { grid-column: 1 / -1; min-height: 700px; }
+  .detail-panel { grid-column: auto; min-height: 0; }
+}
+
+@media (max-width: 1100px) {
+  /* Compact workspaces use one clear reading lane. There is intentionally no
+     intermediate Composer and Queue split view. */
+  .workspace { grid-template-columns: minmax(0, 1fr); }
+  .detail-panel { grid-column: auto; }
 }
 
 @media (max-width: 900px) {
@@ -8813,21 +8842,25 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
 
 .header-running-monitor {
   position: relative;
-  display: grid;
   flex: 1 1 auto;
-  grid-template-columns: minmax(0, 1fr) 26px;
-  align-items: center;
-  gap: 5px;
   min-width: 0;
   margin: 0 4px;
 }
 
-.header-running-tasks {
+.header-running-primary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.header-running-tasks,
+.header-running-extra-tasks {
   display: grid;
   flex: 1 1 auto;
   grid-auto-columns: var(--running-task-width, 286px);
   grid-auto-flow: column;
-  grid-template-rows: repeat(var(--running-task-rows, 1), 44px);
   gap: 7px;
   min-width: 0;
   padding: 0;
@@ -8837,11 +8870,21 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   scrollbar-width: thin;
 }
 
-.header-running-tasks::-webkit-scrollbar {
+.header-running-tasks {
+  grid-template-rows: 44px;
+}
+
+.header-running-extra-tasks {
+  display: none;
+}
+
+.header-running-tasks::-webkit-scrollbar,
+.header-running-extra-tasks::-webkit-scrollbar {
   height: 4px;
 }
 
-.header-running-tasks::-webkit-scrollbar-thumb {
+.header-running-tasks::-webkit-scrollbar-thumb,
+.header-running-extra-tasks::-webkit-scrollbar-thumb {
   border-radius: 999px;
   background: #d6d1ef;
 }
@@ -8971,16 +9014,14 @@ html[data-header-position="bottom"] .running-task-settings-popover {
   bottom: calc(100% + 7px);
 }
 
-html[data-running-task-rows="1"] {
-  --running-task-rows: 1;
+html[data-running-task-rows="2"] .header-running-extra-tasks {
+  display: grid;
+  grid-template-rows: 44px;
 }
 
-html[data-running-task-rows="2"] {
-  --running-task-rows: 2;
-}
-
-html[data-running-task-rows="3"] {
-  --running-task-rows: 3;
+html[data-running-task-rows="3"] .header-running-extra-tasks {
+  display: grid;
+  grid-template-rows: repeat(2, 44px);
 }
 
 html[data-running-task-width="230"] {
@@ -9105,22 +9146,65 @@ html[data-running-task-width="360"] {
     padding-block: 7px;
   }
 
+  html[data-running-task-rows="2"] .app-header,
+  html[data-running-task-rows="3"] .app-header {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr) max-content;
+    column-gap: 18px;
+    row-gap: 7px;
+    align-items: center;
+  }
+
   html[data-running-task-rows="2"] .app-header {
     height: 109px;
     min-height: 109px;
+    grid-template-rows: repeat(2, 44px);
   }
 
   html[data-running-task-rows="3"] .app-header {
     height: 160px;
     min-height: 160px;
+    grid-template-rows: repeat(3, 44px);
+  }
+
+  html[data-running-task-rows="2"] .brand-lockup,
+  html[data-running-task-rows="3"] .brand-lockup {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  html[data-running-task-rows="2"] .header-actions,
+  html[data-running-task-rows="3"] .header-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  html[data-running-task-rows="2"] .header-running-monitor,
+  html[data-running-task-rows="3"] .header-running-monitor {
+    display: contents;
+  }
+
+  html[data-running-task-rows="2"] .header-running-primary,
+  html[data-running-task-rows="3"] .header-running-primary {
+    grid-column: 2;
+    grid-row: 1;
+    margin-inline: 4px;
+  }
+
+  html[data-running-task-rows="2"] .header-running-extra-tasks,
+  html[data-running-task-rows="3"] .header-running-extra-tasks {
+    grid-column: 1 / -1;
+    grid-row: 2 / -1;
   }
 }
 
 @media (max-width: 1344px) {
   .header-running-monitor {
     order: 3;
+    display: grid;
     flex-basis: 100%;
     width: 100%;
+    gap: 7px;
     margin: 1px 0 0;
   }
 
@@ -9130,7 +9214,8 @@ html[data-running-task-width="360"] {
 }
 
 @media (max-width: 760px) {
-  .header-running-tasks {
+  .header-running-tasks,
+  .header-running-extra-tasks {
     grid-auto-columns: min(var(--running-task-width, 286px), calc(100vw - 69px));
   }
 }
@@ -12267,11 +12352,13 @@ html[data-theme="dark"] .task-card[data-status="cancelled"] .task-duration::befo
   background: var(--app-text-muted);
 }
 
-html[data-theme="dark"] .header-running-tasks {
+html[data-theme="dark"] .header-running-tasks,
+html[data-theme="dark"] .header-running-extra-tasks {
   scrollbar-color: var(--app-border-strong) transparent;
 }
 
-html[data-theme="dark"] .header-running-tasks::-webkit-scrollbar-thumb {
+html[data-theme="dark"] .header-running-tasks::-webkit-scrollbar-thumb,
+html[data-theme="dark"] .header-running-extra-tasks::-webkit-scrollbar-thumb {
   background: var(--app-border-strong);
 }
 
@@ -14712,6 +14799,116 @@ html[data-theme="dark"] .desktop-update-modal[data-state="error"] .desktop-updat
   }
 }
 
+/* The macOS Electron shell keeps native traffic lights while the draggable title
+   region carries the same Crowie mark as the Dock, splash, and in-app header. */
+.desktop-titlebar {
+  display: none;
+}
+
+html[data-desktop-titlebar="true"] {
+  --desktop-titlebar-height: 36px;
+}
+
+html[data-desktop-titlebar="true"] body {
+  display: grid;
+  grid-template-areas:
+    "titlebar"
+    "monitor"
+    "projects"
+    "workspace";
+  grid-template-rows: var(--desktop-titlebar-height) auto auto minmax(0, 1fr);
+  height: 100vh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+html[data-desktop-titlebar="true"] .desktop-titlebar {
+  position: relative;
+  z-index: 200;
+  grid-area: titlebar;
+  display: flex;
+  height: var(--desktop-titlebar-height);
+  align-items: center;
+  justify-content: center;
+  padding: 0 76px;
+  border-bottom: 1px solid #d7dce0;
+  color: #5d6369;
+  background: #f0f2f4;
+  box-shadow: inset 0 1px rgb(255 255 255 / 55%);
+  user-select: none;
+  -webkit-app-region: drag;
+}
+
+html[data-desktop-titlebar="true"] .app-header {
+  grid-area: monitor;
+}
+
+html[data-desktop-titlebar="true"] .project-dock {
+  grid-area: projects;
+}
+
+html[data-desktop-titlebar="true"] .workspace {
+  grid-area: workspace;
+  height: auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.desktop-titlebar-mark {
+  display: block;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+html[data-theme="dark"] .desktop-titlebar {
+  border-bottom-color: #111619;
+  color: #aeb4b8;
+  background: #20272b;
+  box-shadow: inset 0 1px rgb(255 255 255 / 4%);
+}
+
+html[data-theme="dark"] .desktop-titlebar-mark {
+  filter: invert(1) sepia(.1) saturate(.5) hue-rotate(180deg) brightness(1.25);
+}
+
+html[data-desktop-titlebar="true"][data-header-position="bottom"] body {
+  grid-template-areas:
+    "titlebar"
+    "projects"
+    "workspace"
+    "monitor";
+  grid-template-rows: var(--desktop-titlebar-height) auto minmax(0, 1fr) auto;
+  padding-bottom: 0;
+}
+
+html[data-desktop-titlebar="true"][data-header-position="bottom"] .app-header {
+  position: static;
+  z-index: auto;
+  right: auto;
+  bottom: auto;
+  left: auto;
+}
+
+@media (max-width: 1344px) {
+  html[data-desktop-titlebar="true"] .workspace {
+    overflow: auto;
+    overscroll-behavior: contain;
+  }
+}
+
+@media (min-width: 761px) and (max-width: 1344px) {
+  html[data-desktop-titlebar="true"] .workspace {
+    grid-auto-rows: 100%;
+  }
+
+  html[data-desktop-titlebar="true"] .detail-panel {
+    min-height: 0;
+  }
+}
+
 /* Crowie brand experience: the header lockup opens a focused company profile. */
 .brand-lockup {
   padding: 4px 6px 4px 4px;
@@ -15118,7 +15315,7 @@ html[data-theme="dark"] .about-footer strong {
   overflow: hidden;
   color: #747e8f;
   font-family: var(--font-mono);
-  font-size: 7px;
+  font-size: 9px;
   font-weight: 650;
   line-height: 1;
   text-overflow: ellipsis;

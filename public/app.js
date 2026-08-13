@@ -16,6 +16,7 @@ import {
   subAgentEntryState,
 } from './event-stream.js';
 import { taskDurationLabel, formatElapsedDuration, taskLifecycleDates } from './task-time.js';
+import { runningTaskRailGroups } from './running-task-layout.js';
 import {
   refreshActivityOverviewDurations,
   taskActivityOverview,
@@ -824,7 +825,9 @@ const elements = {
   plannerPlanList: document.querySelector('#planner-plan-list'),
   plannerDetail: document.querySelector('#planner-detail'),
   plannerMessage: document.querySelector('#planner-message'),
+  headerRunningMonitor: document.querySelector('.header-running-monitor'),
   headerRunningTasks: document.querySelector('#header-running-tasks'),
+  headerRunningExtraTasks: document.querySelector('#header-running-extra-tasks'),
   runningTaskSettings: document.querySelector('#running-task-settings'),
   runningTaskRows: document.querySelector('#running-task-rows'),
   runningTaskWidth: document.querySelector('#running-task-width'),
@@ -1137,6 +1140,7 @@ function setRunningTaskLayout(value, { persist = true } = {}) {
   document.documentElement.dataset.runningTaskWidth = String(state.runningTaskLayout.width);
   elements.runningTaskRows.value = String(state.runningTaskLayout.rows);
   elements.runningTaskWidth.value = String(state.runningTaskLayout.width);
+  renderHeaderRunningTasks();
   if (persist) queueUiPreferencesSave();
   requestAnimationFrame(syncHeaderHeight);
 }
@@ -1179,6 +1183,20 @@ async function restoreUiPreferences() {
     applyTerminalHeight();
   } catch (error) {
     console.warn('Could not restore UI layout preferences.', error);
+  }
+}
+
+async function migrateCompletionReviews() {
+  try {
+    await api('/api/tasks/completion-reviews/migrate', {
+      method: 'POST',
+      body: JSON.stringify({
+        unreadTaskIds: state.projectCompletionNotifications.pendingReviewMigrationTaskIds(),
+      }),
+    });
+    state.projectCompletionNotifications.completeReviewMigration();
+  } catch (error) {
+    console.warn('Could not migrate completion review state.', error);
   }
 }
 
@@ -3233,6 +3251,12 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     rememberEventOutputScroll();
   }
   const previousScrollTop = elements.detailEvents.scrollTop;
+  const previousOverviewScrollTop = resetDisclosures ? 0 : elements.eventOverviewBody.scrollTop;
+  const previousPlanScroller = resetDisclosures
+    ? null
+    : elements.eventOverviewBody.querySelector('.activity-overview-plan > ol');
+  const previousPlanScrollTop = previousPlanScroller?.scrollTop || 0;
+  const restorePlanFocus = document.activeElement === previousPlanScroller;
   const grouped = groupEventEntries(events);
   const visible = filterEventEntries(grouped, state.eventFilter);
   // A turn that is no longer running owns no live sub-agents, however its last notification
@@ -3277,6 +3301,12 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     <span class="${stats.errors ? 'has-errors' : ''}"><b>${stats.errors}</b><small>errors</small></span>
   `;
   elements.eventOverviewBody.innerHTML = overview.body;
+  elements.eventOverviewBody.scrollTop = previousOverviewScrollTop;
+  const planScroller = elements.eventOverviewBody.querySelector('.activity-overview-plan > ol');
+  if (planScroller) {
+    planScroller.scrollTop = previousPlanScrollTop;
+    if (restorePlanFocus) planScroller.focus({ preventScroll: true });
+  }
   elements.copyEventsButton.disabled = visible.length === 0;
   elements.detailEvents.innerHTML = visible.length === 0
     ? `<div class="events-empty"><span aria-hidden="true">⌁</span><strong>No ${escapeHtml(state.eventFilter)} activity yet</strong><small>New matching signals will appear here.</small></div>`
@@ -4789,7 +4819,10 @@ function isActiveProjectPaused() {
 function renderHeaderRunningTasks() {
   const running = state.runningTasks || [];
   if (running.length === 0) {
-    if (elements.headerRunningTasks.dataset.signature === 'empty') return;
+    if (
+      elements.headerRunningTasks.dataset.signature === 'empty'
+      && elements.headerRunningExtraTasks.childElementCount === 0
+    ) return;
     elements.headerRunningTasks.dataset.signature = 'empty';
     elements.headerRunningTasks.innerHTML = `
       <div class="header-running-empty">
@@ -4797,26 +4830,34 @@ function renderHeaderRunningTasks() {
         <span>No tasks running</span>
       </div>
     `;
+    elements.headerRunningExtraTasks.replaceChildren();
     return;
   }
 
-  const signature = JSON.stringify(running.map((task) => [
-    task.id,
-    task.repo_path,
-    task.thread_id,
-    task.thread_name,
-    task.title,
-    task.prompt,
-    task.latestAgentUpdate?.provider,
-    task.latestAgentUpdate?.text,
-    taskRelayLabel(task),
-    projectIdentityCustomColor(task.repo_path),
-  ]));
+  const signature = JSON.stringify([
+    state.runningTaskLayout.rows,
+    running.map((task) => [
+      task.id,
+      task.repo_path,
+      task.thread_id,
+      task.thread_name,
+      task.title,
+      task.prompt,
+      task.latestAgentUpdate?.provider,
+      task.latestAgentUpdate?.text,
+      taskRelayLabel(task),
+      projectIdentityCustomColor(task.repo_path),
+    ]),
+  ]);
   if (elements.headerRunningTasks.dataset.signature === signature) return;
-  const previousScrollLeft = elements.headerRunningTasks.scrollLeft;
+  const previousPrimaryScrollLeft = elements.headerRunningTasks.scrollLeft;
+  const previousExtraScrollLeft = elements.headerRunningExtraTasks.scrollLeft;
   const focusedTaskId = document.activeElement?.closest?.('[data-running-task-id]')?.dataset.runningTaskId;
-  elements.headerRunningTasks.dataset.signature = signature;
-  elements.headerRunningTasks.innerHTML = running.map((task) => {
+  const { primary: primaryTasks, extra: extraTasks } = runningTaskRailGroups(
+    running,
+    state.runningTaskLayout.rows,
+  );
+  const taskMarkup = (task) => {
     const update = task.latestAgentUpdate;
     const updateProvider = update?.provider || taskProvider(task);
     const project = workspaceName(task.repo_path);
@@ -4843,10 +4884,14 @@ function renderHeaderRunningTasks() {
         </span>
       </button>
     `;
-  }).join('');
-  elements.headerRunningTasks.scrollLeft = previousScrollLeft;
+  };
+  elements.headerRunningTasks.dataset.signature = signature;
+  elements.headerRunningTasks.innerHTML = primaryTasks.map(taskMarkup).join('');
+  elements.headerRunningExtraTasks.innerHTML = extraTasks.map(taskMarkup).join('');
+  elements.headerRunningTasks.scrollLeft = previousPrimaryScrollLeft;
+  elements.headerRunningExtraTasks.scrollLeft = previousExtraScrollLeft;
   if (focusedTaskId) {
-    elements.headerRunningTasks
+    elements.headerRunningMonitor
       .querySelector(`[data-running-task-id="${focusedTaskId}"]`)
       ?.focus({ preventScroll: true });
   }
@@ -5482,7 +5527,7 @@ function refreshTaskDurations() {
     }
   }
   const runningById = new Map(state.runningTasks.map((task) => [task.id, task]));
-  for (const element of elements.headerRunningTasks.querySelectorAll('[data-header-running-duration]')) {
+  for (const element of elements.headerRunningMonitor.querySelectorAll('[data-header-running-duration]')) {
     const task = runningById.get(Number(element.dataset.headerRunningDuration));
     if (task) {
       element.textContent = taskDurationLabel(task);
@@ -6468,9 +6513,30 @@ async function selectTask(taskId) {
   if (requestSequence !== state.taskLoadSequence || state.selectedTaskId !== taskId) return;
   const sessionSurface = isDirectSessionTask(task);
   const manualSessionSurface = isManualSessionTask(task);
-  if (state.projectCompletionNotifications.acknowledge(task)) {
-    renderProjects();
-    renderTasks();
+  const reviewPending = task.ready_for_review === true
+    || state.projectCompletionNotifications.includes(task.repo_path, task.id);
+  if (reviewPending) {
+    try {
+      const review = await api(`/api/tasks/${task.id}/review`, {
+        method: 'POST',
+        body: JSON.stringify({ finishedAt: task.finished_at ?? null }),
+      });
+      if (review.task) {
+        Object.assign(task, review.task);
+        const snapshotTask = state.tasks.find((item) => item.id === task.id);
+        if (snapshotTask) Object.assign(snapshotTask, review.task);
+      }
+      if (
+        review.task?.ready_for_review !== true
+        && state.projectCompletionNotifications.acknowledge(task)
+      ) {
+        renderProjects();
+        renderTasks();
+      }
+    } catch (error) {
+      console.warn(`Could not mark task ${task.id} as reviewed.`, error);
+    }
+    if (requestSequence !== state.taskLoadSequence || state.selectedTaskId !== taskId) return;
   }
   elements.emptyDetail.hidden = true;
   elements.taskDetail.hidden = false;
@@ -9523,12 +9589,25 @@ elements.form.addEventListener('submit', async (event) => {
 });
 
 elements.standupButton.addEventListener('click', openStandup);
-elements.clearTaskNotificationsButton.addEventListener('click', () => {
-  const cleared = state.projectCompletionNotifications.acknowledgeProject(state.activeProjectPath);
-  if (!cleared) return;
-  renderProjects();
-  renderTasks();
-  elements.queueSummary.textContent = `${cleared} task${cleared === 1 ? '' : 's'} marked as reviewed`;
+elements.clearTaskNotificationsButton.addEventListener('click', async () => {
+  const reviews = state.projectCompletionNotifications.taskIds(state.activeProjectPath)
+    .map((taskId) => state.tasks.find((task) => task.id === taskId))
+    .filter(Boolean)
+    .map((task) => ({ taskId: task.id, finishedAt: task.finished_at ?? null }));
+  if (!reviews.length) return;
+  elements.clearTaskNotificationsButton.disabled = true;
+  try {
+    const result = await api('/api/tasks/review-project', {
+      method: 'POST',
+      body: JSON.stringify({ projectPath: state.activeProjectPath, reviews }),
+    });
+    await load({ fresh: true });
+    const count = Number(result.reviewedCount) || 0;
+    elements.queueSummary.textContent = `${count} task${count === 1 ? '' : 's'} marked as reviewed`;
+  } catch (error) {
+    elements.queueSummary.textContent = error.message;
+    elements.clearTaskNotificationsButton.disabled = false;
+  }
 });
 elements.taskSearchInput.addEventListener('input', () => {
   state.taskSearchSequence += 1;
@@ -10340,7 +10419,7 @@ if ('ResizeObserver' in window) {
 syncHeaderHeight();
 setRunningTaskLayout(state.runningTaskLayout, { persist: false });
 
-elements.headerRunningTasks.addEventListener('click', async (event) => {
+elements.headerRunningMonitor.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-running-task-id]');
   if (!button) return;
   const taskId = Number(button.dataset.runningTaskId);
@@ -10470,6 +10549,8 @@ elements.detailEvents.addEventListener('toggle', (event) => {
 
 renderCompletionAlertSettings();
 const uiPreferencesReady = restoreUiPreferences();
+const completionReviewsReady = migrateCompletionReviews();
+const rendererStateReady = Promise.all([uiPreferencesReady, completionReviewsReady]);
 const events = new EventSource('/api/events');
 let refreshTimer = null;
 events.addEventListener('change', (event) => {
@@ -10479,7 +10560,7 @@ events.addEventListener('change', (event) => {
     try {
       change = JSON.parse(event.data);
     } catch {}
-    const operations = [uiPreferencesReady.then(() => load())];
+    const operations = [rendererStateReady.then(() => load())];
     if (change.threads) {
       operations.push(loadThreads());
     }
@@ -10498,7 +10579,7 @@ renderPlanControls();
 renderTurboControls();
 renderAttachmentComposer();
 updateSubmitState();
-Promise.all([uiPreferencesReady, uiPreferencesReady.then(() => load()), loadThreads({ silent: false }), loadModels('codex'), loadModels('claude'), loadTerminalDisplays()]).catch((error) => {
+Promise.all([rendererStateReady, rendererStateReady.then(() => load()), loadThreads({ silent: false }), loadModels('codex'), loadModels('claude'), loadTerminalDisplays()]).catch((error) => {
   elements.queueSummary.textContent = error.message;
 });
 

@@ -103,7 +103,8 @@ test('renderer restores and saves layout through the durable preferences API', (
   assert.match(app, /setHeaderPosition\(preferences\.headerPosition, \{ persist: false \}\)/);
   assert.match(app, /setRunningTaskLayout\(preferences\.runningTaskLayout, \{ persist: false \}\)/);
   assert.match(app, /const uiPreferencesReady = restoreUiPreferences\(\)/);
-  assert.match(app, /uiPreferencesReady\.then\(\(\) => load\(\)\)/);
+  assert.match(app, /const rendererStateReady = Promise\.all\(\[uiPreferencesReady, completionReviewsReady\]\)/);
+  assert.match(app, /rendererStateReady\.then\(\(\) => load\(\)\)/);
   assert.match(server, /request\.method === 'GET' && pathname === '\/api\/ui-preferences'/);
   assert.match(server, /request\.method === 'PATCH' && pathname === '\/api\/ui-preferences'/);
 });

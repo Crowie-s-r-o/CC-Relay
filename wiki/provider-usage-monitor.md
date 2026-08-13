@@ -61,6 +61,8 @@ Provider status is `checking`, `ready`, `stale`, or `unavailable`. A missing ind
 
 `public/provider-usage.js` owns the pure presentation mapping. Values below 50 percent are green, values from 50 through 74 percent are yellow, values from 75 through 89 percent are orange, and values from 90 through 100 percent are red. The text percentage remains visible beside every bar, reset details live in its title, and stale values say **Last known value**.
 
+The visible compact labels are **Cla 5h**, **Cla Week**, **Fable**, and **Cod Week**. Their full provider and window names remain on the accessible progress bars and in reset tooltips. Reset countdowns use 9px monospace text so the remaining time stays readable within the fixed header instrument.
+
 Each meter also shows a live reset countdown below its bar. The five-hour Claude window uses hours and minutes, such as `2h 20m`; the three weekly windows use days and hours, such as `3d 14h`. Codex supplies an epoch timestamp directly. Claude supplies localized English reset copy, so the pure presentation helper parses the known time-only and `Mon DD at time` forms with their IANA timezone suffix. If a future Claude version returns an unknown label shape, the exact reset remains in the tooltip and the countdown stays blank rather than guessing. The normal two-second visible-page status render keeps the countdown current without adding a timer or another provider request.
 
 > [!note]

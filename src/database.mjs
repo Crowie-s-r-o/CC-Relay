@@ -45,6 +45,8 @@ const TASK_FIELDS = new Set([
   'exit_code',
 ]);
 
+const COMPLETION_REVIEW_MIGRATION_SETTING = 'completion-review-state-v1-migrated';
+
 function now() {
   return new Date().toISOString();
 }
@@ -58,6 +60,7 @@ function normalizeTask(row) {
     turbo_json: encodedTurbo,
     terminal_layout_json: encodedTerminalLayout,
     diff_state_json: encodedDiffState,
+    completion_reviewed: completionReviewed,
     submission_id: _submissionId,
     clear_context: _legacyClearContext,
     ...task
@@ -77,6 +80,8 @@ function normalizeTask(row) {
     attachments: Array.isArray(attachments) ? attachments : [],
     turbo,
     terminal_layout: terminalLayout,
+    ready_for_review: task.status === 'complete'
+      && (completionReviewed === 0 || completionReviewed === false),
     // Null for a legacy row, a task that never started, and any row whose stored state cannot
     // be parsed. The diff preview treats all three the same way.
     diffState: normalizeDiffState(encodedDiffState),
@@ -210,6 +215,7 @@ export class RelayDatabase {
         created_at TEXT NOT NULL,
         started_at TEXT,
         finished_at TEXT,
+        completion_reviewed INTEGER NOT NULL DEFAULT 1,
         session_id TEXT,
         result TEXT,
         error TEXT,
@@ -362,6 +368,7 @@ export class RelayDatabase {
     this.ensureColumn('turbo_json', 'TEXT');
     this.ensureColumn('attachments_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn('diff_state_json', 'TEXT');
+    this.ensureColumn('completion_reviewed', 'INTEGER NOT NULL DEFAULT 1');
     this.ensureColumn('prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('import_source', 'TEXT');
     this.ensureColumn('import_task_id', 'INTEGER');
@@ -692,7 +699,22 @@ export class RelayDatabase {
   }
 
   updateTask(id, changes) {
-    const entries = Object.entries(changes).filter(([key]) => TASK_FIELDS.has(key));
+    const persistedChanges = Object.fromEntries(
+      Object.entries(changes).filter(([key]) => TASK_FIELDS.has(key)),
+    );
+    if (Object.hasOwn(persistedChanges, 'status')) {
+      const currentStatus = this.database.prepare(
+        `SELECT status FROM tasks WHERE id = ?`,
+      ).get(id)?.status;
+      if (persistedChanges.status === 'complete') {
+        if (currentStatus && currentStatus !== 'complete') {
+          persistedChanges.completion_reviewed = 0;
+        }
+      } else {
+        persistedChanges.completion_reviewed = 1;
+      }
+    }
+    const entries = Object.entries(persistedChanges);
     if (entries.length === 0) {
       return this.getTask(id);
     }
@@ -701,6 +723,92 @@ export class RelayDatabase {
     const values = entries.map(([, value]) => value);
     this.database.prepare(`UPDATE tasks SET ${assignments} WHERE id = ?`).run(...values, id);
     return this.getTask(id);
+  }
+
+  markTaskReviewed(id, expectedFinishedAt = undefined) {
+    const exactCompletion = expectedFinishedAt !== undefined;
+    const result = this.database.prepare(`
+      UPDATE tasks
+      SET completion_reviewed = 1
+      WHERE id = ?
+        AND status = 'complete'
+        AND completion_reviewed = 0
+        ${exactCompletion ? 'AND finished_at IS ?' : ''}
+    `).run(...(exactCompletion ? [id, expectedFinishedAt] : [id]));
+    return {
+      reviewed: result.changes > 0,
+      task: this.getTask(id),
+    };
+  }
+
+  markProjectTasksReviewed(repoPath, reviews = []) {
+    let inTransaction = false;
+    try {
+      this.database.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
+      const review = this.database.prepare(`
+        UPDATE tasks
+        SET completion_reviewed = 1
+        WHERE id = ?
+          AND repo_path = ?
+          AND status = 'complete'
+          AND completion_reviewed = 0
+          AND finished_at IS ?
+      `);
+      let reviewedCount = 0;
+      for (const item of reviews) {
+        reviewedCount += Number(review.run(item.taskId, repoPath, item.finishedAt).changes);
+      }
+      this.database.exec('COMMIT');
+      inTransaction = false;
+      return reviewedCount;
+    } catch (error) {
+      if (inTransaction) {
+        try {
+          this.database.exec('ROLLBACK');
+        } catch {}
+      }
+      throw error;
+    }
+  }
+
+  migrateCompletionReviews(unreadTaskIds = []) {
+    let inTransaction = false;
+    try {
+      this.database.exec('BEGIN IMMEDIATE');
+      inTransaction = true;
+      const migrated = this.database.prepare(
+        `SELECT value FROM settings WHERE key = ?`,
+      ).get(COMPLETION_REVIEW_MIGRATION_SETTING);
+      if (migrated) {
+        this.database.exec('COMMIT');
+        inTransaction = false;
+        return { migrated: false, restored: 0 };
+      }
+
+      const restore = this.database.prepare(`
+        UPDATE tasks
+        SET completion_reviewed = 0
+        WHERE id = ? AND status = 'complete'
+      `);
+      let restored = 0;
+      for (const id of unreadTaskIds) {
+        restored += Number(restore.run(id).changes);
+      }
+      this.database.prepare(`
+        INSERT INTO settings (key, value) VALUES (?, ?)
+      `).run(COMPLETION_REVIEW_MIGRATION_SETTING, now());
+      this.database.exec('COMMIT');
+      inTransaction = false;
+      return { migrated: true, restored };
+    } catch (error) {
+      if (inTransaction) {
+        try {
+          this.database.exec('ROLLBACK');
+        } catch {}
+      }
+      throw error;
+    }
   }
 
   // How many other tasks ran in the same working tree while this one held it. A git diff cannot

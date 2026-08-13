@@ -81,7 +81,7 @@ export function desktopUpdatePresentation(update) {
       title: `CC Relay v${version} is ready to install. Open update details.`,
       statusLabel: 'Ready to install',
       modalTitle: 'Ready when you are',
-      modalMessage: `CC Relay v${version} has finished downloading. Use the desktop restart prompt when you are ready to install it.`,
+      modalMessage: `CC Relay v${version} has finished downloading. Restart now, or quit normally and it will install automatically.`,
     };
   }
   return {
@@ -95,7 +95,7 @@ export function desktopUpdatePresentation(update) {
     modalMessage: status === 'error'
       ? `Automatic updating could not continue for CC Relay v${version}. Open the official release to review or install it manually.`
       : update?.automaticUpdate === true
-        ? `CC Relay v${version} is available. The desktop prompt can download it, and you can review the release before deciding.`
+        ? `CC Relay v${version} is available and will download automatically in the background.`
         : `CC Relay v${version} is available. Open the official release to download and install it manually.`,
   };
 }

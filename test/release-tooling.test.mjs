@@ -60,7 +60,7 @@ test('the desktop build workflow runs the suite on macOS and never skips the rel
   assert.doesNotMatch(deploy, /GitHub Actions will build and publish/);
 });
 
-test('GitHub Releases publish a DMG-only macOS package', () => {
+test('GitHub Releases publish the macOS installer and automatic update feed', () => {
   const builder = readFileSync(join(projectRoot, 'electron-builder.yml'), 'utf8');
   const workflow = readFileSync(
     join(projectRoot, '.github', 'workflows', 'build-desktop.yml'),
@@ -72,12 +72,9 @@ test('GitHub Releases publish a DMG-only macOS package', () => {
   assert.match(builder, /^\s*- LICENSE$/m);
   assert.match(builder, /^\s*- THIRD_PARTY_NOTICES\.md$/m);
   const macConfig = builder.match(/^mac:\n([\s\S]*?)^win:/m)?.[1] || '';
-  assert.match(macConfig, /^ {2}target:\n {4}- dmg$/m);
-  assert.doesNotMatch(macConfig, /^\s+- zip$/m);
+  assert.match(macConfig, /^ {2}target:\n {4}- dmg\n {4}- zip$/m);
   assert.doesNotMatch(workflow, /(?:path|files): dist\/\*\*/);
-  assert.doesNotMatch(workflow, /dist\/\*\.zip/);
-  assert.doesNotMatch(workflow, /latest(?:\*|-mac)\.yml/);
-  for (const pattern of ['*.dmg', '*.exe', '*.blockmap', 'latest.yml']) {
+  for (const pattern of ['*.dmg', '*.zip', '*.exe', '*.blockmap', 'latest.yml', 'latest-mac.yml']) {
     assert.equal(workflow.split(`dist/${pattern}`).length, 3);
   }
 });
@@ -108,6 +105,8 @@ test('the public README leads with platform truth, download, and the six core be
   assert.match(getStarted, /latest GitHub Release/);
   assert.match(getStarted, /-Setup\.exe/);
   assert.match(getStarted, /-Portable\.exe/);
+  assert.match(getStarted, /Updates download in the background/);
+  assert.match(getStarted, /first macOS release that contains the automatic updater/);
   assert.doesNotMatch(getStarted, /git clone|npm (?:ci|start|run desktop)|Node\.js 24\+/);
   assert.match(development, /git clone https:\/\/github\.com\/Crowie-s-r-o\/CC-Relay\.git/);
   assert.match(development, /npm start/);

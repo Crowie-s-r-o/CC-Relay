@@ -14,6 +14,7 @@ CC Relay uses a high-density desktop shell that keeps monitoring and project sel
 ## Header
 
 - The brand mark is `28px`, header actions are `32px`, and global running-task cards default to `286px` wide. The monitor cog can switch cards to `230px` or `360px` and expand the rail to two or three 44px rows.
+- On wide multi-row layouts, row one stays between the brand and action cluster. Rows two and three span the complete padded header width, reclaiming the otherwise empty space below both fixed header regions.
 - A running card still exposes metadata, prompt, and latest response, but uses tighter type and a `9px` radius.
 - The empty running state remains a content-sized chip.
 - At and below `1344px`, the running rail may wrap to its own row.
@@ -58,7 +59,9 @@ All project accents retain at least 4.5:1 contrast both on the strongest project
 - `public/style.css`
 - `public/index.html`
 - `public/app.js`
+- `public/running-task-layout.js`
 - `test/project-layout.test.mjs`
+- `test/running-task-layout.test.mjs`
 - `test/project-colors.test.mjs`
 - `test/semantic-palette.test.mjs`
 - `test/composer-workflows.test.mjs`
@@ -91,6 +94,8 @@ See [[interface-layout]], [[project-workspaces]], and [[semantic-palette-review]
 ## Compact queue cards and panel priority
 
 The wide-screen workspace treats Task queue as a compact index and Task activity as the primary working surface. The default columns are a 580px Composer, a 500px Task queue, and a flexible Task activity panel that receives all remaining width. Composer clamps to a 400px minimum, including for older saved layouts. The right separator now resizes the queue directly. Older saved Composer and Activity widths migrate by deriving the equivalent queue width on first load.
+
+At medium desktop widths, the responsive grid keeps all three panels visible with fluid 300px, 320px, and 380px minimum tracks. At 1100px and below it switches straight to one full-width column. There is no two-panel Composer and Queue state, because that state used the complete first viewport row while pushing Task activity below it at common Electron zoom levels. See [[interface-layout]] and [[task-detail-modal-and-app-zoom]].
 
 Queue cards use 11px by 12px padding and an 8px list gap. Names remain two lines. A distinct prompt preview is capped at two lines, while an automatically prompt-derived name suppresses the repeated preview. The footer keeps owner, runtime, start, and completion evidence in a tighter grid. Manual terminal-session cards use the same geometry with their mode bar aligned to the reduced padding.
 

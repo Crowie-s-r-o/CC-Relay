@@ -84,14 +84,14 @@ try {
     throw new Error('electron-builder.yml must give the Windows portable build a unique name.');
   }
   const macConfig = builder.match(/^mac:\n([\s\S]*?)^win:/m)?.[1] || '';
-  if (!/^ {2}target:\n {4}- dmg$/m.test(macConfig) || /^\s+- zip$/m.test(macConfig)) {
-    throw new Error('electron-builder.yml must build the macOS DMG without a ZIP target.');
+  if (!/^ {2}target:\n {4}- dmg\n {4}- zip$/m.test(macConfig)) {
+    throw new Error('electron-builder.yml must build both macOS DMG and ZIP targets.');
   }
-  if (/dist\/\*\.zip/.test(desktopWorkflow)) {
-    throw new Error('The desktop release workflow must not publish ZIP artifacts.');
+  if (desktopWorkflow.split('dist/*.zip').length !== 3) {
+    throw new Error('The desktop release workflow must upload and publish the macOS ZIP updater.');
   }
-  if (/latest\*\.yml/.test(desktopWorkflow) || /latest-mac\.yml/.test(desktopWorkflow)) {
-    throw new Error('The desktop release workflow must publish only the Windows latest.yml feed.');
+  if (desktopWorkflow.split('dist/latest-mac.yml').length !== 3) {
+    throw new Error('The desktop release workflow must upload and publish latest-mac.yml.');
   }
   for (const packagedNotice of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
     if (!new RegExp(`^\\s*- ${packagedNotice.replace('.', '\\.')}$`, 'm').test(builder)) {

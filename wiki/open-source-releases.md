@@ -16,9 +16,8 @@ CC Relay's public home is `https://github.com/Crowie-s-r-o/CC-Relay`. The curren
 The root [[../README|README]] is the compact public front door. It leads with the platform warning, latest-release download, and `docs/assets/cc-relay-overview.png`, then keeps six numbered benefits, packaged setup, the product loop, a two-sentence safety model, development, contributing, and licensing concise. The selected image is the later `OnPaste.20260812-005444.png` attachment; the earlier screenshot was replaced and is not retained as a second repository asset.
 
 > [!important]
-> **August 12: the README no longer documents updates or release deployment.** The auto-update
-> matrix lives in [[desktop-updates]] and the `npm run deploy` contract lives in this page, so the
-> public front door does not repeat either. Safety collapsed to the caution callout plus one
+> **August 14: the README carries only the packaged update promise, not the implementation matrix or release deployment procedure.** The detailed auto-update
+> contract lives in [[desktop-updates]] and the `npm run deploy` contract lives in this page. Safety collapsed to the caution callout plus one
 > sentence on loopback binding, CLI-held credentials, local task data, and proven terminal
 > ownership. **The loop** now sells the day-to-day experience: parallel projects, queue-on-capacity,
 > completion sound and Launchpad notifications, colorized output with the Messages filter, and a
@@ -34,7 +33,7 @@ pins the PolyForm license sentence and forbids the phrase "open source". Trim th
 checks, not around them.
 
 > [!important]
-> **Get started** is reserved for people running a packaged desktop release. It links to the latest GitHub Release, explains how to launch the macOS DMG or Windows Setup and Portable executables, and states the provider CLI prerequisite. Source checkout, Node.js, localhost, and Electron development commands belong only under **Development**.
+> **Get started** is reserved for people running a packaged desktop release. It links to the latest GitHub Release, explains how to launch the macOS DMG or Windows Setup and Portable executables, states the provider CLI prerequisite, and gives the compact signed-build update behavior. Source checkout, Node.js, localhost, and Electron development commands belong only under **Development**.
 
 [[../CONTRIBUTING|CONTRIBUTING]] documents focused changes, required verification, Conventional Commit signals, synthetic fixtures, and the rule that normal pull requests do not edit versions or the changelog. [[../SECURITY|SECURITY]] routes suspected vulnerabilities to GitHub's private advisory flow.
 
@@ -134,10 +133,13 @@ This invocation follows the official Codex non-interactive pattern and reuses th
 
 Pushing `vX.Y.Z` starts `.github/workflows/build-desktop.yml`. The Ubuntu release job runs `release:check -- --tag`, extracts only the matching changelog body, downloads native artifacts, and publishes that body with the GitHub Release. GitHub's automatically generated notes are disabled so there is one canonical compact narrative.
 
-The native jobs transfer only DMG, EXE, blockmap, and Windows `latest.yml` deliverables. Unpacked application trees, macOS ZIP packages, the unusable DMG-only `latest-mac.yml`, and builder diagnostics are excluded. NSIS and portable Windows targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. GitHub still adds its generated source-code ZIP and tarball to every release.
+The native jobs transfer DMG, desktop ZIP, EXE, blockmap, `latest-mac.yml`, and Windows `latest.yml` deliverables. Unpacked application trees and builder diagnostics are excluded. NSIS and portable Windows targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. The macOS DMG remains the first installer while the architecture-specific desktop ZIP and `latest-mac.yml` form the automatic update feed. GitHub still adds its generated source-code ZIP and tarball to every release; those generic archives are not desktop updater payloads.
 
 > [!note]
-> Packaged macOS and Windows portable builds discover a newer stable version through GitHub's latest-release API, then link to the exact release for manual installation. This discovery is deliberately independent of electron-builder feed metadata. Only installed Windows NSIS builds consume `latest.yml` for automatic download and restart installation. See [[desktop-updates]].
+> Signed packaged macOS builds consume `latest-mac.yml`, and installed Windows NSIS builds consume `latest.yml`. Both download in the background, offer an immediate restart, and otherwise install on normal quit. Windows portable builds keep the independent latest-release API and manual download path. See [[desktop-updates]].
+
+> [!warning]
+> The GitHub workflow publishes the complete macOS feed but currently imports no signing identity. Squirrel.Mac requires compatible signatures across the installed and replacement app. Transport completeness is therefore proven, while public CI auto-install remains gated on trusted signing credentials and a released ZIP signature check.
 
 `electron-builder.yml` now publishes to owner `Crowie-s-r-o`, repository `CC-Relay`. Installed Windows builds produced before this move still contain the old publisher and need one manual installation to enter the new update lineage. See [[desktop-updates]] and [[product-naming]].
 

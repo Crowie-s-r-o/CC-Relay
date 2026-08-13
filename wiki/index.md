@@ -39,6 +39,7 @@ type: index
 - [[task-add-reliability]]
 - [[interface-layout]]
 - [[compact-interface-density]]
+- [[running-task-full-width-rows-review]]
 - [[task-detail-modal-and-app-zoom]]
 - [[task-activity-overview]]
 - [[header-position]]

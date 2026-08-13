@@ -12,6 +12,9 @@ tags:
 
 # Desktop Update Discovery Review
 
+> [!warning]
+> This July 2026 review records the former DMG-only decision. It was superseded on August 14, 2026 by the GitHub-backed macOS updater contract in [[desktop-updates]]. Its reproduction evidence remains useful, but its recommendation that Darwin stay manual is no longer current once the ZIP, `latest-mac.yml`, and compatible release signature are present.
+
 ## Executive Summary
 
 **Ticket confidence: High**

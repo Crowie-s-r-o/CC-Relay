@@ -38,9 +38,11 @@ jobs:
           name: cc-relay-${{ runner.os }}
           path: |
             dist/*.dmg
+            dist/*.zip
             dist/*.exe
             dist/*.blockmap
             dist/latest.yml
+            dist/latest-mac.yml
           if-no-files-found: error
 
   release:
@@ -69,8 +71,10 @@ jobs:
           tag_name: ${{ github.ref_name }}
           files: |
             dist/*.dmg
+            dist/*.zip
             dist/*.exe
             dist/*.blockmap
             dist/latest.yml
+            dist/latest-mac.yml
           body_path: release-notes.md
           fail_on_unmatched_files: true

@@ -31,6 +31,8 @@ Grab the packaged app from the [latest GitHub Release](https://github.com/Crowie
 - **macOS (tested):** open the `.dmg` and drag **CC Relay** to **Applications**.
 - **Windows (experimental):** run the `-Setup.exe` installer, or the `-Portable.exe` file to skip installing.
 
+Signed macOS builds and installed Windows builds then check the same GitHub repository for releases every five minutes. Updates download in the background and install when you restart or normally quit CC Relay. The Windows portable build remains a manual download. The first macOS release that contains the automatic updater still needs the normal DMG installation once.
+
 No source checkout or Node.js needed. Before queueing work, sign in to at least one provider CLI: Codex with ChatGPT, or Claude Code with a Claude subscription.
 
 ## The loop

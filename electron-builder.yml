@@ -13,6 +13,7 @@ mac:
   icon: icon.png
   target:
     - dmg
+    - zip
 win:
   icon: icon.png
   target:

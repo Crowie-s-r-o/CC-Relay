@@ -1133,6 +1133,50 @@ export const server = createServer(async (request, response) => {
       return;
     }
 
+    if (request.method === 'POST' && pathname === '/api/tasks/completion-reviews/migrate') {
+      const body = await readJson(request, 128 * 1024);
+      if (!Array.isArray(body.unreadTaskIds) || body.unreadTaskIds.length > 10_000) {
+        throw new Error('Unread task IDs must be a bounded array.');
+      }
+      const unreadTaskIds = [...new Set(body.unreadTaskIds.map(Number))];
+      if (unreadTaskIds.some((id) => !Number.isInteger(id) || id <= 0)) {
+        throw new Error('Unread task IDs must contain only positive integers.');
+      }
+      sendJson(response, 200, database.migrateCompletionReviews(unreadTaskIds));
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/tasks/review-project') {
+      const body = await readJson(request, 512 * 1024);
+      const requestedPath = typeof body.projectPath === 'string' ? body.projectPath.trim() : '';
+      if (!requestedPath) throw new Error('A project path is required.');
+      if (!Array.isArray(body.reviews) || body.reviews.length > 10_000) {
+        throw new Error('Completion reviews must be a bounded array.');
+      }
+      const reviews = body.reviews.map((item) => ({
+        taskId: Number(item?.taskId),
+        finishedAt: item?.finishedAt ?? null,
+      }));
+      if (reviews.some((item) => (
+        !Number.isInteger(item.taskId)
+        || item.taskId <= 0
+        || (item.finishedAt !== null && (
+          typeof item.finishedAt !== 'string'
+          || item.finishedAt.length > 128
+        ))
+      ))) {
+        throw new Error('Each completion review must identify one task outcome.');
+      }
+      if (new Set(reviews.map((item) => item.taskId)).size !== reviews.length) {
+        throw new Error('Completion reviews must not contain duplicate task IDs.');
+      }
+      const projectPath = resolve(requestedPath);
+      const reviewedCount = database.markProjectTasksReviewed(projectPath, reviews);
+      if (reviewedCount) broadcast({ tasks: true });
+      sendJson(response, 200, { reviewedCount });
+      return;
+    }
+
     if (request.method === 'GET' && pathname === '/api/tasks') {
       const tasks = database.listTasks().map((task) => {
         if (task.mode !== 'turbo') return task;
@@ -2358,6 +2402,27 @@ export const server = createServer(async (request, response) => {
         plan: task.mode === 'plan' ? readPlanRecord(task) : null,
         turboPlan: task.mode === 'turbo' ? artifacts.readTurboPlan(taskId) : null,
       });
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/tasks\/\d+\/review$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const body = await readJson(request, 1024);
+      const finishedAtProvided = Object.hasOwn(body, 'finishedAt');
+      const finishedAt = body.finishedAt ?? null;
+      if (finishedAt !== null && (typeof finishedAt !== 'string' || finishedAt.length > 128)) {
+        throw new Error('The completion outcome is invalid.');
+      }
+      const review = database.markTaskReviewed(
+        taskId,
+        finishedAtProvided ? finishedAt : undefined,
+      );
+      if (!review.task) {
+        sendError(response, 404, 'Task not found.');
+        return;
+      }
+      if (review.reviewed) broadcast({ tasks: true, taskId });
+      sendJson(response, 200, review);
       return;
     }
 

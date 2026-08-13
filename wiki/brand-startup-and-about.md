@@ -75,6 +75,24 @@ tagline, and also receives copyright, version, website, and author metadata.
 > Keep the native `credits` value to one line. macOS centers that single credit in the standard
 > About panel; adding a newline produces the visually left-aligned block used by the earlier design.
 
+## macOS main-window title bar
+
+The main macOS Electron window uses `titleBarStyle: 'hiddenInset'` so the standard traffic-light
+controls remain native while the renderer owns a 36px drag region. That region contains only the
+centered Crowie mark from `public/favicon.svg`. It deliberately omits the repeated product name.
+Light and dark themes give the title bar matching neutral surfaces and keep the mark legible.
+
+The desktop-only renderer state is set in the early `public/index.html` bootstrap when both the
+Electron and Macintosh user-agent tokens are present. Browser use and non-macOS Electron windows
+therefore retain their normal native chrome and do not render an extra title bar.
+
+> [!important]
+> Do not use `setRepresentedFilename()` to place this logo. That API declares that the window
+> represents a real file and adds document-proxy behavior that is false for CC Relay. Keep the
+> branded drag region and the Darwin-only `hiddenInset` window option paired.
+
+See [[interface-layout]], [[dark-mode]], and [[header-position]].
+
 ## Files
 
 - `src/electron-main.mjs`
@@ -84,9 +102,17 @@ tagline, and also receives copyright, version, website, and author metadata.
 - `public/style.css`
 - `public/app.js`
 - `test/brand-experience.test.mjs`
+- `test/desktop-icon.test.mjs`
 
 ## Verification
 
+- Centered title-bar and fixed-shell revision: `node --test test/desktop-icon.test.mjs
+  test/project-layout.test.mjs` passed 18 of 18.
+- Current complete suite: `npm test` passed 1,537 of 1,537.
+- Current `npm run release:check` and `git diff --check`: passed for v0.2.11.
+- Isolated macOS Electron captures checked dark and light title bars at 1540 by 980 and 1120 by
+  760. The root scroll area matched the viewport at both sizes, the centered mark stayed visible,
+  and the compact workspace retained full-height Composer and Queue panels inside its own scroll.
 - `node --test test/brand-experience.test.mjs`: 4 passed.
 - Complete clean-worktree suite with only the splash revision applied: 1,419 passed.
 - `npm run release:check`: release metadata consistent for v0.2.3.

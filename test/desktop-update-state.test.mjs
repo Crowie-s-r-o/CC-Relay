@@ -35,9 +35,10 @@ test('shows an available release with its trusted GitHub URL', () => {
   assert.equal(result.releaseLabel, 'View v1.2.0 release');
   assert.equal(result.automaticUpdate, true);
   assert.equal(result.progress, null);
+  assert.match(result.modalMessage, /download automatically/i);
 });
 
-test('presents manual macOS discovery as an official release download', () => {
+test('presents manual release discovery as an official release download', () => {
   const result = desktopUpdatePresentation({
     supported: true,
     automaticUpdate: false,
@@ -85,6 +86,7 @@ test('formats download progress and ready state compactly', () => {
   assert.equal(downloaded.currentVersion, '1.0.0');
   assert.equal(downloaded.latestVersion, '1.2.0');
   assert.equal(downloaded.progress, 100);
+  assert.match(downloaded.modalMessage, /install automatically/i);
 });
 
 test('falls back to the official latest release for an untrusted URL', () => {

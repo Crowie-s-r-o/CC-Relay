@@ -55,3 +55,32 @@ test('the in-app header uses the Crowie icon instead of a text monogram', () => 
   assert.match(brandMark, /alt=""/);
   assert.doesNotMatch(markup, /class="brand-mark"[^>]*>R/);
 });
+
+test('the macOS desktop title bar carries the Crowie lockup', () => {
+  const main = readFileSync(join(projectRoot, 'src', 'electron-main.mjs'), 'utf8');
+  const markup = readFileSync(join(projectRoot, 'public', 'index.html'), 'utf8');
+  const style = readFileSync(join(projectRoot, 'public', 'style.css'), 'utf8');
+  const titlebar = markup.match(/<div class="desktop-titlebar"[\s\S]*?<\/div>/)?.[0];
+
+  assert.match(main, /process\.platform === 'darwin' \? \{ titleBarStyle: 'hiddenInset' \} : \{\}/);
+  assert.match(markup, /navigator\.userAgent\.includes\('Electron\/'\)/);
+  assert.match(markup, /navigator\.userAgent\.includes\('Macintosh'\)/);
+  assert.match(markup, /dataset\.desktopTitlebar = 'true'/);
+  assert.ok(titlebar);
+  assert.match(titlebar, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);
+  assert.doesNotMatch(titlebar, /CC Relay/);
+  assert.match(style, /html\[data-desktop-titlebar="true"\] \.desktop-titlebar \{[\s\S]*?justify-content: center;[\s\S]*?-webkit-app-region: drag;/);
+  assert.match(style, /height: calc\(100vh - var\(--desktop-titlebar-height\)/);
+});
+
+test('the macOS desktop shell stays fixed while its content regions scroll', () => {
+  const style = readFileSync(join(projectRoot, 'public', 'style.css'), 'utf8');
+
+  assert.match(style, /html\[data-desktop-titlebar="true"\] body \{[\s\S]*?grid-template-areas:[\s\S]*?"titlebar"[\s\S]*?"workspace";[\s\S]*?overflow: hidden;/);
+  assert.match(style, /html\[data-desktop-titlebar="true"\] \.workspace \{[\s\S]*?height: auto;[\s\S]*?overflow: hidden;/);
+  assert.match(style, /@media \(max-width: 1344px\) \{[\s\S]*?html\[data-desktop-titlebar="true"\] \.workspace \{[\s\S]*?overflow: auto;/);
+  assert.match(style, /@media \(min-width: 761px\) and \(max-width: 1344px\) \{[\s\S]*?html\[data-desktop-titlebar="true"\] \.workspace \{\s*grid-auto-rows: 100%;/);
+  assert.match(style, /@media \(min-width: 761px\) and \(max-width: 1344px\) \{[\s\S]*?html\[data-desktop-titlebar="true"\] \.detail-panel \{\s*min-height: 0;/);
+  assert.match(style, /html\[data-desktop-titlebar="true"\]\[data-header-position="bottom"\] body \{[\s\S]*?"workspace"[\s\S]*?"monitor";[\s\S]*?padding-bottom: 0;/);
+  assert.match(style, /html\[data-desktop-titlebar="true"\]\[data-header-position="bottom"\] \.app-header \{[\s\S]*?position: static;/);
+});

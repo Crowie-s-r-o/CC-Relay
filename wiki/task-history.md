@@ -32,7 +32,10 @@ Every task card begins its footer metadata with the assigned CC Relay. Connected
 > CC Relay identity is global and persisted per Codex thread. The API exposes immutable `relayNumber` and `relayName` fields; reconnecting a thread reuses them, while a new thread receives the next number. Never derive a number from the current terminal array or recycle a disconnected number. Persisted `thread_name` remains the durable display fallback for historical tasks.
 
 > [!important]
-> Do not duplicate task records into browser storage. SQLite remains the source of truth for prompts, status, results, events, and restart recovery. Browser storage holds only the display preference.
+> Do not duplicate task records into browser storage. SQLite remains the source of truth for
+> prompts, status, results, events, completion review state, and restart recovery. Browser storage
+> holds display preferences and a best-effort unfinished-status baseline for completion sounds,
+> never the authoritative Ready for review stack. See [[launchpad-completion-notifications]].
 
 The desktop app used to copy finished localhost rows into its own SQLite database through **Import localhost**. That action was removed on August 13, 2026, so desktop and localhost histories are now independent with no transfer path. Rows imported before removal keep their origin columns and stay in desktop history. See [[localhost-task-import]].
 
@@ -48,6 +51,13 @@ Every task card now has a dedicated lifecycle row with **Started** and **Complet
 After any successful composer submission, CC Relay switches to **Queue**, selects the newly created task card, and opens that task in Task Activity. This applies equally to Execute, Plan council, Turbo, normal Enter, and **Run now** submissions. Project-wide visibility ensures idle routing to another CC Relay cannot hide the new task.
 
 Task card selection and completion review are deliberately independent visual states. Selection owns the complete project-colored outline and tinted card surface. An unviewed completion uses a rose left rail, while the operational Queue collects every such card under one rose **Ready for review** divider directly below running work. Search and History preserve their own result order, so an unviewed card there carries an individual **Ready for review** badge. The unread card background rule is limited to `:not(.selected)` so it cannot replace the stronger selection treatment. Opening the task acknowledges only that completion and immediately returns it to its normal Today or Past position. **Mark reviewed** remains the explicit project-wide bulk acknowledgement.
+
+The review distinction is persisted on the task row as `completion_reviewed` and exposed as
+`ready_for_review`. Review writes carry the exact displayed `finished_at`, including bulk review,
+so a retry or continuation that finishes again while acknowledgement is in flight remains visible
+as a new outcome. An additive schema upgrade treats pre-column completions as reviewed, then
+imports any still-reachable legacy unread IDs once. See
+[[launchpad-completion-notifications]].
 
 > [!note]
 > The review divider is the Queue view's non-color cue. Keeping the repeated badge out of that already-grouped view prevents the longer label from crowding compact task metadata. The rose rail and accessible card label still identify each member of the group, and light and dark themes use matching review colors.

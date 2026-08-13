@@ -86,8 +86,10 @@ const desktopUpdater = createDesktopUpdater({
     || process.platform === 'win32'
   ),
   isAutomaticUpdateEligible: () => app.isPackaged
-    && process.platform === 'win32'
-    && !process.env.PORTABLE_EXECUTABLE_FILE,
+    && (
+      process.platform === 'darwin'
+      || (process.platform === 'win32' && !process.env.PORTABLE_EXECUTABLE_FILE)
+    ),
   checkLatestRelease: createGitHubReleaseChecker(),
   getMainWindow: () => mainWindow,
   releasesUrl: `${DESKTOP_RELEASES_URL}/latest`,
@@ -203,6 +205,7 @@ async function createWindow() {
     backgroundColor: '#dfe7e4',
     title: PRODUCT_NAME,
     show: false,
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : {}),
     ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {
       contextIsolation: true,

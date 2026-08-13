@@ -48,19 +48,27 @@ Plan states, agent states, glyphs, and color all carry the same reading. Complet
 
 The overview stays inside the existing Tokyo Night terminal palette in both application themes. At wider inspector widths, plan and worker lanes can sit side by side. A 440px container rule stacks each row's state beneath its title, and the expanded body has a bounded 320px or 34vh scroll budget so the terminal remains usable. The component adds no animation and no new live region.
 
+> [!important]
+> The Plan lane has its own stricter height budget: at most 25 percent of the rendered `.events-section` height. The terminal is a size query container, so `25cqh` follows the operator's persisted or resized terminal split instead of the application viewport. The Plan heading stays fixed and only the ordered step list scrolls. Do not replace this with `vh`, which becomes incorrect whenever the terminal is resized.
+
+The two-second selected-task refresh still rebuilds provider markup so a revised step state cannot go stale. Before that replacement, the renderer records the overview and Plan-list scroll offsets and restores them afterwards. If the browser focused the scrollable Plan list for keyboard navigation, focus returns to the replacement list without scrolling the surrounding terminal.
+
 Provider-controlled step text, owners, worker names, roles, and briefs are escaped before interpolation and bounded in the overview. Longer evidence remains intact in the activity log and copied output.
 
 ## Implementation map
 
 - `public/index.html` owns the stable, expanded-by-default disclosure.
 - `public/task-activity-overview.js` builds the pure overview markup and updates duration nodes.
-- `public/app.js` supplies folded event entries and refreshes the live clocks.
-- `public/style.css` owns the terminal-native manifest, state cues, scroll bound, and compact container layout.
+- `public/app.js` supplies folded event entries, refreshes the live clocks, and preserves manifest scroll state across live refreshes.
+- `public/style.css` owns the terminal-native manifest, state cues, terminal-relative Plan cap, scroll bounds, and compact container layout.
 - `test/task-activity-overview.test.mjs` covers default expansion, current-plan selection, worker timing, terminal-state cleanup, escaping, duration refresh, and responsive styling.
 
 ## Verification
 
-The dedicated overview suite passes 8 tests. The combined overview, plan, sub-agent, event-stream, and project-layout run passes 144 tests. The complete repository suite passes 1,470 tests, `npm run release:check` reports consistent v0.2.6 metadata, and `git diff --check` is clean.
+The dedicated overview suite passes 8 tests. The focused overview, plan, terminal palette, dark-mode, and diff-surface run passes 99 tests. `node --check public/app.js`, `npm run release:check`, and `git diff --check` are green for v0.2.11.
+
+> [!note]
+> The complete repository run reached one unrelated source-contract failure while concurrent completion-review persistence work was present in the shared worktree: `test/ui-preferences.test.mjs` still expected startup through `uiPreferencesReady`, while that in-progress renderer change had moved startup to `rendererStateReady`. The Plan-focused suites remained green.
 
 > [!note]
 > Live browser screenshot verification was unavailable in the August 13 non-interactive run because the browser runtime exposed no browser instance. Focused renderer, lifecycle, security, and responsive source-contract tests provide the verification for this pass.

@@ -58,7 +58,7 @@ function resolveAutomaticUpdateEligibility(options) {
     return true;
   }
   if (!packaged) return false;
-  return platform === 'win32' && portable !== true;
+  return platform === 'darwin' || (platform === 'win32' && portable !== true);
 }
 
 function currentVersion(options) {
@@ -136,7 +136,7 @@ function notifyState(listener, state) {
 }
 
 /**
- * Coordinates the safe, user-driven desktop update lifecycle.
+ * Coordinates the safe desktop update lifecycle.
  *
  * This module intentionally has no Electron imports. The caller injects the
  * electron-updater instance, dialog API, BrowserWindow lookup, and graceful
@@ -161,9 +161,7 @@ export function createDesktopUpdater(options = {}) {
   let automaticUpdate = false;
   let checkInFlight = false;
   let downloadInFlight = false;
-  let availablePromptInFlight = false;
   let downloadedPromptInFlight = false;
-  let lastAvailablePromptVersion = null;
   let state = {
     supported: false,
     automaticUpdate: false,
@@ -189,8 +187,8 @@ export function createDesktopUpdater(options = {}) {
 
   function configureUpdater() {
     if (!updater) return;
-    updater.autoDownload = false;
-    updater.autoInstallOnAppQuit = false;
+    updater.autoDownload = true;
+    updater.autoInstallOnAppQuit = true;
   }
 
   async function checkForUpdates() {
@@ -226,50 +224,16 @@ export function createDesktopUpdater(options = {}) {
     }
   }
 
-  async function handleAvailable(info) {
-    if (availablePromptInFlight || downloadInFlight) return;
-    publishUpdate('available', info, { downloadPercent: null });
-    const version = availableVersion(info);
-    if (lastAvailablePromptVersion === version) return;
-    const window = dialogWindow(getMainWindow);
-    if (!window) {
-      safeLogger(logger, 'info', 'Desktop update available, but no live window can show the prompt.');
-      return;
-    }
-    lastAvailablePromptVersion = version;
-    availablePromptInFlight = true;
-    try {
-      const response = await showMessage(
-        dialog,
-        window,
-        dialogOptions(
-          'CC Relay update available',
-          `CC Relay ${availableVersion(info)} is available. You are running ${currentVersion(options)}.`,
-          ['Download', 'Later'],
-        ),
-      );
-      if (selectedDialogButton(response) !== 0) return;
-      if (downloadInFlight) return;
-      downloadInFlight = true;
-      publishUpdate('downloading', info, { downloadPercent: null });
-      safeLogger(logger, 'info', `Downloading CC Relay ${availableVersion(info)}.`);
-      try {
-        await updater.downloadUpdate();
-      } catch (error) {
-        publishUpdate('error', info);
-        safeLogger(logger, 'error', 'Desktop update download failed.', error);
-      } finally {
-        downloadInFlight = false;
-      }
-    } catch (error) {
-      safeLogger(logger, 'error', 'Desktop update prompt failed.', error);
-    } finally {
-      availablePromptInFlight = false;
-    }
+  function handleAvailable(info) {
+    if (state.status === 'downloaded' || state.status === 'installing') return;
+    downloadInFlight = true;
+    publishUpdate('downloading', info, { downloadPercent: null });
+    safeLogger(logger, 'info', `Downloading CC Relay ${availableVersion(info)} automatically.`);
   }
 
   async function handleDownloaded(info) {
     if (downloadedPromptInFlight) return;
+    downloadInFlight = false;
     publishUpdate('downloaded', info, { downloadPercent: 100 });
     const window = dialogWindow(getMainWindow);
     if (!window) {
@@ -283,8 +247,8 @@ export function createDesktopUpdater(options = {}) {
         window,
         dialogOptions(
           'CC Relay update ready',
-          `CC Relay ${availableVersion(info)} has been downloaded and is ready to install.`,
-          ['Restart and install', 'Later'],
+          `CC Relay ${availableVersion(info)} is ready. Restart now, or it will install automatically when you quit CC Relay.`,
+          ['Restart and install', 'Install on quit'],
         ),
       );
       if (selectedDialogButton(response) !== 0) return;
@@ -321,12 +285,14 @@ export function createDesktopUpdater(options = {}) {
         });
       });
       eventOn(updater, 'download-progress', (progress) => {
+        downloadInFlight = true;
         publish('downloading', {
           downloadPercent: Number.isFinite(progress?.percent) ? progress.percent : null,
         });
       });
       eventOn(updater, 'update-downloaded', handleDownloaded);
       eventOn(updater, 'error', (error) => {
+        downloadInFlight = false;
         publish('error');
         safeLogger(logger, 'error', 'Desktop updater reported an error.', error);
       });

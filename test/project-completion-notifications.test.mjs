@@ -11,11 +11,19 @@ function memoryStorage(initial = {}) {
     setItem(key, value) {
       values.set(key, value);
     },
+    value(key) {
+      return values.get(key) ?? null;
+    },
   };
 }
 
-function task(id, status, repoPath = '/work/alpha') {
-  return { id, status, repo_path: repoPath };
+function task(id, status, repoPath = '/work/alpha', readyForReview = undefined) {
+  return {
+    id,
+    status,
+    repo_path: repoPath,
+    ...(typeof readyForReview === 'boolean' ? { ready_for_review: readyForReview } : {}),
+  };
 }
 
 test('first observation treats historical completed tasks as an acknowledged baseline', () => {
@@ -29,6 +37,41 @@ test('first observation treats historical completed tasks as an acknowledged bas
   assert.equal(notifications.count('/work/alpha'), 0);
   assert.equal(notifications.count('/work/beta'), 0);
   assert.deepEqual(completed, []);
+});
+
+test('a durable unread task is restored even on the first observation of a new browser origin', () => {
+  const notifications = new ProjectCompletionNotifications(memoryStorage());
+  const completed = notifications.observe([
+    task(21, 'complete', '/work/alpha', true),
+    task(22, 'complete', '/work/beta', false),
+  ]);
+
+  assert.equal(notifications.count('/work/alpha'), 1);
+  assert.equal(notifications.includes('/work/alpha', 21), true);
+  assert.equal(notifications.count('/work/beta'), 0);
+  assert.deepEqual(completed, []);
+});
+
+test('legacy local unread IDs are exposed once and retired after durable migration', () => {
+  const key = 'relay.projectCompletionNotifications.v1';
+  const storage = memoryStorage({
+    [key]: JSON.stringify({
+      version: 1,
+      initialized: true,
+      unread: { '/work/alpha': { 31: true }, '/work/beta': { 32: true } },
+      unfinished: { '/work/alpha': { 33: 'running' } },
+    }),
+  });
+  const notifications = new ProjectCompletionNotifications(storage);
+
+  assert.deepEqual(notifications.pendingReviewMigrationTaskIds(), [31, 32]);
+  notifications.completeReviewMigration();
+  assert.deepEqual(notifications.pendingReviewMigrationTaskIds(), []);
+  assert.deepEqual(JSON.parse(storage.value(key)), {
+    version: 2,
+    initialized: true,
+    unfinished: { '/work/alpha': { 33: 'running' } },
+  });
 });
 
 test('a task completing outside the open Task Activity becomes a project notification', () => {

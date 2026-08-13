@@ -13,10 +13,17 @@ const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8
 
 test('header places four accessible usage meters after the position control without an online pill', () => {
   assert.equal(PROVIDER_USAGE_METERS.length, 4);
+  assert.deepEqual(PROVIDER_USAGE_METERS.map(({ label }) => label), [
+    'Cla 5h',
+    'Cla Week',
+    'Fable',
+    'Cod Week',
+  ]);
   assert.equal((html.match(/data-usage-key=/g) || []).length, 4);
   assert.equal((html.match(/class="provider-usage-reset"/g) || []).length, 4);
   for (const meter of PROVIDER_USAGE_METERS) {
     assert.match(html, new RegExp(`data-usage-key="${meter.key}"`));
+    assert.match(html, new RegExp(`<span>${meter.label}</span>`));
   }
   assert.doesNotMatch(html, /id="pause-button"/);
   assert.doesNotMatch(app, /pauseButton/);
@@ -152,6 +159,7 @@ test('usage strip has four semantic colors, dark mode, and mobile layout', () =>
   assert.match(style, /\.provider-usage-meter\[data-level="critical"\]/);
   assert.match(style, /html\[data-theme="dark"\] \.provider-usage/);
   assert.match(style, /\.provider-usage-reset/);
+  assert.match(style, /\.provider-usage-reset \{[\s\S]*?font-size: 9px;/);
   assert.match(style, /@media \(max-width: 760px\)[\s\S]*?\.provider-usage/);
   const baseTrack = style.indexOf('.provider-usage-track i {', style.indexOf('Subscription runway'));
   const reducedMotion = style.lastIndexOf('@media (prefers-reduced-motion: reduce)');
