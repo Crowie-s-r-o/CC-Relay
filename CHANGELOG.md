@@ -2,6 +2,18 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.7] - 2026-08-13
+
+### Added
+
+- Added task search.
+- Added a task activity overview.
+- Added safeguards for Claude execution and terminal workflows.
+
+### Security
+
+- Removed localhost task import.
+
 ## [0.2.6] - 2026-08-13
 
 ### Changed
