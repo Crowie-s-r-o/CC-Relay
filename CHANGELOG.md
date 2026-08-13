@@ -2,6 +2,13 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.9] - 2026-08-13
+
+### Added
+
+- Completion speech can be configured with selectable content and word limits.
+- Per-task Git diffs are available in Relay.
+
 ## [0.2.8] - 2026-08-13
 
 ### Changed
