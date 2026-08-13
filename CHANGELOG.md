@@ -2,6 +2,13 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.6] - 2026-08-13
+
+### Changed
+
+- Release notes and standup changelogs now include every distinct confirmed fact without item-count limits.
+- Release tooling, standup documentation, and related tests now reflect unlimited changelog items.
+
 ## [0.2.5] - 2026-08-12
 
 ### Added
