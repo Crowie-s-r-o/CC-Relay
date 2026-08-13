@@ -32,6 +32,7 @@ import {
 import { ProjectCompletionNotifications } from './project-completion-notifications.js';
 import {
   CompletionAlerts,
+  completionSpeechText,
   normalizeCompletionAlertPreferences,
 } from './completion-alerts.js';
 import { parallelClaudeRestartRequired, projectQueueRestartRequired } from './project-queue-state.js';
@@ -115,6 +116,18 @@ import {
   sessionStateLabel,
 } from './task-session-history.js';
 import { escapeHtml } from './escape-html.js';
+import {
+  buildFileTree,
+  diffNoticeTexts,
+  diffPlaceholderMarkup,
+  diffTotalsText,
+  diffUnavailableText,
+  isLiveTaskStatus,
+  renderDiffNotices,
+  renderDiffUnavailable,
+  renderFileDiff,
+  renderFileTree,
+} from './task-diff-view.js';
 import { markdownPreviewText, renderMarkdown } from './markdown.js';
 import {
   availableProviderSelection,
@@ -307,9 +320,14 @@ function setHeaderPosition(position, { persist = true } = {}) {
 setHeaderPosition(currentHeaderPosition(), { persist: false });
 
 function cachedCompletionAlertPreferences() {
+  let speech = {};
+  try {
+    speech = JSON.parse(localStorage.getItem('relay.completionSpeechOptions') || '{}');
+  } catch {}
   return normalizeCompletionAlertPreferences({
     sound: localStorage.getItem('relay.completionSound'),
     speak: localStorage.getItem('relay.completionSpeech') === 'true',
+    speech,
   });
 }
 
@@ -443,6 +461,24 @@ const state = {
   planExecutionTargets: new Map(),
   detailCopyContent: {},
   detailCopyTimers: new Map(),
+  /*
+   * Everything the Changes dialog owns. It is keyed on its own taskId rather than the
+   * selected task because the two-second detail refresh rebuilds the trigger button on
+   * every pass: the dialog cannot hold state on a node that keeps being replaced.
+   * `collapsed` records folders the reader closed by hand so a live refresh cannot
+   * reopen them, and both signatures are the server's, never one this client invents.
+   */
+  taskDiff: {
+    taskId: null,
+    summary: null,
+    selectedPath: null,
+    file: null,
+    collapsed: new Map(),
+    pollTimer: null,
+    summaryRequest: 0,
+    fileRequest: 0,
+    stopped: false,
+  },
   modelCatalogs: {
     codex: FALLBACK_MODELS.codex,
     claude: FALLBACK_MODELS.claude,
@@ -594,6 +630,13 @@ const elements = {
   terminalLayoutStatus: document.querySelector('#terminal-layout-status'),
   completionSound: document.querySelector('#completion-sound'),
   completionSpeech: document.querySelector('#completion-speech'),
+  completionSpeechOptions: document.querySelector('#completion-speech-options'),
+  completionSpeechProject: document.querySelector('#completion-speech-project'),
+  completionSpeechTask: document.querySelector('#completion-speech-task'),
+  completionSpeechStatus: document.querySelector('#completion-speech-status'),
+  completionSpeechWords: document.querySelector('#completion-speech-words'),
+  completionSpeechWordSetting: document.querySelector('.completion-speech-word-setting'),
+  completionSpeechExample: document.querySelector('#completion-speech-example'),
   completionAlertPreview: document.querySelector('#completion-alert-preview'),
   completionAlertStatus: document.querySelector('#completion-alert-status'),
   providerUsage: document.querySelector('#provider-usage'),
@@ -655,6 +698,17 @@ const elements = {
   taskDetailModalTitle: document.querySelector('#task-detail-modal-title'),
   taskDetailModalSubtitle: document.querySelector('#task-detail-modal-subtitle'),
   taskDetailModalClose: document.querySelector('#task-detail-modal-close'),
+  taskDiffModal: document.querySelector('#task-diff-modal'),
+  taskDiffTitle: document.querySelector('#task-diff-title'),
+  taskDiffSubtitle: document.querySelector('#task-diff-subtitle'),
+  taskDiffClose: document.querySelector('#task-diff-close'),
+  taskDiffTotals: document.querySelector('#task-diff-totals'),
+  taskDiffLive: document.querySelector('#task-diff-live'),
+  taskDiffCaptured: document.querySelector('#task-diff-captured'),
+  taskDiffNotices: document.querySelector('#task-diff-notices'),
+  taskDiffMessage: document.querySelector('#task-diff-message'),
+  taskDiffTree: document.querySelector('#task-diff-tree'),
+  taskDiffFile: document.querySelector('#task-diff-file'),
   detailTitle: document.querySelector('#detail-title'),
   detailTaskName: document.querySelector('#detail-task-name'),
   detailExecutionProfile: document.querySelector('#detail-execution-profile'),
@@ -1009,6 +1063,11 @@ async function api(path, options = {}) {
      */
     if (body.deliveryUncertain === true) failure.deliveryUncertain = true;
     if (body.composerBlocked === true) failure.composerBlocked = true;
+    /*
+     * Pollers need to tell "gone for good" from "briefly unhappy". Without the code a
+     * deleted task would be retried every three seconds forever against a 404.
+     */
+    failure.status = response.status;
     throw failure;
   }
   return body;
@@ -1039,11 +1098,31 @@ function cacheUiPreferences(preferences = uiPreferencesPayload()) {
   const completionAlerts = normalizeCompletionAlertPreferences(preferences.completionAlerts);
   localStorage.setItem('relay.completionSound', completionAlerts.sound);
   localStorage.setItem('relay.completionSpeech', String(completionAlerts.speak));
+  localStorage.setItem('relay.completionSpeechOptions', JSON.stringify(completionAlerts.speech));
+}
+
+function completionAlertExampleTask() {
+  return state.tasks.find((item) => item.id === state.selectedTaskId) || {
+    repo_path: state.activeProjectPath || 'CC Relay',
+    title: elements.taskName.value || elements.prompt.value || 'Task',
+  };
 }
 
 function renderCompletionAlertSettings() {
-  elements.completionSound.value = state.completionAlertPreferences.sound;
-  elements.completionSpeech.checked = state.completionAlertPreferences.speak;
+  const { speak, sound, speech } = state.completionAlertPreferences;
+  elements.completionSound.value = sound;
+  elements.completionSpeech.checked = speak;
+  elements.completionSpeechOptions.disabled = !speak;
+  elements.completionSpeechProject.checked = speech.project;
+  elements.completionSpeechTask.checked = speech.task;
+  elements.completionSpeechStatus.checked = speech.status;
+  elements.completionSpeechWords.value = String(speech.taskWords);
+  elements.completionSpeechWords.disabled = !speak || !speech.task;
+  elements.completionSpeechWordSetting.dataset.inactive = String(!speech.task);
+  elements.completionSpeechExample.textContent = completionSpeechText(
+    completionAlertExampleTask(),
+    state.completionAlertPreferences,
+  );
 }
 
 function setCompletionAlertPreferences(value, { persist = true } = {}) {
@@ -5512,6 +5591,246 @@ function closeTaskDetailModal() {
   if (elements.taskDetailModal.open) elements.taskDetailModal.close();
 }
 
+/* ------------------------------------------------------------------
+ * Changes dialog (per-task git diff preview).
+ *
+ * The dialog owns one interval, created when it opens and cleared on its own close
+ * event, on a task switch and the moment the task stops being live. It never reuses the
+ * two-second detail poll, because that poll runs whether or not this dialog is open.
+ * ------------------------------------------------------------------ */
+
+const TASK_DIFF_POLL_MS = 3_000;
+
+function taskDiffTask() {
+  const taskId = state.taskDiff.taskId;
+  if (taskId === null) return null;
+  return state.tasks.find((item) => item.id === taskId)
+    || state.runningTasks.find((item) => item.id === taskId)
+    || null;
+}
+
+function taskDiffIsLive() {
+  return isLiveTaskStatus(taskDiffTask()?.status);
+}
+
+function setTaskDiffMessage(message) {
+  elements.taskDiffMessage.hidden = !message;
+  elements.taskDiffMessage.textContent = message || '';
+}
+
+function stopTaskDiffPolling() {
+  if (state.taskDiff.pollTimer === null) return;
+  window.clearInterval(state.taskDiff.pollTimer);
+  state.taskDiff.pollTimer = null;
+}
+
+/*
+ * Only closed folders are recorded. The renderer treats presence in the map as "closed",
+ * so an entry left behind for a folder the reader reopened would collapse it again on
+ * the next live refresh.
+ */
+function rememberTaskDiffCollapse() {
+  for (const folder of elements.taskDiffTree.querySelectorAll('.task-diff-folder')) {
+    const path = folder.dataset.folderPath;
+    if (folder.open) state.taskDiff.collapsed.delete(path);
+    else state.taskDiff.collapsed.set(path, true);
+  }
+}
+
+function markTaskDiffSelection() {
+  for (const row of elements.taskDiffTree.querySelectorAll('.task-diff-file-row')) {
+    const selected = row.dataset.diffPath === state.taskDiff.selectedPath;
+    row.dataset.selected = String(selected);
+    if (selected) row.setAttribute('aria-current', 'true');
+    else row.removeAttribute('aria-current');
+  }
+}
+
+function resetTaskDiffView(taskId) {
+  stopTaskDiffPolling();
+  state.taskDiff.taskId = taskId;
+  state.taskDiff.summary = null;
+  state.taskDiff.selectedPath = null;
+  state.taskDiff.file = null;
+  state.taskDiff.collapsed = new Map();
+  state.taskDiff.summaryRequest += 1;
+  state.taskDiff.fileRequest += 1;
+  state.taskDiff.stopped = false;
+  elements.taskDiffTree.dataset.signature = '';
+  elements.taskDiffTree.innerHTML = '';
+  elements.taskDiffFile.dataset.path = '';
+  elements.taskDiffFile.dataset.signature = '';
+  elements.taskDiffFile.dataset.notice = '';
+  elements.taskDiffFile.innerHTML = diffPlaceholderMarkup('Loading changes...');
+  elements.taskDiffNotices.dataset.notices = '';
+  elements.taskDiffNotices.innerHTML = '';
+  elements.taskDiffTotals.textContent = '';
+  elements.taskDiffCaptured.textContent = '';
+  elements.taskDiffLive.hidden = true;
+  setTaskDiffMessage('');
+}
+
+function renderTaskDiffSummary(summary) {
+  const live = taskDiffIsLive();
+  elements.taskDiffLive.hidden = !live;
+  elements.taskDiffTotals.textContent = summary.available === true ? diffTotalsText(summary) : '';
+  // A finished task shows the moment its changes were frozen, never a ticking clock.
+  const stamp = live ? summary.capturedAt : summary.endedAt || summary.capturedAt;
+  const stampTime = stamp ? formatTime(stamp) : '';
+  elements.taskDiffCaptured.textContent = stampTime ? `${live ? 'Updated' : 'Final'} ${stampTime}` : '';
+  const noticeKey = diffNoticeTexts(summary).join('|');
+  if (elements.taskDiffNotices.dataset.notices !== noticeKey) {
+    elements.taskDiffNotices.dataset.notices = noticeKey;
+    elements.taskDiffNotices.innerHTML = renderDiffNotices(summary);
+  }
+}
+
+function renderTaskDiffTree(summary) {
+  const signature = String(summary.signature ?? '');
+  if (elements.taskDiffTree.dataset.signature === signature) return false;
+  rememberTaskDiffCollapse();
+  const scrollTop = elements.taskDiffTree.scrollTop;
+  elements.taskDiffTree.dataset.signature = signature;
+  elements.taskDiffTree.innerHTML = renderDiffUnavailable(summary) || renderFileTree(buildFileTree(summary.files), {
+    selectedPath: state.taskDiff.selectedPath,
+    collapsed: state.taskDiff.collapsed,
+  });
+  elements.taskDiffTree.scrollTop = scrollTop;
+  return true;
+}
+
+async function loadTaskDiffFile(path) {
+  const taskId = state.taskDiff.taskId;
+  if (taskId === null || !path) return;
+  const sequence = ++state.taskDiff.fileRequest;
+  let file;
+  try {
+    file = await api(`/api/tasks/${taskId}/diff/file?path=${encodeURIComponent(path)}`);
+  } catch (error) {
+    if (sequence !== state.taskDiff.fileRequest || state.taskDiff.taskId !== taskId) return;
+    if (error?.status === 404) {
+      /*
+       * The file was reverted or renamed away while the task kept working. Only this pane
+       * is stale; the task is still there, so the summary poll carries on and the next
+       * tree render picks a file that still exists.
+       */
+      state.taskDiff.selectedPath = null;
+      state.taskDiff.file = null;
+      elements.taskDiffFile.dataset.path = '';
+      elements.taskDiffFile.dataset.signature = '';
+      elements.taskDiffFile.dataset.notice = '';
+      elements.taskDiffFile.innerHTML = diffPlaceholderMarkup('That file is no longer part of these changes.');
+      markTaskDiffSelection();
+      return;
+    }
+    setTaskDiffMessage(error.message);
+    return;
+  }
+  await textSelectionGuard.waitForClear();
+  if (
+    sequence !== state.taskDiff.fileRequest
+    || state.taskDiff.taskId !== taskId
+    || state.taskDiff.selectedPath !== path
+  ) return;
+  state.taskDiff.file = file;
+  const signature = String(file.signature ?? '');
+  if (elements.taskDiffFile.dataset.path === path && elements.taskDiffFile.dataset.signature === signature) return;
+  // Only a file the reader is already looking at keeps its scroll position.
+  const scrollTop = elements.taskDiffFile.dataset.path === path ? elements.taskDiffFile.scrollTop : 0;
+  const summaryEntry = (state.taskDiff.summary?.files || []).find((entry) => entry.path === path) || null;
+  elements.taskDiffFile.dataset.path = path;
+  elements.taskDiffFile.dataset.signature = signature;
+  // Drawing a real diff clears the notice marker, so the same notice returning later is
+  // still redrawn instead of leaving a stale file on screen.
+  elements.taskDiffFile.dataset.notice = '';
+  elements.taskDiffFile.innerHTML = renderFileDiff(file, summaryEntry);
+  elements.taskDiffFile.scrollTop = scrollTop;
+}
+
+function selectTaskDiffFile(path) {
+  if (!path || state.taskDiff.selectedPath === path) return;
+  state.taskDiff.selectedPath = path;
+  // Moving the highlight in place keeps the reader's focus and scroll where they are.
+  markTaskDiffSelection();
+  loadTaskDiffFile(path).catch(console.error);
+}
+
+async function refreshTaskDiff() {
+  const taskId = state.taskDiff.taskId;
+  if (taskId === null || state.taskDiff.stopped) return;
+  const sequence = ++state.taskDiff.summaryRequest;
+  let summary;
+  try {
+    summary = await api(`/api/tasks/${taskId}/diff`);
+  } catch (error) {
+    if (sequence !== state.taskDiff.summaryRequest || state.taskDiff.taskId !== taskId) return;
+    if (error?.status === 404) {
+      stopTaskDiffPolling();
+      state.taskDiff.stopped = true;
+      setTaskDiffMessage('This task is no longer available.');
+      return;
+    }
+    setTaskDiffMessage(error.message);
+    return;
+  }
+  // Browser selections reference concrete nodes, so a poll must never rewrite under one.
+  await textSelectionGuard.waitForClear();
+  if (sequence !== state.taskDiff.summaryRequest || state.taskDiff.taskId !== taskId) return;
+  setTaskDiffMessage('');
+  state.taskDiff.summary = summary;
+  renderTaskDiffSummary(summary);
+  const rewritten = renderTaskDiffTree(summary);
+  const unavailable = diffUnavailableText(summary);
+  if (unavailable) {
+    state.taskDiff.selectedPath = null;
+    state.taskDiff.file = null;
+    // A live task in a folder git cannot read would otherwise rewrite this line on every
+    // tick, so the notice already on screen is recorded and redrawn only when it changes.
+    if (elements.taskDiffFile.dataset.notice !== unavailable) {
+      elements.taskDiffFile.dataset.path = '';
+      elements.taskDiffFile.dataset.signature = '';
+      elements.taskDiffFile.dataset.notice = unavailable;
+      elements.taskDiffFile.innerHTML = diffPlaceholderMarkup(unavailable);
+    }
+  } else if (rewritten || !state.taskDiff.selectedPath) {
+    // An unchanged summary signature means nothing moved, so nothing is refetched.
+    const paths = new Set((summary.files || []).map((entry) => entry.path));
+    if (state.taskDiff.selectedPath && !paths.has(state.taskDiff.selectedPath)) state.taskDiff.selectedPath = null;
+    if (!state.taskDiff.selectedPath) {
+      state.taskDiff.selectedPath = elements.taskDiffTree.querySelector('.task-diff-file-row')?.dataset.diffPath || null;
+      markTaskDiffSelection();
+    }
+    if (state.taskDiff.selectedPath) await loadTaskDiffFile(state.taskDiff.selectedPath);
+  }
+  // The task ended between ticks: this pass was the final look, so the loop retires.
+  if (!taskDiffIsLive()) stopTaskDiffPolling();
+}
+
+function taskDiffPollTick() {
+  if (document.visibilityState !== 'visible') return;
+  refreshTaskDiff().catch(console.error);
+}
+
+function startTaskDiffPolling() {
+  stopTaskDiffPolling();
+  if (!taskDiffIsLive()) return;
+  state.taskDiff.pollTimer = window.setInterval(taskDiffPollTick, TASK_DIFF_POLL_MS);
+}
+
+function openTaskDiffModal(task) {
+  if (!task) return;
+  if (state.taskDiff.taskId !== task.id) resetTaskDiffView(task.id);
+  elements.taskDiffSubtitle.textContent = `Task ${String(task.id).padStart(3, '0')} · ${workspaceName(task.repo_path)}`;
+  if (!elements.taskDiffModal.open) elements.taskDiffModal.showModal();
+  startTaskDiffPolling();
+  refreshTaskDiff().catch(console.error);
+}
+
+function closeTaskDiffModal() {
+  if (elements.taskDiffModal.open) elements.taskDiffModal.close();
+  else stopTaskDiffPolling();
+}
+
 function planStatusLabel(status, plan = null, task = null) {
   const author = providerLabel(plan?.author?.provider || task?.author_provider || 'claude');
   const reviewer = providerLabel(plan?.reviewer?.provider || task?.reviewer_provider || 'codex');
@@ -6240,6 +6559,9 @@ async function selectTask(taskId) {
   renderSessionStrip(task, sessionSurface);
   renderSessionHistory(task, sessionTurns, sessionSurface);
   elements.detailActions.replaceChildren();
+  // The dialog belongs to one task. Selecting another closes it rather than silently
+  // leaving a diff on screen that describes work the reader is no longer looking at.
+  if (state.taskDiff.taskId !== null && state.taskDiff.taskId !== task.id) closeTaskDiffModal();
   const retentionFeedback = task.status === 'running'
     ? state.terminalRetentionFeedback.get(task.id) || null
     : null;
@@ -6293,6 +6615,25 @@ async function selectTask(taskId) {
         ? 'Keep every terminal launched for this task open after the run.'
         : 'Restart CC Relay to stop terminal auto-close during a run.';
     elements.detailActions.append(retentionButton);
+  }
+  /*
+   * A null diffState is a legacy task or a task whose baseline never started, and a
+   * backend without the capability cannot answer the endpoint at all. Both hide the
+   * action outright instead of offering a button that can only disappoint.
+   */
+  if (
+    state.status?.capabilities?.taskDiffPreview === true
+    && task.diffState
+    && (task.diffState?.baseline || task.diffState?.error)
+  ) {
+    const changesButton = actionButton('Changes', () => openTaskDiffModal(task), 'quiet');
+    changesButton.setAttribute('aria-haspopup', 'dialog');
+    changesButton.setAttribute('aria-controls', 'task-diff-modal');
+    // The close handler finds the current trigger through this marker. The node itself is
+    // replaced every two seconds, so it can never be held as a reference.
+    changesButton.dataset.taskDiffTrigger = String(task.id);
+    changesButton.title = 'Show the files this task changed.';
+    elements.detailActions.append(changesButton);
   }
   if (task.status === 'queued' || task.status === 'running') {
     const cancelLabel = manualSessionSurface && task.status === 'running' ? 'Stop turn' : 'Cancel';
@@ -9363,6 +9704,34 @@ elements.taskDetailModal.addEventListener('click', (event) => {
   if (event.target === elements.taskDetailModal) closeTaskDetailModal();
 });
 
+elements.taskDiffClose.addEventListener('click', closeTaskDiffModal);
+elements.taskDiffModal.addEventListener('click', (event) => {
+  if (event.target === elements.taskDiffModal) closeTaskDiffModal();
+});
+/*
+ * Esc and the backdrop both reach this one event, so the interval is retired here rather
+ * than in each caller. Native dialog close also returns focus to the trigger.
+ */
+elements.taskDiffModal.addEventListener('close', () => {
+  stopTaskDiffPolling();
+  rememberTaskDiffCollapse();
+  /*
+   * A native dialog returns focus to whatever was focused when it opened, but the detail
+   * refresh replaces the whole action row every two seconds, so by the time the reader
+   * presses Esc that node is detached and focus falls to the document body. Only an
+   * orphaned focus is repaired: moving it unconditionally would steal focus during the
+   * task-switch close, which live refreshes are never allowed to do.
+   */
+  const orphaned = document.activeElement === document.body
+    || document.activeElement === document.documentElement
+    || document.activeElement === null;
+  if (orphaned) elements.detailActions.querySelector('[data-task-diff-trigger]')?.focus();
+});
+elements.taskDiffTree.addEventListener('click', (event) => {
+  const row = event.target.closest?.('.task-diff-file-row');
+  if (row && elements.taskDiffTree.contains(row)) selectTaskDiffFile(row.dataset.diffPath);
+});
+
 function closeDesktopUpdateModal() {
   if (elements.desktopUpdateModal.open) elements.desktopUpdateModal.close();
 }
@@ -9787,6 +10156,7 @@ for (const tab of elements.modeTabs) {
 }
 elements.terminalSettingsButton.addEventListener('click', () => {
   resetTerminalLayoutStatus();
+  renderCompletionAlertSettings();
   elements.terminalSettingsModal.showModal();
 });
 elements.terminalSettingsClose.addEventListener('click', () => {
@@ -9813,12 +10183,37 @@ elements.completionSpeech.addEventListener('change', () => {
     ? 'Voice announcement enabled.'
     : 'Voice announcement off.';
 });
+for (const input of [
+  elements.completionSpeechProject,
+  elements.completionSpeechTask,
+  elements.completionSpeechStatus,
+]) {
+  input.addEventListener('change', () => {
+    const speech = {
+      ...state.completionAlertPreferences.speech,
+      project: elements.completionSpeechProject.checked,
+      task: elements.completionSpeechTask.checked,
+      status: elements.completionSpeechStatus.checked,
+    };
+    const hasSpokenPart = speech.project || speech.task || speech.status;
+    setCompletionAlertPreferences({ ...state.completionAlertPreferences, speech });
+    elements.completionAlertStatus.textContent = hasSpokenPart
+      ? 'Voice announcement saved.'
+      : 'Keep at least one announcement detail selected.';
+  });
+}
+elements.completionSpeechWords.addEventListener('change', () => {
+  setCompletionAlertPreferences({
+    ...state.completionAlertPreferences,
+    speech: {
+      ...state.completionAlertPreferences.speech,
+      taskWords: elements.completionSpeechWords.value,
+    },
+  });
+  elements.completionAlertStatus.textContent = 'Task name length saved.';
+});
 elements.completionAlertPreview.addEventListener('click', () => {
-  const task = state.tasks.find((item) => item.id === state.selectedTaskId) || {
-    repo_path: state.activeProjectPath || 'CC Relay',
-    title: elements.taskName.value || elements.prompt.value || 'Task',
-  };
-  state.completionAlerts.notify(task, state.completionAlertPreferences);
+  state.completionAlerts.notify(completionAlertExampleTask(), state.completionAlertPreferences);
   elements.completionAlertStatus.textContent = state.completionAlertPreferences.sound === 'none'
     && !state.completionAlertPreferences.speak
     ? 'Both completion alerts are off.'

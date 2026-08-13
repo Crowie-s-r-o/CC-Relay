@@ -7,6 +7,16 @@ type: hot
 # Current CC Relay Notes
 
 > [!note]
+> **August 13: completion speech is now aligned and configurable.** Terminal settings places sound
+> and voice in matching full-width rows. Voice can announce any combination of project name, task
+> name, and `Task complete`, with a 1 through 12 word task-name limit and an exact spoken preview.
+> Existing saved behavior remains project plus one task word, at least one spoken part is enforced,
+> and all choices persist through shared UI preferences. The focused suite passes 65 of 65, the
+> complete suite passes 1,472 of 1,472, and `release:check` is green for v0.2.8. Browser control was
+> unavailable for live screenshot verification. See [[task-completion-alerts]],
+> [[project-terminal-settings]], and [[durable-ui-layout-preferences]].
+
+> [!note]
 > **August 13: unviewed completions now form a Ready for review block.** The operational Queue ranks them directly below running work until each task is opened, then returns the acknowledged card to its normal Today or Past section. The rose divider replaces the repeated New label in Queue, individual review badges remain in Search and History, and **Mark reviewed** clears the current project's review stack. Today, Past, and review dividers have more vertical breathing room with coordinated light and dark colors. The ordering helper leaves History, search relevance, queued FIFO positions, and scheduler state unchanged. The complete suite passes 1,471 tests and `release:check` is green. See [[task-history]], [[task-search]], and [[interface-layout]].
 
 > [!note]

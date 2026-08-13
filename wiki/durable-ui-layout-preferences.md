@@ -14,7 +14,7 @@ CC Relay persists its global interface layout in the shared configuration databa
 - Task Activity terminal height, when the user has explicitly resized it
 - Monitor bar position, `top` or `bottom`
 - Running-task monitor rows, one through three, and card width, Compact, Default, or Wide
-- Completion sound choice and optional short voice announcement
+- Completion sound choice, voice enabled state, selected spoken parts, and task-name word limit
 
 `GET /api/ui-preferences` restores the record. `PATCH /api/ui-preferences` validates bounded pixel
 values and writes it through `ProjectConfigStore`. The renderer updates browser `localStorage` at

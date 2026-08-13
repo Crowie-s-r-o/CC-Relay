@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ProjectConfigStore } from './project-config-store.mjs';
+import { normalizeDiffState } from './task-diff.mjs';
 import { titleFromPrompt } from './task-title.mjs';
 import { parseUiPreferences, UI_PREFERENCES_SETTING } from './ui-preferences.mjs';
 
@@ -33,6 +34,7 @@ const TASK_FIELDS = new Set([
   'terminal_layout_json',
   'turbo_json',
   'attachments_json',
+  'diff_state_json',
   'status',
   'position',
   'started_at',
@@ -55,6 +57,7 @@ function normalizeTask(row) {
     attachments_json: encodedAttachments,
     turbo_json: encodedTurbo,
     terminal_layout_json: encodedTerminalLayout,
+    diff_state_json: encodedDiffState,
     submission_id: _submissionId,
     clear_context: _legacyClearContext,
     ...task
@@ -74,6 +77,9 @@ function normalizeTask(row) {
     attachments: Array.isArray(attachments) ? attachments : [],
     turbo,
     terminal_layout: terminalLayout,
+    // Null for a legacy row, a task that never started, and any row whose stored state cannot
+    // be parsed. The diff preview treats all three the same way.
+    diffState: normalizeDiffState(encodedDiffState),
   };
 }
 
@@ -355,6 +361,7 @@ export class RelayDatabase {
     this.ensureColumn('terminal_layout_json', 'TEXT');
     this.ensureColumn('turbo_json', 'TEXT');
     this.ensureColumn('attachments_json', "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureColumn('diff_state_json', 'TEXT');
     this.ensureColumn('prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('import_source', 'TEXT');
     this.ensureColumn('import_task_id', 'INTEGER');
@@ -694,6 +701,29 @@ export class RelayDatabase {
     const values = entries.map(([, value]) => value);
     this.database.prepare(`UPDATE tasks SET ${assignments} WHERE id = ?`).run(...values, id);
     return this.getTask(id);
+  }
+
+  // How many other tasks ran in the same working tree while this one held it. A git diff cannot
+  // attribute a change to a task, so the diff preview uses this to say when what it shows may
+  // include another task's edits. Timestamps are ISO UTC, so string order is time order.
+  countOverlappingRepoTasks(repoPath, { excludeTaskId = null, from = null, to = null } = {}) {
+    if (typeof repoPath !== 'string' || !repoPath) return 0;
+    const windowStart = typeof from === 'string' && from ? from : '';
+    const windowEnd = typeof to === 'string' && to ? to : now();
+    const row = this.database.prepare(`
+      SELECT COUNT(*) AS count
+      FROM tasks
+      WHERE repo_path = ?
+        AND id IS NOT ?
+        AND started_at IS NOT NULL
+        AND started_at <= ?
+        AND (
+          status IN ('running', 'open')
+          OR finished_at IS NULL
+          OR finished_at >= ?
+        )
+    `).get(repoPath, excludeTaskId, windowEnd, windowStart);
+    return Number(row?.count || 0);
   }
 
   updateQueuedTask(id, changes) {

@@ -66,6 +66,11 @@ import {
   submissionSessionProvider,
 } from './session-resolution.mjs';
 import { buildSessionFollowUp } from './task-continuation.mjs';
+import {
+  buildTaskDiffFile,
+  buildTaskDiffSummary,
+  maybeCaptureTaskDiffEnd,
+} from './task-diff.mjs';
 import { searchTaskDocuments } from './task-search.mjs';
 import { TerminalCloseCoordinator } from './terminal-close-coordinator.mjs';
 import { retainedSessionTaskForThread } from './terminal-control.mjs';
@@ -928,6 +933,11 @@ queue.on('changed', (change) => {
     // listener fires synchronously from inside queue.enqueue while a run is still fanning
     // its ready steps out.
     if (planRuns.reconcileForTask(change.taskId)) plansChanged = true;
+    // Freezing the diff is the only work here that touches a child process, so it never joins
+    // this synchronous path. The helper returns on a property read for every change that is
+    // not a terminal transition of a task that already holds a baseline, and it guards its own
+    // in-flight captures against this listener firing again mid snapshot.
+    void maybeCaptureTaskDiffEnd({ database, task });
   }
   broadcast(plansChanged ? { ...change, plans: true } : change);
 });
@@ -970,6 +980,7 @@ export const server = createServer(async (request, response) => {
           directClaudeExecution: true,
           parallelClaudeExecution: true,
           imageAttachments: true,
+          taskDiffPreview: true,
           planCouncil: true,
           planCouncilProviderOrder: true,
           planCouncilTerminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
@@ -2298,6 +2309,37 @@ export const server = createServer(async (request, response) => {
         return;
       }
       servePlanArtifact(task, response);
+      return;
+    }
+
+    // The diff preview reads git through bounded child processes and never writes to the
+    // repository. Both routes answer for a finished task as well as a running one: a terminal
+    // task is compared against the tree captured when it ended, so the payload stops moving.
+    if (request.method === 'GET' && /^\/api\/tasks\/\d+\/diff$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const task = database.getTask(taskId);
+      if (!task) {
+        sendError(response, 404, 'Task not found.');
+        return;
+      }
+      sendJson(response, 200, await buildTaskDiffSummary({ database, task }));
+      return;
+    }
+
+    if (request.method === 'GET' && /^\/api\/tasks\/\d+\/diff\/file$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const task = database.getTask(taskId);
+      if (!task) {
+        sendError(response, 404, 'Task not found.');
+        return;
+      }
+      // A rejected path carries its own status code: 400 for a malformed request, 404 for a
+      // path that is not part of this diff.
+      sendJson(response, 200, await buildTaskDiffFile({
+        database,
+        task,
+        path: url.searchParams.get('path'),
+      }));
       return;
     }
 

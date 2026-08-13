@@ -87,7 +87,11 @@ test('dark task evidence overrides higher-specificity light document surfaces', 
 test('revealed terminal and attachment controls cannot retain light surfaces', () => {
   assert.match(
     style,
-    /html\[data-theme="dark"\] \.terminal-layout-settings input\[type="number"\],[\s\S]*?\.completion-alert-settings select \{[\s\S]*?background: var\(--app-control\);/,
+    /html\[data-theme="dark"\] \.terminal-layout-settings input\[type="number"\],[\s\S]*?\.completion-alert-settings input\[type="number"\] \{[\s\S]*?background: var\(--app-control\);/,
+  );
+  assert.match(
+    style,
+    /html\[data-theme="dark"\] \.completion-alert-control-row,[\s\S]*?html\[data-theme="dark"\] \.completion-speech-choices label \{[\s\S]*?background: var\(--app-control\);/,
   );
   assert.match(
     style,

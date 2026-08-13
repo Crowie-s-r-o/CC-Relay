@@ -63,7 +63,9 @@ The settings dialog labels the stored `terminal_layout.background` field as **Op
 
 The dialog body is `.terminal-settings-body`, and each group is a `.terminal-settings-section` with one rhythm: a `.terminal-settings-section-head` carrying the section name on the left and that section's own control on the right, then the fields, then a quiet status line. Sections sit on the card surface separated by hairlines instead of gray bands.
 
-Both boolean settings use the shared `.terminal-settings-switch` pill. **Arrange in a grid** is the bare pill in the window-layout head; **Open new terminals minimized** and **Speak project and task word** add `.terminal-settings-switch-row` for a bordered two-line row with its explanation as a `<small>`. This retired the `!important` stack the old `.terminal-background-toggle` needed to escape `.terminal-layout-settings label`; the background toggle is now a sibling of that grid, not a child of it.
+The window-layout booleans use the shared `.terminal-settings-switch` pill. **Arrange in a grid** is the bare pill in the section head, while **Open new terminals minimized** adds `.terminal-settings-switch-row` for a bordered two-line row with its explanation as a `<small>`. This retired the `!important` stack the old `.terminal-background-toggle` needed to escape `.terminal-layout-settings label`; the background toggle is now a sibling of that grid, not a child of it.
+
+The completion section uses aligned full-width sound and voice rows. **Voice announcement** retains the shared switch, then nests its content checkboxes, 1 through 12 task-name word limit, and exact spoken preview in `.completion-speech-options`. The fieldset stays visible but disabled while voice is off. See [[task-completion-alerts]].
 
 > [!important]
 > `.terminal-layout-settings`, `.completion-alert-settings`, `.terminal-layout-heading`, `.completion-alert-heading`, `.terminal-background-toggle`, and `.completion-speech-toggle` kept their class names through the redesign. Dark-theme parity for this dialog is spread across six blocks in `public/style.css`, and `test/dark-mode.test.mjs` asserts several of those selectors by name. Any new class in this dialog needs its own `html[data-theme="dark"]` rule in the end-of-cascade repair block, or it will show a white surface in the midnight shell.
@@ -71,7 +73,7 @@ Both boolean settings use the shared `.terminal-settings-switch` pill. **Arrange
 > [!important]
 > The minimized-window explanation now lives in the **Open new terminals minimized** switch row, so `resetTerminalLayoutStatus()` writes only "Grid launches use the next available cell." That reset runs on every dialog open. Any copy moved out of `#terminal-layout-status` into static markup must be removed from that function in the same change, or the dialog repeats itself the moment it is opened.
 
-The compact rule set collapses the layout grid to two columns, moves the monitor field to its own row, wraps section heads instead of stacking them, and drops the completion alert section to a single column. Verified with no horizontal overflow in light and dark at 900, 620, and 420 pixels.
+The compact rule set collapses the layout grid to two columns, moves the monitor field to its own row, wraps section heads, stacks the sound label above its select, and eventually stacks the three speech choices and spoken preview. The completion alert section is always a single column, which keeps sound and voice aligned at every width.
 
 > [!note]
 > Retention changes apply to new task submissions immediately. When a renderer is temporarily connected to an older backend without `capabilities.projectTerminalSettings`, it keeps the choice in that project's in-memory composer session without showing a restart requirement. A current backend also persists the same snapshot through the project settings API.
@@ -82,6 +84,10 @@ Each submitted task still snapshots `keep_terminal_open`. New direct Execute tas
 
 ## Validation
 
+- August 13 completion voice pass: the sound and voice controls now align as full-width rows, the
+  voice detail panel has responsive light and dark rules, the focused suite passes 65 of 65, and
+  the complete suite passes 1,472 of 1,472 tests. Browser control was unavailable for a live
+  screenshot in that run. See [[task-completion-alerts]].
 - August 12 dialog pass: full `npm test` (1,427 tests) passed, `npm run release:check` reported consistent v0.2.3 metadata, and `git diff --check` was clean.
 - 136 focused renderer, database, shared-config, launcher, and dark-theme tests passed.
 - Database coverage proves a bulk layout copy changes both project layouts while preserving their different retention and idle-routing values.

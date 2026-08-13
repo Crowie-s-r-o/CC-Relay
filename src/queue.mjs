@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { now } from './database.mjs';
+import { captureTaskDiffBaseline } from './task-diff.mjs';
 
 const RETRYABLE_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_SOURCE_STATUSES = new Set(['open', 'complete', 'failed', 'cancelled', 'interrupted']);
@@ -26,6 +27,7 @@ export class TaskQueue extends EventEmitter {
     terminalPool = null,
     dispatchWait = wait,
     dispatchPollMs = 1_000,
+    captureDiffBaseline = captureTaskDiffBaseline,
   }) {
     super();
     this.database = database;
@@ -42,6 +44,7 @@ export class TaskQueue extends EventEmitter {
     this.terminalPool = terminalPool;
     this.dispatchWait = dispatchWait;
     this.dispatchPollMs = dispatchPollMs;
+    this.captureDiffBaseline = captureDiffBaseline;
     // A Claude task whose selected terminal is externally busy stays queued here until the
     // terminal is idle or idle routing finds another destination. Codex still uses this map
     // for its short routing window after beginTask. In both cases no runner owns the task yet,
@@ -1050,6 +1053,16 @@ export class TaskQueue extends EventEmitter {
         : execution.length > 0 ? `Task started with ${execution.join(', ')}.` : 'Task started.',
     );
     this.changed(task.id);
+    // Captured once per task. A follow-up or retry re-enters here, keeps the original baseline,
+    // and only clears the frozen end so the diff goes live again. A failure is recorded as diff
+    // state and never reaches the task.
+    //
+    // Deliberately not awaited. beginTask has to hand control to executeTask inside the same
+    // tick as runNext(), because planAhead() runs immediately after it and reads state that
+    // only runner.run() establishes; awaiting anything here silently stops Turbo look-ahead.
+    // The snapshot therefore races the provider's first write and wins by a wide margin: it
+    // starts now, while the runner still has a CLI to start and a model to wait for.
+    void this.captureDiffBaseline({ database: this.database, taskId: task.id });
   }
 
   runTask(task, options = {}) {

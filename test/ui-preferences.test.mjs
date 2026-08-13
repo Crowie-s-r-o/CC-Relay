@@ -15,18 +15,30 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
     terminalHeight: 700.6,
     headerPosition: 'bottom',
     runningTaskLayout: { rows: 3, width: 360 },
-    completionAlerts: { sound: 'bell', speak: true },
+    completionAlerts: {
+      sound: 'bell',
+      speak: true,
+      speech: { project: false, task: true, status: true, taskWords: 4 },
+    },
   }), {
     panelWidths: { composer: 582, queue: 499 },
     terminalHeight: 701,
     headerPosition: 'bottom',
     runningTaskLayout: { rows: 3, width: 360 },
-    completionAlerts: { sound: 'bell', speak: true },
+    completionAlerts: {
+      sound: 'bell',
+      speak: true,
+      speech: { project: false, task: true, status: true, taskWords: 4 },
+    },
   });
   assert.equal(normalizeUiPreferences({ panelWidths: { composer: 399, queue: 500 } }), null);
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
-  })?.completionAlerts, { sound: 'chime', speak: false });
+  })?.completionAlerts, {
+    sound: 'chime',
+    speak: false,
+    speech: { project: true, task: true, status: false, taskWords: 1 },
+  });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
   })?.runningTaskLayout, { rows: 1, width: 286 });
@@ -37,7 +49,23 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
     completionAlerts: { sound: 'invalid', speak: 'yes' },
-  })?.completionAlerts, { sound: 'chime', speak: false });
+  })?.completionAlerts, {
+    sound: 'chime',
+    speak: false,
+    speech: { project: true, task: true, status: false, taskWords: 1 },
+  });
+  assert.deepEqual(normalizeUiPreferences({
+    panelWidths: { composer: 580, queue: 500 },
+    completionAlerts: {
+      sound: 'bell',
+      speak: true,
+      speech: { project: false, task: false, status: false, taskWords: 90 },
+    },
+  })?.completionAlerts, {
+    sound: 'bell',
+    speak: true,
+    speech: { project: true, task: false, status: false, taskWords: 12 },
+  });
   assert.equal(parseUiPreferences('{broken'), null);
 });
 
@@ -50,7 +78,11 @@ test('UI preferences persist in durable shared configuration', () => {
     terminalHeight: 720,
     headerPosition: 'bottom',
     runningTaskLayout: { rows: 2, width: 230 },
-    completionAlerts: { sound: 'pulse', speak: false },
+    completionAlerts: {
+      sound: 'pulse',
+      speak: false,
+      speech: { project: true, task: true, status: false, taskWords: 6 },
+    },
   });
   let database = new RelayDatabase(databasePath, { projectConfigPath: configPath });
   try {

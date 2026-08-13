@@ -13,6 +13,15 @@ function boundedNumber(value, minimum, maximum) {
     : null;
 }
 
+function completionSpeechWordLimit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return COMPLETION_SPEECH_MIN_WORDS;
+  return Math.min(
+    COMPLETION_SPEECH_MAX_WORDS,
+    Math.max(COMPLETION_SPEECH_MIN_WORDS, Math.round(number)),
+  );
+}
+
 export function normalizeUiPreferences(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const composer = boundedNumber(value.panelWidths?.composer, 400, 5000);
@@ -23,11 +32,7 @@ export function normalizeUiPreferences(value) {
     project: value.completionAlerts?.speech?.project !== false,
     task: value.completionAlerts?.speech?.task !== false,
     status: value.completionAlerts?.speech?.status === true,
-    taskWords: boundedNumber(
-      value.completionAlerts?.speech?.taskWords,
-      COMPLETION_SPEECH_MIN_WORDS,
-      COMPLETION_SPEECH_MAX_WORDS,
-    ) ?? COMPLETION_SPEECH_MIN_WORDS,
+    taskWords: completionSpeechWordLimit(value.completionAlerts?.speech?.taskWords),
   };
   if (!completionSpeech.project && !completionSpeech.task && !completionSpeech.status) {
     completionSpeech.project = true;
