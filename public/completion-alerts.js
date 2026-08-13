@@ -7,10 +7,33 @@ export const COMPLETION_SOUND_OPTIONS = Object.freeze([
 
 const COMPLETION_SOUND_IDS = new Set(COMPLETION_SOUND_OPTIONS.map(({ id }) => id));
 
+export const COMPLETION_SPEECH_WORD_LIMITS = Object.freeze({ minimum: 1, maximum: 12 });
+
+function normalizeSpeechWordLimit(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return COMPLETION_SPEECH_WORD_LIMITS.minimum;
+  return Math.min(
+    COMPLETION_SPEECH_WORD_LIMITS.maximum,
+    Math.max(COMPLETION_SPEECH_WORD_LIMITS.minimum, Math.round(number)),
+  );
+}
+
+export function normalizeCompletionSpeechPreferences(value) {
+  const normalized = {
+    project: value?.project !== false,
+    task: value?.task !== false,
+    status: value?.status === true,
+    taskWords: normalizeSpeechWordLimit(value?.taskWords),
+  };
+  if (!normalized.project && !normalized.task && !normalized.status) normalized.project = true;
+  return normalized;
+}
+
 export function normalizeCompletionAlertPreferences(value) {
   return {
     sound: COMPLETION_SOUND_IDS.has(value?.sound) ? value.sound : 'chime',
     speak: value?.speak === true,
+    speech: normalizeCompletionSpeechPreferences(value?.speech),
   };
 }
 
@@ -19,14 +42,18 @@ function lastPathPart(path) {
   return clean.split(/[\\/]/).filter(Boolean).pop() || 'Project';
 }
 
-function firstWord(value) {
-  return String(value || '').match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/u)?.[0] || 'task';
+function firstWords(value, limit) {
+  const words = String(value || '').match(/[\p{L}\p{N}]+(?:['’][\p{L}\p{N}]+)*/gu) || [];
+  return words.slice(0, limit).join(' ') || 'task';
 }
 
-export function completionSpeechText(task) {
-  const project = lastPathPart(task?.repo_path);
-  const taskWord = firstWord(task?.title || task?.prompt);
-  return `${project}. ${taskWord}.`;
+export function completionSpeechText(task, preferences) {
+  const speech = normalizeCompletionAlertPreferences(preferences).speech;
+  const parts = [];
+  if (speech.project) parts.push(lastPathPart(task?.repo_path));
+  if (speech.task) parts.push(firstWords(task?.title || task?.prompt, speech.taskWords));
+  if (speech.status) parts.push('Task complete');
+  return `${parts.join('. ')}.`;
 }
 
 function audioContextConstructor(windowObject) {
@@ -86,12 +113,12 @@ export class CompletionAlerts {
     }
   }
 
-  speak(task) {
+  speak(task, preferences) {
     const speech = this.windowObject?.speechSynthesis;
     const Utterance = this.windowObject?.SpeechSynthesisUtterance;
     if (!speech || !Utterance) return;
     try {
-      const utterance = new Utterance(completionSpeechText(task));
+      const utterance = new Utterance(completionSpeechText(task, preferences));
       utterance.rate = 1.05;
       utterance.pitch = 1;
       speech.speak(utterance);
@@ -103,6 +130,6 @@ export class CompletionAlerts {
   notify(task, preferences) {
     const normalized = normalizeCompletionAlertPreferences(preferences);
     void this.playSound(normalized.sound);
-    if (normalized.speak) this.speak(task);
+    if (normalized.speak) this.speak(task, normalized);
   }
 }

@@ -3,6 +3,8 @@ export const UI_PREFERENCES_SETTING = 'ui-layout-preferences';
 const COMPLETION_SOUNDS = new Set(['none', 'chime', 'bell', 'pulse']);
 const RUNNING_TASK_ROWS = new Set([1, 2, 3]);
 const RUNNING_TASK_WIDTHS = new Set([230, 286, 360]);
+const COMPLETION_SPEECH_MIN_WORDS = 1;
+const COMPLETION_SPEECH_MAX_WORDS = 12;
 
 function boundedNumber(value, minimum, maximum) {
   const number = Number(value);
@@ -17,11 +19,25 @@ export function normalizeUiPreferences(value) {
   const queue = boundedNumber(value.panelWidths?.queue, 360, 5000);
   const terminalHeight = boundedNumber(value.terminalHeight, 180, 5000);
   const headerPosition = value.headerPosition === 'bottom' ? 'bottom' : 'top';
+  const completionSpeech = {
+    project: value.completionAlerts?.speech?.project !== false,
+    task: value.completionAlerts?.speech?.task !== false,
+    status: value.completionAlerts?.speech?.status === true,
+    taskWords: boundedNumber(
+      value.completionAlerts?.speech?.taskWords,
+      COMPLETION_SPEECH_MIN_WORDS,
+      COMPLETION_SPEECH_MAX_WORDS,
+    ) ?? COMPLETION_SPEECH_MIN_WORDS,
+  };
+  if (!completionSpeech.project && !completionSpeech.task && !completionSpeech.status) {
+    completionSpeech.project = true;
+  }
   const completionAlerts = {
     sound: COMPLETION_SOUNDS.has(value.completionAlerts?.sound)
       ? value.completionAlerts.sound
       : 'chime',
     speak: value.completionAlerts?.speak === true,
+    speech: completionSpeech,
   };
   const requestedRunningTaskRows = Number(value.runningTaskLayout?.rows);
   const requestedRunningTaskWidth = Number(value.runningTaskLayout?.width);

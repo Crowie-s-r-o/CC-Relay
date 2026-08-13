@@ -447,8 +447,8 @@
                     <span>Completion alert</span>
                     <button id="completion-alert-preview" class="button compact" type="button">Test</button>
                   </div>
-                  <label for="completion-sound">
-                    <span>Sound</span>
+                  <label class="completion-alert-control-row completion-sound-setting" for="completion-sound">
+                    <span><strong>Sound</strong><small>Play a tone when a task finishes.</small></span>
                     <select id="completion-sound">
                       <option value="none">Silent</option>
                       <option value="chime" selected>Gentle chime</option>
@@ -456,10 +456,28 @@
                       <option value="pulse">Digital pulse</option>
                     </select>
                   </label>
-                  <label class="terminal-settings-switch terminal-settings-switch-row completion-speech-toggle">
-                    <input id="completion-speech" type="checkbox">
-                    <span><strong>Speak project and task word</strong><small>For example: “Relay. Add.”</small></span>
-                  </label>
+                  <div class="completion-speech-panel">
+                    <label class="terminal-settings-switch completion-speech-toggle">
+                      <input id="completion-speech" type="checkbox" role="switch" aria-controls="completion-speech-options" aria-expanded="false">
+                      <span><strong>Voice announcement</strong><small>Speak the details you choose below.</small></span>
+                    </label>
+                    <fieldset id="completion-speech-options" class="completion-speech-options" disabled>
+                      <legend>Announcement says</legend>
+                      <div class="completion-speech-choices">
+                        <label><input id="completion-speech-project" type="checkbox" checked><span>Project name</span></label>
+                        <label><input id="completion-speech-task" type="checkbox" checked><span>Task name</span></label>
+                        <label><input id="completion-speech-status" type="checkbox"><span>“Task complete”</span></label>
+                      </div>
+                      <label class="completion-speech-word-setting" for="completion-speech-words">
+                        <span><strong>Task name length</strong><small>Read the first words from the task name.</small></span>
+                        <span class="completion-speech-word-input"><input id="completion-speech-words" type="number" min="1" max="12" value="1" inputmode="numeric"><span>words</span></span>
+                      </label>
+                      <div class="completion-speech-example">
+                        <span>Spoken preview</span>
+                        <q id="completion-speech-example" aria-live="polite">Relay. Add.</q>
+                      </div>
+                    </fieldset>
+                  </div>
                   <small id="completion-alert-status" role="status">Plays when a task finishes.</small>
                 </section>
               </div>
