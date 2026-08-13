@@ -2,6 +2,12 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.8] - 2026-08-13
+
+### Changed
+
+- Expanded desktop update documentation with atomic push failure and GitHub permission troubleshooting guidance.
+
 ## [0.2.7] - 2026-08-13
 
 ### Added
