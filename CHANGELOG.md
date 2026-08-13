@@ -2,6 +2,12 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.11] - 2026-08-13
+
+### Changed
+
+- Relayed tasks must stop any processes they start.
+
 ## [0.2.10] - 2026-08-13
 
 ### Fixed
