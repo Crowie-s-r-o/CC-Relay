@@ -13,7 +13,7 @@ CC Relay exposes subscription runway without asking for an API key or reading pr
 3. Claude current week for Fable
 4. Codex current week
 
-The background monitor refreshes both providers every five minutes. Status requests only read the in-memory snapshot, so opening or polling the interface never starts a CLI process. Overlapping refresh requests share one promise. A successful sample records `checkedAt`; a later failure preserves the sample as `stale`. A provider with no successful sample settles as `unavailable`.
+The background monitor refreshes both providers once per minute. Status requests only read the in-memory snapshot, so opening or polling the interface never starts a CLI process. Overlapping refresh requests share one promise. A successful sample records `checkedAt`; a later failure preserves the sample as `stale`. A provider with no successful sample settles as `unavailable`.
 
 ## Claude source
 
@@ -70,10 +70,22 @@ Each meter also shows a live reset countdown below its bar. The five-hour Claude
 
 The four-meter strip replaces the former header **Pause queue** button and sits immediately after the **Top** or **Bottom** monitor-position control, before the theme control. The redundant **CC Relay online** pill is not rendered. Pause and resume endpoints, stored project pause state, and queue helper support remain in place; only the global header action is removed. See [[interface-layout]] and [[provider-installation-detection]].
 
+## Session rollover synchronization
+
+On August 14, the header showed an old Claude session sample of `98%` and `23h 58m` while Claude's live usage screen showed `1%` and `4h 59m`. The desktop status API returned the correct new values on its next sample, proving that the probe and parser were working. The defect had two parts:
+
+1. The five-minute sampling interval kept the expired session snapshot visible too long.
+2. The renderer treated every past time-only reset label as tomorrow. Just after a reset, an old label such as `2:20am` therefore became an impossible almost-24-hour countdown for a five-hour window.
+
+`src/provider-usage.mjs` now samples once per minute while retaining overlap deduplication and cached status reads. `public/provider-usage.js` advances a time-only five-hour reset into the next day only when that candidate is within the window's five-hour horizon. Otherwise it keeps the expired timestamp, and the visible countdown clamps to `0h 0m` until the next provider sample replaces the old percentage and reset label.
+
+> [!important]
+> Do not restore unconditional next-day rollover for the five-hour meter. Overnight labels can legitimately point into the next day, but a candidate almost 24 hours away proves that the cached five-hour window has expired.
+
 ## Verification
 
-- `test/provider-usage.test.mjs` covers ANSI parsing, latest-frame selection, session reuse, platform gating, exact Codex bucket selection, refresh deduplication, and stale preservation.
-- `test/provider-usage-ui.test.mjs` covers the four-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units, timezone-aware Claude labels, absent windows, dark mode, and the mobile layout.
+- `test/provider-usage.test.mjs` covers ANSI parsing, latest-frame selection, session reuse, platform gating, exact Codex bucket selection, the one-minute default, refresh deduplication, and stale preservation.
+- `test/provider-usage-ui.test.mjs` covers the four-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units, timezone-aware Claude labels, expired five-hour rollover, absent windows, dark mode, and the mobile layout.
 - `test/codex-app-server.test.mjs` protects the authenticated rate-limit method and proves its null parameters pass through the actual request serializer.
 
 #relay #providers #usage #claude #codex #header

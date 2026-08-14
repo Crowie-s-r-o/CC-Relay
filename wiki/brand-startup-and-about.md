@@ -1,6 +1,6 @@
 ---
 name: Brand Startup and About Experience
-description: Crowie splash lifecycle, branded About dialog, and desktop company identity contract.
+description: Minimal square startup lifecycle, branded About dialog, and desktop company identity contract.
 type: design
 tags:
   - relay
@@ -12,7 +12,7 @@ tags:
 
 # Brand Startup and About Experience
 
-CC Relay presents a dedicated Crowie startup window before the embedded server is ready. Electron
+CC Relay presents a dedicated minimal startup window before the embedded server is ready. Electron
 shows the window's solid graphite background immediately after creating it, before awaiting the
 local splash document. The main desktop window stays hidden until its loopback renderer finishes
 the first load, then appears before the splash closes.
@@ -21,7 +21,7 @@ the first load, then appears before the splash closes.
 
 `src/electron-main.mjs` owns two windows during desktop startup:
 
-1. A 520 by 600 frameless splash is created with `show: true` and background `#0d0e11` immediately
+1. A 320 by 320 frameless splash is created with `show: true` and background `#0d0e11` immediately
    after Electron is ready.
 2. `public/splash.html` loads into the already visible window.
 3. The embedded server starts and selects its loopback ports.
@@ -37,10 +37,10 @@ the splash forward during startup and the main application forward after handoff
 > showing the window recreates an invisible startup gap.
 
 > [!note]
-> The splash is a packaged local file, not part of the loopback renderer. It uses the existing
-> `public/favicon.svg` Crowie artwork and bundled fonts, requires no renderer JavaScript, and has no
-> animation, transition, progress track, gradient, or decorative background effect. The Electron
-> `backgroundColor` and CSS background are identical so the first frame and loaded document match.
+> The splash is a packaged local file, not part of the loopback renderer. It loads only bundled
+> fonts, requires no image or renderer JavaScript, and has no animation, transition, progress track,
+> gradient, or decorative background effect. The Electron `backgroundColor` and CSS background are
+> identical so the first frame and loaded document match.
 
 ## Visual identity
 
@@ -48,12 +48,15 @@ The brand surfaces extend the neutral graphite language from [[dark-mode]] and t
 [[interface-layout]]:
 
 - Source Serif 4 carries the CC Relay display name.
-- Instrument Sans carries product copy.
-- JetBrains Mono carries company and operational labels.
-- Graphite `#0d0e11` is the splash's only background color. Blue `#7aa2f7`, white, and muted gray
-  provide the logo and text hierarchy.
-- A centered crow mark, product name, company attribution, and plain startup message form the
-  complete splash. The splash has no moving or ornamental status indicator.
+- JetBrains Mono carries the small operational label.
+- Graphite `#0d0e11` is the only background color. White, muted gray, and one inset hairline provide
+  the complete hierarchy.
+- The frameless window and its content are one 320 by 320 square. The centered product name and
+  `Starting` remain primary, followed by the quiet two-line attribution `Created by software
+  development company Crowie s.r.o.`
+- The splash deliberately omits the Crowie artwork, tagline, progress indicator, rounded corners,
+  and motion. The attribution uses an accessible 4.61:1 muted-gray contrast without competing with
+  the startup state. The fuller company identity remains available in About.
 
 The About dialog retains its own rotating signal orbit, which stops when reduced motion is
 requested. The loading screen does not share that motion.
@@ -123,6 +126,12 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 
 ## Verification
 
+- Minimal square revision: an isolated Electron 43.4 capture at the exact 320 by 320 production
+  dimensions showed one sharp graphite square containing `CC Relay`, `Starting`, and the restrained
+  Crowie s.r.o. company attribution, with no overflow or additional artwork. The attribution wraps
+  cleanly onto two centered lines. The 32 focused startup, icon, title-bar, and layout checks passed.
+  The complete suite passed 1,551 tests, `release:check` was green for v0.2.12, and
+  `git diff --check` was clean.
 - Versioned shell-marker revision: 39 focused title-bar, startup, zoom, and layout tests passed. An
   isolated Electron 43.4 macOS window using the production option and URL helpers showed one 36px
   title bar with native traffic lights and the centered Crowie mark, with no visible `CC Relay`
@@ -130,8 +139,8 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
   1,551 tests, `release:check` was green for v0.2.12, and `git diff --check` was clean.
 - Centered title-bar and fixed-shell revision: `node --test test/desktop-icon.test.mjs
   test/project-layout.test.mjs` passed 18 of 18.
-- Current complete suite: `npm test` passed 1,537 of 1,537.
-- Current `npm run release:check` and `git diff --check`: passed for v0.2.11.
+- Current complete suite: `npm test` passed 1,551 of 1,551.
+- Current `npm run release:check` and `git diff --check`: passed for v0.2.12.
 - Isolated macOS Electron captures checked dark and light title bars at 1540 by 980 and 1120 by
   760. The root scroll area matched the viewport at both sizes, the centered mark stayed visible,
   and the compact workspace retained full-height Composer and Queue panels inside its own scroll.
@@ -139,8 +148,8 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 - Complete clean-worktree suite with only the splash revision applied: 1,419 passed.
 - `npm run release:check`: release metadata consistent for v0.2.3.
 - `node --check src/electron-main.mjs` and `git diff --check`: passed.
-- Isolated Electron capture checked at the exact 520 by 600 splash size. The rendered screen has one
-  solid background, the Crowie logo, static text, no progress indicator, and no visual overflow.
+- The original branded splash revision was also captured at its former 520 by 600 size before the
+  later minimal-square redesign.
 
 See [[packaged-renderer-startup]], [[product-naming]], and [[desktop-updates]].
 

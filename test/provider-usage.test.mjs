@@ -6,6 +6,7 @@ import {
   ClaudeUsageProbe,
   normalizeCodexUsage,
   parseClaudeUsageScreen,
+  PROVIDER_USAGE_REFRESH_MS,
   ProviderUsageMonitor,
   stripTerminalControls,
 } from '../src/provider-usage.mjs';
@@ -202,4 +203,10 @@ test('provider usage monitor deduplicates refreshes and preserves last-known val
 
   stale.claude.weekly.usedPercent = 0;
   assert.equal(monitor.current().claude.weekly.usedPercent, 77);
+});
+
+test('provider usage monitor samples providers once per minute by default', () => {
+  const monitor = new ProviderUsageMonitor();
+  assert.equal(PROVIDER_USAGE_REFRESH_MS, 60_000);
+  assert.equal(monitor.refreshMs, 60_000);
 });

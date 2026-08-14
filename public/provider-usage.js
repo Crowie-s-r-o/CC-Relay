@@ -24,6 +24,7 @@ const MONTH_INDEX = Object.freeze({
   nov: 10,
   dec: 11,
 });
+const FIVE_HOUR_RESET_HORIZON_MS = 5 * 60 * 60 * 1_000;
 
 function zonedDateParts(timestamp, timeZone) {
   const parts = new Intl.DateTimeFormat('en-US', {
@@ -68,7 +69,9 @@ function timestampForZonedParts(parts, timeZone) {
   return timestamp;
 }
 
-function resetTimestamp(usageWindow, now) {
+function resetTimestamp(usageWindow, now, {
+  timeOnlyHorizonMs = Number.POSITIVE_INFINITY,
+} = {}) {
   const seconds = Number(usageWindow?.resetsAt);
   if (Number.isFinite(seconds) && seconds > 0) return seconds * 1_000;
 
@@ -93,13 +96,17 @@ function resetTimestamp(usageWindow, now) {
 
     if (!match[1] && timestamp < now) {
       const followingDay = new Date(Date.UTC(year, month, day + 1));
-      timestamp = timestampForZonedParts({
+      const nextDayTimestamp = timestampForZonedParts({
         year: followingDay.getUTCFullYear(),
         month: followingDay.getUTCMonth(),
         day: followingDay.getUTCDate(),
         hour,
         minute,
       }, timeZone);
+      // A five-hour window cannot legitimately point almost a full day ahead. That shape means
+      // the cached window just expired, so keep the past timestamp and let the countdown clamp
+      // to zero until the next provider sample arrives.
+      if (nextDayTimestamp - now <= timeOnlyHorizonMs) timestamp = nextDayTimestamp;
     } else if (match[1] && !match[3] && timestamp < now - (180 * 24 * 60 * 60 * 1_000)) {
       year += 1;
       timestamp = timestampForZonedParts({ year, month, day, hour, minute }, timeZone);
@@ -111,7 +118,11 @@ function resetTimestamp(usageWindow, now) {
 }
 
 function resetCountdown(usageWindow, meter, now) {
-  const timestamp = resetTimestamp(usageWindow, now);
+  const timestamp = resetTimestamp(usageWindow, now, {
+    timeOnlyHorizonMs: meter.window === 'fiveHour'
+      ? FIVE_HOUR_RESET_HORIZON_MS
+      : Number.POSITIVE_INFINITY,
+  });
   if (timestamp === null) return { value: '', label: '' };
   const remaining = Math.max(0, timestamp - now);
   if (meter.window === 'fiveHour') {

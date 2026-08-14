@@ -1,12 +1,4 @@
 @font-face {
-  font-family: "Instrument Sans";
-  src: url("./fonts/instrument-sans-latin.woff2") format("woff2");
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-}
-
-@font-face {
   font-family: "JetBrains Mono";
   src: url("./fonts/jetbrains-mono-latin.woff2") format("woff2");
   font-style: normal;
@@ -24,7 +16,6 @@
 
 :root {
   color-scheme: dark;
-  font-family: "Instrument Sans", sans-serif;
   color: #e9ebef;
   background: #0d0e11;
 }
@@ -52,65 +43,45 @@ body {
   flex-direction: column;
   justify-content: center;
   align-items: center;
+  gap: 10px;
   width: 100%;
   height: 100%;
-  padding: 56px;
+  aspect-ratio: 1;
+  padding: 40px;
   background: #0d0e11;
-}
-
-.splash-logo {
-  width: 128px;
-  height: 128px;
-  margin-bottom: 34px;
-  filter: invert(1) brightness(1.28);
-  opacity: .94;
-}
-
-.splash-copy {
+  box-shadow: inset 0 0 0 1px #24262b;
   text-align: center;
-}
-
-.splash-eyebrow,
-.splash-company,
-.startup-state {
-  font-family: "JetBrains Mono", monospace;
-}
-
-.splash-eyebrow {
-  margin: 0 0 10px;
-  color: #7aa2f7;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: .16em;
-  text-transform: uppercase;
 }
 
 h1 {
   margin: 0;
   font-family: "Source Serif 4", serif;
-  font-size: 45px;
+  font-size: 28px;
   font-weight: 600;
-  letter-spacing: -.045em;
+  letter-spacing: -.035em;
   line-height: 1;
 }
 
-h1 span {
-  color: #9ca2ad;
-  font-weight: 400;
-}
-
-.splash-company {
-  margin: 10px 0 0;
-  color: #9ca2ad;
-  font-size: 10px;
-  letter-spacing: .045em;
+.startup-state,
+.splash-credit {
+  margin: 0;
+  font-family: "JetBrains Mono", monospace;
 }
 
 .startup-state {
-  margin: 38px 0 0;
   color: #8d939d;
   font-size: 9px;
-  letter-spacing: .08em;
-  text-align: center;
+  font-weight: 500;
+  letter-spacing: .14em;
   text-transform: uppercase;
+}
+
+.splash-credit {
+  max-width: 220px;
+  margin-top: 18px;
+  color: #777c86;
+  font-size: 8px;
+  font-weight: 400;
+  letter-spacing: .025em;
+  line-height: 1.5;
 }

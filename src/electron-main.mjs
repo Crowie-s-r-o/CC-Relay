@@ -138,8 +138,8 @@ function applyDevelopmentAppIcon() {
 
 async function createSplashWindow(appIcon) {
   splashWindow = new BrowserWindow({
-    width: 520,
-    height: 600,
+    width: 320,
+    height: 320,
     frame: false,
     resizable: false,
     minimizable: false,

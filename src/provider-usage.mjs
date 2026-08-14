@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
-const CLAUDE_USAGE_REFRESH_MS = 5 * 60 * 1_000;
+export const PROVIDER_USAGE_REFRESH_MS = 60_000;
 const CLAUDE_USAGE_TIMEOUT_MS = 30_000;
 const WEEK_MINUTES = 7 * 24 * 60;
 const MAX_SCREEN_BYTES = 256 * 1_024;
@@ -304,7 +304,7 @@ export class ProviderUsageMonitor extends EventEmitter {
     readCodex,
     cancelClaude = () => {},
     now = Date.now,
-    refreshMs = CLAUDE_USAGE_REFRESH_MS,
+    refreshMs = PROVIDER_USAGE_REFRESH_MS,
   } = {}) {
     super();
     this.readClaude = readClaude;
@@ -380,5 +380,3 @@ export class ProviderUsageMonitor extends EventEmitter {
     this.cancelClaude();
   }
 }
-
-export const PROVIDER_USAGE_REFRESH_MS = CLAUDE_USAGE_REFRESH_MS;

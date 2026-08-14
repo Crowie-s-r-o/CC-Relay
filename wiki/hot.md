@@ -6,6 +6,19 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 14: provider runway now resamples once per minute and handles a five-hour rollover honestly.** The previous five-minute cache could retain `98%` after Claude had reset to `1%`, while the expired time-only reset label rolled into tomorrow and displayed `23h 58m`. A five-hour reset now advances overnight only when the resulting timestamp is within five hours; an expired cached label clamps at `0h 0m` until the next sample. Focused usage checks pass 58 of 58, the complete suite passes 1,553 tests, `release:check` is green for v0.2.12, and `git diff --check` is clean. See [[provider-usage-monitor]].
+
+> [!note]
+> **August 14: desktop startup is now one minimal square.** The frameless splash is 320 by 320 and
+> contains `CC Relay`, `Starting`, and the restrained two-line attribution `Created by software
+> development company Crowie s.r.o.` on the existing graphite surface. The Crowie artwork, tagline,
+> extra typeface, rounded treatment, progress UI, and motion are absent. The pre-server visibility
+> and clean handoff to the main window are unchanged. An isolated exact Electron render confirmed
+> the final spacing, readable attribution contrast, and hairline edge. The 32 focused desktop checks
+> and all 1,551 repository tests pass, and `release:check` is green for v0.2.12. See
+> [[brand-startup-and-about]] and [[packaged-renderer-startup]].
+
 > [!important]
 > **August 14: the macOS Crowie title bar is now gated by the shell that created it.** The Electron main process pairs `hiddenInset` with a versioned renderer URL marker, and the early renderer bootstrap requires that marker as well as Electron and Macintosh identity. Refreshing newer static files inside an older native-title window can no longer create a second 36px title bar. Task 752's screenshot came from the installed v0.2.10 bundle while source was already v0.2.12, so a rebuild and relaunch remain necessary to replace the visible native `CC Relay` title with the centered mark. An isolated Electron 43.4 capture showed native traffic lights and the Crowie mark in one bar with no visible product title. The 39 focused checks and all 1,551 repository tests pass, `release:check` is green for v0.2.12, and `git diff --check` is clean. See [[brand-startup-and-about]] and [[packaged-renderer-startup]].
 

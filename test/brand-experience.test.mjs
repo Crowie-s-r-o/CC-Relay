@@ -9,28 +9,27 @@ const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 
-test('desktop startup shows the Crowie splash before waiting for the embedded server', () => {
+test('desktop startup shows the minimal splash before waiting for the embedded server', () => {
   const splashStart = main.indexOf('await createSplashWindow(appIcon)');
   const serverStart = main.indexOf("await import('./server.mjs')");
 
   assert.ok(splashStart > 0);
   assert.ok(serverStart > splashStart);
   assert.match(main, /const SPLASH_PATH = fileURLToPath\(new URL\('\.\.\/public\/splash\.html'/);
+  assert.match(main, /width: 320,\s+height: 320,/);
   assert.match(main, /frame: false,[\s\S]*?show: true,[\s\S]*?backgroundColor: '#0d0e11'/);
   assert.match(main, /desktopDiagnostic\('desktop\.splash\.shown'\);[\s\S]*?await splashWindow\.loadFile\(SPLASH_PATH\);/);
   assert.match(main, /mainWindow\.show\(\);[\s\S]*?closeSplashWindow\(\);/);
 });
 
-test('splash presents a static CC Relay and Crowie company identity accessibly', () => {
+test('splash is one static square with minimal startup and company text', () => {
   assert.match(splash, /role="status"[^>]+aria-live="polite"/);
-  assert.match(splash, /class="splash-logo" src="\.\/favicon\.svg"/);
-  assert.match(splash, /<h1><span>CC<\/span> Relay<\/h1>/);
-  assert.match(splash, /Software by Crowie s\.r\.o\./);
-  assert.match(splash, /Software Development company/);
-  assert.match(splash, /Preparing your command center/);
-  assert.match(splashStyle, /\.splash \{[\s\S]*?background: #0d0e11;/);
+  assert.match(splash, /<main[^>]+>\s*<h1>CC Relay<\/h1>\s*<p class="startup-state">Starting<\/p>\s*<p class="splash-credit">Created by software development company Crowie s\.r\.o\.<\/p>\s*<\/main>/);
+  assert.doesNotMatch(splash, /<img|<section|command center/);
+  assert.match(splashStyle, /\.splash \{[\s\S]*?aspect-ratio: 1;[\s\S]*?background: #0d0e11;/);
   assert.match(splashStyle, /font-family: "Source Serif 4"/);
-  assert.doesNotMatch(splashStyle, /animation|transition|@keyframes|gradient/i);
+  assert.match(splashStyle, /\.splash-credit \{[\s\S]*?max-width: 220px;[\s\S]*?font-size: 8px;/);
+  assert.doesNotMatch(splashStyle, /animation|transition|@keyframes|gradient|border-radius/i);
 });
 
 test('the header opens a branded About dialog with company and founder details', () => {

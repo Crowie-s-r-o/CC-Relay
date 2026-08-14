@@ -106,6 +106,18 @@ test('a time-only Claude reset uses its timezone and rolls into the next day', (
   assert.equal(fiveHour.countdown, '2h 20m');
 });
 
+test('an expired five-hour reset clamps at zero instead of rolling almost a day ahead', () => {
+  const [fiveHour] = providerUsagePresentation({
+    claude: {
+      status: 'ready',
+      fiveHour: { usedPercent: 98, resetLabel: '2:20am (Europe/Bratislava)' },
+    },
+  }, { now: Date.parse('2026-08-14T00:22:00Z') });
+
+  assert.equal(fiveHour.countdown, '0h 0m');
+  assert.equal(fiveHour.countdownLabel, 'Resets in 0 hours and 0 minutes');
+});
+
 test('usage thresholds are green below 50, yellow from 50, orange from 75, and red from 90', () => {
   const levelAt = (usedPercent) => providerUsagePresentation({
     claude: {
