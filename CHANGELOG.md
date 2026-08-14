@@ -2,6 +2,17 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.13] - 2026-08-14
+
+### Changed
+
+- Provider usage now refreshes every minute.
+- Startup has been streamlined.
+
+### Fixed
+
+- Expired usage reset times are now clamped.
+
 ## [0.2.12] - 2026-08-14
 
 ### Changed
