@@ -50,11 +50,11 @@
       </button>
       <div class="header-running-monitor">
         <div class="header-running-primary">
-          <div id="header-running-tasks" class="header-running-tasks" aria-label="Running tasks across all projects" aria-live="polite">
-            <div class="header-running-empty"><span>No tasks running</span></div>
+          <div id="header-running-tasks" class="header-running-tasks" aria-label="Active tasks and terminal sessions across all projects" aria-live="polite">
+            <div class="header-running-empty"><span>No active tasks or sessions</span></div>
           </div>
         </div>
-        <div id="header-running-extra-tasks" class="header-running-extra-tasks" aria-label="Additional running task rows" aria-live="polite"></div>
+        <div id="header-running-extra-tasks" class="header-running-extra-tasks" aria-label="Additional task monitor rows" aria-live="polite"></div>
       </div>
       <div class="header-actions">
         <button id="desktop-update-indicator" class="desktop-update-indicator" type="button" aria-haspopup="dialog" aria-controls="desktop-update-modal" data-state="hidden" hidden>
@@ -94,7 +94,7 @@
           <div class="display-settings-popover">
             <strong>Display</strong>
             <section class="display-settings-section" aria-labelledby="running-task-display-heading">
-              <span id="running-task-display-heading" class="display-settings-section-title">Running tasks</span>
+              <span id="running-task-display-heading" class="display-settings-section-title">Task monitor</span>
               <label for="running-task-rows">Rows
                 <select id="running-task-rows">
                   <option value="1">1 row</option>
@@ -835,7 +835,7 @@
                 <span id="task-continuation-state" class="task-continuation-state" data-state="ready">Ready</span>
               </div>
               <div class="task-continuation-entry">
-                <textarea id="task-continuation-input" rows="1" maxlength="12000" aria-label="Write a follow-up for this task" placeholder="Ask a follow-up in this terminal..."></textarea>
+                <textarea id="task-continuation-input" rows="1" aria-label="Write a follow-up for this task" placeholder="Ask a follow-up in this terminal..."></textarea>
                 <label id="task-continuation-attach" class="task-continuation-attach" title="Add PNG, JPEG, or WebP images" aria-label="Add images to this follow-up">
                   <input id="task-continuation-image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
                   <span aria-hidden="true">＋</span>

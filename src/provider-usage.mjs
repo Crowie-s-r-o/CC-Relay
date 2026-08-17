@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
-export const PROVIDER_USAGE_REFRESH_MS = 60_000;
+export const PROVIDER_USAGE_REFRESH_MS = 30_000;
 const CLAUDE_USAGE_TIMEOUT_MS = 30_000;
 const WEEK_MINUTES = 7 * 24 * 60;
 const MAX_SCREEN_BYTES = 256 * 1_024;
@@ -24,7 +24,16 @@ expect {
 }
 expect {
   -re {Current week \(all models\)} {
-    after 500
+    # Claude first paints a persisted usage snapshot, then replaces it after the live request.
+    # Give that request time to repaint before looking for one more complete frame. If the values
+    # did not change and Claude skips the repaint, the short timeout still bounds the probe.
+    after 1500
+    set timeout 2
+    expect {
+      -re {Current week \(all models\)} { after 500 }
+      timeout {}
+      eof { exit 125 }
+    }
     send -- "\033"
   }
   timeout { exit 124 }
@@ -68,32 +77,58 @@ export function stripTerminalControls(value) {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
 }
 
-function lastClaudeWindow(screen, label) {
+function lastClaudeWindowMatching(screen, labelSource, acceptsLabel = () => true) {
   const pattern = new RegExp(
-    `${escapeRegExp(label)}\\s+(?:\\d{1,3}(?:\\.\\d+)?%\\s+)?(\\d{1,3}(?:\\.\\d+)?)%\\s+used\\s+Resets\\s+([^\\r\\n]+)`,
+    `(${labelSource})\\s+(?:\\d{1,3}(?:\\.\\d+)?%\\s+)?(\\d{1,3}(?:\\.\\d+)?)%\\s+used\\s+Resets\\s+([^\\r\\n]+)`,
     'gi',
   );
   let latest = null;
   for (const match of screen.matchAll(pattern)) {
-    const usedPercent = finitePercent(match[1]);
+    if (!acceptsLabel(match[1].replace(/\\s+/g, ' ').trim())) continue;
+    const usedPercent = finitePercent(match[2]);
     if (usedPercent === null) continue;
     latest = {
       usedPercent,
       resetsAt: null,
-      resetLabel: match[2].replace(/\s+/g, ' ').trim().slice(0, 120) || null,
+      resetLabel: match[3].replace(/\s+/g, ' ').trim().slice(0, 120) || null,
     };
   }
   return latest;
 }
 
-// `/usage` first paints a cached snapshot and then replaces it with a fresh one. The terminal
-// byte stream contains both frames, so each parser intentionally keeps the last matching row.
+function lastClaudeWindow(screen, label) {
+  return lastClaudeWindowMatching(screen, escapeRegExp(label));
+}
+
+function lastClaudeFableWindow(screen) {
+  return lastClaudeWindowMatching(
+    screen,
+    'Current week \\([^\\r\\n)]+\\)',
+    (label) => /^Current week \(Fable(?:\s+\d+(?:\.\d+)*)?(?:\s+only)?\)$/i.test(label),
+  );
+}
+
+function latestClaudeUsageFrame(screen) {
+  const frames = [...screen.matchAll(/Current session/gi)];
+  const latest = frames.at(-1);
+  return latest ? screen.slice(latest.index) : screen;
+}
+
+// `/usage` first paints a cached snapshot and then replaces it with a fresh one. Parse all rows
+// from only the final complete frame. Selecting the last match independently for each row lets an
+// optional model-specific row leak forward from an older frame after Claude removes it.
 export function parseClaudeUsageScreen(value) {
   const screen = stripTerminalControls(value);
+  const frame = latestClaudeUsageFrame(screen);
+  const weekly = lastClaudeWindow(frame, 'Current week (all models)');
+  const fableWeekly = lastClaudeFableWindow(frame);
   return {
-    fiveHour: lastClaudeWindow(screen, 'Current session'),
-    weekly: lastClaudeWindow(screen, 'Current week (all models)'),
-    fableWeekly: lastClaudeWindow(screen, 'Current week (Fable)'),
+    sourceStale: /Showing last-known usage|Could not refresh usage data/i.test(frame),
+    fiveHour: lastClaudeWindow(frame, 'Current session'),
+    weekly,
+    // Newer Claude builds can omit a distinct Fable row even in a live Fable session. In that
+    // case the all-model weekly window is the only reported subscription limit that applies.
+    fableWeekly: fableWeekly || (weekly ? { ...weekly, shared: true } : null),
   };
 }
 
@@ -335,11 +370,19 @@ export class ProviderUsageMonitor extends EventEmitter {
     }
     try {
       const value = await read();
+      const { sourceStale = false, ...sample } = value && typeof value === 'object' ? value : {};
+      if (!hasUsage(sample)) {
+        this.state[provider] = {
+          ...previous,
+          status: hasUsage(previous) ? 'stale' : 'unavailable',
+        };
+        return;
+      }
       this.state[provider] = {
         ...previous,
-        ...value,
-        status: hasUsage(value) ? 'ready' : 'unavailable',
-        checkedAt: new Date(this.now()).toISOString(),
+        ...sample,
+        status: sourceStale ? 'stale' : 'ready',
+        checkedAt: sourceStale ? previous.checkedAt : new Date(this.now()).toISOString(),
       };
     } catch {
       this.state[provider] = {

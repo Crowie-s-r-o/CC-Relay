@@ -169,7 +169,12 @@ export function providerUsageMeterPresentation(providerUsage, meter, {
 } = {}) {
   const nowTimestamp = Number(now);
   const provider = providerUsage?.[meter.provider];
-  const usageWindow = provider?.[meter.window];
+  const directWindow = provider?.[meter.window];
+  // Older backends and newer Claude `/usage` screens can both omit a separate Fable row. The
+  // all-model weekly window is then the only reported subscription runway that applies to Fable.
+  const usageWindow = meter.window === 'fableWeekly' && !directWindow && provider?.weekly
+    ? { ...provider.weekly, shared: true }
+    : directWindow;
   const usedPercent = finitePercent(usageWindow?.usedPercent);
   if (usedPercent === null) {
     const state = !provider || provider.status === 'checking' ? 'checking' : 'unavailable';
@@ -180,6 +185,7 @@ export function providerUsageMeterPresentation(providerUsage, meter, {
       countdown: '',
       countdownLabel: '',
       usedPercent: null,
+      shared: false,
       level: state,
       title: state === 'unavailable'
         ? `${meter.label} usage is unavailable.`
@@ -194,6 +200,7 @@ export function providerUsageMeterPresentation(providerUsage, meter, {
     Number.isFinite(nowTimestamp) ? nowTimestamp : Date.now(),
   );
   const stale = provider?.status === 'stale';
+  const shared = usageWindow?.shared === true;
   const level = usedPercent >= 90
     ? 'critical'
     : usedPercent >= 75
@@ -206,8 +213,11 @@ export function providerUsageMeterPresentation(providerUsage, meter, {
     countdown: countdown.value,
     countdownLabel: countdown.label,
     usedPercent,
+    shared,
     level,
-    title: `${meter.label}: ${usedPercent}% used.${reset ? ` ${reset}.` : ''}${stale ? ' Last known value.' : ''}`,
+    title: shared
+      ? `${meter.label}: ${usedPercent}% used from the shared Claude weekly window. Claude reported no separate Fable allowance.${reset ? ` ${reset}.` : ''}${stale ? ' Last known value.' : ''}`
+      : `${meter.label}: ${usedPercent}% used.${reset ? ` ${reset}.` : ''}${stale ? ' Last known value.' : ''}`,
   };
 }
 

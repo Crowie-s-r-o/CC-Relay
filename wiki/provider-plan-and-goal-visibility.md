@@ -30,12 +30,32 @@ CC Relay never calls `thread/goal/set`. It only observes a goal that a connected
 > [!note]
 > Goal timestamps are dual-shape: either an epoch number or an ISO 8601 string. They are preserved exactly as received and never unit-converted. The schema declares int64 with no unit, so converting would mean guessing seconds against milliseconds, and reading a seconds value as milliseconds writes a 1970 date into stored history.
 
-A turn that observed a goal records one turn-final `thread/goal/updated` with a **top-level** `turnEnded: true` when the turn completes, so a finished task's goal stops reading live. `finishActiveTurn` is the only caller of `recordTurnFinalGoal`, and it deletes the `activeTurns` entry immediately after replaying, so the second finish of one turn (the `turn/completed` notification and the one-second poll both call it) finds no record left. Once-per-turn therefore rests on that delete plus one fresh record per `run`, and it assumes no `onEvent` consumer synchronously re-enters `finishActiveTurn` from inside the replay itself. No flag on the record encodes any of that, so this page is where the invariant lives.
+A Relay run that observed a goal records one final `thread/goal/updated` with a **top-level** `turnEnded: true` only after the complete provider turn chain settles. An automatic goal successor stays inside the same `activeTurns` record, so an intermediate `turn/completed` neither resolves the task nor replays a terminal goal row. `finalizeActiveTurn` replays once and deletes the record only at the real thread boundary. A later operator-started run builds a fresh record.
 
 A goal update naming neither an objective nor a status never becomes the turn's last goal. It is still logged verbatim, because Codex output is reported as it arrived, but replaying a blank record at turn end would erase a real objective and its usage behind a bare "Recorded" label, and that replayed record is the one nothing can revise afterwards.
 
 > [!note]
 > The Codex `planKey` is `threadId:turnId`, so two turns on one thread keep two plan rows. Two turns that both omit a turn id share one thread-scoped row. That is known and pinned by test, not fixed.
+
+## Durable goal turn handoff
+
+The [Codex App Server protocol](https://learn.chatgpt.com/docs/app-server) defines a thread as the conversation container and a turn as one model interaction. `turn/completed` therefore proves only that one provider turn ended. It does not prove that an active `/goal` ended. The persisted goal state can launch another turn on the same thread without a new Relay request.
+
+Task 781 provided the binding failure trace. App-server reported `turn/completed` for turn `01a010eb...` at `2026-08-17T18:48:22.877Z`, then the Codex rollout recorded successor turn `2efafb50...` at `2026-08-17T18:48:22.944Z`. The 67 millisecond gap left the thread and native terminal active, but Relay had already resolved the run, released its subscription, changed the manual task to `open`, and disabled live steering as **Conversation busy**.
+
+> [!important]
+> When the last observed goal status is `active`, a successful `turn/completed` enters a goal-continuation boundary instead of finishing the Relay run. The task stays `running`, the subscription stays attached, and the continuation composer stays in live-steering mode.
+
+The handoff has four guarded paths:
+
+1. A normal `turn/started` notification adopts the provider-created successor before the ordinary turn-id filter.
+2. If that notification is missed, `thread/read` with `includeTurns: true` finds the exact in-progress successor.
+3. A successful read that still reports `active`, an unknown status, or a failed read is inconclusive and schedules another check. None of those conditions is evidence of completion.
+4. Only explicit `idle` or `notLoaded` thread state settles the completed chain successfully. `systemError` settles it as a failure.
+
+Each adopted successor replaces the exact active turn id and starts a generation-bound poll. A late poll or duplicate completion from the previous turn cannot finish the successor. If the operator submits during the short boundary, `steer()` waits for the successor and sends `turn/steer` with that exact `expectedTurnId`. This preserves the central terminal-session contract: every message goes into the conversation that is actually running and is never moved to the queue.
+
+Task Activity labels app-server boundaries **Turn started** and **Turn finished**. It does not call `turn/completed` **Session finished**, because the thread, goal, task, and native terminal may all still be active.
 
 ## Claude board folding
 
@@ -70,18 +90,18 @@ The row bounds what it **draws**, never what it **reports**. Caps are 50 steps d
 
 ## Implementation map
 
-- `src/codex-app-server.mjs` normalizes and stores `turn/plan/updated`, `thread/goal/updated`, and `thread/goal/cleared` above the turn guard, and replays the turn-final goal.
+- `src/codex-app-server.mjs` normalizes and stores `turn/plan/updated`, `thread/goal/updated`, and `thread/goal/cleared` above the turn guard, carries active goals across automatic turns, and replays one run-final goal.
 - `src/claude-execution-runner.mjs` marks board tool calls, folds them at the result, reads the mirrored task directory, and emits `claude/plan`.
 - `public/event-stream.js` folds plan and goal events, layers partial revisions, and keeps both out of the sub-agent and activity tallies.
 - `public/app.js` renders the provider-neutral checklist, the goal row, the quiet plan-board tool row, and the lossless copied log.
 - `public/style.css` carries the plan and goal presentation in both themes.
-- `test/codex-app-server.test.mjs` pins the routing, the normalization, the timestamp shapes, and the turn-final replay.
+- `test/codex-app-server.test.mjs` pins routing, normalization, timestamp shapes, run-final replay, automatic successor adoption, missed-notification reconciliation, stale-turn rejection, steering during the handoff, explicit idle settlement, and ambiguous-read safety.
 - `test/claude-plan-events.test.mjs` pins the fold, the mirror, the partial rule, and the failure cases.
 - `test/plan-visibility.test.mjs` and `test/event-stream.test.mjs` pin the renderer contract, the layering, the caps, and the prototype-key guards.
 
 ## Verification
 
-The complete repository suite passes 1,395 tests with zero failures. That figure is tree-wide and includes concurrent unrelated work in the same tree. The four suites covering this contract pass 199 tests between them: 39 in `test/claude-plan-events.test.mjs`, 61 in `test/plan-visibility.test.mjs`, 41 in `test/codex-app-server.test.mjs`, and 58 in `test/event-stream.test.mjs`. `npm run release:check` reports release metadata consistent for v0.2.1, and `git diff --check` is clean. No dependency was added: the only new imports are Node builtins (`node:path`, `node:os`, `node:fs`).
+The complete repository suite passes 1,572 tests with zero failures, cancellations, or skips. The dedicated app-server suite passes 52 tests, including the automatic goal-chain races. `npm run release:check` reports release metadata consistent for v0.2.13, and `git diff --check` is clean. No dependency or environment variable was added. See [[codex-goal-continuation-review]] for the adversarial execution trace and residual risks.
 
 > [!warning]
 > CC Relay must be restarted and the desktop bundle rebuilt before these backend and renderer changes take effect. The packaged app runs `src/` from `app.asar`, frozen at build time, so an installed bundle keeps executing the code it was packaged with no matter what the working tree says. See [[desktop-packaging-review]] and [[packaged-renderer-startup]].

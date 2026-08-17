@@ -8,16 +8,18 @@ type: design
 
 CC Relay uses a high-density desktop shell that keeps monitoring and project selection visible without taking space from active work.
 
+The macOS Electron title bar uses a `32px` renderer row with a centered `20px` Crowie mark. This is intentionally only a modest reduction from the original `36px` row so the native traffic lights retain comfortable surrounding space while the workspace gains four pixels of height. Browser and non-macOS shells do not receive this row. See [[interface-layout]] and [[packaged-renderer-startup]].
+
 > [!important]
 > The one-row wide-screen vertical budget is header `58px` and Launchpad `44px`. Two task rows make the header `109px`; three make it `160px`. `.workspace` subtracts the measured `--app-header-height` plus `44px`, while the legacy bounded `.task-list` calculation remains separate. Keep these values synchronized with the 44px task card and 7px row gap.
 
 ## Header
 
-- The brand mark is `28px`, header actions are `32px`, and global running-task cards default to `286px` wide. The rightmost **Display** cog can switch cards to `230px` or `360px`, expand the rail to two or three 44px rows, move the monitor, change theme, and control whole-app zoom with a visible current percentage.
+- The brand mark is `28px`, header actions are `32px`, and global task-monitor cards default to `286px` wide. The rightmost **Display** cog can switch cards to `230px` or `360px`, expand the rail to two or three 44px rows, move the monitor, change theme, and control whole-app zoom with a visible current percentage.
 - On wide multi-row layouts, row one stays between the brand and action cluster. Rows two and three span the complete padded header width, reclaiming the otherwise empty space below both fixed header regions.
-- A running card still exposes metadata, prompt, and latest response, but uses tighter type and a `9px` radius.
-- The empty running state occupies one standard running-card slot at the selected width and contains only **No tasks running**.
-- At and below `1344px`, the running rail may wrap to its own row.
+- A monitored card still exposes metadata, prompt, and latest response, but uses tighter type and a `9px` radius. Open Terminal session mode cards add one compact worded state chip without changing the three-row geometry.
+- The empty monitor occupies one standard card slot at the selected width and contains only **No active tasks or sessions**.
+- At and below `1344px`, the monitor rail may wrap to its own row.
 
 ## Launchpad
 

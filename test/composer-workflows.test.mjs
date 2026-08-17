@@ -442,13 +442,16 @@ test('Claude and Codex questions route to exact native terminal attention', () =
   assert.match(server, /projectLauncher\.requestTerminalAttention\(thread\)/);
 });
 
-test('the header is a global running-task feed instead of a status switchboard', () => {
-  assert.match(composer, /id="header-running-tasks"[^>]*aria-label="Running tasks across all projects"/);
+test('the header is a global task and terminal-session monitor instead of a status switchboard', () => {
+  assert.match(composer, /id="header-running-tasks"[^>]*aria-label="Active tasks and terminal sessions across all projects"/);
   assert.doesNotMatch(composer, /class="header-status-strip"/);
   assert.doesNotMatch(composer, /id="status-(?:relay|terminals|queue|active)"/);
-  assert.match(composerApp, /state\.runningTasks = statusBody\.runningTasks/);
+  assert.match(composerApp, /state\.runningTasks = taskMonitorTasks\([\s\S]{0,100}statusBody\.monitoredTasks \|\| statusBody\.runningTasks,[\s\S]{0,100}state\.tasks/);
   assert.match(composerApp, /class="header-running-response"/);
   assert.match(composerApp, /data-running-task-id="\$\{task\.id\}"/);
+  assert.match(composerApp, /data-terminal-session="true"/);
+  assert.match(server, /runningTasks: monitoredTasks\.filter\(\(task\) => task\.status === 'running'\)/);
+  assert.match(server, /monitoredTasks,/);
 });
 
 test('an old backend explains when separate project queues require a restart', () => {
@@ -750,6 +753,8 @@ test('Task Activity keeps every continuation in the selected task and conversati
   const followUpRouteSource = server.slice(followUpRouteStart, followUpRouteEnd);
   assert.match(composer, /id="task-continuation-form" class="task-continuation"/);
   assert.match(composer, /id="task-continuation-input"[^>]*placeholder="Ask a follow-up in this terminal/);
+  const continuationInput = composer.match(/<textarea id="task-continuation-input"[^>]*>/)?.[0] || '';
+  assert.doesNotMatch(continuationInput, /\bmaxlength=/);
   assert.match(composer, /id="task-continuation-image-input"[^>]*accept="image\/png,image\/jpeg,image\/webp"[^>]*multiple/);
   assert.match(composer, /id="task-continuation-clear-images"/);
   assert.match(composerApp, /continuationSubmission\(sourceTask, prompt/);
@@ -793,6 +798,7 @@ test('Task Activity keeps every continuation in the selected task and conversati
   assert.match(continuationSource, /mimeType: attachment\.mimeType/);
   assert.match(composerApp, /continuationForm\.addEventListener\('paste'/);
   assert.match(followUpRouteSource, /decodeImageAttachments\(body\.attachments\)/);
+  assert.doesNotMatch(followUpRouteSource, /prompt\.length|12_000|12,000/);
   assert.match(server, /\/api\\\/tasks\\\/\\d\+\\\/steer/);
   assert.match(followUpRouteSource, /queue\.startFollowUp\(buildSessionFollowUp/);
   assert.match(followUpRouteSource, /sourceTask\.terminal_lifecycle === 'disposable'/);

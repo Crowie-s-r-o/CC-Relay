@@ -33,7 +33,7 @@ function sessionPredicates() {
   const end = app.indexOf('function isFailedSessionFollowUp', start);
   assert.notEqual(end, -1, 'the predicate block should be bounded');
   const source = app.slice(start, end);
-  const build = new Function('taskContinuationSession', `${source}\nreturn { isSessionTask, isManualSessionTask, isDirectSessionTask, sessionTaskState, sessionBadgeWord };`);
+  const build = new Function('taskContinuationSession', `${source}\nreturn { isSessionTask, isManualSessionTask, isDirectSessionTask, sessionTaskState, sessionBadgeWord, taskMonitorTasks, taskMonitorPresentation, taskMonitorResponse, taskMonitorResponseHash };`);
   return (thread = null) => build(() => thread);
 }
 
@@ -130,6 +130,61 @@ test('session state reads the bound thread and never claims an unlaunched termin
   assert.equal(gone.sessionBadgeWord('nonsense'), 'unknown');
 });
 
+test('the global monitor retains an open manual session and names its live state', () => {
+  const session = {
+    id: 8,
+    status: 'open',
+    keep_terminal_open: true,
+    manual_completion: true,
+    terminal_lifecycle: 'disposable',
+    mode: 'execute',
+    provider: 'codex',
+    thread_id: 't1',
+    repo_path: '/w',
+  };
+  const idle = sessionPredicates()({ id: 't1', status: 'idle' });
+  const runningFeedTask = { id: 2, status: 'running', latestAgentUpdate: { text: 'Working' } };
+  const monitored = idle.taskMonitorTasks([runningFeedTask], [runningFeedTask, session, {
+    ...session,
+    id: 9,
+    status: 'complete',
+  }]);
+
+  assert.deepEqual(monitored.map((task) => task.id), [2, 8]);
+  assert.deepEqual(idle.taskMonitorPresentation(session), {
+    state: 'idle',
+    label: 'Terminal idle',
+    terminalSession: true,
+  });
+  assert.equal(idle.taskMonitorResponse(session), 'Ready for another command');
+  assert.equal(idle.taskMonitorResponse({ ...session, result: 'Last result' }), 'Last result');
+  assert.equal(idle.taskMonitorResponse({ ...session, result: 'Old result', error: 'Latest failure' }), 'Latest failure');
+  assert.notEqual(
+    idle.taskMonitorResponseHash({ ...session, result: 'review the queue' }),
+    idle.taskMonitorResponseHash({ ...session, result: 'review the cache' }),
+  );
+
+  const busy = sessionPredicates()({ id: 't1', status: 'running' });
+  assert.equal(busy.taskMonitorPresentation(session).label, 'Terminal busy');
+  assert.equal(busy.taskMonitorPresentation({ ...session, status: 'running' }).label, 'Session running');
+
+  const closed = sessionPredicates()(null);
+  assert.equal(closed.taskMonitorPresentation(session).label, 'Terminal closed');
+  assert.equal(closed.taskMonitorResponse(session), 'Send a command to relaunch this session');
+  assert.deepEqual(closed.taskMonitorPresentation({ status: 'running' }), {
+    state: 'running',
+    label: 'Running',
+    terminalSession: false,
+  });
+
+  const backendAlreadyIncludesSession = idle.taskMonitorTasks(
+    [runningFeedTask, { ...session, latestAgentUpdate: { text: 'Last response' } }],
+    [runningFeedTask, session],
+  );
+  assert.deepEqual(backendAlreadyIncludesSession.map((task) => task.id), [2, 8]);
+  assert.equal(backendAlreadyIncludesSession[1].latestAgentUpdate.text, 'Last response');
+});
+
 test('queue cards mark a direct session task with a word, not only a colour', () => {
   assert.match(app, /function isSessionTask\(task\)/);
   assert.match(app, /function isDirectSessionTask\(task\)/);
@@ -149,6 +204,22 @@ test('queue cards mark a direct session task with a word, not only a colour', ()
   for (const word of ["'open'", "'busy'", "'pending'", "'closed'"]) {
     assert.ok(badgeWords.includes(word), `badge word ${word} should exist`);
   }
+});
+
+test('the top or bottom task monitor marks manual sessions without dropping idle ones', () => {
+  assert.match(html, /aria-label="Active tasks and terminal sessions across all projects"/);
+  assert.match(html, /No active tasks or sessions/);
+  assert.match(app, /state\.runningTasks = taskMonitorTasks\([\s\S]{0,100}statusBody\.monitoredTasks \|\| statusBody\.runningTasks,[\s\S]{0,100}state\.tasks/);
+  assert.match(app, /data-terminal-session="true"/);
+  assert.match(app, /class="header-running-state" data-state=/);
+  assert.match(app, /'Session running'/);
+  assert.match(app, /'Terminal idle'/);
+  assert.match(app, /'Terminal busy'/);
+  assert.match(app, /'Terminal closed'/);
+  assert.match(app, /taskMonitorResponseHash\(task\)/);
+  assert.match(app, /taskMonitorPresentation\(task\)\.state/);
+  assert.match(style, /\.header-running-state\[data-state="idle"\]/);
+  assert.match(style, /html\[data-theme="dark"\] \.header-running-state\[data-state="idle"\]/);
 });
 
 test('the session surface replaces the flat prompt and result disclosures', () => {
@@ -304,6 +375,7 @@ test('session surfaces are styled in both themes with motion guarded', () => {
     '.task-session-modebar',
     '.session-mode-badge',
     '.session-complete-button',
+    '.header-running-state',
   ]) {
     assert.ok(style.includes(`${selector} {`) || style.includes(`${selector}[`), `${selector} should be styled`);
     assert.ok(style.includes(`html[data-theme="dark"] ${selector}`), `${selector} should have a dark treatment`);

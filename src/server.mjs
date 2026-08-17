@@ -993,6 +993,7 @@ export const server = createServer(async (request, response) => {
     if (request.method === 'GET' && pathname === '/api/status') {
       const projectPath = url.searchParams.get('projectPath')?.trim() || null;
       const tasks = database.listTasks();
+      const monitoredTasks = agentUpdates.feed(tasks);
       const claudeRuntimeStatus = currentClaudeStatus();
       sendJson(response, 200, {
         ...queue.status(projectPath),
@@ -1051,7 +1052,10 @@ export const server = createServer(async (request, response) => {
           desktopZoomControls: IS_DESKTOP && typeof desktopZoomHandler === 'function',
         },
         taskCount: tasks.length,
-        runningTasks: agentUpdates.feed(tasks),
+        // Keep the legacy field exact for older renderers. Current renderers prefer the
+        // additive monitor feed, which also retains open manual terminal sessions.
+        runningTasks: monitoredTasks.filter((task) => task.status === 'running'),
+        monitoredTasks,
         diagnostics: { endpoint: '/api/diagnostics', file: diagnostics.filePath },
         // Another CC Relay backend is heartbeating against the shared configuration database.
         // Terminal ownership stays correct either way; this only lets the interface say so.

@@ -46,16 +46,16 @@ test('rightmost display cog owns monitor layout and application controls', () =>
   assert.match(app, /elements\.runningTaskWidth\.addEventListener\('change'/);
 });
 
-test('empty running monitor uses one canonical task-card slot with text only', () => {
+test('empty task monitor uses one canonical task-card slot with text only', () => {
   const emptyMarkupStart = markup.indexOf('<div class="header-running-empty">');
   const emptyMarkup = markup.slice(emptyMarkupStart, markup.indexOf('</div>', emptyMarkupStart) + 6);
   assert.match(
     emptyMarkup,
-    /class="header-running-empty">\s*<span>No tasks running<\/span>\s*<\/div>/,
+    /class="header-running-empty">\s*<span>No active tasks or sessions<\/span>\s*<\/div>/,
   );
   assert.match(
     app,
-    /<div class="header-running-empty">\s*<span>No tasks running<\/span>\s*<\/div>/,
+    /<div class="header-running-empty">\s*<span>No active tasks or sessions<\/span>\s*<\/div>/,
   );
   assert.doesNotMatch(emptyMarkup, /<i/);
 

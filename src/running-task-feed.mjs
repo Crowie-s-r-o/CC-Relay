@@ -25,9 +25,19 @@ export function latestAgentUpdate(events) {
   return null;
 }
 
+export function taskBelongsInMonitor(task) {
+  if (task?.status === 'running') return true;
+  return task?.status === 'open'
+    && task?.manual_completion === true
+    && task?.keep_terminal_open === true
+    && task?.terminal_lifecycle === 'disposable'
+    && task?.mode === 'execute'
+    && ['codex', 'claude'].includes(task?.provider);
+}
+
 export function runningTaskFeed(tasks, eventsForTask) {
   return (tasks || [])
-    .filter((task) => task.status === 'running')
+    .filter(taskBelongsInMonitor)
     .map((task) => ({
       ...task,
       latestAgentUpdate: latestAgentUpdate(eventsForTask(task.id)),
@@ -35,12 +45,12 @@ export function runningTaskFeed(tasks, eventsForTask) {
 }
 
 // GET /api/status is polled every two seconds and used to rebuild this feed by re-reading and
-// re-parsing a large event window for every running task. That was affordable when exactly
-// one task ran at a time; with per-session parallel execution it multiplies by the number of
-// running tasks and reintroduces the very main-thread stall this work exists to remove.
+// re-parsing a large event window for every monitored task. That was affordable when exactly
+// one task ran at a time; with per-session parallel execution and durable terminal sessions it
+// multiplies by the number of cards and reintroduces the main-thread stall this work avoids.
 //
 // Instead, remember the last computed update per task and only read events appended since
-// then. A poll where nothing new arrived costs one indexed MAX(id) lookup per running task.
+// then. A poll where nothing new arrived costs one indexed MAX(id) lookup per monitored task.
 export class AgentUpdateCache {
   constructor({ latestEventId, listEventsSince, limit = 500 }) {
     this.latestEventId = latestEventId;
@@ -61,7 +71,7 @@ export class AgentUpdateCache {
     return next;
   }
 
-  // Keeps the cache bounded to whatever is actually running right now.
+  // Keeps the cache bounded to whatever is actually visible in the task monitor.
   prune(activeTaskIds) {
     const keep = new Set(activeTaskIds);
     for (const taskId of this.entries.keys()) {
@@ -70,8 +80,8 @@ export class AgentUpdateCache {
   }
 
   feed(tasks) {
-    const running = (tasks || []).filter((task) => task.status === 'running');
-    this.prune(running.map((task) => task.id));
-    return running.map((task) => ({ ...task, latestAgentUpdate: this.update(task.id) }));
+    const monitored = (tasks || []).filter(taskBelongsInMonitor);
+    this.prune(monitored.map((task) => task.id));
+    return monitored.map((task) => ({ ...task, latestAgentUpdate: this.update(task.id) }));
   }
 }

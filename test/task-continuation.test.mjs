@@ -30,6 +30,19 @@ test('follow-up reuses the source task and exact session without building a queu
   assert.equal('continuedFromTaskId' in continuation, false);
 });
 
+test('continuation keeps logs larger than the fresh-task prompt limit', () => {
+  const prompt = `Inspect this log:\n${'log entry\n'.repeat(20_000)}`;
+  const continuation = buildSessionFollowUp({
+    sourceTask,
+    prompt,
+    thread,
+    execution: { model: 'sol', effort: 'xhigh' },
+  });
+
+  assert.ok(prompt.length > 12_000);
+  assert.equal(continuation.prompt, prompt.trim());
+});
+
 test('continuation rejects multi-provider tasks and mismatched sessions', () => {
   assert.throws(() => buildSessionFollowUp({
     sourceTask,

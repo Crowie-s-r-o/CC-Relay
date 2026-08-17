@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { latestAgentUpdate, runningTaskFeed } from '../src/running-task-feed.mjs';
+import {
+  latestAgentUpdate,
+  runningTaskFeed,
+  taskBelongsInMonitor,
+} from '../src/running-task-feed.mjs';
 
 test('latest agent update reads Codex and Claude response events', () => {
   const events = [
@@ -35,22 +39,61 @@ test('latest agent update reads Codex and Claude response events', () => {
   });
 });
 
-test('running task feed is global and excludes non-running tasks', () => {
+test('task monitor is global and retains only valid open manual sessions after running work', () => {
+  const manualSession = {
+    status: 'open',
+    manual_completion: true,
+    keep_terminal_open: true,
+    terminal_lifecycle: 'disposable',
+    mode: 'execute',
+    provider: 'codex',
+  };
   const tasks = [
     { id: 1, status: 'running', repo_path: '/repo/alpha' },
     { id: 2, status: 'queued', repo_path: '/repo/alpha' },
     { id: 3, status: 'running', repo_path: '/repo/beta' },
+    { id: 4, ...manualSession, repo_path: '/repo/alpha' },
+    { id: 5, ...manualSession, manual_completion: false, repo_path: '/repo/alpha' },
+    { id: 6, ...manualSession, status: 'complete', repo_path: '/repo/alpha' },
+    { id: 7, ...manualSession, mode: 'plan', repo_path: '/repo/alpha' },
   ];
   const events = new Map([
     [1, [{ id: 1, kind: 'codex', payload: { item: { type: 'agentMessage', text: 'Alpha update' } } }]],
     [3, [{ id: 2, kind: 'claude', payload: { type: 'claude/message', text: 'Beta update', provider: 'claude' } }]],
+    [4, [{ id: 3, kind: 'codex', payload: { item: { type: 'agentMessage', text: 'Session result' } } }]],
   ]);
 
   const feed = runningTaskFeed(tasks, (taskId) => events.get(taskId) || []);
   assert.deepEqual(feed.map((task) => [task.id, task.repo_path, task.latestAgentUpdate.text]), [
     [1, '/repo/alpha', 'Alpha update'],
     [3, '/repo/beta', 'Beta update'],
+    [4, '/repo/alpha', 'Session result'],
   ]);
+
+  assert.equal(taskBelongsInMonitor({ status: 'running' }), true);
+  assert.equal(taskBelongsInMonitor(manualSession), true);
+  assert.equal(taskBelongsInMonitor({ ...manualSession, keep_terminal_open: false }), false);
+  assert.equal(taskBelongsInMonitor({ ...manualSession, terminal_lifecycle: 'persistent' }), false);
+  assert.equal(taskBelongsInMonitor({ ...manualSession, provider: 'council' }), false);
+});
+
+test('status can preserve the legacy running-only feed beside the additive monitor feed', () => {
+  const tasks = [
+    { id: 1, status: 'running' },
+    {
+      id: 2,
+      status: 'open',
+      manual_completion: true,
+      keep_terminal_open: true,
+      terminal_lifecycle: 'disposable',
+      mode: 'execute',
+      provider: 'claude',
+    },
+  ];
+  const monitored = runningTaskFeed(tasks, () => []);
+
+  assert.deepEqual(monitored.map((task) => task.id), [1, 2]);
+  assert.deepEqual(monitored.filter((task) => task.status === 'running').map((task) => task.id), [1]);
 });
 
 test('a Claude input request becomes the latest running-task update', () => {

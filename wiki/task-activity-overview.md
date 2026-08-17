@@ -46,7 +46,7 @@ Plan states, agent states, glyphs, and color all carry the same reading. Complet
 
 ## Layout and safety
 
-The overview stays inside the existing Tokyo Night terminal palette in both application themes. At wider inspector widths, plan and worker lanes can sit side by side. A 440px container rule stacks each row's state beneath its title, and the expanded body has a bounded 320px or 34vh scroll budget so the terminal remains usable. The component adds no animation and no new live region.
+The overview stays inside the existing Tokyo Night terminal palette in both application themes. At wider inspector widths, plan and worker lanes can sit side by side. A 440px container rule stacks each row's state beneath its title. The expanded body has a bounded 240px or 28vh scroll budget so the terminal remains usable. Plan and worker rows use 5px vertical padding, worker briefs stay on one line, and the terminal toolbar is 28px tall. The component adds no animation and no new live region.
 
 > [!important]
 > The Plan lane has its own stricter height budget: at most 25 percent of the rendered `.events-section` height. The terminal is a size query container, so `25cqh` follows the operator's persisted or resized terminal split instead of the application viewport. The Plan heading stays fixed and only the ordered step list scrolls. Do not replace this with `vh`, which becomes incorrect whenever the terminal is resized.
@@ -64,6 +64,9 @@ Provider-controlled step text, owners, worker names, roles, and briefs are escap
 - `test/task-activity-overview.test.mjs` covers default expansion, current-plan selection, worker timing, terminal-state cleanup, escaping, duration refresh, and responsive styling.
 
 ## Verification
+
+> [!note]
+> The August 17 density pass reduced the expanded manifest from a 320px or 34vh ceiling to 240px or 28vh. It also tightened group headers, rows, counter padding, and the filter toolbar while retaining every state, owner, duration, and assignment. Long worker briefs remain available through their existing title text and the complete activity log. The focused 8 checks and all 1,561 repository tests pass, `release:check` is green for v0.2.13, and `git diff --check` is clean. Browser screenshot verification was unavailable because the local browser runtime exposed no browser.
 
 The dedicated overview suite passes 8 tests. The focused overview, plan, terminal palette, dark-mode, and diff-surface run passes 99 tests. `node --check public/app.js`, `npm run release:check`, and `git diff --check` are green for v0.2.11.
 

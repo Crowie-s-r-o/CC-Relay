@@ -2664,7 +2664,7 @@ function eventPresentation(entry, task) {
       kind: 'note',
       quiet: true,
       glyph: '◎',
-      title: payloadType === 'turn/started' ? 'Session started' : 'Session finished',
+      title: payloadType === 'turn/started' ? 'Turn started' : 'Turn finished',
       status: payloadType === 'turn/started' ? 'live' : 'complete',
       body: '',
     };
@@ -3053,6 +3053,64 @@ const SESSION_BADGE_WORDS = {
 
 function sessionBadgeWord(stateKey) {
   return SESSION_BADGE_WORDS[stateKey] || 'unknown';
+}
+
+function taskMonitorTasks(statusTasks, tasks) {
+  const taskRows = Array.isArray(tasks) ? tasks : [];
+  const rowsById = new Map(taskRows.map((task) => [task.id, task]));
+  const monitored = (Array.isArray(statusTasks)
+    ? statusTasks
+    : taskRows.filter((task) => task.status === 'running'))
+    .map((task) => ({ ...rowsById.get(task.id), ...task }));
+  const monitoredIds = new Set(monitored.map((task) => task.id));
+  for (const task of taskRows) {
+    if (task.status !== 'open' || !isManualSessionTask(task) || monitoredIds.has(task.id)) continue;
+    monitored.push(task);
+    monitoredIds.add(task.id);
+  }
+  return monitored;
+}
+
+function taskMonitorPresentation(task) {
+  if (!isManualSessionTask(task)) {
+    return { state: 'running', label: 'Running', terminalSession: false };
+  }
+  if (task.status === 'running') {
+    return { state: 'running', label: 'Session running', terminalSession: true };
+  }
+  const terminalState = sessionTaskState(task);
+  if (terminalState === 'open-busy') {
+    return { state: 'busy', label: 'Terminal busy', terminalSession: true };
+  }
+  if (terminalState === 'closed') {
+    return { state: 'closed', label: 'Terminal closed', terminalSession: true };
+  }
+  if (terminalState === 'open-idle') {
+    return { state: 'idle', label: 'Terminal idle', terminalSession: true };
+  }
+  return { state: 'idle', label: 'Session idle', terminalSession: true };
+}
+
+function taskMonitorResponse(task, presentation = taskMonitorPresentation(task)) {
+  const update = task?.latestAgentUpdate?.text;
+  if (task?.status === 'open') {
+    if (task.error) return task.error;
+    if (task.result) return task.result;
+    if (update) return update;
+    return presentation.state === 'closed'
+      ? 'Send a command to relaunch this session'
+      : 'Ready for another command';
+  }
+  return update || 'Waiting for the first agent response';
+}
+
+function taskMonitorResponseHash(task) {
+  const text = String(taskMonitorResponse(task));
+  let hash = 5381;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = ((hash << 5) + hash) ^ text.charCodeAt(index);
+  }
+  return hash >>> 0;
 }
 
 function isFailedSessionFollowUp(task) {
@@ -4830,7 +4888,7 @@ function renderHeaderRunningTasks() {
     elements.headerRunningTasks.dataset.signature = 'empty';
     elements.headerRunningTasks.innerHTML = `
       <div class="header-running-empty">
-        <span>No tasks running</span>
+        <span>No active tasks or sessions</span>
       </div>
     `;
     elements.headerRunningExtraTasks.replaceChildren();
@@ -4847,7 +4905,10 @@ function renderHeaderRunningTasks() {
       task.title,
       task.prompt,
       task.latestAgentUpdate?.provider,
-      task.latestAgentUpdate?.text,
+      task.status,
+      task.manual_completion,
+      taskMonitorResponseHash(task),
+      taskMonitorPresentation(task).state,
       taskRelayLabel(task),
       projectIdentityCustomColor(task.repo_path),
     ]),
@@ -4865,18 +4926,24 @@ function renderHeaderRunningTasks() {
     const updateProvider = update?.provider || taskProvider(task);
     const project = workspaceName(task.repo_path);
     const relay = taskRelayLabel(task);
-    const response = update?.text || 'Waiting for the first agent response';
+    const monitor = taskMonitorPresentation(task);
+    const response = taskMonitorResponse(task, monitor);
+    const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}, ${project}, ${relay}`;
     return `
       <button
-        class="header-running-task ${projectIdentityColorClass(task.repo_path)}"
+        class="header-running-task ${projectIdentityColorClass(task.repo_path)}${monitor.terminalSession ? ' header-terminal-session' : ''}"
         ${projectIdentityStyleAttribute(task.repo_path)}
         type="button"
         data-running-task-id="${task.id}"
         data-provider="${escapeHtml(taskProvider(task))}"
+        data-monitor-state="${escapeHtml(monitor.state)}"
+        ${monitor.terminalSession ? 'data-terminal-session="true"' : ''}
+        aria-label="${escapeHtml(accessibleLabel)}"
       >
         <span class="header-running-meta">
           <i aria-hidden="true"></i>
           <b>#${String(task.id).padStart(3, '0')}</b>
+          ${monitor.terminalSession ? `<span class="header-running-state" data-state="${escapeHtml(monitor.state)}">${escapeHtml(monitor.label)}</span>` : ''}
           <span class="header-running-loc" title="${escapeHtml(task.repo_path)}"><span class="header-running-project">${escapeHtml(project)}</span> · ${escapeHtml(relay)}</span>
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
@@ -4947,7 +5014,8 @@ function renderProviderUsage() {
     } else {
       track.style.setProperty('--provider-usage-value', `${presentation.usedPercent}%`);
       track.setAttribute('aria-valuenow', String(presentation.usedPercent));
-      track.removeAttribute('aria-valuetext');
+      if (presentation.shared) track.setAttribute('aria-valuetext', presentation.title);
+      else track.removeAttribute('aria-valuetext');
     }
   }
   elements.providerUsage.setAttribute('aria-busy', String(checking));
@@ -6786,8 +6854,10 @@ async function loadSnapshot() {
       state.completionAlerts.notify(task, state.completionAlertPreferences);
     }, index * 650);
   });
-  state.runningTasks = statusBody.runningTasks
-    || state.tasks.filter((task) => task.status === 'running');
+  state.runningTasks = taskMonitorTasks(
+    statusBody.monitoredTasks || statusBody.runningTasks,
+    state.tasks,
+  );
   await loadProjects();
   hydrateThreadExecutionSettings(state, state.tasks);
   renderProviderTabs();

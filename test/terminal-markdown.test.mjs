@@ -61,3 +61,8 @@ test('Task Activity applies Markdown to final and live provider responses only',
   assert.match(style, /\.events-section \.terminal-markdown \.markdown-table-scroll \{[^}]*border-color: var\(--term-border\);/s);
   assert.match(style, /\.events-section \.terminal-markdown th \{[^}]*color: #e5ebff;[^}]*background: rgb\(122 162 247 \/ 16%\);/s);
 });
+
+test('Task Activity labels provider turn boundaries without claiming the session finished', () => {
+  assert.match(app, /title: payloadType === 'turn\/started' \? 'Turn started' : 'Turn finished'/);
+  assert.doesNotMatch(app, /Session finished/);
+});

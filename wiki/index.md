@@ -64,6 +64,7 @@ type: index
 - [[claude-fresh-session-review]]
 - [[provider-sub-agent-visibility]]
 - [[provider-plan-and-goal-visibility]]
+- [[codex-goal-continuation-review]]
 - [[claude-terminal-visibility]]
 - [[claude-provider-api-error-outcomes]]
 - [[claude-terminal-live-output]]

@@ -34,6 +34,7 @@ test('header places four accessible usage meters before the rightmost display co
   assert.ok(html.indexOf('id="header-position-toggle"') < html.indexOf('id="theme-toggle"'));
   assert.match(html, /role="progressbar"/);
   assert.match(app, /renderProviderUsage\(\)/);
+  assert.match(app, /presentation\.shared[\s\S]*aria-valuetext/);
   assert.match(server, /providerUsage: providerUsage\.current\(\)/);
   assert.match(server, /providerUsage: true/);
   assert.match(server, /providerUsage\.start\(\)/);
@@ -66,6 +67,7 @@ test('usage meter presentation exposes threshold, stale, and unavailable states'
   ]);
   assert.match(presentations[0].title, /Resets 1:20am/);
   assert.match(presentations[0].title, /Last known value/);
+  assert.equal(presentations[2].shared, false);
   assert.match(presentations[3].title, /unavailable/);
   assert.equal(presentations[3].countdown, '');
 });
@@ -151,7 +153,7 @@ test('Codex epoch reset times are formatted for the meter tooltip', () => {
   assert.match(codex.title, /Resets Aug 19, 2:00 PM/);
 });
 
-test('an absent model-specific window settles as unavailable after Claude responds', () => {
+test('an absent model-specific window uses Claude weekly runway instead of implying Fable is unavailable', () => {
   const [,, fable] = providerUsagePresentation({
     claude: {
       status: 'ready',
@@ -161,8 +163,11 @@ test('an absent model-specific window settles as unavailable after Claude respon
     },
     codex: { status: 'checking' },
   });
-  assert.equal(fable.level, 'unavailable');
-  assert.equal(fable.value, '--');
+  assert.equal(fable.level, 'warning');
+  assert.equal(fable.value, '51%');
+  assert.equal(fable.shared, true);
+  assert.match(fable.title, /shared Claude weekly window/);
+  assert.match(fable.title, /no separate Fable allowance/);
 });
 
 test('usage strip has four semantic colors, dark mode, and mobile layout', () => {

@@ -27,7 +27,7 @@ Resets 1:20am (Europe/Bratislava)
 Current week (all models)
 77% used
 Resets Aug 13 at 1:59pm (Europe/Bratislava)
-Current week (Fable)
+Current week (Fable 5 only)
 87% used
 Resets Aug 13 at 2pm (Europe/Bratislava)
 `;
@@ -57,6 +57,7 @@ function fakeExpectProcess(screen, onScript = () => {}) {
 test('Claude usage parsing removes terminal controls and keeps the latest painted frame', () => {
   assert.equal(stripTerminalControls('\u001b[31mClaude\u001b[0m'), 'Claude');
   assert.deepEqual(parseClaudeUsageScreen(CLAUDE_SCREEN), {
+    sourceStale: false,
     fiveHour: {
       usedPercent: 3,
       resetsAt: null,
@@ -75,7 +76,7 @@ test('Claude usage parsing removes terminal controls and keeps the latest painte
   });
 });
 
-test('Claude usage parsing leaves an absent Fable allowance unknown', () => {
+test('Claude usage parsing uses the all-model week when Claude omits a separate Fable allowance', () => {
   const usage = parseClaudeUsageScreen(`
 Current session
 4% used
@@ -83,10 +84,59 @@ Resets 2am
 Current week (all models)
 51% used
 Resets Friday
-`);
+  `);
+  assert.equal(usage.sourceStale, false);
   assert.equal(usage.fiveHour.usedPercent, 4);
   assert.equal(usage.weekly.usedPercent, 51);
-  assert.equal(usage.fableWeekly, null);
+  assert.deepEqual(usage.fableWeekly, {
+    usedPercent: 51,
+    resetsAt: null,
+    resetLabel: 'Friday',
+    shared: true,
+  });
+});
+
+test('Claude usage parsing cannot leak a model-specific row from an older painted frame', () => {
+  const usage = parseClaudeUsageScreen(`
+\u001b[2JCurrent session
+21% used
+Resets 8:09pm (Europe/Bratislava)
+Current week (all models)
+47% used
+Resets Aug 20 at 2pm (Europe/Bratislava)
+Current week (Fable)
+34% used
+Resets Aug 20 at 1:59pm (Europe/Bratislava)
+\u001b[HCurrent session
+23% used
+Resets 8:10pm (Europe/Bratislava)
+Current week (all models)
+48% used
+Resets Aug 20 at 2pm (Europe/Bratislava)
+`);
+
+  assert.equal(usage.fiveHour.usedPercent, 23);
+  assert.equal(usage.weekly.usedPercent, 48);
+  assert.deepEqual(usage.fableWeekly, {
+    usedPercent: 48,
+    resetsAt: null,
+    resetLabel: 'Aug 20 at 2pm (Europe/Bratislava)',
+    shared: true,
+  });
+});
+
+test('Claude usage parsing identifies an explicitly last-known CLI snapshot', () => {
+  const usage = parseClaudeUsageScreen(`
+Current session
+23% used
+Resets 8:10pm
+Current week (all models)
+48% used
+Resets Aug 20 at 2pm
+Showing last-known usage (could not refresh)
+`);
+
+  assert.equal(usage.sourceStale, true);
 });
 
 test('Claude usage probe runs the authenticated CLI in a private Expect terminal and reuses its session', async () => {
@@ -118,6 +168,7 @@ test('Claude usage probe runs the authenticated CLI in a private Expect terminal
   assert.equal(invocations[0].options.detached, true);
   assert.match(scripts[0], /spawn -noecho/);
   assert.match(scripts[0], /\/usage/);
+  assert.match(scripts[0], /after 1500[\s\S]*set timeout 2[\s\S]*after 500/);
 });
 
 test('Claude usage probe reports unsupported platforms without spawning', async () => {
@@ -205,8 +256,33 @@ test('provider usage monitor deduplicates refreshes and preserves last-known val
   assert.equal(monitor.current().claude.weekly.usedPercent, 77);
 });
 
-test('provider usage monitor samples providers once per minute by default', () => {
+test('provider usage monitor marks CLI-retained values stale without advancing their checked time', async () => {
+  let sourceStale = false;
+  let now = Date.parse('2026-08-17T13:45:00Z');
+  const monitor = new ProviderUsageMonitor({
+    now: () => now,
+    readClaude: async () => ({
+      sourceStale,
+      fiveHour: { usedPercent: sourceStale ? 22 : 21, resetLabel: '8:10pm' },
+      weekly: { usedPercent: 48, resetLabel: 'Thursday' },
+      fableWeekly: { usedPercent: 48, resetLabel: 'Thursday', shared: true },
+    }),
+  });
+
+  const ready = await monitor.refresh();
+  assert.equal(ready.claude.status, 'ready');
+  assert.equal(ready.claude.checkedAt, '2026-08-17T13:45:00.000Z');
+
+  sourceStale = true;
+  now += 30_000;
+  const stale = await monitor.refresh();
+  assert.equal(stale.claude.status, 'stale');
+  assert.equal(stale.claude.checkedAt, '2026-08-17T13:45:00.000Z');
+  assert.equal(stale.claude.fiveHour.usedPercent, 22);
+});
+
+test('provider usage monitor samples providers every thirty seconds by default', () => {
   const monitor = new ProviderUsageMonitor();
-  assert.equal(PROVIDER_USAGE_REFRESH_MS, 60_000);
-  assert.equal(monitor.refreshMs, 60_000);
+  assert.equal(PROVIDER_USAGE_REFRESH_MS, 30_000);
+  assert.equal(monitor.refreshMs, 30_000);
 });

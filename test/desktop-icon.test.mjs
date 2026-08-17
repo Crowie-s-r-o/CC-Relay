@@ -71,6 +71,8 @@ test('the macOS desktop title bar carries the Crowie lockup', () => {
   assert.ok(titlebar);
   assert.match(titlebar, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);
   assert.doesNotMatch(titlebar, /CC Relay/);
+  assert.match(style, /html\[data-desktop-titlebar="true"\] \{\s*--desktop-titlebar-height: 32px;/);
+  assert.match(style, /\.desktop-titlebar-mark \{[\s\S]*?width: 20px;[\s\S]*?height: 20px;[\s\S]*?flex: 0 0 20px;/);
   assert.match(style, /html\[data-desktop-titlebar="true"\] \.desktop-titlebar \{[\s\S]*?justify-content: center;[\s\S]*?-webkit-app-region: drag;/);
   assert.match(style, /height: calc\(100vh - var\(--desktop-titlebar-height\)/);
 });

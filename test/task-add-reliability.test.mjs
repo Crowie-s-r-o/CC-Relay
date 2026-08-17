@@ -186,8 +186,8 @@ test('the idle routing preference persists on the task and defaults to off', () 
 });
 
 // GET /api/status rebuilds this feed every two seconds. Re-reading a full event window per
-// running task does not scale now that several tasks run at once.
-test('the running feed only reads events appended since the last poll', () => {
+// monitored task does not scale now that several tasks and terminal sessions can stay visible.
+test('the task monitor only reads events appended since the last poll', () => {
   withDatabase((database) => {
     const task = database.createTask({
       title: 'Running',
@@ -227,7 +227,7 @@ test('the running feed only reads events appended since the last poll', () => {
   });
 });
 
-test('the running feed cache is bounded to tasks that are actually running', () => {
+test('the task monitor cache is bounded to tasks that remain visible', () => {
   withDatabase((database) => {
     const task = database.createTask({
       title: 'Running',
@@ -248,5 +248,40 @@ test('the running feed cache is bounded to tasks that are actually running', () 
     database.updateTask(task.id, { status: 'complete' });
     assert.deepEqual(cache.feed([database.getTask(task.id)]), []);
     assert.equal(cache.entries.size, 0, 'finished tasks must not accumulate in the cache');
+  });
+});
+
+test('the task monitor cache keeps an idle manual session until explicit completion', () => {
+  withDatabase((database) => {
+    const task = database.createTask({
+      title: 'Terminal workspace',
+      prompt: 'First command',
+      repoPath: '/tmp/alpha',
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
+    });
+    database.updateTask(task.id, { status: 'running' });
+    database.addEvent(task.id, 'codex', 'Finished turn', {
+      item: { type: 'agentMessage', text: 'Finished turn' },
+    });
+
+    const cache = new AgentUpdateCache({
+      latestEventId: (taskId) => database.latestEventId(taskId),
+      listEventsSince: (taskId, sinceId, limit) => database.listEventsSince(taskId, sinceId, limit),
+    });
+    assert.equal(cache.feed([database.getTask(task.id)])[0].status, 'running');
+
+    database.updateTask(task.id, { status: 'open', finished_at: null });
+    const idle = cache.feed([database.getTask(task.id)]);
+    assert.equal(idle[0].status, 'open');
+    assert.equal(idle[0].latestAgentUpdate.text, 'Finished turn');
+    assert.equal(cache.entries.size, 1);
+
+    database.updateTask(task.id, { status: 'complete' });
+    assert.deepEqual(cache.feed([database.getTask(task.id)]), []);
+    assert.equal(cache.entries.size, 0);
   });
 });

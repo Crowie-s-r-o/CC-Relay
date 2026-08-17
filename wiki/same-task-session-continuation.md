@@ -48,11 +48,14 @@ The task row keeps its original `prompt` unchanged. Every accepted finished-turn
 
 For a running interactive Claude task advertising `claudeSteerOutbox`, submission does not take the global continuation lock. Each update and its attachments are captured immediately, the visible composer is released for the next message, and the active watcher serializes terminal delivery. A definite failure is restored only when doing so cannot overwrite newer task-scoped text. See [[claude-live-steer-outbox]].
 
+For a running Codex task with an active `/goal`, one Relay run can span several automatic app-server turns. Relay keeps the task `running` after an intermediate `turn/completed`, adopts the successor `turn/started`, and keeps the continuation composer in live-update mode. A submission inside the brief turn boundary waits for that successor and calls `turn/steer` with its exact `expectedTurnId`. It never falls through to finished-task resume or the queue. See [[provider-plan-and-goal-visibility]] and [[manual-terminal-session-mode]].
+
 ## Files
 
 - `src/queue.mjs`
 - `src/server.mjs`
 - `src/database.mjs`
+- `src/codex-app-server.mjs`
 - `public/app.js`
 - `public/index.html`
 - `public/task-continuation-state.js`
@@ -62,6 +65,7 @@ For a running interactive Claude task advertising `claudeSteerOutbox`, submissio
 - `test/composer-workflows.test.mjs`
 - `test/task-continuation-state.test.mjs`
 - `test/task-prompt-history.test.mjs`
+- `test/codex-app-server.test.mjs`
 
 ## Regression coverage
 
@@ -71,6 +75,7 @@ For a running interactive Claude task advertising `claudeSteerOutbox`, submissio
 - Full capacity rejects before task state, events, or attachments change.
 - Prompt history remains complete after more than 500 console events.
 - Paired steering events produce one prompt-history entry.
+- Active Codex goals remain one running task across automatic turns, accept steering during the handoff, and ignore stale completion from the prior turn.
 - Renderer source contracts forbid `queue.enqueue()`, `continuationQueued`, and task-selection replacement in the continuation path.
 
 See [[task-history]], [[disposable-terminal-pools]], [[retained-terminal-sessions]], [[continuation-input-review]], and [[project-workspaces]].

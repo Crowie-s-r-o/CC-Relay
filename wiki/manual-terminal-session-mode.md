@@ -43,12 +43,15 @@ The additive task column is `manual_completion INTEGER NOT NULL DEFAULT 0`. Norm
 |---|---|---|---|
 | New session submitted | `queued` | `null` | Waits for an ordinary project and provider slot |
 | A turn is active | `running` | `null` | Owns the exact task terminal and conversation |
-| A turn succeeds | `open` | `null` | Retains the terminal and accepts another message |
+| An active Codex goal finishes an intermediate turn | `running` | `null` | Adopts the provider-created successor and keeps live steering available |
+| The complete provider turn chain succeeds | `open` | `null` | Retains the terminal and accepts another message |
 | A turn fails or is stopped | `open` | `null` | Records the error, performs no automatic retry, and accepts a corrected message |
 | CC Relay restarts during a turn | `open` | `null` | Records the interrupted turn and preserves the session task |
 | Operator presses Complete session | `complete` | current time | Emits the normal completion transition without closing the terminal |
 
 `TaskQueue.beginTask()` preserves the first `started_at` across later turns, so the card's **Open** duration describes the full workspace lifetime. Each follow-up still appends its prompt and response evidence to the same task. The task alternates only between `open` and `running` until manual completion.
+
+For Codex, one Relay run can contain several app-server turns when the thread carries an active `/goal`. `turn/completed` is only a provider-turn boundary. Relay keeps the task `running` across the automatic handoff and changes it to `open` only after app-server explicitly reports the thread settled. See [[provider-plan-and-goal-visibility]].
 
 Manual sessions never enter the automatic retry loop. A failed command is useful session context, and replaying it automatically could repeat destructive work. The task returns to `open`, keeps the error in its record, and lets the operator send a corrected message or finish the session.
 
@@ -77,9 +80,13 @@ Manual session tasks deliberately look different from retained tasks that still 
 - Queue summary reports the number of open terminal sessions separately from waiting tasks
 - open sessions sort after running work and before queued work
 - the task card has a cool-blue terminal rail, **Terminal session**, **Manual finish**, an explicit **Terminal** state badge, `status-open`, and an **Open** duration
+- the global Task monitor retains the card while the session is `open`; it leaves only after **Complete session**
+- the monitor card carries a persistent text state: **Session running** during a Relay turn, **Terminal idle** or **Terminal busy** for a connected open workspace, **Terminal closed** after window loss, and **Session idle** before a terminal has been bound
 - Task Activity is labeled **Session details** and uses a blue top rail
 - the session strip is titled **Terminal session workspace** and contains the manual badge, live terminal state, **Complete session**, and the independent **Close terminal** control
 - the continuation dock is labeled **Terminal session** and uses **Send command** while the task is open
+- while a Codex goal is automatically continuing, the dock remains enabled as **Updates current** and messages steer the exact successor turn, including messages submitted during the brief handoff
+- Task Activity calls protocol boundaries **Turn started** and **Turn finished**, never **Session finished**
 - after manual completion, the continuation composer is removed so the completed task cannot silently reopen
 
 At widths below 640px, the manual session split reserves enough height for the complete control and state message before the terminal pane. The terminal remains the larger working surface without covering the completion boundary.
@@ -95,6 +102,7 @@ An open manual session survives a CC Relay restart as an ordinary persisted row.
 ## Compatibility
 
 - An older backend without `manualSessionTasks` keeps the project setting as terminal retention only. The renderer explains that a restart is required for manual task completion and does not send `manualCompletion`.
+- `/api/status.runningTasks` remains running-only for older renderers. Current backends add `monitoredTasks`, and the current renderer also merges valid `open` manual sessions from `/api/tasks` when that additive feed is absent. This keeps mixed backend and renderer versions honest while preventing duplicate cards.
 - Existing retained direct tasks have `manual_completion = false`; their automatic completion and later **Continue session** behavior do not change.
 - Pressing **Stop auto-close** during a running automatic task sets only `keep_terminal_open`. It does not retroactively convert that task to manual completion. See [[live-terminal-retention]].
 - Plan council and Turbo always keep automatic task outcomes, even when their terminals are retained.
@@ -105,8 +113,10 @@ An open manual session survives a CC Relay restart as an ordinary persisted row.
 - Failure coverage proves a failed manual turn returns to `open`, retains its terminal, and never schedules an automatic retry.
 - Recovery coverage proves an interrupted manual turn returns to `open` with no `finished_at`.
 - Route and renderer tests pin capability gating, the explicit endpoint, final continuation rejection, state wording, card treatment, both themes, and the narrow split.
+- Monitor tests prove a successful turn transitions from **Session running** to **Terminal idle** without removing the card, invalid open rows stay excluded, explicit completion removes the card, the refresh signature follows status and response changes, and light and dark state chips carry words as well as color.
+- Codex app-server tests prove an active goal keeps one Relay run alive across automatic turns, steering waits through the handoff and targets the exact successor, stale completions cannot close it, missed notifications reconcile through `thread/read`, and ambiguous reads cannot create a false finish.
 - A temporary live backend and database exercised `open` to `complete` through the actual browser button. The pass covered 1440 by 1000 and 600 by 900 layouts, light and dark themes, the enabled project setting, the open and complete detail states, and zero browser console warnings or errors.
-- The complete repository test suite passes after the feature.
+- The complete repository test suite passes 1,572 tests after the goal-handoff correction.
 
 ## Files
 

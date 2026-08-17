@@ -918,9 +918,9 @@ export class RelayDatabase {
     return Number(row?.latest || 0);
   }
 
-  // Incremental read used by the running-task feed. Re-reading and re-parsing a full event
-  // window for every running task on every two-second poll does not scale now that several
-  // tasks run at once, so callers only ask for what they have not already seen.
+  // Incremental read used by the global task monitor. Re-reading and re-parsing a full event
+  // window for every running task or open manual session on every two-second poll does not
+  // scale, so callers only ask for what they have not already seen.
   listEventsSince(taskId, sinceId = 0, limit = 500) {
     return this.database.prepare(`
       SELECT * FROM (

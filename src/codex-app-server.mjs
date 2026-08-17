@@ -189,6 +189,33 @@ function describesGoal(goal) {
   return Boolean(goal?.objective) || Boolean(goal?.status);
 }
 
+// An active Codex goal is intentionally larger than one provider turn. The TUI completes the
+// current turn and starts the next one automatically, so `turn/completed` is not a task outcome
+// while this exact state is still attached to the thread.
+function goalWantsAnotherTurn(active) {
+  return active?.lastGoalPayload?.goal?.status === 'active';
+}
+
+function successorTurns(thread, previousTurnId) {
+  const turns = Array.isArray(thread?.turns) ? thread.turns : [];
+  const previousIndex = turns.findIndex((turn) => turn?.id === previousTurnId);
+  return (previousIndex >= 0 ? turns.slice(previousIndex + 1) : turns).filter((turn) => (
+    typeof turn?.id === 'string'
+    && turn.id
+    && turn.id !== previousTurnId
+  ));
+}
+
+function inProgressSuccessorTurn(turns) {
+  return [...turns].reverse().find((turn) => turn.status === 'inProgress') || null;
+}
+
+function settledSuccessorTurn(turns) {
+  return [...turns].reverse().find((turn) => (
+    ['completed', 'interrupted', 'failed'].includes(turn.status)
+  )) || null;
+}
+
 export function notificationMessage(method, params) {
   if (method === 'item/reasoning/summaryTextDelta') {
     return 'Codex reasoning summary updated.';
@@ -269,6 +296,8 @@ export class CodexAppServer extends EventEmitter {
     proxy = null,
     diagnostic = () => {},
     freshThreadRetryDelayMs = 100,
+    goalContinuationGraceMs = 1_000,
+    goalContinuationPollMs = 250,
     terminateProcess = terminateProcessTree,
     platform = process.platform,
     resolveExecutable = resolveExecutableOnPath,
@@ -283,6 +312,8 @@ export class CodexAppServer extends EventEmitter {
     this.webSocketFactory = webSocketFactory;
     this.diagnostic = diagnostic;
     this.freshThreadRetryDelayMs = freshThreadRetryDelayMs;
+    this.goalContinuationGraceMs = Math.max(0, Number(goalContinuationGraceMs) || 0);
+    this.goalContinuationPollMs = Math.max(1, Number(goalContinuationPollMs) || 250);
     this.terminateProcess = terminateProcess;
     const publicUrl = new URL(publicEndpoint);
     this.proxy = proxy || new RelayWebSocketProxy({
@@ -642,18 +673,17 @@ export class CodexAppServer extends EventEmitter {
       return;
     }
     if (method === 'thread/goal/updated') {
-      // A goal belongs to the thread, not to the turn, so every goal update that lands after
-      // the turn finished is dropped by the `active` guard above. The last goal that named an
-      // objective or a status is kept here so finishActiveTurn can close the row with a real
-      // record. A goal update that names neither is still logged verbatim below, because Codex
-      // output is reported as it arrived, but it cannot become the turn's last word: Task
-      // Activity folds every goal event into one row, so replaying a blank record as the turn
-      // ends would erase a real objective and its usage behind a bare "Recorded" label, and
-      // that record is the one nothing can revise afterwards.
+      // A goal belongs to the thread, not to one provider turn. Automatic successor turns keep
+      // this same active record, so the last payload spans the complete goal chain and closes
+      // the row only when the thread really settles. A goal update that names neither an
+      // objective nor a status is still logged verbatim, but it cannot become the last word:
+      // Task Activity folds every goal event into one row, and replaying a blank record at the
+      // end would erase a real objective and its usage behind a bare "Recorded" label.
       const payload = normalizeGoalParams(params);
       if (describesGoal(payload.goal)) {
         active.lastGoalPayload = payload;
       }
+      active.goalRevision = (active.goalRevision || 0) + 1;
       active.onEvent({
         event: { type: method, ...payload },
         message: notificationMessage(method, params),
@@ -663,11 +693,19 @@ export class CodexAppServer extends EventEmitter {
     if (method === 'thread/goal/cleared') {
       // A cleared goal already resolves its row, so the turn end has nothing left to record.
       active.lastGoalPayload = null;
+      active.goalRevision = (active.goalRevision || 0) + 1;
       active.onEvent({
         event: { type: method, threadId: params.threadId },
         message: notificationMessage(method, params),
       });
       return;
+    }
+
+    // A durable goal starts its own successor turn immediately after the previous turn reports
+    // completion. Adopt that provider-started turn before the ordinary turn-id guard so Relay
+    // keeps the same task running and `turn/steer` always targets the real in-flight turn.
+    if (method === 'turn/started') {
+      this.adoptGoalContinuation(active, params.turn);
     }
 
     if (active.turnId && params.turnId && params.turnId !== active.turnId) {
@@ -719,7 +757,7 @@ export class CodexAppServer extends EventEmitter {
     }
     if (method === 'turn/completed') {
       if (!active.turnId) {
-        active.earlyCompletion = params;
+        if (!active.goalContinuation) active.earlyCompletion = params;
       } else if (params.turn?.id === active.turnId) {
         this.finishActiveTurn(params);
       }
@@ -728,8 +766,187 @@ export class CodexAppServer extends EventEmitter {
 
   finishActiveTurn(params) {
     const active = this.activeTurns.get(params.threadId);
-    if (!active) {
+    const { turn } = params;
+    if (!active || !turn?.id || active.turnId !== turn.id) {
       return;
+    }
+
+    if (
+      turn.status === 'completed'
+      && goalWantsAnotherTurn(active)
+      && this.goalContinuationGraceMs > 0
+    ) {
+      this.waitForGoalContinuation(active, params);
+      return;
+    }
+
+    this.finalizeActiveTurn(active, params);
+  }
+
+  waitForGoalContinuation(active, params) {
+    if (this.activeTurns.get(active.threadId) !== active || active.goalContinuation) {
+      return;
+    }
+    const waiting = {
+      completed: params,
+      previousTurnId: params.turn.id,
+      timer: null,
+      warnedError: '',
+    };
+    active.turnId = null;
+    active.goalContinuation = waiting;
+    this.diagnostic('task.codex.goal_continuation.waiting', {
+      taskId: active.taskId,
+      threadId: active.threadId,
+      turnId: waiting.previousTurnId,
+    });
+    waiting.timer = setTimeout(() => {
+      void this.reconcileGoalContinuation(active, waiting);
+    }, this.goalContinuationGraceMs);
+  }
+
+  scheduleGoalContinuationReconcile(active, waiting) {
+    if (
+      this.activeTurns.get(active.threadId) !== active
+      || active.goalContinuation !== waiting
+    ) return;
+    clearTimeout(waiting.timer);
+    waiting.timer = setTimeout(() => {
+      void this.reconcileGoalContinuation(active, waiting);
+    }, this.goalContinuationPollMs);
+  }
+
+  async reconcileGoalContinuation(active, waiting) {
+    if (
+      this.activeTurns.get(active.threadId) !== active
+      || active.goalContinuation !== waiting
+    ) return;
+
+    try {
+      const response = await this.request('thread/read', {
+        threadId: active.threadId,
+        includeTurns: true,
+      }, 5_000);
+      if (
+        this.activeTurns.get(active.threadId) !== active
+        || active.goalContinuation !== waiting
+      ) return;
+
+      const successors = successorTurns(response.thread, waiting.previousTurnId);
+      const successor = inProgressSuccessorTurn(successors);
+      if (successor) {
+        this.adoptGoalContinuation(active, successor);
+        return;
+      }
+
+      const settledSuccessor = settledSuccessorTurn(successors);
+      if (settledSuccessor) {
+        waiting.completed = { threadId: active.threadId, turn: settledSuccessor };
+        waiting.previousTurnId = settledSuccessor.id;
+        const finalItem = [...(settledSuccessor.items || [])]
+          .reverse()
+          .find((item) => item.type === 'agentMessage');
+        active.finalResponse = finalItem?.text || '';
+        active.reasoningSummaries = new Map();
+        active.tokenUsage = null;
+      }
+
+      const threadStatus = response.thread?.status?.type;
+      if (threadStatus === 'active') {
+        this.scheduleGoalContinuationReconcile(active, waiting);
+        return;
+      }
+      if (!['idle', 'notLoaded', 'systemError'].includes(threadStatus)) {
+        this.diagnostic('task.codex.goal_continuation.ambiguous', {
+          taskId: active.taskId,
+          threadId: active.threadId,
+          turnId: waiting.previousTurnId,
+          threadStatus: threadStatus || null,
+        });
+        this.scheduleGoalContinuationReconcile(active, waiting);
+        return;
+      }
+
+      this.diagnostic('task.codex.goal_continuation.settled', {
+        taskId: active.taskId,
+        threadId: active.threadId,
+        turnId: waiting.previousTurnId,
+        threadStatus: threadStatus || null,
+        goalStatus: active.lastGoalPayload?.goal?.status || null,
+      });
+      if (active.cancelRequested) {
+        this.finalizeActiveTurn(active, {
+          threadId: active.threadId,
+          turn: {
+            ...waiting.completed.turn,
+            status: 'interrupted',
+          },
+        });
+        return;
+      }
+      if (threadStatus === 'systemError') {
+        this.finalizeActiveTurn(active, {
+          threadId: active.threadId,
+          turn: {
+            ...waiting.completed.turn,
+            status: 'failed',
+            error: { message: 'Codex entered a system error while continuing its active goal.' },
+          },
+        });
+        return;
+      }
+      this.finalizeActiveTurn(active, waiting.completed);
+    } catch (error) {
+      if (
+        this.activeTurns.get(active.threadId) !== active
+        || active.goalContinuation !== waiting
+      ) return;
+      if (waiting.warnedError !== error.message) {
+        waiting.warnedError = error.message;
+        active.onStderr(`Could not verify whether Codex continued its active goal: ${error.message}`);
+      }
+      // A failed read is not evidence that the terminal finished. Keep the task live and retry
+      // until app-server either reports an idle thread, exposes the successor, or disconnects
+      // and rejects the active run through failOutstanding().
+      this.scheduleGoalContinuationReconcile(active, waiting);
+    }
+  }
+
+  adoptGoalContinuation(active, turn) {
+    const waiting = active?.goalContinuation;
+    const turnId = typeof turn?.id === 'string' ? turn.id : '';
+    if (
+      !waiting
+      || !turnId
+      || turnId === waiting.previousTurnId
+      || this.activeTurns.get(active.threadId) !== active
+    ) return false;
+
+    clearTimeout(waiting.timer);
+    active.goalContinuation = null;
+    active.turnId = turnId;
+    active.finalResponse = '';
+    active.reasoningSummaries = new Map();
+    active.tokenUsage = null;
+    active.earlyCompletion = null;
+    this.diagnostic('task.codex.goal_continuation.started', {
+      taskId: active.taskId,
+      threadId: active.threadId,
+      previousTurnId: waiting.previousTurnId,
+      turnId,
+    });
+    if (active.cancelRequested) this.interruptActiveTurn(active);
+    this.startPollingActiveTurn(active);
+    return true;
+  }
+
+  finalizeActiveTurn(active, params) {
+    if (this.activeTurns.get(active.threadId) !== active) {
+      return;
+    }
+    if (active.goalContinuation) {
+      clearTimeout(active.goalContinuation.timer);
+      active.goalContinuation = null;
     }
     this.recordTurnFinalGoal(active);
     this.activeTurns.delete(active.threadId);
@@ -752,19 +969,14 @@ export class CodexAppServer extends EventEmitter {
   }
 
   // Task Activity folds every goal event on a thread into one row, so a goal last reported as
-  // `active` keeps describing live work long after the turn that reported it is gone. The last
-  // goal Codex reported during the turn is replayed once as the turn ends, flagged
-  // `turnEnded`, so the stored history closes on a record that cannot change again. Codex is
-  // never second-guessed: the status it last reported is replayed verbatim, and a goal that was
-  // cleared or never seen during the turn records nothing.
+  // `active` keeps describing live work after Relay's run ends. The last goal Codex reported is
+  // replayed once when the complete provider turn chain ends, flagged `turnEnded`, so stored
+  // history closes on a record that cannot change again. Intermediate automatic goal turns do
+  // not replay it because the task and the goal are both still live.
   //
-  // Once per turn needs no flag on the record. finishActiveTurn is the only caller, and it
-  // reads the record out of `activeTurns` and deletes it, so the second finish of one turn (the
-  // turn/completed notification and the one-second poll both call it) finds nothing to replay.
-  // Nothing re-enters finishActiveTurn synchronously from inside the replay either: its other
-  // two call sites sit after awaits, and the only synchronous one is the socket message
-  // dispatch. A second turn on the same thread is a second `run`, which builds a fresh record,
-  // so it replays its own goal rather than inheriting a spent guard.
+  // Once per Relay run needs no flag on the record. finalizeActiveTurn deletes the record, so a
+  // duplicate completion observation finds nothing to replay. A later user-started run builds a
+  // fresh record; an automatic goal successor deliberately stays inside the existing one.
   recordTurnFinalGoal(active) {
     if (!active?.lastGoalPayload) {
       return;
@@ -795,6 +1007,7 @@ export class CodexAppServer extends EventEmitter {
     }
     this.pending.clear();
     for (const active of this.activeTurns.values()) {
+      if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
       active.reject(new CodexAppServerError(message));
     }
     this.activeTurns.clear();
@@ -992,10 +1205,68 @@ export class CodexAppServer extends EventEmitter {
     throw new CodexAppServerError('Task cancelled.', { cancelled: true });
   }
 
-  async pollActiveTurn(active) {
-    while (this.activeTurns.get(active.threadId) === active && active.turnId) {
+  async loadCurrentGoal(active) {
+    const observedRevision = active.goalRevision || 0;
+    try {
+      const response = await this.request('thread/goal/get', {
+        threadId: active.threadId,
+      }, 5_000);
+      const currentRevision = active.goalRevision || 0;
+      if (
+        this.activeTurns.get(active.threadId) !== active
+        || currentRevision !== observedRevision
+      ) {
+        this.diagnostic('task.codex.goal.read_stale', {
+          taskId: active.taskId,
+          threadId: active.threadId,
+          observedRevision,
+          currentRevision,
+        });
+        return;
+      }
+      const payload = normalizeGoalParams({
+        threadId: active.threadId,
+        turnId: null,
+        goal: response.goal,
+      });
+      active.lastGoalPayload = describesGoal(payload.goal) ? payload : null;
+      this.diagnostic('task.codex.goal.loaded', {
+        taskId: active.taskId,
+        threadId: active.threadId,
+        goalStatus: active.lastGoalPayload?.goal?.status || null,
+      });
+    } catch (error) {
+      // Goal notifications still provide the primary live path. Older app-server builds may not
+      // implement the read method, so failure here is diagnostic and must not block the turn.
+      this.diagnostic('task.codex.goal.read_unavailable', {
+        taskId: active.taskId,
+        threadId: active.threadId,
+        error: error.message,
+      });
+    }
+  }
+
+  startPollingActiveTurn(active) {
+    const turnId = active?.turnId;
+    if (!turnId) return;
+    this.pollActiveTurn(active, turnId).catch((error) => {
+      if (
+        this.activeTurns.get(active.threadId) === active
+        && active.turnId === turnId
+      ) active.onStderr(`Codex turn polling stopped: ${error.message}`);
+    });
+  }
+
+  async pollActiveTurn(active, turnId = active.turnId) {
+    while (
+      this.activeTurns.get(active.threadId) === active
+      && active.turnId === turnId
+    ) {
       await delay(1_000);
-      if (this.activeTurns.get(active.threadId) !== active) {
+      if (
+        this.activeTurns.get(active.threadId) !== active
+        || active.turnId !== turnId
+      ) {
         return;
       }
       try {
@@ -1003,7 +1274,7 @@ export class CodexAppServer extends EventEmitter {
           threadId: active.threadId,
           includeTurns: true,
         });
-        const turn = response.thread.turns?.find((item) => item.id === active.turnId);
+        const turn = response.thread.turns?.find((item) => item.id === turnId);
         if (turn && turn.status !== 'inProgress') {
           this.finishActiveTurn({ threadId: active.threadId, turn });
           return;
@@ -1085,7 +1356,9 @@ export class CodexAppServer extends EventEmitter {
         finalResponse: '',
         reasoningSummaries: new Map(),
         lastGoalPayload: null,
+        goalRevision: 0,
         earlyCompletion: null,
+        goalContinuation: null,
         cancelRequested: false,
         subscribed: false,
         onEvent,
@@ -1157,6 +1430,12 @@ export class CodexAppServer extends EventEmitter {
         });
         freshThread = true;
       }
+      if (!freshThread) {
+        await this.loadCurrentGoal(activeTurn);
+      }
+      if (activeTurn.cancelRequested) {
+        throw new CodexAppServerError('Task cancelled.', { cancelled: true });
+      }
       const started = await this.request('turn/start', {
         threadId: executionThreadId,
         input: [
@@ -1196,15 +1475,17 @@ export class CodexAppServer extends EventEmitter {
       if (active.earlyCompletion?.turn?.id === active.turnId) {
         this.finishActiveTurn(active.earlyCompletion);
       } else {
-        this.pollActiveTurn(active).catch((error) => {
-          this.activeTurns.get(executionThreadId)?.onStderr(`Codex turn polling stopped: ${error.message}`);
-        });
+        this.startPollingActiveTurn(active);
       }
       return await completion;
     } catch (error) {
       this.diagnostic('task.codex.run.failed', { taskId: task.id, threadId: task.thread_id, error: error.message });
       const active = [...this.activeTurns.values()].find((turn) => turn.taskId === task.id);
       if (active) {
+        if (active.goalContinuation) {
+          clearTimeout(active.goalContinuation.timer);
+          active.goalContinuation = null;
+        }
         this.activeTurns.delete(active.threadId);
         await this.releaseSubscription(active);
         active.reject(error);
@@ -1231,21 +1512,38 @@ export class CodexAppServer extends EventEmitter {
     if (!value) {
       throw new CodexAppServerError('Write a follow-up before sending it.');
     }
-    const active = [...this.activeTurns.values()].find((turn) => turn.taskId === taskId);
+    let active = [...this.activeTurns.values()].find((turn) => turn.taskId === taskId);
+    if (active?.goalContinuation && !active.turnId) {
+      const deadline = Date.now() + Math.max(
+        5_000,
+        this.goalContinuationGraceMs + (this.goalContinuationPollMs * 4),
+      );
+      while (
+        this.activeTurns.get(active.threadId) === active
+        && active.goalContinuation
+        && !active.turnId
+        && Date.now() < deadline
+      ) {
+        await delay(25);
+      }
+      active = [...this.activeTurns.values()].find((turn) => turn.taskId === taskId);
+    }
     if (!active?.turnId) {
       throw new CodexAppServerError('That task no longer has an active Codex turn.');
     }
+    const threadId = active.threadId;
+    const expectedTurnId = active.turnId;
     const clientUserMessageId = `relay-steer-${taskId}-${this.nextSteerId}`;
     this.nextSteerId += 1;
     this.diagnostic('task.codex.steer.requested', {
       taskId,
-      threadId: active.threadId,
-      turnId: active.turnId,
+      threadId,
+      turnId: expectedTurnId,
       clientUserMessageId,
     });
     try {
       const response = await this.request('turn/steer', {
-        threadId: active.threadId,
+        threadId,
         input: [
           {
             type: 'text',
@@ -1257,24 +1555,24 @@ export class CodexAppServer extends EventEmitter {
             path: attachment.path,
           })),
         ],
-        expectedTurnId: active.turnId,
+        expectedTurnId,
         clientUserMessageId,
       });
-      if (response.turnId !== active.turnId) {
+      if (response.turnId !== expectedTurnId) {
         throw new CodexAppServerError('Codex updated a different turn than CC Relay expected.');
       }
       this.diagnostic('task.codex.steer.completed', {
         taskId,
-        threadId: active.threadId,
-        turnId: active.turnId,
+        threadId,
+        turnId: expectedTurnId,
         clientUserMessageId,
       });
-      return { taskId, threadId: active.threadId, turnId: active.turnId };
+      return { taskId, threadId, turnId: expectedTurnId };
     } catch (error) {
       this.diagnostic('task.codex.steer.failed', {
         taskId,
-        threadId: active.threadId,
-        turnId: active.turnId,
+        threadId,
+        turnId: expectedTurnId,
         error: error.message,
       });
       throw error;

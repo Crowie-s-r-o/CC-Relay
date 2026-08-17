@@ -253,8 +253,10 @@ function activeTurnFixture({ taskId, turnId, events }) {
     finalResponse: '',
     reasoningSummaries: new Map(),
     lastGoalPayload: null,
+    goalRevision: 0,
     subscribed: false,
     earlyCompletion: null,
+    goalContinuation: null,
     cancelRequested: false,
     onEvent: (event) => events.push(event),
     onStderr: () => {},
@@ -264,7 +266,12 @@ function activeTurnFixture({ taskId, turnId, events }) {
 }
 
 function planTurnClient(taskId, turnId = ACTIVE_TURN_ID) {
-  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  // These folding tests end isolated turns directly. Automatic goal continuation has its own
+  // lifecycle coverage below, so disable its production grace window in this narrow fixture.
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 0,
+  });
   const events = [];
   client.activeTurns.set(THREAD_ID, activeTurnFixture({ taskId, turnId, events }));
   return { client, events };
@@ -502,7 +509,433 @@ test('Codex thread goal updates and clears reach the task event stream', () => {
   }
 });
 
-test('a goal still live when the Codex turn ends is closed by one turn-final record', () => {
+test('a persisted active goal is loaded before the run even without a new notification', async () => {
+  const events = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 60_000,
+  });
+  const active = activeTurnFixture({ taskId: 228, turnId: ACTIVE_TURN_ID, events });
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async (method, params) => {
+    assert.equal(method, 'thread/goal/get');
+    assert.deepEqual(params, { threadId: THREAD_ID });
+    return { goal: { ...LIVE_GOAL } };
+  };
+
+  try {
+    await client.loadCurrentGoal(active);
+    completeTurn(client, ACTIVE_TURN_ID);
+
+    assert.equal(active.lastGoalPayload.goal.status, 'active');
+    assert.equal(active.goalContinuation.previousTurnId, ACTIVE_TURN_ID);
+    assert.equal(client.activeTurns.get(THREAD_ID), active);
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a delayed goal read cannot overwrite a newer live goal notification', async () => {
+  const events = [];
+  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  const active = activeTurnFixture({ taskId: 227, turnId: ACTIVE_TURN_ID, events });
+  client.activeTurns.set(THREAD_ID, active);
+  let resolveGoalRead;
+  client.request = () => new Promise((resolve) => {
+    resolveGoalRead = resolve;
+  });
+
+  try {
+    const loading = client.loadCurrentGoal(active);
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    resolveGoalRead({ goal: null });
+    await loading;
+
+    assert.equal(active.lastGoalPayload.goal.status, 'active');
+    assert.equal(active.goalRevision, 1);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('an active Codex goal keeps one Relay run live and steerable across automatic turns', async () => {
+  const diagnostics = [];
+  const events = [];
+  const requests = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    diagnostic: (event, fields) => diagnostics.push({ event, fields }),
+    // The notification path should adopt the successor without waiting for reconciliation.
+    goalContinuationGraceMs: 60_000,
+  });
+  let resolveCompletion;
+  let rejectCompletion;
+  const completion = new Promise((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  const active = activeTurnFixture({ taskId: 229, turnId: ACTIVE_TURN_ID, events });
+  active.resolve = resolveCompletion;
+  active.reject = rejectCompletion;
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async (method, params) => {
+    requests.push({ method, params });
+    if (method === 'turn/steer') return { turnId: SECOND_ACTIVE_TURN_ID };
+    throw new Error(`Unexpected request: ${method}`);
+  };
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    client.handleNotification('turn/completed', {
+      threadId: THREAD_ID,
+      turn: {
+        id: ACTIVE_TURN_ID,
+        status: 'completed',
+        items: [{ id: 'first-answer', type: 'agentMessage', text: 'First checkpoint.' }],
+      },
+    });
+
+    assert.equal(client.activeTurns.get(THREAD_ID), active);
+    assert.equal(active.turnId, null);
+    assert.equal(active.goalContinuation.previousTurnId, ACTIVE_TURN_ID);
+    assert.equal(events.some(({ event }) => event.turnEnded === true), false);
+
+    // A message submitted in the brief boundary waits for the provider-started successor and
+    // then steers that exact turn instead of being rejected as a busy finished conversation.
+    const steering = client.steer(229, 'Prioritize the validation report.');
+    client.handleNotification('turn/started', {
+      threadId: THREAD_ID,
+      turn: { id: SECOND_ACTIVE_TURN_ID, status: 'inProgress', items: [] },
+    });
+    const steered = await steering;
+    assert.equal(steered.turnId, SECOND_ACTIVE_TURN_ID);
+    assert.equal(requests.at(-1).params.expectedTurnId, SECOND_ACTIVE_TURN_ID);
+
+    // A late poll or duplicate completion from the prior turn cannot close its successor.
+    completeTurn(client, ACTIVE_TURN_ID);
+    assert.equal(client.activeTurns.get(THREAD_ID), active);
+    assert.equal(active.turnId, SECOND_ACTIVE_TURN_ID);
+
+    client.handleNotification('item/completed', {
+      threadId: THREAD_ID,
+      turnId: SECOND_ACTIVE_TURN_ID,
+      item: { id: 'final-answer', type: 'agentMessage', text: 'Goal finished.' },
+    });
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: SECOND_GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL, status: 'complete' },
+    });
+    client.handleNotification('turn/completed', {
+      threadId: THREAD_ID,
+      turn: {
+        id: SECOND_ACTIVE_TURN_ID,
+        status: 'completed',
+        items: [{ id: 'final-answer', type: 'agentMessage', text: 'Goal finished.' }],
+      },
+    });
+
+    assert.deepEqual(await completion, {
+      finalResponse: 'Goal finished.',
+      sessionId: THREAD_ID,
+      exitCode: 0,
+    });
+    assert.equal(client.activeTurns.has(THREAD_ID), false);
+    assert.equal(events.filter(({ event }) => event.type === 'turn/completed').length, 2);
+    assert.equal(events.filter(({ event }) => event.turnEnded === true).length, 1);
+    assert.equal(events.find(({ event }) => event.turnEnded === true).event.goal.status, 'complete');
+    assert.equal(
+      diagnostics.some(({ event }) => event === 'task.codex.goal_continuation.started'),
+      true,
+    );
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('goal continuation reconciliation recovers a missed successor notification', async () => {
+  const events = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 60_000,
+  });
+  const active = activeTurnFixture({ taskId: 230, turnId: ACTIVE_TURN_ID, events });
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async (method) => {
+    assert.equal(method, 'thread/read');
+    return {
+      thread: {
+        status: { type: 'active' },
+        turns: [
+          { id: ACTIVE_TURN_ID, status: 'completed', items: [] },
+          { id: SECOND_ACTIVE_TURN_ID, status: 'inProgress', items: [] },
+        ],
+      },
+    };
+  };
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    const waiting = active.goalContinuation;
+
+    await client.reconcileGoalContinuation(active, waiting);
+
+    assert.equal(active.goalContinuation, null);
+    assert.equal(active.turnId, SECOND_ACTIVE_TURN_ID);
+    assert.equal(client.activeTurns.get(THREAD_ID), active);
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('an ambiguous goal-continuation read never produces a false task finish', async () => {
+  const events = [];
+  const warnings = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 60_000,
+  });
+  const active = activeTurnFixture({ taskId: 231, turnId: ACTIVE_TURN_ID, events });
+  active.onStderr = (message) => warnings.push(message);
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async () => {
+    throw new Error('temporary app-server read failure');
+  };
+  let scheduled = false;
+  client.scheduleGoalContinuationReconcile = () => {
+    scheduled = true;
+  };
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    const waiting = active.goalContinuation;
+
+    await client.reconcileGoalContinuation(active, waiting);
+
+    assert.equal(scheduled, true);
+    assert.equal(client.activeTurns.get(THREAD_ID), active);
+    assert.equal(active.goalContinuation, waiting);
+    assert.match(warnings[0], /Could not verify whether Codex continued its active goal/);
+    assert.equal(events.some(({ event }) => event.turnEnded === true), false);
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('goal continuation reconciliation finishes only after an explicitly idle thread', async () => {
+  const events = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 60_000,
+  });
+  let resolveCompletion;
+  let rejectCompletion;
+  const completion = new Promise((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  const active = activeTurnFixture({ taskId: 232, turnId: ACTIVE_TURN_ID, events });
+  active.resolve = resolveCompletion;
+  active.reject = rejectCompletion;
+  active.finalResponse = 'Stale first-turn answer.';
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async (method) => {
+    assert.equal(method, 'thread/read');
+    return {
+      thread: {
+        status: { type: 'idle' },
+        turns: [
+          { id: ACTIVE_TURN_ID, status: 'completed', items: [] },
+          {
+            id: SECOND_ACTIVE_TURN_ID,
+            status: 'completed',
+            items: [{ id: 'final-answer', type: 'agentMessage', text: 'Recovered final answer.' }],
+          },
+        ],
+      },
+    };
+  };
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    const waiting = active.goalContinuation;
+
+    await client.reconcileGoalContinuation(active, waiting);
+
+    assert.deepEqual(await completion, {
+      finalResponse: 'Recovered final answer.',
+      sessionId: THREAD_ID,
+      exitCode: 0,
+    });
+    assert.equal(client.activeTurns.has(THREAD_ID), false);
+    assert.equal(events.filter(({ event }) => event.turnEnded === true).length, 1);
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('cancelling inside a goal handoff cannot resolve the run as successful', async () => {
+  const events = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 60_000,
+  });
+  let resolveCompletion;
+  let rejectCompletion;
+  const completion = new Promise((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  const active = activeTurnFixture({ taskId: 234, turnId: ACTIVE_TURN_ID, events });
+  active.resolve = resolveCompletion;
+  active.reject = rejectCompletion;
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async () => ({
+    thread: {
+      status: { type: 'idle' },
+      turns: [{ id: ACTIVE_TURN_ID, status: 'completed', items: [] }],
+    },
+  });
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    const waiting = active.goalContinuation;
+
+    assert.equal(client.cancel(234), true);
+    await client.reconcileGoalContinuation(active, waiting);
+
+    await assert.rejects(completion, (error) => (
+      error instanceof Error
+      && error.message === 'Task cancelled.'
+      && error.cancelled === true
+    ));
+    assert.equal(client.activeTurns.has(THREAD_ID), false);
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('a system-error thread fails instead of completing an active goal', async () => {
+  const events = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 60_000,
+  });
+  let resolveCompletion;
+  let rejectCompletion;
+  const completion = new Promise((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+  const active = activeTurnFixture({ taskId: 235, turnId: ACTIVE_TURN_ID, events });
+  active.resolve = resolveCompletion;
+  active.reject = rejectCompletion;
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async () => ({
+    thread: {
+      status: { type: 'systemError' },
+      turns: [{ id: ACTIVE_TURN_ID, status: 'completed', items: [] }],
+    },
+  });
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    const waiting = active.goalContinuation;
+
+    await client.reconcileGoalContinuation(active, waiting);
+
+    await assert.rejects(completion, /system error while continuing its active goal/i);
+    assert.equal(client.activeTurns.has(THREAD_ID), false);
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('an unknown thread status keeps an active goal live for another reconciliation', async () => {
+  const events = [];
+  const client = new CodexAppServer({
+    proxy: new FakeProxy(),
+    goalContinuationGraceMs: 60_000,
+  });
+  const active = activeTurnFixture({ taskId: 233, turnId: ACTIVE_TURN_ID, events });
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async () => ({ thread: { turns: [] } });
+  let scheduled = false;
+  client.scheduleGoalContinuationReconcile = () => {
+    scheduled = true;
+  };
+
+  try {
+    client.handleNotification('thread/goal/updated', {
+      threadId: THREAD_ID,
+      turnId: GOAL_TURN_ID,
+      goal: { ...LIVE_GOAL },
+    });
+    completeTurn(client, ACTIVE_TURN_ID);
+    const waiting = active.goalContinuation;
+
+    await client.reconcileGoalContinuation(active, waiting);
+
+    assert.equal(scheduled, true);
+    assert.equal(client.activeTurns.get(THREAD_ID), active);
+    assert.equal(active.goalContinuation, waiting);
+    assert.equal(events.some(({ event }) => event.turnEnded === true), false);
+  } finally {
+    if (active.goalContinuation) clearTimeout(active.goalContinuation.timer);
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
+test('an isolated turn closes a live goal once when automatic continuation is disabled', () => {
   const { client, events } = planTurnClient(216);
 
   try {
@@ -1040,6 +1473,8 @@ class FakeWebSocket extends EventTarget {
       } else {
         this.respond({ id: message.id, result: { thread: { id: THREAD_ID } } });
       }
+    } else if (message.method === 'thread/goal/get') {
+      this.respond({ id: message.id, result: { goal: null } });
     } else if (message.method === 'model/list') {
       this.respond({
         id: message.id,
@@ -1238,6 +1673,24 @@ test('a live update steers the exact active Codex turn', async () => {
     },
   }]);
   assert.equal(diagnostics.some(({ event }) => event === 'task.codex.steer.completed'), true);
+});
+
+test('a steer acknowledgement remains tied to the accepted turn after a fast handoff', async () => {
+  const client = new CodexAppServer({ proxy: new FakeProxy() });
+  const active = {
+    taskId: 42,
+    threadId: THREAD_ID,
+    turnId: 'turn-live',
+  };
+  client.activeTurns.set(THREAD_ID, active);
+  client.request = async () => {
+    active.turnId = 'turn-successor';
+    return { turnId: 'turn-live' };
+  };
+
+  const result = await client.steer(42, 'Correct the current work');
+
+  assert.deepEqual(result, { taskId: 42, threadId: THREAD_ID, turnId: 'turn-live' });
 });
 
 test('live updates reject inactive tasks instead of queueing elsewhere', async () => {

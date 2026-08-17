@@ -4163,7 +4163,7 @@ pre {
 
 .event-overview-summary {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   min-width: 0;
   color: var(--term-fg);
   cursor: pointer;
@@ -4192,8 +4192,9 @@ pre {
   gap: 7px;
   align-items: center;
   justify-content: center;
-  min-width: 78px;
-  padding: 0 10px;
+  min-width: 72px;
+  align-self: stretch;
+  padding: 0 8px;
   border-left: 1px solid var(--term-line);
   color: var(--term-muted2);
   font-family: var(--font-mono);
@@ -4219,7 +4220,7 @@ pre {
 .event-overview-body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
-  max-height: min(34vh, 320px);
+  max-height: min(28vh, 240px);
   overflow: auto;
   overscroll-behavior: contain;
   background:
@@ -4230,7 +4231,7 @@ pre {
 
 .activity-overview-group {
   min-width: 0;
-  padding: 10px 12px 12px;
+  padding: 6px 10px 8px;
   border-left: 2px solid var(--term-blue);
 }
 
@@ -4241,7 +4242,7 @@ pre {
   gap: 10px;
   align-items: baseline;
   justify-content: space-between;
-  padding-bottom: 7px;
+  padding-bottom: 4px;
   border-bottom: 1px solid var(--term-line);
 }
 
@@ -4297,10 +4298,10 @@ pre {
 .activity-overview-item {
   display: grid;
   grid-template-columns: 16px minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 6px;
   align-items: start;
   min-width: 0;
-  padding: 8px 0;
+  padding: 5px 0;
   border-bottom: 1px solid rgb(90 95 106 / 20%);
 }
 
@@ -4316,7 +4317,7 @@ pre {
 
 .activity-overview-copy {
   display: grid;
-  gap: 2px;
+  gap: 1px;
   min-width: 0;
 }
 
@@ -4327,7 +4328,7 @@ pre {
   font-family: var(--font-mono);
   font-size: 10px;
   font-weight: 650;
-  line-height: 1.35;
+  line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
@@ -4335,19 +4336,18 @@ pre {
   color: var(--term-muted);
   font-family: var(--font-mono);
   font-size: 8px;
-  line-height: 1.35;
+  line-height: 1.25;
 }
 
 .activity-overview-brief {
   display: -webkit-box;
-  margin-top: 2px;
   overflow: hidden;
   color: var(--term-muted2);
   font-size: 9px;
-  line-height: 1.4;
+  line-height: 1.3;
   overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
 }
 
 .activity-overview-state {
@@ -4362,7 +4362,7 @@ pre {
 
 .activity-overview-result {
   display: grid;
-  gap: 3px;
+  gap: 1px;
   justify-items: end;
 }
 
@@ -4404,7 +4404,7 @@ pre {
 .activity-overview-more,
 .activity-overview-group-empty {
   margin: 0;
-  padding: 8px 0 0 24px;
+  padding: 5px 0 0 22px;
   color: var(--term-muted);
   font-size: 8px;
   font-style: italic;
@@ -4414,7 +4414,7 @@ pre {
   grid-column: 1 / -1;
   display: grid;
   gap: 3px;
-  padding: 12px 14px;
+  padding: 8px 10px;
   color: var(--term-muted);
   font-size: 9px;
 }
@@ -4454,9 +4454,9 @@ pre {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   min-height: 0;
-  padding: 6px 10px;
+  padding: 3px 8px;
   border-bottom: 1px solid var(--term-line);
   background: #0a0b12;
 }
@@ -4473,8 +4473,8 @@ pre {
 
 .event-filters button,
 .event-tools button {
-  min-height: 26px;
-  padding: 4px 9px;
+  min-height: 24px;
+  padding: 3px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
   color: var(--term-muted2);
@@ -6642,21 +6642,21 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
 
 .detail-panel .event-metrics > span {
   min-width: 0;
-  padding: 6px 10px;
+  padding: 4px 9px;
 }
 
 .detail-panel .event-metrics b { font-size: 12px; }
 .detail-panel .event-metrics small { font-size: 7px; }
 
 .detail-panel .event-toolbar {
-  min-height: 32px;
-  padding: 5px 8px;
+  min-height: 28px;
+  padding: 2px 8px;
 }
 
 .detail-panel .event-filters button,
 .detail-panel .event-tools button {
-  min-height: 24px;
-  padding: 3px 8px;
+  min-height: 22px;
+  padding: 2px 7px;
   font-size: 10px;
 }
 
@@ -8834,7 +8834,7 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   }
 }
 
-/* Global running-task monitor. A live scroll of what is running, not a container. */
+/* Global task monitor. Running work and idle manual terminal sessions share one rail. */
 .brand-lockup,
 .header-actions {
   flex: 0 0 auto;
@@ -9162,6 +9162,40 @@ html[data-running-task-width="360"] {
   background: color-mix(in srgb, var(--project-accent, var(--running)) 10%, #fff);
   font-weight: 700;
   letter-spacing: .04em;
+}
+
+.header-running-state {
+  flex: 0 0 auto;
+  padding: 1px 4px;
+  border: 1px solid color-mix(in srgb, var(--running) 34%, var(--line));
+  border-radius: 999px;
+  color: #6247a8;
+  background: color-mix(in srgb, var(--running) 8%, #fff);
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 750;
+  letter-spacing: .035em;
+  line-height: 1.1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.header-running-state[data-state="idle"] {
+  border-color: #afc2ee;
+  color: #3158b8;
+  background: #edf3ff;
+}
+
+.header-running-state[data-state="busy"] {
+  border-color: color-mix(in srgb, var(--signal) 40%, var(--line));
+  color: #167586;
+  background: color-mix(in srgb, var(--signal) 9%, #fff);
+}
+
+.header-running-state[data-state="closed"] {
+  border-color: #d5dbe5;
+  color: #697489;
+  background: #f4f6fa;
 }
 
 .header-running-loc {
@@ -13344,6 +13378,30 @@ html[data-theme="dark"] .header-running-meta > b {
   background: color-mix(in srgb, var(--project-accent-dark, var(--app-violet)) 18%, var(--app-control));
 }
 
+html[data-theme="dark"] .header-running-state {
+  border-color: color-mix(in srgb, var(--app-violet) 48%, var(--app-border));
+  color: var(--app-violet);
+  background: color-mix(in srgb, var(--app-violet) 14%, var(--app-control));
+}
+
+html[data-theme="dark"] .header-running-state[data-state="idle"] {
+  border-color: color-mix(in srgb, var(--app-blue) 48%, var(--app-border));
+  color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 14%, var(--app-control));
+}
+
+html[data-theme="dark"] .header-running-state[data-state="busy"] {
+  border-color: color-mix(in srgb, var(--app-teal) 48%, var(--app-border));
+  color: var(--app-teal);
+  background: color-mix(in srgb, var(--app-teal) 14%, var(--app-control));
+}
+
+html[data-theme="dark"] .header-running-state[data-state="closed"] {
+  border-color: var(--app-border-strong);
+  color: var(--app-text-muted);
+  background: var(--app-control);
+}
+
 /* ---------------------------------------------------------------------------
    Active project identity in the prompt composer
 
@@ -14919,7 +14977,7 @@ html[data-theme="dark"] .desktop-update-modal[data-state="error"] .desktop-updat
 }
 
 html[data-desktop-titlebar="true"] {
-  --desktop-titlebar-height: 36px;
+  --desktop-titlebar-height: 32px;
 }
 
 html[data-desktop-titlebar="true"] body {
@@ -14969,9 +15027,9 @@ html[data-desktop-titlebar="true"] .workspace {
 
 .desktop-titlebar-mark {
   display: block;
-  width: 22px;
-  height: 22px;
-  flex: 0 0 22px;
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
   object-fit: contain;
   pointer-events: none;
 }
