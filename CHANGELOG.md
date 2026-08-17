@@ -2,6 +2,12 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.14] - 2026-08-17
+
+### Changed
+
+- The monitor now keeps Codex goals active and preserves manually started sessions.
+
 ## [0.2.13] - 2026-08-14
 
 ### Changed
