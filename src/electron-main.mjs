@@ -48,6 +48,30 @@ function desktopDiagnostic(event, details = {}) {
   });
 }
 
+function desktopUpdaterLog(level, message, error) {
+  const embeddedError = message && typeof message === 'object' ? message : null;
+  const failure = error || embeddedError;
+  const text = embeddedError ? embeddedError.message || String(embeddedError) : String(message || '');
+  desktopDiagnostic('desktop.updater.log', {
+    level,
+    message: text,
+    ...(failure ? errorDetails(failure) : {}),
+  });
+  const sink = console[level] || console.log;
+  if (failure && failure !== message) {
+    sink.call(console, message, failure);
+  } else {
+    sink.call(console, message);
+  }
+}
+
+const desktopUpdaterLogger = {
+  debug: (message, error) => desktopUpdaterLog('debug', message, error),
+  info: (message, error) => desktopUpdaterLog('info', message, error),
+  warn: (message, error) => desktopUpdaterLog('warn', message, error),
+  error: (message, error) => desktopUpdaterLog('error', message, error),
+};
+
 /*
  * Both the macOS menu accelerators and the renderer key handler call this. Whether a macOS
  * accelerator also reaches the renderer is not observable from tests, so instead of dropping one
@@ -113,7 +137,7 @@ const desktopUpdater = createDesktopUpdater({
       autoUpdater.quitAndInstall(false, true);
     }
   },
-  logger: console,
+  logger: desktopUpdaterLogger,
   timer: setTimeout,
 });
 

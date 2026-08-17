@@ -33,16 +33,17 @@ jobs:
       - if: runner.os == 'macOS'
         run: npm test
       - run: ${{ matrix.command }}
-      - uses: actions/upload-artifact@v7
+      # The macOS build remains packaging validation. Public macOS artifacts are built with the
+      # maintainer's continuity identity, verified, and uploaded by npm run deploy. Publishing the
+      # unsigned hosted-runner bundle would make Squirrel.Mac reopen the old application.
+      - if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v7
         with:
           name: cc-relay-${{ runner.os }}
           path: |
-            dist/*.dmg
-            dist/*.zip
             dist/*.exe
             dist/*.blockmap
             dist/latest.yml
-            dist/latest-mac.yml
           if-no-files-found: error
 
   release:
@@ -63,18 +64,15 @@ jobs:
       - run: npm run release:notes -- "$GITHUB_REF_NAME" > release-notes.md
       - uses: actions/download-artifact@v8
         with:
-          pattern: cc-relay-*
+          pattern: cc-relay-Windows
           path: dist
           merge-multiple: true
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
           files: |
-            dist/*.dmg
-            dist/*.zip
             dist/*.exe
             dist/*.blockmap
             dist/latest.yml
-            dist/latest-mac.yml
           body_path: release-notes.md
           fail_on_unmatched_files: true

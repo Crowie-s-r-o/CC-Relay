@@ -7,18 +7,23 @@ import {
   buildReleasePrompt,
   changelogEntryForVersion,
   compareVersions,
+  FIRST_SIGNED_MAC_RELEASE_VERSION,
   formatChangelogEntry,
   inferReleaseType,
   localCalendarDate,
+  MAC_RELEASE_MANIFEST_NAME,
+  macReleaseArtifactNames,
   nextVersion,
   normalizeReleaseTags,
   normalizeReleaseNotes,
   parseVersion,
   pendingReleaseTags,
   prependChangelog,
+  releaseHasSignedMacArtifacts,
   releasePublishStatus,
   releaseNotesSchema,
   releaseRecoveryRefspecs,
+  releaseTagsFromCompletePublishedReleases,
   releaseTagsFromPublishedReleases,
   releaseTagsFromRemoteRefs,
   selectReleaseWorkflowRun,
@@ -38,10 +43,12 @@ test('npm run deploy owns versioning, verification, tags, and the atomic push', 
   assert.match(deploy, /git\(\['push', '--atomic', 'origin', 'main', tag\]/);
   assert.match(deploy, /recoverPendingReleases\(localTags, options\)/);
   assert.match(deploy, /git\(\['push', '--atomic', 'origin', \.\.\.refspecs\]/);
-  assert.match(deploy, /Pending release recovery requires publication watching/);
   assert.doesNotMatch(deploy, /Retry with git push --atomic/);
   assert.match(deploy, /watchReleasePublication\(tag, sha\)/);
   assert.match(deploy, /if \(!outcome\.ok\) \{/);
+  assert.match(deploy, /buildSignedMacRelease\(/);
+  assert.match(deploy, /publishSignedMacRelease\(tag, signedMacRelease\)/);
+  assert.doesNotMatch(deploy, /--no-watch/);
 });
 
 test('the desktop build workflow runs the suite on macOS and never skips the release job silently', () => {
@@ -60,12 +67,14 @@ test('the desktop build workflow runs the suite on macOS and never skips the rel
   assert.doesNotMatch(deploy, /GitHub Actions will build and publish/);
 });
 
-test('GitHub Releases publish the macOS installer and automatic update feed', () => {
+test('GitHub Releases publish locally verified macOS artifacts and hosted Windows artifacts', () => {
   const builder = readFileSync(join(projectRoot, 'electron-builder.yml'), 'utf8');
   const workflow = readFileSync(
     join(projectRoot, '.github', 'workflows', 'build-desktop.yml'),
     'utf8',
   );
+  const deploy = readFileSync(join(projectRoot, 'scripts', 'deploy.mjs'), 'utf8');
+  const macRelease = readFileSync(join(projectRoot, 'scripts', 'mac-release.mjs'), 'utf8');
 
   assert.match(builder, /-Setup\.\$\{ext\}/);
   assert.match(builder, /-Portable\.\$\{ext\}/);
@@ -74,9 +83,21 @@ test('GitHub Releases publish the macOS installer and automatic update feed', ()
   const macConfig = builder.match(/^mac:\n([\s\S]*?)^win:/m)?.[1] || '';
   assert.match(macConfig, /^ {2}target:\n {4}- dmg\n {4}- zip$/m);
   assert.doesNotMatch(workflow, /(?:path|files): dist\/\*\*/);
-  for (const pattern of ['*.dmg', '*.zip', '*.exe', '*.blockmap', 'latest.yml', 'latest-mac.yml']) {
+  for (const pattern of ['*.exe', '*.blockmap', 'latest.yml']) {
     assert.equal(workflow.split(`dist/${pattern}`).length, 3);
   }
+  for (const pattern of ['*.dmg', '*.zip', 'latest-mac.yml']) {
+    assert.equal(workflow.includes(`dist/${pattern}`), false);
+  }
+  assert.match(workflow, /if: runner\.os == 'Windows'\n\s+uses: actions\/upload-artifact/);
+  assert.match(workflow, /pattern: cc-relay-Windows/);
+  assert.match(deploy, /'release',\s+'upload'/);
+  assert.match(deploy, /'--clobber'/);
+  assert.match(macRelease, /codesign[\s\S]*?'--verify'[\s\S]*?'--deep'[\s\S]*?'--strict'/);
+  assert.match(macRelease, /unzip[\s\S]*?'-q'[\s\S]*?verifySignedAppBundle\(join\(extractedRoot/);
+  assert.match(macRelease, /hdiutil[\s\S]*?'verify'/);
+  assert.match(macRelease, /_CodeSignature\/CodeResources/);
+  assert.match(macRelease, /Apple Development: Patrik Kelemen \(SSUH7T22L8\)/);
 });
 
 test('the public README leads with platform truth, download, and the six core benefits', () => {
@@ -193,6 +214,45 @@ dddddddd refs/tags/not-a-release
     () => releaseRecoveryRefspecs({ tag: 'latest', sha }),
     /Invalid release tag/,
   );
+});
+
+test('signed macOS release manifests separate complete releases from Windows-only handoffs', () => {
+  assert.equal(FIRST_SIGNED_MAC_RELEASE_VERSION, '0.2.15');
+  assert.equal(MAC_RELEASE_MANIFEST_NAME, 'mac-release.json');
+  assert.deepEqual(macReleaseArtifactNames('0.2.15'), [
+    'CC-Relay-0.2.15-mac-arm64.dmg',
+    'CC-Relay-0.2.15-mac-arm64.dmg.blockmap',
+    'CC-Relay-0.2.15-mac-arm64.zip',
+    'CC-Relay-0.2.15-mac-arm64.zip.blockmap',
+    'latest-mac.yml',
+    'mac-release.json',
+  ]);
+
+  const legacy = { tag_name: 'v0.2.14', draft: false, prerelease: false, assets: [] };
+  const incomplete = {
+    tag_name: 'v0.2.15',
+    draft: false,
+    prerelease: false,
+    assets: macReleaseArtifactNames('0.2.15').slice(0, -1).map((name) => ({ name, size: 1 })),
+  };
+  const complete = {
+    ...incomplete,
+    assets: macReleaseArtifactNames('0.2.15').map((name) => ({ name, size: 1 })),
+  };
+  assert.equal(releaseHasSignedMacArtifacts(legacy), true);
+  assert.equal(releaseHasSignedMacArtifacts(incomplete), false);
+  assert.equal(releaseHasSignedMacArtifacts(complete), true);
+  assert.equal(releaseHasSignedMacArtifacts({
+    ...complete,
+    assets: complete.assets.map((asset) => (
+      asset.name === MAC_RELEASE_MANIFEST_NAME ? { ...asset, size: 0 } : asset
+    )),
+  }), false);
+  assert.deepEqual(releaseTagsFromCompletePublishedReleases([legacy, incomplete]), ['v0.2.14']);
+  assert.deepEqual(releaseTagsFromCompletePublishedReleases([legacy, complete]), [
+    'v0.2.14',
+    'v0.2.15',
+  ]);
 });
 
 test('release dates follow the operator local calendar', () => {
@@ -332,7 +392,7 @@ Compact release history.
   assert.throws(() => changelogEntryForVersion(changelog, '9.9.9'), /has no entry/);
 });
 
-test('release watching picks the tag run and only reports success once the release exists', () => {
+test('release watching reports success only after the tag workflow and release both succeed', () => {
   const payload = {
     workflow_runs: [
       { id: 3, path: '.github/workflows/ci.yml', head_sha: 'abc', head_branch: 'main', status: 'completed', conclusion: 'success' },
@@ -354,6 +414,12 @@ test('release watching picks the tag run and only reports success once the relea
   const running = releasePublishStatus({ tag: 'v1.2.3', run: selected });
   assert.equal(running.done, false);
   assert.match(running.message, /in_progress/);
+  const prematurelyPublished = releasePublishStatus({
+    tag: 'v1.2.3',
+    run: selected,
+    releaseUrl: 'https://example.invalid/releases/v1.2.3',
+  });
+  assert.equal(prematurelyPublished.done, false);
 
   const failed = releasePublishStatus({ tag: 'v1.2.3', run: payload.workflow_runs[1] });
   assert.equal(failed.done, true);
@@ -372,7 +438,7 @@ test('release watching picks the tag run and only reports success once the relea
 
   const published = releasePublishStatus({
     tag: 'v1.2.3',
-    run: failed,
+    run: succeededRun,
     releaseUrl: 'https://example.invalid/releases/v1.2.3',
   });
   assert.deepEqual(published, {

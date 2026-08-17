@@ -59,17 +59,20 @@ Automatic version intent is deterministic:
 
 ## Release sequence
 
-1. Require a clean `main` branch and the expected `origin` repository.
+1. Require a clean `main` branch, the expected `origin` repository, a macOS arm64 host, the exact continuity signing identity, and readable GitHub CLI access.
 2. Fetch `origin/main` and tags, then require the remote branch to be an ancestor of local `HEAD`.
 3. Require the latest reachable SemVer tag to match the package version.
-4. Compare reachable local SemVer tags with stable GitHub Releases and recover any unpublished suffix.
+4. Compare reachable local SemVer tags with complete stable GitHub Releases and recover any unpublished or partially published suffix.
 5. Collect commits and changed-file evidence since the latest tag.
 6. Generate structured release notes through an isolated local subscription CLI.
 7. Normalize every supported note into short, deduplicated facts without an item-count limit.
 8. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` together.
 9. Run `release:check`, the complete test suite, and `npm audit --audit-level=high`.
-10. Create `chore(release): vX.Y.Z` and an annotated `vX.Y.Z` tag.
-11. Push `main` and the tag with one atomic Git operation.
+10. Build the macOS DMG and updater ZIP locally, verify their signature lineage and metadata, and create `mac-release.json`.
+11. Create `chore(release): vX.Y.Z` and an annotated `vX.Y.Z` tag.
+12. Push `main` and the tag with one atomic Git operation.
+13. Wait for the exact GitHub Actions run to publish the Windows artifacts and release notes.
+14. Upload the verified local macOS assets and confirm their names and byte sizes through the GitHub Release API.
 
 The version files are restored if a gate fails before the release commit. If the commit and tag are valid but GitHub rejects the push, they remain locally. After GitHub access is corrected, rerunning `npm run deploy` recovers that release and any older unpublished releases without regenerating notes or changing their versions.
 
@@ -95,20 +98,24 @@ The remote latest release was still v0.2.6. `origin/main` was at the v0.2.7 rele
 commit and tag at `94efe61` were also local-only. Pushing only `main` and `v0.2.9` would leave two
 versioned changelog entries without their intended releases.
 
-Recovery uses the highest stable GitHub Release as its baseline, not the highest remote tag. This is
-load bearing: a tag whose push succeeded but whose workflow is still running remains pending on the
-next invocation. The command validates every candidate before its first write: each must be an
+Recovery uses the highest complete stable GitHub Release as its baseline, not the highest remote tag.
+This is load bearing: a tag whose push succeeded but whose workflow is still running remains pending
+on the next invocation. Starting with v0.2.15, a release also remains pending until it contains the
+signed macOS DMG, ZIP, both blockmaps, `latest-mac.yml`, and `mac-release.json`. The command validates
+every candidate before its first write: each must be an
 annotated tag reachable from `main`, point to an ordered `chore(release): vX.Y.Z` commit, and contain
 matching package, lockfile, and changelog versions. It then handles the suffix in ascending SemVer
 order. For each version it atomically advances `main` when needed, pushes the tag when missing, and
-waits for the exact GitHub Release before proceeding. A tag already on GitHub resumes its existing
-publication watch. Completed releases are skipped on another retry.
+waits for the exact GitHub workflow before proceeding. It builds an older tag in an isolated detached
+worktree, uploads its verified macOS assets after the Windows release exists, and cleans the worktree.
+A tag already on GitHub resumes its existing publication watch. Completed releases are skipped on
+another retry.
 
 > [!important]
-> Recovery preflights the complete suffix before changing the remote and requires normal publication
-> watching. `--no-watch` is rejected when pending releases exist. After recovery, deploy either exits
-> successfully when there are no new commits or continues through the normal release flow for commits
-> made after the newest recovered tag.
+> Recovery preflights the complete suffix before changing the remote and always requires publication
+> watching. Deploy has no push-and-stop option because the locally signed macOS handoff is part of
+> release completion. After recovery, deploy either exits successfully when there are no new commits
+> or continues through the normal release flow for commits made after the newest recovered tag.
 
 ## AI generation boundary
 
@@ -131,15 +138,15 @@ This invocation follows the official Codex non-interactive pattern and reuses th
 
 ## GitHub release handoff
 
-Pushing `vX.Y.Z` starts `.github/workflows/build-desktop.yml`. The Ubuntu release job runs `release:check -- --tag`, extracts only the matching changelog body, downloads native artifacts, and publishes that body with the GitHub Release. GitHub's automatically generated notes are disabled so there is one canonical compact narrative.
+Pushing `vX.Y.Z` starts `.github/workflows/build-desktop.yml`. The Ubuntu release job runs `release:check -- --tag`, extracts only the matching changelog body, downloads the Windows artifacts, and publishes that body with the GitHub Release. GitHub's automatically generated notes are disabled so there is one canonical compact narrative.
 
-The native jobs transfer DMG, desktop ZIP, EXE, blockmap, `latest-mac.yml`, and Windows `latest.yml` deliverables. Unpacked application trees and builder diagnostics are excluded. NSIS and portable Windows targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. The macOS DMG remains the first installer while the architecture-specific desktop ZIP and `latest-mac.yml` form the automatic update feed. GitHub still adds its generated source-code ZIP and tarball to every release; those generic archives are not desktop updater payloads.
+The hosted macOS job runs the full tests and packaging command as validation, but uploads no macOS output because the runner has no continuity identity. The Windows job transfers the EXE files, blockmaps, and `latest.yml`. NSIS and portable targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. After the exact workflow succeeds, local deploy uploads the signed arm64 DMG, desktop ZIP, both blockmaps, `latest-mac.yml`, and `mac-release.json`. GitHub still adds its generated source-code ZIP and tarball to every release; those generic archives are not desktop updater payloads.
 
 > [!note]
 > Signed packaged macOS builds consume `latest-mac.yml`, and installed Windows NSIS builds consume `latest.yml`. Both download in the background, offer an immediate restart, and otherwise install on normal quit. Windows portable builds keep the independent latest-release API and manual download path. See [[desktop-updates]].
 
-> [!warning]
-> The GitHub workflow publishes the complete macOS feed but currently imports no signing identity. Squirrel.Mac requires compatible signatures across the installed and replacement app. Transport completeness is therefore proven, while public CI auto-install remains gated on trusted signing credentials and a released ZIP signature check.
+> [!important]
+> `scripts/mac-release.mjs` pins `Apple Development: Patrik Kelemen (SSUH7T22L8)`, team `7TNPY5FX2F`, and the exact designated requirement already carried by the installed app. It verifies both the build app and the application extracted from the updater ZIP, checks the bundle version, validates the DMG and feed digest, and freezes hashes in `mac-release.json`. Any missing, ad hoc, or changed identity fails locally before the release commit.
 
 `electron-builder.yml` now publishes to owner `Crowie-s-r-o`, repository `CC-Relay`. Installed Windows builds produced before this move still contain the old publisher and need one manual installation to enter the new update lineage. See [[desktop-updates]] and [[product-naming]].
 
@@ -234,7 +241,7 @@ Accept the consequence: `build-desktop.yml` triggers on `v*` tag pushes, so movi
 ## Remaining operator work
 
 - Configure branch protection and require the macOS CI check after the first push.
-- Add trusted Apple signing and notarization before presenting macOS artifacts as production-installable.
+- Plan an explicit Developer ID and notarization transition before distributing beyond the current personal Apple Development update lineage.
 - Add trusted Windows signing only after real Windows end-to-end validation.
 - Validate Linux localhost and terminal behavior before changing its platform status.
 

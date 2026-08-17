@@ -11,6 +11,10 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const RELEASE_TYPES = new Set(['major', 'minor', 'patch']);
 const MAX_RELEASE_COMMITS = 100;
 
+export const FIRST_SIGNED_MAC_RELEASE_VERSION = '0.2.15';
+export const MAC_RELEASE_ARCH = 'arm64';
+export const MAC_RELEASE_MANIFEST_NAME = 'mac-release.json';
+
 export const releaseNotesSchema = changelogNotesSchema;
 
 export function parseVersion(value) {
@@ -57,6 +61,40 @@ export function releaseTagsFromPublishedReleases(releases) {
   const values = Array.isArray(releases) ? releases : [];
   return normalizeReleaseTags(values
     .filter((release) => release && !release.draft && !release.prerelease)
+    .map((release) => release.tag_name));
+}
+
+export function macReleaseArtifactNames(version, { includeManifest = true } = {}) {
+  parseVersion(version);
+  const prefix = `CC-Relay-${version}-mac-${MAC_RELEASE_ARCH}`;
+  return [
+    `${prefix}.dmg`,
+    `${prefix}.dmg.blockmap`,
+    `${prefix}.zip`,
+    `${prefix}.zip.blockmap`,
+    'latest-mac.yml',
+    ...(includeManifest ? [MAC_RELEASE_MANIFEST_NAME] : []),
+  ];
+}
+
+export function releaseHasSignedMacArtifacts(release) {
+  if (!release || release.draft || release.prerelease) return false;
+  const tag = String(release.tag_name || '');
+  const normalized = normalizeReleaseTags([tag]);
+  if (normalized.length !== 1 || normalized[0] !== tag) return false;
+  const version = tag.slice(1);
+  if (compareVersions(version, FIRST_SIGNED_MAC_RELEASE_VERSION) < 0) return true;
+  const assetNames = new Set((Array.isArray(release.assets) ? release.assets : [])
+    .filter((asset) => Number(asset?.size || 0) > 0)
+    .map((asset) => String(asset?.name || ''))
+    .filter(Boolean));
+  return macReleaseArtifactNames(version).every((name) => assetNames.has(name));
+}
+
+export function releaseTagsFromCompletePublishedReleases(releases) {
+  const values = Array.isArray(releases) ? releases : [];
+  return normalizeReleaseTags(values
+    .filter(releaseHasSignedMacArtifacts)
     .map((release) => release.tag_name));
 }
 
@@ -237,9 +275,6 @@ export function releasePublishStatus({
   settleRemaining = 0,
 } = {}) {
   const label = String(tag || 'the release tag');
-  if (releaseUrl) {
-    return { done: true, ok: true, message: `Published ${label}: ${releaseUrl}` };
-  }
   if (!run) {
     return { done: false, ok: false, message: `Waiting for the desktop build workflow for ${label}...` };
   }
@@ -255,6 +290,9 @@ export function releasePublishStatus({
       ok: false,
       message: `The desktop build workflow for ${label} ended as ${conclusion || 'unsuccessful'}, so GitHub published no release. Inspect ${url}`,
     };
+  }
+  if (releaseUrl) {
+    return { done: true, ok: true, message: `Published ${label}: ${releaseUrl}` };
   }
   if (settleRemaining > 0) {
     return { done: false, ok: false, message: `Desktop build succeeded for ${label}; waiting for the release assets...` };

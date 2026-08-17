@@ -25,6 +25,9 @@ try {
     resolve(projectRoot, '.github/workflows/build-desktop.yml'),
     'utf8',
   );
+  const deploy = readFileSync(resolve(projectRoot, 'scripts/deploy.mjs'), 'utf8');
+  const macRelease = readFileSync(resolve(projectRoot, 'scripts/mac-release.mjs'), 'utf8');
+  const releaseCore = readFileSync(resolve(projectRoot, 'scripts/release-core.mjs'), 'utf8');
   const license = readFileSync(resolve(projectRoot, 'LICENSE'), 'utf8');
   const readme = readFileSync(resolve(projectRoot, 'README.md'), 'utf8');
   const thirdPartyNotices = readFileSync(resolve(projectRoot, 'THIRD_PARTY_NOTICES.md'), 'utf8');
@@ -87,11 +90,30 @@ try {
   if (!/^ {2}target:\n {4}- dmg\n {4}- zip$/m.test(macConfig)) {
     throw new Error('electron-builder.yml must build both macOS DMG and ZIP targets.');
   }
-  if (desktopWorkflow.split('dist/*.zip').length !== 3) {
-    throw new Error('The desktop release workflow must upload and publish the macOS ZIP updater.');
+  for (const hostedMacPattern of ['dist/*.dmg', 'dist/*.zip', 'dist/latest-mac.yml']) {
+    if (desktopWorkflow.includes(hostedMacPattern)) {
+      throw new Error(`The hosted workflow must not publish unsigned macOS artifacts through ${hostedMacPattern}.`);
+    }
   }
-  if (desktopWorkflow.split('dist/latest-mac.yml').length !== 3) {
-    throw new Error('The desktop release workflow must upload and publish latest-mac.yml.');
+  for (const windowsPattern of ['dist/*.exe', 'dist/*.blockmap', 'dist/latest.yml']) {
+    if (desktopWorkflow.split(windowsPattern).length !== 3) {
+      throw new Error(`The desktop release workflow must upload and publish ${windowsPattern}.`);
+    }
+  }
+  if (!/buildSignedMacRelease\(/.test(deploy) || !/publishSignedMacRelease\(/.test(deploy)) {
+    throw new Error('npm run deploy must build, verify, and publish the signed macOS release locally.');
+  }
+  for (const signingContract of [
+    'Apple Development: Patrik Kelemen (SSUH7T22L8)',
+    "commandResult('/usr/bin/codesign', ['--verify', '--deep', '--strict'",
+    "commandResult('/usr/bin/hdiutil', ['verify'",
+  ]) {
+    if (!macRelease.includes(signingContract)) {
+      throw new Error(`The local macOS release verifier is missing: ${signingContract}`);
+    }
+  }
+  if (!releaseCore.includes("MAC_RELEASE_MANIFEST_NAME = 'mac-release.json'")) {
+    throw new Error('The signed macOS release must publish its verification manifest.');
   }
   for (const packagedNotice of ['LICENSE', 'THIRD_PARTY_NOTICES.md']) {
     if (!new RegExp(`^\\s*- ${packagedNotice.replace('.', '\\.')}$`, 'm').test(builder)) {

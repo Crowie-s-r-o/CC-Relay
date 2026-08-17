@@ -30,10 +30,15 @@ import {
   releaseNotesSchema,
   releasePublishStatus,
   releaseRecoveryRefspecs,
-  releaseTagsFromPublishedReleases,
+  releaseHasSignedMacArtifacts,
+  releaseTagsFromCompletePublishedReleases,
   releaseTagsFromRemoteRefs,
   selectReleaseWorkflowRun,
 } from './release-core.mjs';
+import {
+  assertMacReleaseHost,
+  buildSignedMacRelease,
+} from './mac-release.mjs';
 
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const AI_TIMEOUT_MS = 180_000;
@@ -48,7 +53,7 @@ function usage() {
   return `CC Relay deploy
 
 Usage:
-  npm run deploy -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run] [--no-watch]
+  npm run deploy -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run]
 
 Examples:
   npm run deploy
@@ -56,12 +61,11 @@ Examples:
   npm run deploy -- patch --dry-run
 
 Deploy first recovers any validated unpublished local releases in version order.
-It waits for GitHub Actions to publish each release and fails if publication does not complete.
-Pass --no-watch to stop after a normal release push; pending-release recovery requires watching.`;
+It builds and verifies signed macOS artifacts locally, waits for the Windows workflow, and fails if publication does not complete.`;
 }
 
 function parseArguments(argv) {
-  const options = { releaseType: 'auto', provider: 'auto', dryRun: false, watch: true, help: false };
+  const options = { releaseType: 'auto', provider: 'auto', dryRun: false, help: false };
   let sawReleaseType = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -71,10 +75,6 @@ function parseArguments(argv) {
     }
     if (value === '--dry-run') {
       options.dryRun = true;
-      continue;
-    }
-    if (value === '--no-watch') {
-      options.watch = false;
       continue;
     }
     if (value === '--provider') {
@@ -408,8 +408,8 @@ async function generateReleaseNotes(prompt, providerPreference) {
 }
 
 // The GitHub CLI carries the maintainer credential, so deploy never handles a token itself.
-// `gh api` is used instead of `gh run`/`gh release` because the REST paths are stable across the
-// old CLI builds that are commonly installed.
+// REST reads keep workflow selection deterministic, while `gh release upload` transfers the
+// locally verified macOS artifacts after the hosted Windows release exists.
 function ghJson(path) {
   const resolved = resolveExecutableOnPath('gh');
   const invocation = providerCommandInvocation(resolved, [
@@ -430,6 +430,15 @@ function ghJson(path) {
   }
 }
 
+function gh(args, { inherit = false } = {}) {
+  const resolved = resolveExecutableOnPath('gh');
+  const invocation = providerCommandInvocation(resolved, args);
+  return commandResult(invocation.command, invocation.args, {
+    inherit,
+    invocationOptions: invocation.options,
+  });
+}
+
 // A missing release and an unusable CLI both fail the same way, so probe the repository once and
 // treat only a positive answer as permission to interpret later 404s as "not published yet".
 function releaseWatchAvailable() {
@@ -440,7 +449,78 @@ function releaseWatchAvailable() {
 function publishedReleaseTags() {
   const releases = ghJson(`repos/${RELEASE_REPOSITORY}/releases?per_page=100`);
   if (!Array.isArray(releases)) return null;
-  return releaseTagsFromPublishedReleases(releases);
+  return releaseTagsFromCompletePublishedReleases(releases);
+}
+
+function publishSignedMacRelease(tag, signedRelease) {
+  console.log(`Uploading verified signed macOS artifacts for ${tag}...`);
+  gh([
+    'release',
+    'upload',
+    tag,
+    ...signedRelease.paths,
+    '--repo',
+    RELEASE_REPOSITORY,
+    '--clobber',
+  ], { inherit: true });
+
+  const release = ghJson(`repos/${RELEASE_REPOSITORY}/releases/tags/${tag}`);
+  if (!releaseHasSignedMacArtifacts(release)) {
+    throw new Error(`GitHub Release ${tag} is missing one or more verified macOS assets after upload.`);
+  }
+  const remoteSizes = new Map((Array.isArray(release.assets) ? release.assets : [])
+    .map((asset) => [String(asset?.name || ''), Number(asset?.size || 0)]));
+  for (const [name, size] of Object.entries(signedRelease.sizes)) {
+    if (remoteSizes.get(name) !== size) {
+      throw new Error(`GitHub Release ${tag} has the wrong uploaded size for ${name}.`);
+    }
+  }
+  console.log(`Published verified signed macOS artifacts for ${tag}.`);
+}
+
+function removeReleaseWorktree(root, workspace) {
+  git(['worktree', 'remove', '--force', workspace], { allowFailure: true });
+  rmSync(root, { recursive: true, force: true });
+}
+
+function buildSignedMacReleaseAt(record) {
+  const version = record.tag.slice(1);
+  const currentHead = gitText(['rev-parse', 'HEAD']).trim();
+  if (currentHead === record.sha) {
+    console.log(`Building signed macOS artifacts for ${record.tag}...`);
+    const signedRelease = buildSignedMacRelease({
+      projectRoot,
+      version,
+      runBuild: () => npm(['run', 'desktop:build:mac'], { inherit: true }),
+    });
+    return { signedRelease, dispose() {} };
+  }
+
+  const root = mkdtempSync(join(tmpdir(), 'cc-relay-mac-release-'));
+  const workspace = join(root, 'source');
+  let worktreeAdded = false;
+  try {
+    console.log(`Preparing isolated signed macOS build for ${record.tag}...`);
+    git(['worktree', 'add', '--detach', workspace, record.tag], { inherit: true });
+    worktreeAdded = true;
+    npm(['ci'], { cwd: workspace, inherit: true });
+    const signedRelease = buildSignedMacRelease({
+      projectRoot: workspace,
+      version,
+      runBuild: () => npm(['run', 'desktop:build:mac'], { cwd: workspace, inherit: true }),
+    });
+    return {
+      signedRelease,
+      dispose: () => removeReleaseWorktree(root, workspace),
+    };
+  } catch (error) {
+    if (worktreeAdded) {
+      removeReleaseWorktree(root, workspace);
+    } else {
+      rmSync(root, { recursive: true, force: true });
+    }
+    throw error;
+  }
 }
 
 function delay(milliseconds) {
@@ -511,39 +591,42 @@ async function recoverPendingReleases(localTags, options) {
     console.log('Dry run: pending releases would be published in the order shown above.');
     return { pendingTags, recoveredTags: [] };
   }
-  if (!options.watch) {
-    throw new Error('Pending release recovery requires publication watching. Rerun without --no-watch.');
-  }
 
   const remoteTagSet = new Set(remoteTags);
   const recoveredTags = [];
   for (const record of records) {
-    const refspecs = releaseRecoveryRefspecs({
-      ...record,
-      remoteTagPresent: remoteTagSet.has(record.tag),
-    });
+    const prepared = buildSignedMacReleaseAt(record);
+    try {
+      const refspecs = releaseRecoveryRefspecs({
+        ...record,
+        remoteTagPresent: remoteTagSet.has(record.tag),
+      });
 
-    if (refspecs.length > 0) {
-      console.log(`Recovering ${record.tag} with an atomic push...`);
-      try {
-        git(['push', '--atomic', 'origin', ...refspecs], { inherit: true });
-      } catch (error) {
-        throw new Error(
-          `Pending release ${record.tag} is valid, but GitHub push failed: ${error.message}. Fix GitHub access, then rerun npm run deploy; completed releases will be skipped.`,
-        );
+      if (refspecs.length > 0) {
+        console.log(`Recovering ${record.tag} with an atomic push...`);
+        try {
+          git(['push', '--atomic', 'origin', ...refspecs], { inherit: true });
+        } catch (error) {
+          throw new Error(
+            `Pending release ${record.tag} is valid, but GitHub push failed: ${error.message}. Fix GitHub access, then rerun npm run deploy; completed releases will be skipped.`,
+          );
+        }
+        remoteTagSet.add(record.tag);
+      } else {
+        console.log(`${record.tag} is already pushed; resuming its publication watch.`);
       }
-      remoteTagSet.add(record.tag);
-    } else {
-      console.log(`${record.tag} is already pushed; resuming its publication watch.`);
-    }
 
-    console.log(`Waiting for GitHub Actions to build and publish ${record.tag}...`);
-    const outcome = await watchReleasePublication(record.tag, record.sha);
-    if (!outcome.ok) {
-      throw new Error(`${outcome.message}\nRecovery stopped at ${record.tag}; later pending releases were not pushed.`);
+      console.log(`Waiting for GitHub Actions to publish the Windows artifacts for ${record.tag}...`);
+      const outcome = await watchReleasePublication(record.tag, record.sha);
+      if (!outcome.ok) {
+        throw new Error(`${outcome.message}\nRecovery stopped at ${record.tag}; later pending releases were not pushed.`);
+      }
+      console.log(outcome.message);
+      publishSignedMacRelease(record.tag, prepared.signedRelease);
+      recoveredTags.push(record.tag);
+    } finally {
+      prepared.dispose();
     }
-    console.log(outcome.message);
-    recoveredTags.push(record.tag);
   }
   return { pendingTags, recoveredTags };
 }
@@ -571,6 +654,12 @@ async function main() {
   }
 
   assertReleaseRepository();
+  if (!options.dryRun) {
+    assertMacReleaseHost();
+    if (!releaseWatchAvailable()) {
+      throw new Error(`The GitHub CLI must be able to read ${RELEASE_REPOSITORY} before a signed desktop release.`);
+    }
+  }
   const packagePath = resolve(projectRoot, 'package.json');
   const lockPath = resolve(projectRoot, 'package-lock.json');
   const changelogPath = resolve(projectRoot, 'CHANGELOG.md');
@@ -630,11 +719,18 @@ async function main() {
   lockfile.packages[''].version = version;
   const nextChangelog = prependChangelog(changelogSource, entry, version);
   let commitCreated = false;
+  let signedMacRelease = null;
   try {
     writeJson(packagePath, manifest);
     writeJson(lockPath, lockfile);
     writeFileSync(changelogPath, nextChangelog);
     runReleaseGates();
+    console.log('Building and verifying signed macOS release artifacts...');
+    signedMacRelease = buildSignedMacRelease({
+      projectRoot,
+      version,
+      runBuild: () => npm(['run', 'desktop:build:mac'], { inherit: true }),
+    });
     git(['add', 'package.json', 'package-lock.json', 'CHANGELOG.md']);
     git(['diff', '--cached', '--check']);
     git(['commit', '-m', `chore(release): ${tag}`], { inherit: true });
@@ -660,23 +756,13 @@ async function main() {
   }
 
   const sha = gitText(['rev-parse', 'HEAD']).trim();
-  const releasePage = `https://github.com/${RELEASE_REPOSITORY}/releases/tag/${tag}`;
-  if (!options.watch) {
-    console.log(`Pushed ${tag}. Confirm the published release at ${releasePage}`);
-    return;
-  }
-  if (!releaseWatchAvailable()) {
-    console.log(`Pushed ${tag}, but the GitHub CLI could not read the repository, so the release is unconfirmed.`);
-    console.log(`Confirm it at ${releasePage}`);
-    return;
-  }
-
-  console.log(`Waiting for GitHub Actions to build and publish ${tag}...`);
+  console.log(`Waiting for GitHub Actions to publish the Windows artifacts for ${tag}...`);
   const outcome = await watchReleasePublication(tag, sha);
   if (!outcome.ok) {
     throw new Error(`${outcome.message}\nThe commit and ${tag} are already pushed. Fix the build, then re-run the workflow for ${tag}.`);
   }
   console.log(outcome.message);
+  publishSignedMacRelease(tag, signedMacRelease);
 }
 
 main().catch((error) => {
