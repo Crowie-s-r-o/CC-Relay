@@ -38,9 +38,9 @@ the splash forward during startup and the main application forward after handoff
 
 > [!note]
 > The splash is a packaged local file, not part of the loopback renderer. It loads only bundled
-> fonts, requires no image or renderer JavaScript, and has no animation, transition, progress track,
-> gradient, or decorative background effect. The Electron `backgroundColor` and CSS background are
-> identical so the first frame and loaded document match.
+> fonts and the bundled Crowie SVG, requires no renderer JavaScript, and has no animation,
+> transition, progress track, gradient, or decorative background effect. The Electron
+> `backgroundColor` and CSS background are identical so the first frame and loaded document match.
 
 ## Visual identity
 
@@ -52,9 +52,11 @@ The brand surfaces extend the neutral graphite language from [[dark-mode]] and t
 - Graphite `#0d0e11` is the only background color. White, muted gray, and one inset hairline provide
   the complete hierarchy.
 - The frameless window and its content are one 320 by 320 square. The centered product name and
-  `Starting` remain primary, followed by the quiet two-line attribution `Created by software
-  development company Crowie s.r.o.`
-- The splash deliberately omits the Crowie artwork, tagline, progress indicator, rounded corners,
+  `Starting` sit above the Crowie bird mark, and the quiet two-line attribution `Created by software
+  development company Crowie s.r.o.` sits below it.
+- The splash reuses `public/favicon.svg` in a 64 by 64 CSS box at the visual center. The same
+  dark-surface filter used by the main renderer turns the near-black source artwork white without
+  creating another asset. The splash still omits the tagline, progress indicator, rounded corners,
   and motion. The attribution uses an accessible 4.61:1 muted-gray contrast without competing with
   the startup state. The fuller company identity remains available in About.
 
@@ -117,6 +119,7 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 - `src/desktop-titlebar.mjs`
 - `public/splash.html`
 - `public/splash.css`
+- `public/favicon.svg`
 - `public/index.html`
 - `public/style.css`
 - `public/app.js`
@@ -126,6 +129,10 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 
 ## Verification
 
+- Centered Crowie mark revision: an exact Electron 43.4 capture at the production 320 by 320
+  dimensions showed the white bird centered between the startup label and company credit, with no
+  clipping or overflow. The focused startup and icon checks passed 10 of 10, the complete suite
+  passed 1,574 of 1,574, `release:check` was green for v0.2.14, and `git diff --check` was clean.
 - Minimal square revision: an isolated Electron 43.4 capture at the exact 320 by 320 production
   dimensions showed one sharp graphite square containing `CC Relay`, `Starting`, and the restrained
   Crowie s.r.o. company attribution, with no overflow or additional artwork. The attribution wraps

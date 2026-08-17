@@ -68,6 +68,14 @@ h1 {
   font-family: "JetBrains Mono", monospace;
 }
 
+.splash-mark {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  filter: invert(1) sepia(.1) saturate(.5) hue-rotate(180deg) brightness(1.25);
+}
+
 .startup-state {
   color: #8d939d;
   font-size: 9px;
@@ -78,7 +86,7 @@ h1 {
 
 .splash-credit {
   max-width: 220px;
-  margin-top: 18px;
+  margin-top: 28px;
   color: #777c86;
   font-size: 8px;
   font-weight: 400;

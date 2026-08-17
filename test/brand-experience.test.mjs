@@ -22,11 +22,12 @@ test('desktop startup shows the minimal splash before waiting for the embedded s
   assert.match(main, /mainWindow\.show\(\);[\s\S]*?closeSplashWindow\(\);/);
 });
 
-test('splash is one static square with minimal startup and company text', () => {
+test('splash is one static square with a centered Crowie mark and company text', () => {
   assert.match(splash, /role="status"[^>]+aria-live="polite"/);
-  assert.match(splash, /<main[^>]+>\s*<h1>CC Relay<\/h1>\s*<p class="startup-state">Starting<\/p>\s*<p class="splash-credit">Created by software development company Crowie s\.r\.o\.<\/p>\s*<\/main>/);
-  assert.doesNotMatch(splash, /<img|<section|command center/);
-  assert.match(splashStyle, /\.splash \{[\s\S]*?aspect-ratio: 1;[\s\S]*?background: #0d0e11;/);
+  assert.match(splash, /<main[^>]+>\s*<h1>CC Relay<\/h1>\s*<p class="startup-state">Starting<\/p>\s*<img class="splash-mark" src="\.\/favicon\.svg" alt="" aria-hidden="true">\s*<p class="splash-credit">Created by software development company Crowie s\.r\.o\.<\/p>\s*<\/main>/);
+  assert.doesNotMatch(splash, /<section|command center/);
+  assert.match(splashStyle, /\.splash \{[\s\S]*?justify-content: center;[\s\S]*?align-items: center;[\s\S]*?aspect-ratio: 1;[\s\S]*?background: #0d0e11;/);
+  assert.match(splashStyle, /\.splash-mark \{[\s\S]*?width: 64px;[\s\S]*?height: 64px;[\s\S]*?filter: invert\(1\)/);
   assert.match(splashStyle, /font-family: "Source Serif 4"/);
   assert.match(splashStyle, /\.splash-credit \{[\s\S]*?max-width: 220px;[\s\S]*?font-size: 8px;/);
   assert.doesNotMatch(splashStyle, /animation|transition|@keyframes|gradient|border-radius/i);

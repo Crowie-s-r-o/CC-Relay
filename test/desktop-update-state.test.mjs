@@ -32,7 +32,7 @@ test('shows an available release with its trusted GitHub URL', () => {
   assert.equal(result.href, `${DESKTOP_RELEASES_URL}/tag/v1.2.0`);
   assert.equal(result.modalTitle, 'A new Relay is ready');
   assert.equal(result.statusLabel, 'Update available');
-  assert.equal(result.releaseLabel, 'View v1.2.0 release');
+  assert.equal(result.releaseLabel, "What's new in v1.2.0");
   assert.equal(result.automaticUpdate, true);
   assert.equal(result.progress, null);
   assert.match(result.modalMessage, /download automatically/i);
@@ -89,15 +89,21 @@ test('formats download progress and ready state compactly', () => {
   assert.match(downloaded.modalMessage, /install automatically/i);
 });
 
-test('falls back to the official latest release for an untrusted URL', () => {
+test('presents automatic updater failures as background retries with informational links', () => {
   const result = desktopUpdatePresentation({
     supported: true,
+    automaticUpdate: true,
     status: 'error',
     latestVersion: '1.2.0',
     releaseUrl: 'https://example.com/fake-installer',
   });
   assert.equal(result.hidden, false);
-  assert.equal(result.label, 'Update v1.2.0');
+  assert.equal(result.label, 'Retrying v1.2.0');
   assert.equal(result.href, `${DESKTOP_RELEASES_URL}/latest`);
-  assert.match(result.title, /automatic download failed/i);
+  assert.equal(result.statusLabel, 'Automatic retry scheduled');
+  assert.equal(result.modalTitle, 'Relay will try again');
+  assert.equal(result.releaseLabel, "What's new in v1.2.0");
+  assert.match(result.title, /retry in the background/i);
+  assert.match(result.modalMessage, /retry automatically in the background/i);
+  assert.doesNotMatch(result.modalMessage, /manually|needs a hand/i);
 });

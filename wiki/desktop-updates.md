@@ -22,9 +22,9 @@ The lifecycle starts once, after `BrowserWindow.loadURL()` succeeds. It schedule
 
 `src/desktop-release-discovery.mjs` requests GitHub's fixed latest stable release endpoint with a ten-second timeout, validates the tag as three-part SemVer, rejects drafts and prereleases, and constructs the trusted release URL locally. Numeric version comparison prevents equal or older releases from producing an indicator. This manual path serves Windows portable builds and does not depend on updater feed metadata or renderer networking.
 
-Automatic download and installation on normal quit are enabled for updater-capable builds. Discovery starts the download without interrupting active work. Once ready, a window-modal choice offers **Restart and install** or **Install on quit**. Choosing the second option leaves the downloaded release ready for the normal updater quit hook. Windows portable discovery publishes the header indicator without starting `electron-updater` or showing a misleading native prompt. No-update results, check failures, and download failures never show background error dialogs; an updater error keeps the trusted manual release link available.
+Automatic download and installation on normal quit are enabled for updater-capable builds. Discovery starts the download without interrupting active work. Once ready, a window-modal choice offers **Restart and install** or **Install on quit**. Choosing the second option leaves the downloaded release ready for the normal updater quit hook and acknowledges that exact version for the lifetime of the desktop process. A duplicate `update-downloaded` event for the acknowledged version keeps the ready state but does not reopen the prompt; a different downloaded version still prompts. The acknowledgement is coordinator-local because a normal quit consumes the choice by installing the update, so it requires no renderer storage or persistent settings file. Windows portable discovery publishes the header indicator without starting `electron-updater` or showing a misleading native prompt. No-update results, check failures, and download failures never show background error dialogs. When an automatic update is interrupted after a newer version is known, the recurring check retries it without operator action. The renderer describes that state as an automatic retry and keeps the official release link informational; it never tells an updater-capable build to install manually.
 
-`createDesktopUpdater` publishes `unsupported`, `checking`, `current`, `available`, `downloading`, `downloaded`, `installing`, and `error` snapshots plus an `automaticUpdate` capability flag. Electron forwards those snapshots through `setDesktopUpdateState`; `/api/status.desktopUpdate` returns only normalized versions, the capability flag, bounded progress, and a URL restricted to this repository's GitHub Releases path. The header stays hidden unless a valid newer version is known. It then becomes a compact status button that shows background download progress or marks the update ready. Activating it opens an in-app details dialog with the installed-to-latest version route, bounded progress, the five-minute cadence, automatic install-on-quit copy, and the trusted release link. Manual platforms say **Download vX.Y.Z** and explain portable installation. The renderer remains read-only.
+`createDesktopUpdater` publishes `unsupported`, `checking`, `current`, `available`, `downloading`, `downloaded`, `installing`, and `error` snapshots plus an `automaticUpdate` capability flag. Electron forwards those snapshots through `setDesktopUpdateState`; `/api/status.desktopUpdate` returns only normalized versions, the capability flag, bounded progress, and a URL restricted to this repository's GitHub Releases path. The header stays hidden unless a valid newer version is known. It then becomes a compact status button that shows background download progress, an automatic retry, or an update ready to install. Activating it opens an in-app details dialog with the installed-to-latest version route, bounded progress, the five-minute cadence, automatic install-on-quit copy, and the trusted release link. Automatic builds label that link **What's new in vX.Y.Z**. Manual platforms say **Download vX.Y.Z** and explain portable installation. The renderer remains read-only.
 
 > [!note]
 > The version route is the update dialog's visual signature: two compact release stations connected by one relay arrow. Light and dark themes share the same hierarchy, the dialog fits a 500 pixel viewport without page overflow, keyboard focus stays native to `<dialog>`, and progress motion is removed under `prefers-reduced-motion`.
@@ -37,7 +37,7 @@ The desktop process does not assume ports `4768` and `4769` are free. It appends
 
 Standalone `npm start` retains fixed ports `4768` and `4769`. This split allows a packaged CC Relay to open while a development CC Relay is coordinating active tasks without changing the browser and local CLI contract.
 
-Desktop lifecycle events are written to `relay-diagnostics.jsonl` under `app.getPath('userData')`. Startup records the data root and log path before importing the server. Window creation, load success or failure, renderer loss, child-process exit, second-instance activation, updater start, and graceful shutdown are recorded. A caught startup failure shows the same path in a native error box.
+Desktop lifecycle events are written to `relay-diagnostics.jsonl` under `app.getPath('userData')`. Startup records the data root and log path before importing the server. Window creation, load success or failure, renderer loss, child-process exit, second-instance activation, updater start, and graceful shutdown are recorded. The `electron-updater` logger uses the same sink under the `desktop.updater.log` event, preserving native validation and installation errors that were previously visible only in a transient process console. A caught startup failure shows the same path in a native error box.
 
 > [!important]
 > A dynamic embedded port creates a different browser origin when the assigned port changes.
@@ -53,13 +53,13 @@ The immediate restart callback sets the existing Electron `quitting` guard befor
 The shared `relayShutdown` path also closes every native terminal launched by this CC Relay process before the backend and desktop process exit. It uses exact macOS Terminal window IDs and Windows process IDs, so an update restart does not leave CC Relay sessions running and does not close unrelated terminals. Normal application quit and update installation use the same cleanup contract.
 
 > [!important]
-> macOS releases have two distinct artifacts. The DMG remains the initial human-facing installer. The ZIP is the Squirrel.Mac updater payload and `latest-mac.yml` points the installed app to it. The GitHub workflow must publish the DMG, ZIP, ZIP blockmap, and `latest-mac.yml` together. Removing the ZIP or feed metadata converts every installed macOS check into an updater error.
+> macOS releases have two distinct artifacts. The DMG remains the initial human-facing installer. The ZIP is the Squirrel.Mac updater payload and `latest-mac.yml` points the installed app to it. The GitHub Release must contain the DMG, ZIP, both blockmaps, and `latest-mac.yml` together; local deploy owns that upload. Removing the ZIP or feed metadata converts every installed macOS check into an updater error.
 
 > [!important]
-> Version 0.2.3 exposed an eligibility split incorrectly. The coordinator's default rule had removed macOS from `electron-updater`, but `src/electron-main.mjs` supplied an explicit `isEligible` callback that still included Darwin and overrode the default. The live packaged app therefore requested the deliberately unpublished `latest-mac.yml`, entered `error` with `latestVersion: null`, and the header correctly hid a failure that knew no newer version. That historical failure remains evidence that runtime eligibility and published artifacts must change atomically. The current contract enables Darwin only because the workflow now publishes the ZIP and `latest-mac.yml`.
+> Version 0.2.3 exposed an eligibility split incorrectly. The coordinator's default rule had removed macOS from `electron-updater`, but `src/electron-main.mjs` supplied an explicit `isEligible` callback that still included Darwin and overrode the default. The live packaged app therefore requested the deliberately unpublished `latest-mac.yml`, entered `error` with `latestVersion: null`, and the header correctly hid a failure that knew no newer version. That historical failure remains evidence that runtime eligibility and published artifacts must change atomically. The current contract enables Darwin only because local deploy completes every release with the signed ZIP and `latest-mac.yml`.
 
-> [!warning]
-> Squirrel.Mac requires a consistently code-signed application. Publishing the ZIP and feed completes the transport contract but cannot make an unsigned CI build replace an installed app. The repository workflow currently imports no macOS signing credentials. Do not claim public macOS automatic replacement is proven until a released ZIP is verified to carry the same trusted signing identity as the installed build. The operator-installed v0.2.11 bundle was locally verified with an Apple Development signature, but that does not prove the GitHub-hosted DMG or future CI ZIP is signed.
+> [!important]
+> Squirrel.Mac requires a consistently code-signed application. Hosted GitHub runners do not own the continuity identity used by installed CC Relay builds, so the workflow must never publish their unsigned macOS output. `npm run deploy` builds the public arm64 DMG and ZIP on the maintainer Mac, verifies the app directory and the app extracted from the ZIP against the exact installed signature lineage, verifies the DMG and update metadata, and only then uploads the macOS feed.
 
 ## Release contract
 
@@ -80,7 +80,7 @@ Create a release from a clean `main` branch with:
 npm run deploy
 ```
 
-The local deploy command first recovers any validated local release suffix that GitHub has not published. It then infers or accepts the Semantic Versioning bump, requires an isolated Codex or Claude CLI to generate compact notes, updates both package manifests and `CHANGELOG.md`, runs metadata checks, all tests, and the dependency audit, creates an annotated tag, then atomically pushes `main` and the tag. The resulting version contract remains:
+The local deploy command first recovers any validated local release suffix that GitHub has not published completely. It then infers or accepts the Semantic Versioning bump, requires an isolated Codex or Claude CLI to generate compact notes, updates both package manifests and `CHANGELOG.md`, runs metadata checks, all tests, and the dependency audit, builds and verifies the signed macOS artifacts, creates an annotated tag, then atomically pushes `main` and the tag. The resulting version contract remains:
 
 ```text
 package.json version: 0.2.0
@@ -88,19 +88,20 @@ git tag:             v0.2.0
 ```
 
 > [!important]
-> Deploy does not stop at the push. It polls the GitHub REST API through the maintainer's `gh` credential, selects the desktop build run for the pushed tag by head SHA plus tag head branch, and exits non-zero with the failing run URL when GitHub publishes no release. Silence after a successful push used to mean the release page stayed empty; `npm run deploy` is now the only command a maintainer needs, and its exit status is the truth about whether a release exists. For a normal new release, `--no-watch` returns the old push-and-stop behavior and an unavailable or unauthenticated `gh` degrades to a printed release URL. A recovery backlog is stricter because versions must remain ordered.
+> Deploy does not stop at the push. It requires the exact Apple Development continuity identity and readable GitHub CLI access before changing a release, polls the GitHub REST API for the exact workflow run by tag and head SHA, waits for its Windows release to succeed, then uploads the already verified local macOS artifacts with `gh release upload`. The command exits non-zero if any stage fails. There is no push-and-stop mode because a tag without its signed macOS feed is an incomplete release.
 
 > [!important]
-> A rerun after a rejected or partial push compares reachable local tags with stable GitHub Releases,
-> validates the complete unpublished suffix, and publishes it oldest first. A tag already on GitHub
-> resumes its publication watch. The next tag is not pushed until the current GitHub Release exists,
-> so workflow completion order cannot make an older version appear latest. Recovery requires the
-> normal watcher and rejects `--no-watch` before changing the remote.
+> A rerun after a rejected or partial push compares reachable local tags with complete stable GitHub
+> Releases, validates the unpublished suffix, and publishes it oldest first. Starting at v0.2.15,
+> completeness requires the signed DMG, ZIP, both blockmaps, `latest-mac.yml`, and
+> `mac-release.json`. A missing marker keeps the tag pending. Recovery rebuilds an older tag inside a
+> temporary detached worktree, resumes its exact workflow watch, uploads its verified macOS files,
+> and cleans the worktree before advancing to the next version.
 
 > [!important]
-> The desktop build workflow runs `npm test` on the macOS matrix entry only. CC Relay is validated on macOS, and the suite simulates Windows paths, shims, and `cmd.exe` invocation from POSIX, so 75 of those cases fail on a real Windows runner. Because the release job declares `needs: build`, a red Windows job silently skipped publication: that is exactly why `v0.2.0` was tagged and pushed with no GitHub Release. The Windows job remains packaging verification. Do not paper over a red job with `continue-on-error`; `fail_on_unmatched_files: true` would then trip on the missing installer.
+> The desktop build workflow runs `npm test` on the macOS matrix entry only. CC Relay is validated on macOS, and the suite simulates Windows paths, shims, and `cmd.exe` invocation from POSIX, so 75 of those cases fail on a real Windows runner. The hosted macOS job remains packaging validation but uploads nothing. The Windows job uploads the NSIS and portable artifacts, and the release job publishes those files before local deploy adds the signed macOS set. Because the release job declares `needs: build`, any red matrix job prevents the Windows handoff.
 
-The release job rejects any tag, package, lockfile, changelog, publisher, or Windows target-name mismatch before downloading or publishing artifacts. It extracts the matching AI-written changelog entry as the GitHub Release body. Native builds upload only packaged deliverables from `dist/`; unpacked application directories and builder diagnostics never become release assets. The expected feed metadata and artifacts are:
+The release job rejects any tag, package, lockfile, changelog, publisher, or Windows target-name mismatch before downloading or publishing artifacts. It extracts the matching AI-written changelog entry as the GitHub Release body. Hosted builds upload only Windows packaged deliverables from `dist/`; unpacked application directories and builder diagnostics never become release assets. Local deploy owns every public macOS deliverable. The expected feed metadata and artifacts are:
 
 | Platform | Update metadata | Installable artifacts |
 | --- | --- | --- |
@@ -109,9 +110,9 @@ The release job rejects any tag, package, lockfile, changelog, publisher, or Win
 | Windows portable | no automatic feed use | portable executable for manual download |
 
 > [!important]
-> Keep `latest-mac.yml`, `latest.yml`, desktop ZIP, blockmaps, DMG, NSIS, and portable artifacts in the GitHub release. The installed updaters need their metadata and update payloads, and can use blockmap data for differential downloads. The DMG and portable executable remain manual downloads. GitHub adds its own source-code ZIP and tarball automatically; those are not desktop packages and cannot replace the desktop ZIP.
+> Keep `latest-mac.yml`, `latest.yml`, desktop ZIP, blockmaps, DMG, NSIS, portable executable, and `mac-release.json` in the GitHub release. The installed updaters need their metadata and update payloads, and can use blockmap data for differential downloads. The manifest is the release-completeness marker and records the exact signing lineage, sizes, and SHA-512 digests verified locally. GitHub adds its own source-code ZIP and tarball automatically; those are not desktop packages and cannot replace the desktop ZIP.
 
-Signing credentials are not stored in the repository. Production macOS releases need Apple Developer signing and notarization. Production Windows NSIS releases need a trusted code-signing certificate. Local directory builds and unsigned CI builds are useful for packaging validation but are not suitable for public update installation.
+Signing credentials are not stored in the repository. The current personal macOS update lineage uses `Apple Development: Patrik Kelemen (SSUH7T22L8)`, team `7TNPY5FX2F`, from the maintainer's local keychain. The verifier pins its designated requirement so a missing, ad hoc, or different signature fails before the release commit. Notarization remains unconfigured, and a future Developer ID transition needs an explicit bridge plan because changing lineage can strand already installed builds. Production Windows NSIS releases still need a trusted code-signing certificate.
 
 ## Files involved
 
@@ -127,9 +128,10 @@ Signing credentials are not stored in the repository. Production macOS releases 
 - `src/diagnostics.mjs`: bounded JSONL persistence shared by Electron and the backend.
 - `build/icon.png`: 1024px transparent Crowie source used for native application icons and the development Dock icon.
 - `electron-builder.yml`: native targets, artifact names, update metadata generation, and GitHub publisher.
-- `.github/workflows/build-desktop.yml`: native build matrix, tag/version guard, artifact upload, and GitHub release publishing.
-- `scripts/deploy.mjs`: clean-tree checks, ordered pending-release recovery, version selection, isolated AI generation, verification, commit, tag, atomic push, and the GitHub Release watch that fails loudly when publication does not happen.
-- `scripts/release-core.mjs`: deterministic SemVer, release-tag normalization and recovery selection, changelog normalization, formatting, extraction helpers, and the pure workflow-run selection and publication-status decisions that deploy polls with.
+- `.github/workflows/build-desktop.yml`: native build matrix, tag/version guard, Windows artifact upload, and the first GitHub release handoff.
+- `scripts/deploy.mjs`: clean-tree checks, ordered pending-release recovery, version selection, isolated AI generation, verification, local signed macOS build, commit, tag, atomic push, Windows workflow watch, and verified macOS upload.
+- `scripts/mac-release.mjs`: exact host and identity preflight, app and updater ZIP signature verification, DMG and feed verification, and `mac-release.json` generation.
+- `scripts/release-core.mjs`: deterministic SemVer, release-tag normalization and recovery selection, signed macOS artifact naming and completeness, changelog normalization, formatting, extraction helpers, and workflow-run publication decisions.
 - `scripts/release-check.mjs` and `scripts/release-notes.mjs`: CI metadata enforcement and GitHub Release body extraction.
 - `CHANGELOG.md`: canonical compact release history.
 - `package.json` and `package-lock.json`: app version and `electron-updater` dependency.
@@ -145,6 +147,33 @@ The focused updater, status, renderer, startup, icon, release-discovery, and rel
 > [!important]
 > The public v0.2.11 GitHub Release predates this contract and contains a DMG, its blockmap, Windows packages, and `latest.yml`, but no desktop ZIP or `latest-mac.yml`. It cannot bootstrap automatic macOS updates. The first release containing this implementation still requires one manual DMG installation. A later signed release is the first end-to-end updater proof.
 
+## August 17, 2026 automatic retry correction
+
+The installed v0.2.13 application downloaded the public v0.2.14 desktop ZIP and then entered the updater error state. The installed app has an Apple Development signature with team `7TNPY5FX2F`, while the cached public v0.2.14 ZIP contains no `_CodeSignature/CodeResources`. That replacement is not compatible with Squirrel.Mac's consistent-signature requirement. The repository also has no Actions signing secrets configured.
+
+The former error presentation reused the retired manual-update fallback: **The update needs a hand**, a manual-install instruction, and a release button presented as the resolution. Current automatic builds instead show **Retrying vX.Y.Z**, explain that Relay will retry in the background, and label the external link **What's new in vX.Y.Z**. A focused coordinator test proves the next recurring interval calls `checkForUpdates()` after an updater error without operator action. Windows portable remains the only current manual-download path.
+
+> [!warning]
+> The public v0.2.14 ZIP remains unsigned and cannot be repaired by retrying either installation choice. The signed-release contract begins with v0.2.15; the next release must pass that contract before it is considered complete.
+
+## August 18, 2026 signed release repair
+
+The live incident proved that both native choices reached the updater handoff. **Restart and install** shut down and reopened CC Relay, and **Install on quit** installed during the later normal quit. Both attempts returned to v0.2.13 because Squirrel.Mac rejected the same unsigned v0.2.14 payload. The buttons did not need another installation path.
+
+The release boundary now prevents recurrence:
+
+1. `npm run deploy` runs only on macOS arm64 and requires the exact local continuity identity before any release mutation.
+2. It builds the DMG, ZIP, blockmaps, and `latest-mac.yml` locally after all release gates pass.
+3. `scripts/mac-release.mjs` strictly verifies the build app and the app extracted from the updater ZIP, including bundle ID, team, authority, designated requirement, and bundle version. It also verifies the DMG, feed path, feed SHA-512, and every required file.
+4. The verifier writes `mac-release.json` with the frozen identity and artifact hashes. Starting at v0.2.15, a stable release without that marker remains pending.
+5. GitHub Actions publishes only the Windows artifacts. Deploy waits for that exact run to succeed, uploads the verified macOS set, then confirms all asset names and byte sizes through the release API.
+
+Recovery follows the same rule. If the tag is already pushed or the Windows-only release already exists, rerunning deploy builds the tagged source in an isolated temporary worktree and completes the missing signed macOS handoff. It never treats a partial v0.2.15 or later release as finished.
+
+The updater now sends its internal logger to persistent desktop diagnostics. A future native rejection is recorded as `desktop.updater.log` in `relay-diagnostics.jsonl`, alongside startup and graceful-shutdown events.
+
+Validation rebuilt v0.2.14 from the current source and passed the new verifier against the signed app directory, the application extracted from the ZIP, the DMG, both blockmaps, and `latest-mac.yml`. This local build is proof of the repaired pipeline, not a replacement for the already published unsigned v0.2.14 asset. The complete repository suite passes 1,577 of 1,577 tests, `release:check`, attribution checking, YAML parsing, dependency audit, and `git diff --check` all pass, and the audit reports zero vulnerabilities.
+
 ## Troubleshooting
 
 - **No check during development:** expected. Use a packaged build; `npm run desktop` is intentionally ineligible.
@@ -154,6 +183,7 @@ The focused updater, status, renderer, startup, icon, release-discovery, and rel
 - **The tag is pushed but the Releases page is empty:** the desktop build workflow failed, so `needs: build` skipped the release job. Open the run that deploy names in its failure message. A tag whose run already failed cannot be recovered by re-running the workflow, because the dispatch uses the workflow file at that ref; release the fix under the next version instead of retagging.
 - **The atomic push fails with `Permission ... denied` and HTTP 403:** GitHub authenticated the named HTTPS user but that identity lacks effective write permission. The commit author and committer do not select the GitHub account used for a push; the credential-helper identity named in the remote error is authoritative. Confirm the active identity with `gh auth status -h github.com` and the repository grant with `gh repo view Crowie-s-r-o/CC-Relay --json viewerPermission`. A `READ` result requires the organization or repository owner to restore a direct or team `Write` grant. If GitHub already shows that grant, refresh the GitHub CLI credential and its organization SSO authorization. Do not recreate tags or push only the newest one. Rerun `npm run deploy`; it validates and publishes every pending release in order, skips completed releases on another retry, and continues with a new release only after the backlog is published. See [[open-source-releases]].
 - **An older macOS build still asks for a DMG:** expected once. Install the first release containing the automatic updater manually. Later signed releases use the GitHub updater feed.
+- **An automatic build says Retrying:** Relay will run another check on its five-minute cadence. If the state repeats, verify that the published ZIP is signed by a compatible identity; retrying cannot make an unsigned replacement compatible.
 - **Packaged startup reports that the `autoUpdater` named export is missing:** inspect `src/electron-main.mjs` and keep the CommonJS default-import interop described above.
 - **Signing reports that `CC Relay.app` could not be found, or packaging reports `ENOTEMPTY` for `dist/mac-arm64`:** confirm that only one `electron-builder` process is running and that no app is running from the output bundle. Concurrent builds share and replace the same `dist/mac-arm64` directory, so one build can remove the bundle while another signs it.
 - **Dock icon but no window:** inspect `relay-diagnostics.jsonl` for the `desktop.start.*`, `desktop.server.*`, `relay.listen.*`, and `desktop.window.*` sequence. Current builds use dynamic embedded ports and reject startup failures instead of waiting forever.

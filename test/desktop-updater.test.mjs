@@ -81,6 +81,7 @@ function harness(options = {}) {
     dialog,
     dialogs,
     logs,
+    logger,
     timers,
     intervals,
     restartCalls,
@@ -147,9 +148,10 @@ test('derives automatic updates for packaged macOS and NSIS builds only', () => 
 });
 
 test('start is idempotent, configures automatic updates, and checks every five minutes', async () => {
-  const { updater, coordinator, timers, intervals } = harness();
+  const { updater, coordinator, logger, timers, intervals } = harness();
   assert.equal(coordinator.start(), true);
   assert.equal(coordinator.start(), false);
+  assert.equal(updater.logger, logger);
   assert.equal(updater.autoDownload, true);
   assert.equal(updater.autoInstallOnAppQuit, true);
   assert.equal(timers.length, 1);
@@ -283,6 +285,19 @@ test('downloads available updates automatically without interrupting active work
   );
 });
 
+test('retries an automatic update after an updater error without manual action', async () => {
+  const { updater, coordinator, intervals, states } = harness();
+  coordinator.start();
+  updater.emit('update-available', { version: '1.2.0' });
+  updater.emit('error', new Error('download interrupted'));
+  assert.equal(states.at(-1).status, 'error');
+  assert.equal(states.at(-1).latestVersion, '1.2.0');
+
+  intervals[0].callback();
+  await flush();
+  assert.equal(updater.checkCalls, 1);
+});
+
 test('pauses recurring checks while an automatic download or installation is pending', async () => {
   const { updater, coordinator, intervals } = harness({ choices: [1] });
   coordinator.start();
@@ -310,6 +325,26 @@ test('prompts for a downloaded update and restarts only after acceptance', async
   deferred.updater.emit('update-downloaded', { version: '1.2.0' });
   await flush();
   assert.equal(deferred.restartCalls.length, 0);
+});
+
+test('does not prompt again after install on quit is selected for the same version', async () => {
+  const deferred = harness({ choices: [1, 0] });
+  deferred.coordinator.start();
+
+  deferred.updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  assert.equal(deferred.dialogs.length, 1);
+  assert.equal(deferred.restartCalls.length, 0);
+
+  deferred.updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  assert.equal(deferred.dialogs.length, 1);
+  assert.equal(deferred.restartCalls.length, 0);
+
+  deferred.updater.emit('update-downloaded', { version: '1.3.0' });
+  await flush();
+  assert.equal(deferred.dialogs.length, 2);
+  assert.equal(deferred.restartCalls.length, 1);
 });
 
 test('does not prompt when the main window is absent or destroyed', async () => {

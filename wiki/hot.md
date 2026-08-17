@@ -6,6 +6,21 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 17: the startup square now includes the Crowie logo in its visual center.** The splash
+> reuses the bundled `public/favicon.svg` in a 64 by 64 box between **Starting** and the company
+> credit, with the established dark-surface filter making the near-black bird white. The 320 by 320
+> window, static pre-server lifecycle, graphite background, typography, and clean main-window
+> handoff are unchanged. An exact Electron 43.4 capture confirmed centered placement with no
+> overflow. The 10 focused brand checks and all 1,574 repository tests pass, `release:check` is green
+> for v0.2.14, and `git diff --check` is clean. See [[brand-startup-and-about]].
+
+> [!important]
+> **August 18: macOS update publication now preserves the installed signature lineage.** The live v0.2.13 to v0.2.14 incident proved both **Restart and install** and **Install on quit** reached Squirrel.Mac, but its unsigned public v0.2.14 ZIP made both reopen v0.2.13. Hosted Actions no longer publishes macOS output. `npm run deploy` requires the exact local Apple Development identity, verifies the build app and the app extracted from the updater ZIP, validates the DMG and feed, waits for the Windows workflow, then uploads the signed macOS set plus `mac-release.json`. From v0.2.15 onward, a release without that marker remains pending and recovery rebuilds its tag in an isolated worktree. Updater internals now persist under `desktop.updater.log`, while known interruptions still appear as **Retrying vX.Y.Z**. See [[desktop-updates]] and [[open-source-releases]].
+
+> [!note]
+> **August 17: Install on quit is now a one-time choice for each downloaded version.** The updater coordinator remembers the exact version after that button is selected, so a duplicate `update-downloaded` event keeps the release ready without reopening the native prompt. A genuinely different downloaded version can still ask. The acknowledgement stays process-local because the next normal quit consumes it by installing the update. The 17 coordinator checks and all 1,574 repository tests pass; `release:check` is green for v0.2.14 and `git diff --check` is clean. See [[desktop-updates]].
+
 > [!important]
 > **August 17: an active Codex goal now stays one running Relay task across automatic turns.** Task 781 proved that app-server completed one turn, then started its goal successor only 67 milliseconds later while the terminal still showed **Pursuing goal**. Relay had treated that provider-turn boundary as the whole run, released its subscription, changed the manual session to `open`, and disabled messages as **Conversation busy**. The app-server runner now loads persisted goal state, keeps the task and subscription live, adopts the exact successor, reconciles missed notifications through explicit thread state, and lets a message submitted during the handoff steer that successor. Ambiguous reads never finish work, stale completions cannot close the new turn, cancellation cannot become success, and final output cannot leak from the prior turn. Task Activity now says **Turn finished**, not **Session finished**. The dedicated app-server suite passes 52 tests and all 1,572 repository tests pass; `release:check` is green for v0.2.13 and `git diff --check` is clean. Rebuild and restart the desktop bundle after active terminal work finishes. See [[provider-plan-and-goal-visibility]], [[manual-terminal-session-mode]], and [[codex-goal-continuation-review]].
 
@@ -41,7 +56,7 @@ type: hot
 > **August 14: the far-right header cog now owns every display control.** Monitor rows and card width, Top or Bottom placement, theme, Zoom out, the current zoom percentage, and Zoom in share one compact popover after the provider runway. Cog zoom uses the same bounded 50 through 200 percent native `webContents` scale as shortcuts, and desktop state keeps the percentage synchronized across buttons, menu actions, and keyboard input. Standalone browser mode hides the native-only zoom row. An isolated real Electron run moved the visible level from `100%` to `90%` and back with no overflow and the cog still open. Focused checks pass 48 of 48, the complete suite passes 1,551 tests, `release:check` is green for v0.2.12, and `git diff --check` is clean. See [[task-detail-modal-and-app-zoom]], [[interface-layout]], [[compact-interface-density]], [[header-position]], and [[dark-mode]].
 
 > [!important]
-> **August 14: signed macOS and installed Windows builds now use the GitHub repository as an automatic update feed.** Updater-capable builds download a discovered release in the background, offer **Restart and install**, and otherwise install it on normal quit after Relay's graceful terminal and server shutdown. The macOS release now includes the desktop ZIP, ZIP blockmap, and `latest-mac.yml` beside the initial DMG; Windows portable remains manual. A real local v0.2.11 arm64 build produced a ZIP-selected feed, passed ZIP integrity and strict deep signature checks, and used the expected GitHub provider. The focused update and packaging set passes 48 tests, the complete suite passes 1,543 tests, `release:check` is green, and `git diff --check` is clean. Public v0.2.11 has no updater ZIP, so one final DMG install is unavoidable. Public CI macOS replacement also remains gated on configuring a stable signing identity. See [[desktop-updates]], [[desktop-update-discovery-review]], and [[open-source-releases]].
+> **August 14: signed macOS and installed Windows builds now use the GitHub repository as an automatic update feed.** Updater-capable builds download a discovered release in the background, offer **Restart and install**, and otherwise install it on normal quit after Relay's graceful terminal and server shutdown. The macOS release includes the desktop ZIP, ZIP blockmap, and `latest-mac.yml` beside the initial DMG; Windows portable remains manual. A real local v0.2.11 arm64 build produced a ZIP-selected feed, passed ZIP integrity and strict deep signature checks, and used the expected GitHub provider. The focused update and packaging set passes 48 tests, the complete suite passes 1,543 tests, `release:check` is green, and `git diff --check` is clean. Public v0.2.11 has no updater ZIP, so one final DMG install is unavoidable. The August 18 handoff now keeps unsigned hosted macOS artifacts out of releases and publishes the verified local continuity build. See [[desktop-updates]], [[desktop-update-discovery-review]], and [[open-source-releases]].
 
 > [!important]
 > **August 13: Ready for review state now survives desktop upgrades and restarts.** Completion
@@ -83,8 +98,8 @@ type: hot
 > every pending annotated tag and its package, lockfile, changelog, release-commit, and ancestry
 > invariants before any write, then publishes oldest first and waits for each exact Release. A tag
 > that reached GitHub but has not finished publishing resumes its watch, and completed versions are
-> skipped on another retry. Recovery rejects `--no-watch`, exits successfully if there are no newer
-> commits, and otherwise continues into the normal release flow. The current recovered suffix will
+> skipped on another retry. Recovery always watches publication, exits successfully if there are no
+> newer commits, and otherwise continues into the normal release flow. The current recovered suffix will
 > be v0.2.7, v0.2.8, and v0.2.9 once `pkelemen` regains GitHub write access. Focused release tests
 > pass 12 of 12, the complete suite passes 1,531 of 1,531, and `release:check` is green for v0.2.9.
 > See [[open-source-releases]] and [[desktop-updates]].
@@ -620,7 +635,7 @@ type: hot
 > Project queue isolation is backend behavior and cannot hot-reload with renderer assets. The current backend advertises `capabilities.projectQueueIsolation`; when it is absent, a waiting project blocked by work elsewhere says **Restart CC Relay for separate project queues**. Task 184 on July 20, 2026 exposed a July 17 backend still running the former global barrier. See [[project-queue-isolation-review]].
 
 > [!note]
-> Packaged macOS and Windows builds check GitHub's stable latest release after startup and every five minutes. macOS DMG and Windows portable builds show the exact release as a manual download. Only installed Windows NSIS builds prompt before updater download and restart, then shut down CC Relay gracefully before installation. Development remains ineligible. See [[desktop-updates]].
+> Signed packaged macOS and installed Windows builds check GitHub's stable latest release after startup and every five minutes, download it in the background, and install it after a graceful restart or normal quit. Windows portable shows the exact release as a manual download. Development remains ineligible. See [[desktop-updates]].
 
 > [!important]
 > `electron-updater` 6.8.9 must be default-imported from the ESM Electron entry point because its CommonJS `autoUpdater` export is a runtime getter that Electron cannot discover as a named export. Also run only one electron-builder process per checkout: overlapping builds mutate the same `dist/mac-arm64` bundle and can fail with `ENOTEMPTY` or a missing app during signing. See [[desktop-updates]] and [[desktop-packaging-review]].

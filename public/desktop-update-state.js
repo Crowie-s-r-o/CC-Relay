@@ -38,7 +38,7 @@ export function desktopUpdatePresentation(update) {
       statusLabel: '',
       modalTitle: '',
       modalMessage: '',
-      releaseLabel: 'View latest release',
+      releaseLabel: "What's new",
       automaticUpdate: false,
       progress: null,
     };
@@ -51,16 +51,17 @@ export function desktopUpdatePresentation(update) {
   const boundedProgress = Number.isFinite(percent)
     ? Math.max(0, Math.min(100, Math.round(percent)))
     : null;
+  const automaticUpdate = update?.automaticUpdate === true;
   const common = {
     hidden: false,
     state: status,
     href: releaseUrl(update.releaseUrl),
     currentVersion,
     latestVersion: version,
-    releaseLabel: update?.automaticUpdate === true
-      ? `View v${version} release`
+    releaseLabel: automaticUpdate
+      ? `What's new in v${version}`
       : `Download v${version}`,
-    automaticUpdate: update?.automaticUpdate === true,
+    automaticUpdate,
     progress: status === 'downloaded' ? 100 : boundedProgress,
   };
   if (status === 'downloading') {
@@ -84,17 +85,30 @@ export function desktopUpdatePresentation(update) {
       modalMessage: `CC Relay v${version} has finished downloading. Restart now, or quit normally and it will install automatically.`,
     };
   }
+  const automaticRetry = status === 'error' && automaticUpdate;
   return {
     ...common,
-    label: `Update v${version}`,
-    title: status === 'error'
-      ? `CC Relay v${version} is available, but the automatic download failed. Open update details.`
-      : `CC Relay v${version} is available. Open update details.`,
-    statusLabel: status === 'error' ? 'Update needs attention' : 'Update available',
-    modalTitle: status === 'error' ? 'The update needs a hand' : 'A new Relay is ready',
+    label: automaticRetry ? `Retrying v${version}` : `Update v${version}`,
+    title: automaticRetry
+      ? `CC Relay v${version} is available. Automatic updating will retry in the background. Open update details.`
+      : status === 'error'
+        ? `CC Relay v${version} is available, but release discovery failed. Open update details.`
+        : `CC Relay v${version} is available. Open update details.`,
+    statusLabel: automaticRetry
+      ? 'Automatic retry scheduled'
+      : status === 'error'
+        ? 'Update needs attention'
+        : 'Update available',
+    modalTitle: automaticRetry
+      ? 'Relay will try again'
+      : status === 'error'
+        ? 'Release check needs attention'
+        : 'A new Relay is ready',
     modalMessage: status === 'error'
-      ? `Automatic updating could not continue for CC Relay v${version}. Open the official release to review or install it manually.`
-      : update?.automaticUpdate === true
+      ? automaticUpdate
+        ? `CC Relay could not finish updating to v${version}. It will retry automatically in the background, so you can keep working.`
+        : `CC Relay could not refresh release details for v${version}. Open the official release to download and install it manually.`
+      : automaticUpdate
         ? `CC Relay v${version} is available and will download automatically in the background.`
         : `CC Relay v${version} is available. Open the official release to download and install it manually.`,
   };

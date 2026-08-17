@@ -162,6 +162,7 @@ export function createDesktopUpdater(options = {}) {
   let checkInFlight = false;
   let downloadInFlight = false;
   let downloadedPromptInFlight = false;
+  const installOnQuitVersions = new Set();
   let state = {
     supported: false,
     automaticUpdate: false,
@@ -187,6 +188,7 @@ export function createDesktopUpdater(options = {}) {
 
   function configureUpdater() {
     if (!updater) return;
+    updater.logger = logger;
     updater.autoDownload = true;
     updater.autoInstallOnAppQuit = true;
   }
@@ -235,6 +237,11 @@ export function createDesktopUpdater(options = {}) {
     if (downloadedPromptInFlight) return;
     downloadInFlight = false;
     publishUpdate('downloaded', info, { downloadPercent: 100 });
+    const version = availableVersion(info);
+    if (installOnQuitVersions.has(version)) {
+      safeLogger(logger, 'info', `CC Relay ${version} is already scheduled to install on quit.`);
+      return;
+    }
     const window = dialogWindow(getMainWindow);
     if (!window) {
       safeLogger(logger, 'info', 'Desktop update downloaded, but no live window can show the prompt.');
@@ -251,7 +258,13 @@ export function createDesktopUpdater(options = {}) {
           ['Restart and install', 'Install on quit'],
         ),
       );
-      if (selectedDialogButton(response) !== 0) return;
+      const selectedButton = selectedDialogButton(response);
+      if (selectedButton === 1) {
+        installOnQuitVersions.add(version);
+        safeLogger(logger, 'info', `CC Relay ${version} will install on quit.`);
+        return;
+      }
+      if (selectedButton !== 0) return;
       publishUpdate('installing', info, { downloadPercent: 100 });
       await restartAndInstall();
     } catch (error) {
