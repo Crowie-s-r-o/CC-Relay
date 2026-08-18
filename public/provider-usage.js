@@ -172,7 +172,10 @@ export function providerUsageMeterPresentation(providerUsage, meter, {
   const directWindow = provider?.[meter.window];
   // Older backends and newer Claude `/usage` screens can both omit a separate Fable row. The
   // all-model weekly window is then the only reported subscription runway that applies to Fable.
-  const usageWindow = meter.window === 'fableWeekly' && !directWindow && provider?.weekly
+  const usageWindow = meter.window === 'fableWeekly'
+    && !directWindow
+    && provider?.fableWeeklyUnavailable !== true
+    && provider?.weekly
     ? { ...provider.weekly, shared: true }
     : directWindow;
   const usedPercent = finitePercent(usageWindow?.usedPercent);

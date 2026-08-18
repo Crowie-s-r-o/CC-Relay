@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 
 export const PROVIDER_USAGE_REFRESH_MS = 30_000;
-const CLAUDE_USAGE_TIMEOUT_MS = 30_000;
+const CLAUDE_USAGE_TIMEOUT_MS = 40_000;
 const WEEK_MINUTES = 7 * 24 * 60;
 const MAX_SCREEN_BYTES = 256 * 1_024;
 const EXPECT_USAGE_SCRIPT = String.raw`
@@ -24,16 +24,32 @@ expect {
 }
 expect {
   -re {Current week \(all models\)} {
-    # Claude first paints a persisted usage snapshot, then replaces it after the live request.
-    # Give that request time to repaint before looking for one more complete frame. If the values
-    # did not change and Claude skips the repaint, the short timeout still bounds the probe.
-    after 1500
+    # Claude first paints a persisted snapshot and can take more than fifteen seconds to finish
+    # the live request. Consume that initial paint through its Refreshing marker before accepting
+    # a later Fable row or Usage credits section as completion.
     set timeout 2
+    set refreshing 0
     expect {
-      -re {Current week \(all models\)} { after 500 }
+      -re {Refreshing} { set refreshing 1 }
       timeout {}
       eof { exit 125 }
     }
+    if {$refreshing} {
+      set timeout 22
+      expect {
+        -re {Current week \(Fable[^)]*\)} {}
+        -re {Usage credits} {}
+        -re {Showing last-known usage|Could not refresh usage data|Per-model breakdown unavailable|Usage endpoint is rate limited|Failed to load usage data} {}
+        timeout {}
+        eof { exit 125 }
+      }
+    }
+    # Ink can update only the changed percentages, leaving their labels earlier in the byte
+    # stream. Resizing the private pseudo-terminal makes it emit one final complete frame.
+    catch {stty rows 60 columns 120 < $spawn_out(slave,name)}
+    after 100
+    catch {stty rows 61 columns 121 < $spawn_out(slave,name)}
+    after 500
     send -- "\033"
   }
   timeout { exit 124 }
@@ -122,13 +138,17 @@ export function parseClaudeUsageScreen(value) {
   const frame = latestClaudeUsageFrame(screen);
   const weekly = lastClaudeWindow(frame, 'Current week (all models)');
   const fableWeekly = lastClaudeFableWindow(frame);
+  const sourceStale = /Showing last-known usage|Could not refresh usage data|Per-model breakdown unavailable|Usage endpoint is rate limited|Failed to load usage data|Refreshing/i.test(frame);
+  const fableWeeklyUnavailable = sourceStale && !fableWeekly;
   return {
-    sourceStale: /Showing last-known usage|Could not refresh usage data/i.test(frame),
+    sourceStale,
+    fableWeeklyUnavailable,
     fiveHour: lastClaudeWindow(frame, 'Current session'),
     weekly,
     // Newer Claude builds can omit a distinct Fable row even in a live Fable session. In that
-    // case the all-model weekly window is the only reported subscription limit that applies.
-    fableWeekly: fableWeekly || (weekly ? { ...weekly, shared: true } : null),
+    // case the all-model weekly window is the only reported subscription limit that applies. An
+    // explicit refresh failure is different: it cannot prove that no separate allowance exists.
+    fableWeekly: fableWeekly || (!fableWeeklyUnavailable && weekly ? { ...weekly, shared: true } : null),
   };
 }
 
@@ -371,6 +391,18 @@ export class ProviderUsageMonitor extends EventEmitter {
     try {
       const value = await read();
       const { sourceStale = false, ...sample } = value && typeof value === 'object' ? value : {};
+      if (
+        sample.fableWeeklyUnavailable === true
+        && !sample.fableWeekly
+      ) {
+        sample.fableWeekly = previous.fableWeekly && previous.fableWeekly.shared !== true
+          ? previous.fableWeekly
+          : {
+            resetsAt: null,
+            resetLabel: null,
+            unavailable: true,
+          };
+      }
       if (!hasUsage(sample)) {
         this.state[provider] = {
           ...previous,

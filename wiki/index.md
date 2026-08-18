@@ -27,6 +27,7 @@ type: index
 - [[live-terminal-retention-review]]
 - [[provider-installation-detection]]
 - [[provider-usage-monitor]]
+- [[provider-usage-fable-correction-review]]
 - [[queued-provider-switching]]
 - [[configurable-task-retry]]
 - [[task-history]]

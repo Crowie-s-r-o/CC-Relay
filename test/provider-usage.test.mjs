@@ -58,6 +58,7 @@ test('Claude usage parsing removes terminal controls and keeps the latest painte
   assert.equal(stripTerminalControls('\u001b[31mClaude\u001b[0m'), 'Claude');
   assert.deepEqual(parseClaudeUsageScreen(CLAUDE_SCREEN), {
     sourceStale: false,
+    fableWeeklyUnavailable: false,
     fiveHour: {
       usedPercent: 3,
       resetsAt: null,
@@ -86,6 +87,7 @@ Current week (all models)
 Resets Friday
   `);
   assert.equal(usage.sourceStale, false);
+  assert.equal(usage.fableWeeklyUnavailable, false);
   assert.equal(usage.fiveHour.usedPercent, 4);
   assert.equal(usage.weekly.usedPercent, 51);
   assert.deepEqual(usage.fableWeekly, {
@@ -94,6 +96,32 @@ Resets Friday
     resetLabel: 'Friday',
     shared: true,
   });
+});
+
+test('Claude usage parsing keeps the complete redraw after a delayed incremental repaint', () => {
+  const usage = parseClaudeUsageScreen(`
+Current session
+3% used
+Resets 6:10am (Europe/Bratislava)
+Current week (all models)
+80% used
+Resets Aug 20 at 2pm (Europe/Bratislava)
+Refreshing…
+\u001b[GCurrent session
+3% used
+Resets 6:10am (Europe/Bratislava)
+Current week (all models)
+81% used
+Resets Aug 20 at 2pm (Europe/Bratislava)
+Current week (Fable)
+71% used
+Resets Aug 20 at 2pm (Europe/Bratislava)
+`);
+
+  assert.equal(usage.sourceStale, false);
+  assert.equal(usage.fableWeeklyUnavailable, false);
+  assert.equal(usage.weekly.usedPercent, 81);
+  assert.equal(usage.fableWeekly.usedPercent, 71);
 });
 
 test('Claude usage parsing cannot leak a model-specific row from an older painted frame', () => {
@@ -137,6 +165,25 @@ Showing last-known usage (could not refresh)
 `);
 
   assert.equal(usage.sourceStale, true);
+  assert.equal(usage.fableWeeklyUnavailable, true);
+  assert.equal(usage.fableWeekly, null);
+});
+
+test('Claude usage parsing does not turn a rate-limited model breakdown into shared Fable usage', () => {
+  const usage = parseClaudeUsageScreen(`
+Current session
+3% used
+Resets 6:10am
+Current week (all models)
+80% used
+Resets Aug 20 at 2pm
+Per-model breakdown unavailable (rate limited, try again in a moment)
+`);
+
+  assert.equal(usage.sourceStale, true);
+  assert.equal(usage.fableWeeklyUnavailable, true);
+  assert.equal(usage.weekly.usedPercent, 80);
+  assert.equal(usage.fableWeekly, null);
 });
 
 test('Claude usage probe runs the authenticated CLI in a private Expect terminal and reuses its session', async () => {
@@ -160,7 +207,7 @@ test('Claude usage probe runs the authenticated CLI in a private Expect terminal
   assert.equal(second.weekly.usedPercent, 77);
   assert.equal(invocations.length, 2);
   assert.equal(invocations[0].command, '/usr/bin/expect');
-  assert.deepEqual(invocations[0].args.slice(0, 4), ['-f', '-', '28', '/opt/relay/claude']);
+  assert.deepEqual(invocations[0].args.slice(0, 4), ['-f', '-', '38', '/opt/relay/claude']);
   assert.ok(invocations[0].args.includes('--safe-mode'));
   assert.deepEqual(invocations[0].args.slice(-2), ['--session-id', 'usage-session']);
   assert.deepEqual(invocations[1].args.slice(-2), ['--resume', 'usage-session']);
@@ -168,7 +215,9 @@ test('Claude usage probe runs the authenticated CLI in a private Expect terminal
   assert.equal(invocations[0].options.detached, true);
   assert.match(scripts[0], /spawn -noecho/);
   assert.match(scripts[0], /\/usage/);
-  assert.match(scripts[0], /after 1500[\s\S]*set timeout 2[\s\S]*after 500/);
+  assert.match(scripts[0], /set refreshing 0[\s\S]*-re \{Refreshing\}[\s\S]*set timeout 22/);
+  assert.ok(scripts[0].includes('-re {Current week \\(Fable[^)]*\\)}'));
+  assert.match(scripts[0], /stty rows 60 columns 120[\s\S]*stty rows 61 columns 121/);
 });
 
 test('Claude usage probe reports unsupported platforms without spawning', async () => {
@@ -279,6 +328,61 @@ test('provider usage monitor marks CLI-retained values stale without advancing t
   assert.equal(stale.claude.status, 'stale');
   assert.equal(stale.claude.checkedAt, '2026-08-17T13:45:00.000Z');
   assert.equal(stale.claude.fiveHour.usedPercent, 22);
+});
+
+test('provider usage monitor preserves only a real Fable value when its breakdown cannot refresh', async () => {
+  let refreshFailed = false;
+  let now = Date.parse('2026-08-18T01:00:00Z');
+  const monitor = new ProviderUsageMonitor({
+    now: () => now,
+    readClaude: async () => refreshFailed
+      ? {
+        sourceStale: true,
+        fableWeeklyUnavailable: true,
+        fiveHour: { usedPercent: 3, resetLabel: '6:10am' },
+        weekly: { usedPercent: 80, resetLabel: 'Thursday' },
+        fableWeekly: null,
+      }
+      : {
+        sourceStale: false,
+        fableWeeklyUnavailable: false,
+        fiveHour: { usedPercent: 3, resetLabel: '6:10am' },
+        weekly: { usedPercent: 81, resetLabel: 'Thursday' },
+        fableWeekly: { usedPercent: 71, resetLabel: 'Thursday' },
+      },
+  });
+
+  const ready = await monitor.refresh();
+  assert.equal(ready.claude.fableWeekly.usedPercent, 71);
+
+  refreshFailed = true;
+  now += 30_000;
+  const stale = await monitor.refresh();
+  assert.equal(stale.claude.status, 'stale');
+  assert.equal(stale.claude.weekly.usedPercent, 80);
+  assert.equal(stale.claude.fableWeekly.usedPercent, 71);
+  assert.equal(stale.claude.fableWeeklyUnavailable, true);
+  assert.equal(stale.claude.checkedAt, '2026-08-18T01:00:00.000Z');
+});
+
+test('provider usage monitor emits a mixed-version-safe unavailable Fable window without a real value', async () => {
+  const monitor = new ProviderUsageMonitor({
+    readClaude: async () => ({
+      sourceStale: true,
+      fableWeeklyUnavailable: true,
+      fiveHour: { usedPercent: 3, resetLabel: '6:10am' },
+      weekly: { usedPercent: 80, resetLabel: 'Thursday' },
+      fableWeekly: null,
+    }),
+  });
+
+  const stale = await monitor.refresh();
+  assert.equal(stale.claude.status, 'stale');
+  assert.deepEqual(stale.claude.fableWeekly, {
+    resetsAt: null,
+    resetLabel: null,
+    unavailable: true,
+  });
 });
 
 test('provider usage monitor samples providers every thirty seconds by default', () => {

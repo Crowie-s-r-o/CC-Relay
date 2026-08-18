@@ -170,6 +170,24 @@ test('an absent model-specific window uses Claude weekly runway instead of imply
   assert.match(fable.title, /no separate Fable allowance/);
 });
 
+test('an explicitly unavailable model breakdown does not masquerade as shared Fable usage', () => {
+  const [,, fable] = providerUsagePresentation({
+    claude: {
+      status: 'stale',
+      fiveHour: { usedPercent: 3, resetLabel: '6:10am' },
+      weekly: { usedPercent: 80, resetLabel: 'Thursday' },
+      fableWeekly: { unavailable: true },
+      fableWeeklyUnavailable: true,
+    },
+    codex: { status: 'checking' },
+  });
+
+  assert.equal(fable.value, '--');
+  assert.equal(fable.level, 'unavailable');
+  assert.equal(fable.shared, false);
+  assert.match(fable.title, /usage is unavailable/);
+});
+
 test('usage strip has four semantic colors, dark mode, and mobile layout', () => {
   assert.match(style, /\.provider-usage-meter \{[\s\S]*?--provider-usage-accent: #2f855a;/);
   assert.match(style, /\.provider-usage-meter\[data-level="warning"\]/);

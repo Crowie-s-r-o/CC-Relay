@@ -23,6 +23,8 @@ Claude Code exposes its five-hour and all-model weekly windows in status-line JS
 
 When the final frame contains no distinct Fable allowance but does contain the all-model weekly window, Relay publishes that weekly window as `fableWeekly` with `shared: true`. The Fable meter shows the shared percentage and reset countdown, and its tooltip says that Claude reported no separate Fable allowance. This is subscription-runway fallback, not a model-availability claim. A real model-specific Fable row always takes precedence.
 
+An explicit per-model refresh failure is not treated as an absent allowance. When Claude says the model breakdown is rate limited or unavailable, Relay retains a prior real Fable value as stale. Without a prior real value, the Fable meter is unavailable rather than copying the all-model percentage. `fableWeeklyUnavailable` distinguishes that failure from a successful response with no separate row. The backend also publishes a nonnumeric `fableWeekly` unavailable sentinel so an older renderer cannot ignore the new flag and restore the incorrect shared fallback.
+
 The pseudo-terminal output is held only in a bounded in-memory buffer. It is not returned by the status endpoint or written to diagnostics. OAuth credentials remain inside Claude Code. The current bridge is macOS-only because it depends on `/usr/bin/expect`; other platforms report Claude usage as unavailable instead of attempting a weaker credential path.
 
 ## Codex source
@@ -93,10 +95,21 @@ The cause was row-by-row history parsing. The pseudo-terminal byte stream held b
 > [!important]
 > Never select the newest Claude usage row independently by label. Optional model-scoped rows can disappear between frames, so the frame boundary must be selected before any individual window is parsed.
 
+## Delayed live repaint correction
+
+Claude Code 2.1.234 can show a persisted `80%` all-model frame with no Fable row for about eighteen seconds while the Usage dialog says **Refreshing**. Its successful live repaint can then change all-model usage to `81%` and add a `71%` Fable row without repeating every label. Closing the dialog after the former 3.5-second settle window therefore published the persisted all-model value as shared Fable usage.
+
+The probe now waits up to 22 seconds after observing **Refreshing**, inside a 40-second process ceiling that leaves room for clean dialog and CLI shutdown. A direct Fable row, the live Usage credits section, or an explicit refresh outcome ends that wait. Before closing the dialog, the probe changes the private pseudo-terminal dimensions twice so Ink emits one complete final frame instead of leaving an incremental repaint in the byte history. The parser still selects one final frame before reading any row.
+
+> [!important]
+> **Per-model breakdown unavailable** and a genuinely absent Fable allowance are different states. Only a successful final frame may use the shared Claude-week fallback.
+
 ## Verification
 
-- `test/provider-usage.test.mjs` covers ANSI parsing, final-frame selection, optional-row removal, current Fable label variants, shared fallback, live-repaint settling, session reuse, platform gating, exact Codex bucket selection, the 30-second default, refresh deduplication, and stale preservation.
-- `test/provider-usage-ui.test.mjs` covers the four-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units, timezone-aware Claude labels, expired five-hour rollover, shared Fable presentation, accessible fallback text, absent windows, dark mode, and the mobile layout.
+- `test/provider-usage.test.mjs` covers ANSI parsing, final-frame selection, optional-row removal, delayed complete redraws, current Fable label variants, shared fallback, explicit per-model unavailability, live-repaint settling, session reuse, platform gating, exact Codex bucket selection, the 30-second default, refresh deduplication, and stale preservation.
+- `test/provider-usage-ui.test.mjs` covers the four-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units, timezone-aware Claude labels, expired five-hour rollover, shared Fable presentation, explicit model-breakdown failures, accessible fallback text, absent windows, dark mode, and the mobile layout.
 - `test/codex-app-server.test.mjs` protects the authenticated rate-limit method and proves its null parameters pass through the actual request serializer.
+
+The adversarial completion verdict is recorded in [[provider-usage-fable-correction-review]].
 
 #relay #providers #usage #claude #codex #header

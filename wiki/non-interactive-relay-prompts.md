@@ -1,6 +1,6 @@
 ---
 name: Non-interactive CC Relay Prompts
-description: Delivery-time instructions that keep CC Relay-launched turns non-interactive and require process cleanup.
+description: Delivery-time instructions that keep CC Relay-launched turns autonomous, require a final verification pass, and require process cleanup.
 type: behavior
 ---
 
@@ -8,7 +8,14 @@ type: behavior
 
 > [!important]
 > Every prompt CC Relay delivers to Codex or Claude now ends with a short orchestrator notice that no answers can be provided. The provider must not ask questions, request approval, or wait for input. It should make reasonable assumptions and continue autonomously, or report a blocker and end the run when progress is impossible.
+> Before finishing, it must perform one extra verification pass and fix any issue it finds.
 > Its final cleanup sentence is: `When done, stop all processes you started.`
+
+## Completion depth
+
+Task 806 ran for 30 minutes and 27 seconds before Codex returned a normal final answer. Relay did not stop it on a duration or event limit. The `70/70 signals` label was the number of visible grouped signals out of the total grouped signals, not a quota.
+
+Relay does not impose a wall-clock ceiling on Codex Execute turns. The completion-depth instruction therefore extends useful work instead of holding a finished provider turn open behind an arbitrary timer. Every delivered task now requires one additional verification pass before completion. Simple tasks can still finish promptly, while implementation work should use that pass to revisit the requested outcome, tests, regressions, and documentation and continue fixing anything uncovered.
 
 ## Delivery contract
 
@@ -19,7 +26,7 @@ The notice is added at the final provider boundary rather than when a task is sa
 - `taskPrompt()` adds it to visible and headless Claude Execute turns after any reference-image instructions.
 - `ClaudeRunner.run()` adds it to isolated read-only Claude stages used by Plan council and Turbo workflows.
 
-`withRelayNonInteractiveInstruction()` is idempotent, so a prompt that already carries the exact notice is not decorated twice.
+`withRelayNonInteractiveInstruction()` is idempotent, so a prompt that already carries the exact notice is not decorated twice. The added completion-depth sentence remains on the same logical line as the rest of the notice, preserving the three-line shape of a one-line Claude live follow-up and its existing guarded paste-delivery contract.
 
 This placement preserves the original prompt in the database, Task Activity, prompt history, task artifacts, retry identity, and continuation events. Only the provider-delivered text is decorated.
 
@@ -42,11 +49,11 @@ The notice is preventive guidance, not a new provider state machine. Existing qu
 - `test/claude-execution-runner.test.mjs`
 - `test/claude-runner.test.mjs`
 
-The full Node suite passes 1,531 tests. Focused coverage proves direct Codex delivery, live Codex steering, Claude Execute delivery with attachments, fresh Claude initialization, isolated Claude planning stages, process cleanup guidance, and idempotent decoration.
+Focused coverage proves direct Codex delivery, live Codex steering, Claude Execute delivery with attachments, fresh Claude initialization, isolated Claude planning stages, the extra verification pass, process cleanup guidance, and idempotent decoration. The focused provider set passes 327 tests. The complete repository suite passes 1,577 tests with no failures, skips, or cancellations, `release:check` is green for v0.2.14, and `git diff --check` is clean.
 
 > [!note]
 > This is backend behavior. A running CC Relay process must be restarted normally before newly dispatched turns receive the notice.
 
 See [[task-history]], [[same-task-session-continuation]], [[claude-terminal-input]], and [[terminal-input-attention]].
 
-#relay #prompts #non-interactive #claude #codex #process-cleanup
+#relay #prompts #non-interactive #verification #claude #codex #process-cleanup

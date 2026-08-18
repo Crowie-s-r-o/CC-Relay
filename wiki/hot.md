@@ -6,6 +6,17 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 18: automatic tasks now require one extra verification pass before completion.** Task
+> 806 ended normally after 30 minutes and 27 seconds; its `70/70 signals` label was a visible and
+> total activity count, not an execution quota. Relay still adds no artificial Codex wall-clock
+> ceiling. Instead, every provider-delivered prompt requires one more verification pass, with any
+> discovered issue fixed before finishing. For implementation work, that pass revisits the
+> requested outcome, relevant tests, regressions, and documentation. The instruction stays on one
+> logical line so guarded Claude live-follow-up delivery keeps its established three-line paste
+> shape. The focused provider set passes 327 tests, all 1,577 repository tests pass, and
+> `release:check` is green for v0.2.14. See [[non-interactive-relay-prompts]].
+
 > [!note]
 > **August 17: the startup square now includes the Crowie logo in its visual center.** The splash
 > reuses the bundled `public/favicon.svg` in a 64 by 64 box between **Starting** and the company
