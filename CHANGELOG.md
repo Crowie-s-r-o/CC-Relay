@@ -2,6 +2,12 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.16] - 2026-08-18
+
+### Changed
+
+- Standups now attribute tasks to their start dates instead of their completion dates.
+
 ## [0.2.15] - 2026-08-18
 
 ### Added
