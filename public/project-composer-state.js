@@ -72,6 +72,7 @@ export function freshProjectComposerState() {
     taskName: '',
     prompt: '',
     attachments: [],
+    taskReferences: [],
     selectedTaskId: null,
     selectedThreadId: null,
     selectedProvider: 'codex',

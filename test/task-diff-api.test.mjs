@@ -28,8 +28,9 @@ test('the diff routes answer with the shared builders and a 404 for a missing ta
   const server = await readFile(new URL('src/server.mjs', root), 'utf8');
   const routes = server.slice(server.indexOf(DIFF_SUMMARY_ROUTE), server.indexOf(TASK_DETAIL_ROUTE));
 
-  assert.match(routes, /sendJson\(response, 200, await buildTaskDiffSummary\(\{ database, task \}\)\)/);
+  assert.match(routes, /await buildTaskDiffSummary\(\{[\s\S]{0,160}database,[\s\S]{0,160}task,[\s\S]{0,160}scope: url\.searchParams\.get\('scope'\) \|\| 'workspace'/);
   assert.match(routes, /await buildTaskDiffFile\(\{[\s\S]{0,120}path: url\.searchParams\.get\('path'\),/);
+  assert.match(routes, /buildTaskDiffFile\(\{[\s\S]{0,240}scope: url\.searchParams\.get\('scope'\) \|\| 'workspace'/);
   assert.equal(routes.match(/sendError\(response, 404, 'Task not found\.'\)/g)?.length, 2);
   assert.match(server, /import \{[\s\S]{0,160}buildTaskDiffFile,[\s\S]{0,160}\} from '\.\/task-diff\.mjs'/);
 });
@@ -39,6 +40,7 @@ test('the diff preview is announced as a capability', async () => {
   const status = server.slice(server.indexOf("pathname === '/api/status'"), server.indexOf(TASK_DETAIL_ROUTE));
 
   assert.match(status, /taskDiffPreview: true/);
+  assert.match(status, /taskExactDiff: true/);
 });
 
 test('the end capture is wired into the queue change listener', async () => {
@@ -121,4 +123,6 @@ test('the diff column is persisted, whitelisted, and normalized', async () => {
   assert.match(database, /diff_state_json: encodedDiffState/);
   assert.match(database, /diffState: normalizeDiffState\(encodedDiffState\)/);
   assert.match(database, /countOverlappingRepoTasks\(repoPath, \{ excludeTaskId = null, from = null, to = null \} = \{\}\)/);
+  assert.match(database, /listTaskFileChangeEvents\(taskId, limit = 2001\)/);
+  assert.match(database, /json_extract\(payload, '\$\.item\.type'\) = 'fileChange'/);
 });

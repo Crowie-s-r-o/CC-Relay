@@ -12,6 +12,7 @@ CC Relay is designed to make AI development work easier to control:
 - Queue prompts instead of waiting for one task to finish before preparing the next.
 - Give tasks recognizable names and rename them without replacing queued work.
 - Search every saved task command and assistant response inside the selected project.
+- Attach earlier task messages, AI responses, or both as context for new work.
 - Choose the provider, model, and reasoning effort without keeping a target terminal open.
 - Launch a fresh provider terminal only when a queued task receives capacity.
 - Optionally keep final task terminal sessions open, with an independent saved choice for every project.
@@ -118,9 +119,17 @@ Run now places an urgent task ahead of other waiting tasks. It does not interrup
 
 Tasks can include PNG, JPEG, or WebP reference images. CC Relay validates and stores them locally, then provides them to the selected workflow without uploading them to a separate CC Relay service.
 
+### Task references
+
+Right-click a task card to attach My messages, AI responses, or Both to the new-task composer. Several task references can be combined, and each ticket keeps an editable Include choice. When the task is queued, CC Relay freezes the selected conversation material into a quoted context section after the new instruction, so Execute, Plan council, and Turbo receive one self-contained prompt.
+
 ### Task activity
 
 CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. Filters, follow mode, and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
+
+### Task changes
+
+The task detail **Changes** action opens on **Exact task edits**, a per-file sequence of patches that Codex or Claude reported for that task. **Workspace window** keeps the original working-tree snapshot comparison so shell commands, external tools, and other disk changes remain inspectable. Relay labels the exact view as provider-reported evidence and calls out any file-change record that did not include a patch.
 
 ### Provider subscription usage
 

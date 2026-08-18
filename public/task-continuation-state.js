@@ -1,5 +1,68 @@
 const DIRECT_PROVIDERS = new Set(['codex', 'claude']);
 
+/**
+ * Task-scoped follow-up image drafts with cancellable asynchronous merges.
+ *
+ * FileReader completes later than the click or paste that started it. A plain Map lets that
+ * delayed completion restore images after Clear images has removed them. Serializing merges
+ * also prevents two quick image selections from overwriting one another.
+ */
+export class ContinuationAttachmentDrafts {
+  constructor() {
+    this.values = new Map();
+    this.generations = new Map();
+    this.pendingMerges = new Map();
+  }
+
+  get(taskId) {
+    return this.values.get(taskId);
+  }
+
+  set(taskId, attachments) {
+    this.invalidate(taskId);
+    this.values.set(taskId, attachments);
+    return this;
+  }
+
+  delete(taskId) {
+    const deleted = this.values.delete(taskId);
+    this.invalidate(taskId);
+    return deleted;
+  }
+
+  invalidate(taskId) {
+    this.generations.set(taskId, this.generation(taskId) + 1);
+  }
+
+  generation(taskId) {
+    return this.generations.get(taskId) || 0;
+  }
+
+  async merge(taskId, mergeAttachments) {
+    const generation = this.generation(taskId);
+    const previous = this.pendingMerges.get(taskId) || Promise.resolve();
+    const pending = previous.catch(() => {}).then(async () => {
+      if (this.generation(taskId) !== generation) {
+        return { committed: false, result: null };
+      }
+      const result = await mergeAttachments(this.get(taskId) || []);
+      if (this.generation(taskId) !== generation) {
+        return { committed: false, result };
+      }
+      this.values.set(taskId, result.attachments);
+      return { committed: true, result };
+    });
+    this.pendingMerges.set(taskId, pending);
+    try {
+      return await pending;
+    } finally {
+      if (this.pendingMerges.get(taskId) === pending) {
+        this.pendingMerges.delete(taskId);
+      }
+    }
+  }
+}
+
 export function continuationPresentation({
   supportsDirectFollowUp,
   supportsTaskSteering,

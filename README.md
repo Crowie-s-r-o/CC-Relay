@@ -21,8 +21,22 @@
 4. **Queue the next prompts now.** Add, reorder, or edit queued work while tasks run; Relay dispatches on capacity.
 5. **Make important plans survive a challenge.** Plan council has one provider author a plan and the other review it critically.
 6. **Plan smart, execute economically.** Turbo builds a dependency graph with a stronger model, then fans work out to faster Codex workers.
+7. **Keep provider runway visible.** The compact status bar shows Claude's five-hour and weekly usage, Fable weekly usage, and Codex weekly usage, including the percentage used and time left until each window resets.
 
-Also included: live execution, local SQLite history, artifacts, image attachments, provider usage bars, and diagnostics. See the [feature inventory](FEATURES.md).
+## Highlights
+
+- **One global task monitor.** Follow running work and open terminal sessions across every project from compact status cards, without leaving the repository you are working in.
+- **Terminal session workspaces.** Keep a direct task open across as many turns as needed, steer work while it runs, resume the saved conversation later, and explicitly finish the session when the job is done.
+- **Plans, goals, and workers in one view.** Task Activity shows runtime, current plan steps, Codex goals, sub-agent assignments, commands, file changes, messages, errors, and results as they happen.
+- **Searchable history and task-owned diffs.** Search task names, prompts, follow-ups, responses, results, and errors. Changes opens on exact patches reported by the task, with a separate Workspace window for every disk change observed while it ran.
+- **A queue built for real work.** Rename and reorder waiting tasks, use Run now for urgent work, retry with a different provider or model, and continue a completed task in its original conversation.
+- **Reference images and local artifacts.** Attach screenshots and other visual context, then keep prompts, plans, events, results, errors, and attachments stored locally with the task.
+- **Completion you will not miss.** Choose a sound or spoken announcement, collect finished tasks in a durable Ready for review stack, and mark them reviewed individually or together.
+- **AI changelogs on demand.** Standup turns the completed work from any selected day into concise Added, Changed, Fixed, and Security notes using a fresh isolated provider session.
+- **A desktop that adapts.** Move and resize the task monitor, switch themes, zoom the whole app, retain terminals when useful, and receive automatic updates on supported desktop installs.
+- **Local by design.** Relay binds to loopback, keeps authentication inside the installed provider CLIs, and stores its task database and artifacts on your machine.
+
+See the complete [feature inventory](FEATURES.md) for workflow details and operational behavior.
 
 ## Get started
 

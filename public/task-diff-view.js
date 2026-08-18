@@ -36,6 +36,7 @@ const STATUS_LABELS = {
 };
 
 const REASON_TEXT = {
+  'exact-changes-unavailable': 'No exact provider patch was recorded for this task. Check Workspace window for disk changes.',
   'not-a-git-repository': 'This project folder is not a git repository.',
   'git-unavailable': 'Git is not available on this machine.',
   'baseline-failed': 'Relay could not capture a baseline when this task started.',
@@ -323,6 +324,22 @@ export function diffPlaceholderMarkup(text = 'Select a file to see its changes.'
 export function renderFileDiff(file, summaryEntry = null) {
   if (!file) return diffPlaceholderMarkup();
   const heading = fileHeadingMarkup(file);
+  if (Array.isArray(file.edits) && file.edits.length > 0) {
+    const edits = file.edits.map((edit, index) => {
+      const provider = String(edit?.provider || 'provider');
+      const providerLabel = `${provider.slice(0, 1).toUpperCase()}${provider.slice(1)}`;
+      const sequence = countOf(edit?.sequence) || index + 1;
+      const editHeading = `<div class="task-diff-edit-heading">Exact edit ${sequence} · ${escapeHtml(providerLabel)}</div>`;
+      if (edit?.binary === true) return `${editHeading}<p class="task-diff-note">Binary file</p>`;
+      if (edit?.tooLarge === true) return `${editHeading}<p class="task-diff-note">This exact edit is too large to display.</p>`;
+      const grid = renderHunkGrid(edit?.hunks);
+      const note = edit?.truncated === true
+        ? '<p class="task-diff-note">This exact edit was shortened.</p>'
+        : '';
+      return `${editHeading}${grid || '<p class="task-diff-note">No line changes recorded for this edit.</p>'}${note}`;
+    }).join('');
+    return `${heading}<div class="task-diff-edits">${edits}</div>`;
+  }
   if (file.binary === true) {
     return `${heading}<p class="task-diff-note">Binary file</p>`;
   }
@@ -331,10 +348,17 @@ export function renderFileDiff(file, summaryEntry = null) {
     const deletions = countOf(summaryEntry?.deletions);
     return `${heading}<p class="task-diff-note">This file's diff is too large to display (+${additions} -${deletions}).</p>`;
   }
-  const rows = pairHunkRows(file.hunks);
-  if (!rows.length) {
-    return `${heading}<p class="task-diff-note">No line changes recorded for this file.</p>`;
-  }
+  const grid = renderHunkGrid(file.hunks);
+  if (!grid) return `${heading}<p class="task-diff-note">No line changes recorded for this file.</p>`;
+  const truncated = file.truncated === true
+    ? '<p class="task-diff-note">This diff was shortened. Later changes in this file are not shown.</p>'
+    : '';
+  return `${heading}${grid}${truncated}`;
+}
+
+function renderHunkGrid(hunks) {
+  const rows = pairHunkRows(hunks);
+  if (!rows.length) return '';
   const cells = rows.map((row) => row.kind === 'hunk-header'
     ? `<span class="task-diff-hunk">${escapeHtml(row.text)}</span>`
     : [
@@ -343,19 +367,33 @@ export function renderFileDiff(file, summaryEntry = null) {
       numberCellMarkup(row.new, 'new'),
       textCellMarkup(row.new, 'new'),
     ].join('')).join('');
-  const truncated = file.truncated === true
-    ? '<p class="task-diff-note">This diff was shortened. Later changes in this file are not shown.</p>'
-    : '';
-  return `${heading}<div class="task-diff-grid">${cells}</div>${truncated}`;
+  return `<div class="task-diff-grid">${cells}</div>`;
 }
 
 export function diffTotalsText(summary) {
   const files = Array.isArray(summary?.files) ? summary.files.length : 0;
-  return `${plural(files, 'file')} · +${countOf(summary?.totalAdditions)} -${countOf(summary?.totalDeletions)}`;
+  const edits = summary?.scope === 'exact'
+    ? (summary.files || []).reduce((total, file) => total + countOf(file?.editCount), 0)
+    : 0;
+  const editText = summary?.scope === 'exact' ? ` · ${plural(edits, 'edit')}` : '';
+  return `${plural(files, 'file')}${editText} · +${countOf(summary?.totalAdditions)} -${countOf(summary?.totalDeletions)}`;
 }
 
 export function diffNoticeTexts(summary) {
   const notices = [];
+  if (summary?.scope === 'exact' && summary.available === true) {
+    notices.push('These are exact provider-reported patches. Shell commands and external tools may appear only in Workspace window.');
+  }
+  if (summary?.scope === 'exact' && countOf(summary?.unreportedChanges) > 0) {
+    const count = countOf(summary.unreportedChanges);
+    notices.push(`${plural(count, 'provider file edit')} did not include an exact patch. Check Workspace window.`);
+  }
+  if (summary?.historyTruncated === true) {
+    notices.push('Only the first 2,000 provider file-change events are included.');
+  }
+  if (summary?.patchesTruncated === true) {
+    notices.push('Some provider patches were shortened to stay within display limits.');
+  }
   if (summary?.sharedTree === true) {
     notices.push('Other tasks ran in this project during this window; changes may overlap.');
   }

@@ -48,6 +48,11 @@ The new split and modal geometry use root-relative `em` units. Live validation a
 
 The full record is a reading surface rather than part of the compact inspector. Prompt text is 13 pixels at a 1.55 line height, rendered results are 15 pixels at a 1.7 line height, disclosure labels are 13 pixels, and the modal title is 18 pixels. These increases are scoped to task evidence and the modal header so terminal output and the fixed Task Activity header retain their intentionally dense typography.
 
+The **Prompts** disclosure opens whenever the operator opens the full task record, including when
+the same record is reopened after Prompts was collapsed. It remains manually collapsible while the
+dialog stays open. Session tasks continue to use their paired conversation history instead of the
+flat Prompts disclosure.
+
 The Plan execution shortcut opens the modal before scrolling and focusing its execution panel. Closing works through the close button, Escape, or the backdrop. When no task remains selected, the modal closes before the empty Task Activity state appears.
 
 > [!note]

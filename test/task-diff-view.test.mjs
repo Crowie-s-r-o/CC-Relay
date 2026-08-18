@@ -229,6 +229,34 @@ test('binary, too large, and shortened files state their limits honestly', () =>
   );
 });
 
+test('exact file evidence renders each provider edit as its own patch', () => {
+  const rendered = renderFileDiff({
+    path: 'src/app.js',
+    status: 'modified',
+    source: 'exact',
+    edits: [
+      {
+        sequence: 1,
+        provider: 'codex',
+        hunks: [hunk([delLine('before', 1), addLine('after', 1)])],
+      },
+      {
+        sequence: 2,
+        provider: '<claude>',
+        hunks: [hunk([addLine('second edit', 4)])],
+        truncated: true,
+      },
+    ],
+    hunks: [],
+  });
+
+  assert.match(rendered, /Exact edit 1 · Codex/);
+  assert.match(rendered, /Exact edit 2 · &lt;claude&gt;/);
+  assert.equal((rendered.match(/class="task-diff-grid"/g) || []).length, 2);
+  assert.match(rendered, /This exact edit was shortened./);
+  assert.doesNotMatch(rendered, /<claude>/);
+});
+
 test('a one sided file still renders every row', () => {
   const deleted = renderFileDiff({
     path: 'gone.js',
@@ -244,6 +272,10 @@ test('a one sided file still renders every row', () => {
 });
 
 test('every unavailable reason maps to its agreed sentence', () => {
+  assert.equal(
+    diffReasonText('exact-changes-unavailable'),
+    'No exact provider patch was recorded for this task. Check Workspace window for disk changes.',
+  );
   assert.equal(diffReasonText('not-a-git-repository'), 'This project folder is not a git repository.');
   assert.equal(diffReasonText('git-unavailable'), 'Git is not available on this machine.');
   assert.equal(diffReasonText('baseline-failed'), 'Relay could not capture a baseline when this task started.');
@@ -259,11 +291,29 @@ test('summary copy reports overlap, truncation, and totals', () => {
     'Showing first 500 changed files.',
   ]);
   assert.deepEqual(diffNoticeTexts({ sharedTree: false, truncated: false }), []);
+  assert.deepEqual(diffNoticeTexts({
+    available: true,
+    scope: 'exact',
+    unreportedChanges: 2,
+    historyTruncated: true,
+    patchesTruncated: true,
+  }), [
+    'These are exact provider-reported patches. Shell commands and external tools may appear only in Workspace window.',
+    '2 provider file edits did not include an exact patch. Check Workspace window.',
+    'Only the first 2,000 provider file-change events are included.',
+    'Some provider patches were shortened to stay within display limits.',
+  ]);
   assert.equal(
     diffTotalsText({ files: [summaryFile('a.js'), summaryFile('b.js')], totalAdditions: 12, totalDeletions: 4 }),
     '2 files · +12 -4',
   );
   assert.equal(diffTotalsText({ files: [summaryFile('a.js')], totalAdditions: 1, totalDeletions: 0 }), '1 file · +1 -0');
+  assert.equal(diffTotalsText({
+    scope: 'exact',
+    files: [summaryFile('a.js', { editCount: 2 }), summaryFile('b.js', { editCount: 1 })],
+    totalAdditions: 4,
+    totalDeletions: 2,
+  }), '2 files · 3 edits · +4 -2');
 });
 
 test('only running and open count as a live task for the badge and the poll', () => {
@@ -280,6 +330,10 @@ test('the changes dialog is a native modal beside the other dialogs', () => {
   assert.match(markup, /class="task-diff-surface"/);
   assert.match(markup, /id="task-diff-tree"/);
   assert.match(markup, /id="task-diff-file"/);
+  assert.match(markup, /data-task-diff-scope="exact"[^>]*aria-pressed="false"[^>]*hidden/);
+  assert.match(markup, /data-task-diff-scope="workspace"[^>]*aria-pressed="true"/);
+  assert.match(markup, /Exact task edits/);
+  assert.match(markup, /Workspace window/);
   // The dialog owns its own markup and never borrows the task detail modal's body.
   const detailModal = markup.slice(markup.indexOf('<dialog id="task-detail-modal"'));
   assert.doesNotMatch(detailModal.slice(0, detailModal.indexOf('</dialog>')), /task-diff-/);
@@ -288,6 +342,8 @@ test('the changes dialog is a native modal beside the other dialogs', () => {
 test('the Changes action is capability gated and never guesses at legacy tasks', () => {
   assert.match(app, /import \{[\s\S]*?\} from '\.\/task-diff-view\.js';/);
   assert.match(app, /state\.status\?\.capabilities\?\.taskDiffPreview === true/);
+  assert.match(app, /state\.status\?\.capabilities\?\.taskExactDiff === true/);
+  assert.match(app, /state\.taskDiff\.scope = taskExactDiffSupported\(\) \? 'exact' : 'workspace'/);
   // diffState null means legacy or not started: the feature stays hidden entirely.
   assert.match(app, /task\.diffState\?\.baseline \|\| task\.diffState\?\.error/);
   assert.match(app, /actionButton\('Changes'/);
@@ -315,6 +371,9 @@ test('the dialog skips redundant rewrites and stops its own poll', () => {
   assert.doesNotMatch(app, /taskDiffSignature\s*\(/);
   // A poll driven rewrite must never destroy an active selection.
   assert.match(app, /await textSelectionGuard\.waitForClear\(\);[\s\S]{0,400}?taskDiff/);
+  assert.match(app, /scope=\$\{encodeURIComponent\(scope\)\}/);
+  assert.match(app, /state\.taskDiff\.scope !== scope/);
+  assert.match(app, /button\.addEventListener\('click', \(\) => selectTaskDiffScope\(button\.dataset\.taskDiffScope\)\)/);
 });
 
 test('a vanished task or file stops the poll instead of retrying forever', () => {
@@ -352,6 +411,8 @@ test('the diff panes scroll internally, collapse at 760px, and add no motion', (
   assert.match(diffCss, /data-type="add"\]/);
   assert.match(diffCss, /data-type="del"\]/);
   assert.match(diffCss, /:focus-visible/);
+  assert.match(diffCss, /\.task-diff-scopes button\[aria-pressed="true"\]/);
+  assert.match(diffCss, /\.task-diff-edit-heading/);
 
   /*
    * planner-board.test.mjs, plan-visibility.test.mjs and session-tasks-ui.test.mjs all read

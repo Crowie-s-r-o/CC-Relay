@@ -30,6 +30,8 @@ test('task search has responsive light and dark evidence styling', () => {
   assert.match(style, /\.task-search-match\[data-source="response"\]::before/);
   assert.match(style, /\.task-search-match mark/);
   assert.match(style, /html\[data-theme="dark"\] \.task-search/);
+  assert.match(style, /html\[data-theme="dark"\] \.task-search input \{[\s\S]*?background: transparent;[\s\S]*?box-shadow: none;[\s\S]*?\}/);
+  assert.match(style, /html\[data-theme="dark"\] \.task-search input:focus \{[\s\S]*?box-shadow: none;[\s\S]*?\}/);
   assert.match(style, /@media \(max-width: 760px\)[\s\S]*?\.task-search kbd/);
   assert.match(style, /@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.task-search/);
 });

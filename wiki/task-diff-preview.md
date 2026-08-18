@@ -1,6 +1,6 @@
 ---
 name: Task Diff Preview
-description: Capability-gated per-task Changes dialog that shows a live or frozen git diff of everything a task edited since it started.
+description: Capability-gated Changes dialog with exact provider-reported task edits and a separate live or frozen workspace-window diff.
 type: feature
 tags:
   - relay
@@ -13,27 +13,48 @@ tags:
 
 # Task Diff Preview
 
-Every task that starts inside a git repository records a baseline tree of the working state at that moment and gains a **Changes** action in the task detail panel. The action opens `#task-diff-modal`: a changed-file tree on the left, a side-by-side before and after diff on the right, both drawn on the Tokyo Night terminal surface in either application theme. While the task is live the diff follows the working tree; after a terminal outcome it freezes against the tree captured when the task ended.
+Every task that starts gains a **Changes** action in the task detail panel when change tracking is available. The action opens `#task-diff-modal`: a changed-file tree on the left and a side-by-side before and after diff on the right, both drawn on the Tokyo Night terminal surface in either application theme.
+
+The dialog has two deliberately different evidence scopes:
+
+- **Exact task edits** is the default on a current backend. It reads successful provider file-change records and shows each reported patch as its own numbered edit. Repeated edits to one file remain separate, so the operator sees the exact mutations instead of a guessed net result.
+- **Workspace window** is the original repository snapshot comparison. While the task is live it follows the working tree; after a terminal outcome it freezes against the tree captured when the task ended. It can contain shell writes, external tools, operator edits, and overlapping tasks.
 
 ## Behavior
 
-The **Changes** button renders only when `capabilities.taskDiffPreview` is true and the task row carries diff state with a baseline or a recorded capture error. Legacy rows read a null `diffState` and never show the button, so an existing database keeps its existing behavior.
+The **Changes** button renders only when `capabilities.taskDiffPreview` is true and the task row carries diff state with a baseline or a recorded capture error. Legacy rows read a null `diffState` and never show the button, so an existing database keeps its existing behavior. `capabilities.taskExactDiff` separately gates the scope switch. A refreshed renderer against an older backend hides Exact task edits and keeps Workspace window selected.
 
 - The left tree shows per-file status letters, `+N`/`-N` line counts, and collapsible folders. Rendering is budgeted at 400 rows (`FILE_ROW_LIMIT`); hidden entries are counted by an honest overflow line, `N more changed files not shown.`
 - The right pane renders paired hunk rows with before and after line numbers. Each side scrolls horizontally on its own (`white-space: pre`), and the two-column body collapses to a single column at 760px.
-- The summary bar carries file and line totals, a `LIVE` badge while the diff is moving, and the capture timestamp once frozen.
+- Exact totals count patch activity, not a final net diff. A line added and later removed counts in both directions, and each file reports how many exact edits it contains.
+- The summary bar carries file and line totals, a `LIVE` badge while the evidence is moving, and the capture timestamp once frozen.
 - While the task status is `running` or `open`, the dialog refetches every 3 seconds (`TASK_DIFF_POLL_MS`). The server sends a render signature with every payload; an unchanged signature skips the DOM write entirely, so scroll positions, text selection, and folder collapse state survive live refreshes. Rewrites also wait for the text-selection guard, and a 404 stops the poll instead of retrying forever.
 - Terminal statuses (`complete`, `failed`, `cancelled`, `interrupted`) freeze the diff; a frozen payload keeps one signature, so later polls move nothing.
 
 ## API contract
 
-- `GET /api/tasks/:id/diff` answers the summary: availability plus a reason code when unavailable, the bounded file list, totals, the live flag, `sharedTree`, `truncated`, the capture timestamp, and the render signature. A missing task is a 404.
-- `GET /api/tasks/:id/diff/file?path=...` answers one file's paired hunks with its own signature and `truncated` and `tooLarge` flags. A malformed path is a 400; a path that is not part of this diff is a 404.
+- `GET /api/tasks/:id/diff` answers the workspace summary by default for compatibility. `?scope=exact` returns provider patch evidence. Both shapes carry availability, bounded files, totals, live state, truncation facts, timestamps, and a render signature. A missing task is a 404.
+- `GET /api/tasks/:id/diff/file?path=...` reads the workspace file by default. `scope=exact` returns the numbered provider edit sequence for that path. A malformed path or scope is a 400; a path that is not part of the selected evidence is a 404.
 - Both routes are registered above the bare `GET /api/tasks/:id` route, and the diff API suite pins that ordering with a dedicated test.
-- The capability is announced as `capabilities.taskDiffPreview` on `/api/status` and fails closed across mixed backend and renderer versions.
+- `/api/status` announces `capabilities.taskDiffPreview` and the additive `capabilities.taskExactDiff`. Both fail closed across mixed backend and renderer versions.
 - `api()` in `public/app.js` now attaches `failure.status` to thrown request errors. The change is additive and available to every caller; the diff dialog uses it to end polling on 404.
 
-## Capture lifecycle and invariants
+## Exact task edit evidence
+
+Codex app-server file-change items already carry `changes[].diff`. Update patches are hunk fragments, while add and delete records carry complete content. Relay reads successful `item/completed` records directly from the task event ledger, so existing Codex tasks can expose exact patches without a data migration.
+
+Claude Code exposes exact `structuredPatch` hunks in the completed `Edit`, `Write`, and `NotebookEdit` tool result. Relay now copies the bounded structured hunks into the completed file-change event; a create result stores its bounded content. Existing Claude events retained only the file path and therefore cannot be retroactively exact.
+
+> [!important]
+> Exact means every displayed patch came from that task's successful provider edit record. It does not mean every possible write was observed. Shell commands, MCP tools, external programs, and providers that omit patch metadata can change files without an exact file-change patch. The Exact task edits notice always points the operator to Workspace window, and path-only provider records are counted as unreported exact edits.
+
+- Only completed, successful file-change items contribute. Started and failed items never become exact evidence.
+- Absolute provider paths are reduced to repository-relative forward-slashed paths. A path outside the task repository is rejected and counted as unreported instead of entering either pane.
+- `RelayDatabase.listTaskFileChangeEvents()` filters the event ledger with SQLite JSON predicates before parsing, so command and reasoning history cannot consume the bounded exact-evidence window.
+- The evidence cache is keyed by task ID and latest event ID. New live activity invalidates the key, while a frozen task reuses immutable parsed patches.
+- One file can contain several numbered edits. The line coordinates belong to the file state at each operation, which is why Relay does not merge sequential patches into a synthetic final file.
+
+## Workspace capture lifecycle and invariants
 
 The baseline is a git tree of the working state, tracked plus untracked with `.gitignore` respected, built through a temporary index: `GIT_INDEX_FILE` pointed into a temp directory, `read-tree --empty`, `add -A -- .`, `write-tree`. Snapshots never touch the user's real index, worktree, refs, or `HEAD`; the only residue is gc-prunable loose objects in `.git/objects`.
 
@@ -52,7 +73,8 @@ Every git spawn runs with an argument array, an explicit `maxBuffer`, a 15 secon
 
 - Summary: at most 500 files; the notice says `Showing first 500 changed files.`
 - File patch: at most 5,000 parsed lines, and a patch over 2 MB answers `tooLarge` instead of the text.
-- Unavailable diffs carry one of `not-a-git-repository`, `git-unavailable`, `baseline-failed`, `captured-before-diff-support`, or `diff-failed`; the renderer maps unknown future reasons to a safe generic sentence, and an available diff with no files reads `No file changes recorded.`
+- Exact evidence reads at most 2,000 successful file-change events, 5,000 change records, and 50,000 parsed lines across one task request. Claude retains at most 5,000 structured patch lines or 2 MB for one completed edit. The interactive Claude hook can impose a smaller source bound; Relay recognizes its compaction markers and reports the patch as shortened. Every bound has visible truncation copy.
+- Unavailable workspace diffs carry one of `not-a-git-repository`, `git-unavailable`, `baseline-failed`, `captured-before-diff-support`, or `diff-failed`. Exact evidence uses `exact-changes-unavailable`. The renderer maps unknown future reasons to a safe generic sentence, and an available diff with no files reads `No file changes recorded.`
 - `sharedTree` shows `Other tasks ran in this project during this window; changes may overlap.`
 - Every model-controlled or task-controlled value, including file paths and hunk text, passes through `escapeHtml` before HTML interpolation.
 
@@ -68,6 +90,9 @@ The dialog styles sit between the markers `/* Task changes dialog` and `/* End t
 
 ## Known limitations
 
+- Exact task edits cannot reconstruct older Claude patches because those event rows stored paths only.
+- A file written through a shell command or external tool can appear only in Workspace window. If another task or the operator edits the same file during the window, the workspace comparison remains shared evidence rather than exact attribution.
+- Exact addition and deletion totals describe all reported patch operations. They are intentionally not netted across repeated edits.
 - Snapshot trees are unreferenced git objects. A `git gc` weeks later can prune them, after which a frozen diff answers `diff-failed`.
 - A live snapshot re-hashes the working tree (`add -A` into the temporary index) on every capture. Very large repositories pay that cost per live refresh window; the 15 second git timeout bounds it and degrades to `diff-failed` instead of blocking.
 - The lazy self-heal after a backend restart freezes the tree as it stands at first view, not as it stood when the task actually ended.
@@ -75,22 +100,23 @@ The dialog styles sit between the markers `/* Task changes dialog` and `/* End t
 
 ## Restart requirement
 
-The routes, the capability flag, the queue-side baseline capture, the database column, and the renderer shipped together. Restart CC Relay and rebuild the desktop bundle to activate the feature; until then the capability stays absent and the renderer hides the action.
+Restart CC Relay and rebuild the desktop bundle to activate Exact task edits. Until the new backend announces `taskExactDiff`, refreshed renderer assets hide that scope and safely retain the older Workspace window behavior.
 
 ## Implementation map
 
-- `src/task-diff.mjs` owns snapshots, state normalization, parsers, the summary and file builders, caches, and every bound.
+- `src/task-diff.mjs` owns exact event extraction, provider patch parsing, snapshots, state normalization, both scope builders, caches, and every bound.
+- `src/claude-execution-runner.mjs` retains bounded structured patches and create content on successful Claude file-change results.
 - `src/queue.mjs` fires the baseline capture as the last statement of `beginTask`.
-- `src/server.mjs` owns the two routes, the capability flag, and the terminal-transition end capture.
-- `src/database.mjs` owns the `diff_state_json` column, the whitelist, `diffState` normalization, and `countOverlappingRepoTasks`.
+- `src/server.mjs` owns the two routes, both capability flags, scope routing, and the terminal-transition end capture.
+- `src/database.mjs` owns the exact event query, the `diff_state_json` column, the whitelist, `diffState` normalization, and `countOverlappingRepoTasks`.
 - `public/task-diff-view.js` is the pure markup module: tree, hunks, notices, reason texts, and budgets.
-- `public/app.js` wires the Changes action, the dialog lifecycle, the 3 second poll, and the signature render-skip.
+- `public/app.js` wires capability-gated scope selection, the dialog lifecycle, the 3 second poll, and the signature render-skip.
 - `public/index.html` carries the `#task-diff-modal` markup; `public/style.css` carries the marked dialog block.
-- `test/task-diff.test.mjs`, `test/task-diff-api.test.mjs`, `test/task-diff-capture.test.mjs`, and `test/task-diff-view.test.mjs` cover the contract.
+- `test/task-diff.test.mjs`, `test/task-diff-api.test.mjs`, `test/task-diff-capture.test.mjs`, `test/task-diff-view.test.mjs`, and `test/claude-execution-runner.test.mjs` cover the contract.
 
 ## Verification
 
-The four focused diff suites pass 58 of 58. The complete repository suite passes 1,531 of 1,531 on August 13, `npm run release:check` reports consistent v0.2.9 metadata, and `git diff --check` is clean. The adversarial review ended verdict Ship with zero mandatory findings and 13 of 13 runtime probes passed: snapshots mutate nothing the user owns, no unhandled rejections escape the fire-and-forget captures, hostile filenames stay inert markup, and concurrent diff-state writes converge.
+The five focused diff and provider suites pass 115 of 115. The complete repository suite passes 1,609 of 1,609 on August 19, `npm run release:check` reports consistent v0.2.16 metadata, and `git diff --check` is clean. An isolated live server fixture confirms the `taskExactDiff` capability, two separately numbered edits to one file, a second exact file, and an empty workspace comparison through the real HTTP routes.
 
 See also [[task-activity-overview]], [[interface-layout]], [[task-history]], and [[dark-mode]].
 

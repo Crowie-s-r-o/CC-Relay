@@ -97,6 +97,13 @@ The input stays editable while submission is unavailable, and Send is disabled w
 
 The continuation dock accepts PNG, JPEG, and WebP images through a minimal **Add images** file control or clipboard paste. It shows only the selected count and a **Clear images** action. Text and image drafts are retained independently per selected task while navigating Task Activity and are cleared only after the provider accepts the follow-up. The existing per-request limits apply: 99 images, 5 MB per image, and 20 MB total.
 
+> [!important]
+> Follow-up image reads finish asynchronously. `ContinuationAttachmentDrafts` serializes additions
+> for each task and gives every task a cancellation generation. **Clear images**, an accepted
+> dispatch, or an authoritative retry restore invalidates older reads, so a delayed `FileReader`
+> completion cannot resurrect cleared images. A completed add updates only its original task and
+> repaints the dock only when that task is still selected.
+
 Finished-task continuations validate images through `decodeImageAttachments()`, append new non-colliding `image-n` IDs to the source task, and pass only the newly attached images to that turn. Earlier task images remain visible but are not resent. Running Codex steering stages the new files, sends them as `localImage` entries in the same `turn/steer` `UserInput[]`, and commits them only after Codex accepts the exact active turn. Running interactive Claude references only the new staged paths in its live prompt. A definite rejection removes staged files and metadata; an uncertain post-injection result retains them because Claude may already have received the paths.
 
 The upper **Prompts** disclosure is task-level conversation history. `GET /api/tasks/:id` returns the canonical original request plus every CC Relay-marked finished-turn follow-up and running-turn steering message. This query is independent of the terminal console's bounded 500-event window, so old prompts do not disappear from the top of a long-running task. The disclosure opens automatically when a task has more than one prompt. Copy preserves the complete ordered user-authored text but omits generated display headings and numbers.

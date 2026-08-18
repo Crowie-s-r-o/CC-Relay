@@ -253,6 +253,46 @@ test('a task that never started and a legacy row both read as no diff state', ()
   }
 });
 
+test('the database reads only successful completed file-change evidence', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-diff-events-'));
+  const { database, artifacts } = context(directory);
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { run() {}, cancel() { return false; } },
+  });
+
+  try {
+    queue.pause();
+    const task = queue.enqueue({ title: 'Evidence', prompt: 'Edit', thread: thread('relay-events', directory) });
+    const payload = (type, status) => ({
+      type,
+      provider: 'codex',
+      item: {
+        id: `${type}-${status}`,
+        type: 'fileChange',
+        status,
+        changes: [{
+          path: join(directory, 'app.js'),
+          kind: { type: 'update', move_path: null },
+          diff: '@@ -1 +1 @@\n-before\n+after\n',
+        }],
+      },
+    });
+    database.addEvent(task.id, 'codex', 'started', payload('item/started', 'inProgress'));
+    const completed = database.addEvent(task.id, 'codex', 'completed', payload('item/completed', 'completed'));
+    database.addEvent(task.id, 'codex', 'failed', payload('item/completed', 'failed'));
+    database.addEvent(task.id, 'codex', 'message', { type: 'claude/message', text: 'Done.' });
+
+    const events = database.listTaskFileChangeEvents(task.id);
+    assert.deepEqual(events.map((event) => event.id), [completed.id]);
+    assert.equal(events[0].payload.item.changes[0].diff.includes('+after'), true);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('the baseline capture never rejects and never touches a task it cannot find', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-diff-guard-'));
   const { database } = context(directory);

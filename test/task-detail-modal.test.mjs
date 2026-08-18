@@ -34,6 +34,10 @@ test('the compact inspector opens every full task surface in one modal', () => {
 test('task detail modal wiring supports normal tasks, council tasks, and backdrop close', () => {
   assert.match(app, /elements\.taskDetailModal\.showModal\(\)/);
   assert.match(app, /elements\.taskDetailModal\.close\(\)/);
+  assert.match(
+    app,
+    /function openTaskDetailModal\(\) \{[\s\S]*?if \(!elements\.promptSection\.hidden\) elements\.promptSection\.open = true;[\s\S]*?elements\.taskDetailModal\.showModal\(\)/,
+  );
   assert.match(app, /task\.mode === 'plan' \? 'Council details' : manualSessionSurface \? 'Session details' : 'Full details'/);
   assert.match(app, /event\.target === elements\.taskDetailModal/);
   assert.match(app, /function revealPlanExecution\(\) \{[\s\S]*?openTaskDetailModal\(\);/);

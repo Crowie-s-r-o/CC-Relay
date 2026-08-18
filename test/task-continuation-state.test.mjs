@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import {
+  ContinuationAttachmentDrafts,
   continuationDispatchOutcome,
   continuationPresentation,
   continuationRetryRestore,
@@ -46,6 +47,74 @@ const sourceTask = {
   effort: 'xhigh',
   status: 'complete',
 };
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+test('clearing follow-up images invalidates a file read that finishes later', async () => {
+  const drafts = new ContinuationAttachmentDrafts();
+  const readingStarted = deferred();
+  const reading = deferred();
+  const original = { id: 'original' };
+  const late = { id: 'late' };
+  drafts.set(42, [original]);
+
+  const update = drafts.merge(42, async (attachments) => {
+    readingStarted.resolve();
+    await reading.promise;
+    return { attachments: [...attachments, late], errors: [] };
+  });
+  await readingStarted.promise;
+  drafts.delete(42);
+  reading.resolve();
+
+  assert.deepEqual(await update, {
+    committed: false,
+    result: { attachments: [original, late], errors: [] },
+  });
+  assert.equal(drafts.get(42), undefined);
+});
+
+test('quick follow-up image additions serialize without overwriting one another', async () => {
+  const drafts = new ContinuationAttachmentDrafts();
+  const firstStarted = deferred();
+  const finishFirst = deferred();
+
+  const first = drafts.merge(42, async (attachments) => {
+    firstStarted.resolve();
+    await finishFirst.promise;
+    return { attachments: [...attachments, { id: 'first' }], errors: [] };
+  });
+  await firstStarted.promise;
+  const second = drafts.merge(42, async (attachments) => ({
+    attachments: [...attachments, { id: 'second' }],
+    errors: [],
+  }));
+  finishFirst.resolve();
+
+  assert.equal((await first).committed, true);
+  assert.equal((await second).committed, true);
+  assert.deepEqual(drafts.get(42).map((attachment) => attachment.id), ['first', 'second']);
+});
+
+test('the renderer uses cancellable image merges and never repaints a different task', () => {
+  const addStart = composerApp.indexOf('async function addContinuationImageFiles');
+  const addEnd = composerApp.indexOf('\nfunction ', addStart + 1);
+  const add = composerApp.slice(addStart, addEnd);
+  const clearStart = composerApp.indexOf("elements.continuationClearImages.addEventListener('click'");
+  const clearEnd = composerApp.indexOf('\n});', clearStart) + 4;
+  const clear = composerApp.slice(clearStart, clearEnd);
+
+  assert.match(add, /state\.continuationAttachments\.merge\(/);
+  assert.match(add, /!update\.committed \|\| state\.selectedTaskForEvents\?\.id !== task\.id/);
+  assert.match(clear, /state\.continuationAttachments\.delete\(task\.id\)/);
+  assert.match(clear, /renderTaskContinuation\(task\)/);
+});
 
 test('continuation drafts stay editable while their session is offline', () => {
   assert.deepEqual(continuationPresentation({

@@ -6,6 +6,27 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 19: Changes now separates exact task edits from the shared workspace window.** A current
+> backend opens the dialog on successful provider-reported patches, keeps repeated edits to one
+> file as numbered operations, and exposes the old baseline-to-end snapshot under **Workspace
+> window** for shell, external-tool, operator, and overlapping-task writes. Historical Codex
+> file-change events already contain exact patches; future Claude Edit, Write, and NotebookEdit
+> completions now retain bounded structured patches, while older path-only Claude events degrade
+> honestly. The additive `taskExactDiff` capability keeps refreshed assets on Workspace window
+> against an older backend. See [[task-diff-preview]] and [[task-activity-overview]].
+
+> [!note]
+> **August 18: Clear images now wins over pending follow-up image reads.** Follow-up additions are
+> serialized per task, and clearing, dispatching, or restoring an authoritative retry invalidates
+> older reads before they can commit. A read that finishes after task navigation can update only
+> its originating task and cannot repaint the selected task's dock. Focused continuation checks
+> cover clear-during-read, consecutive additions, and task-switch ownership. See [[task-history]]
+> and [[same-task-session-continuation]].
+
+> [!note]
+> **August 18: earlier task conversations can now be attached to new work.** Right-click a task card and choose My messages, AI responses, or Both. The composer holds project-local task tickets with editable scopes, then freezes their canonical prompt and response history into a quoted, self-contained context section for Execute, Plan council, or Turbo. Keyboard context-menu access, active-project revalidation, failed-submit retention, successful-clear ordering, and a 90,000-byte composed-prompt guard protect the workflow. See [[task-references]].
+
 > [!note]
 > **August 18: Daily Standup now attributes completed work to when each task started.** Both the
 > renderer preselection and the server-authoritative filter use persisted `started_at`, with

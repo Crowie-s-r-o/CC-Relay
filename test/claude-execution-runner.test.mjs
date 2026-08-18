@@ -320,6 +320,187 @@ test('other Claude tools keep their existing item shape', () => {
   assert.equal(started.message, 'Claude started: Read');
 });
 
+test('completed Claude edits retain structured patches as exact task evidence', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage({
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'tool-edit',
+        name: 'Edit',
+        input: {
+          file_path: '/tmp/repo/app.js',
+          old_string: 'before',
+          new_string: 'after',
+        },
+      }],
+    },
+  }, context);
+
+  const [completed] = consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: {
+      filePath: '/tmp/repo/app.js',
+      oldString: 'before',
+      newString: 'after',
+      structuredPatch: [{
+        oldStart: 4,
+        oldLines: 1,
+        newStart: 4,
+        newLines: 1,
+        lines: ['-before', '+after'],
+      }],
+    },
+    message: {
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'tool-edit',
+        content: 'Updated app.js.',
+      }],
+    },
+  }, context);
+
+  assert.equal(completed.event.item.type, 'fileChange');
+  assert.equal(completed.event.item.status, 'completed');
+  assert.deepEqual(completed.event.item.changes, [{
+    path: '/tmp/repo/app.js',
+    kind: { type: 'update' },
+    hunks: [{
+      oldStart: 4,
+      oldLines: 1,
+      newStart: 4,
+      newLines: 1,
+      lines: ['-before', '+after'],
+    }],
+  }]);
+});
+
+test('completed Claude file creation retains its exact content', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage({
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'tool-write',
+        name: 'Write',
+        input: { file_path: '/tmp/repo/new.txt', content: 'new file\n' },
+      }],
+    },
+  }, context);
+
+  const [completed] = consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: {
+      type: 'create',
+      filePath: '/tmp/repo/new.txt',
+      content: 'new file\n',
+      structuredPatch: [],
+    },
+    message: {
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'tool-write',
+        content: 'File created successfully.',
+      }],
+    },
+  }, context);
+
+  assert.deepEqual(completed.event.item.changes, [{
+    path: '/tmp/repo/new.txt',
+    kind: { type: 'create' },
+    content: 'new file\n',
+  }]);
+});
+
+test('Claude hook compaction is retained as an honest exact-patch truncation', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage({
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'tool-edit-truncated',
+        name: 'Edit',
+        input: { file_path: '/tmp/repo/app.js' },
+      }],
+    },
+  }, context);
+
+  const [completed] = consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: {
+      filePath: '/tmp/repo/app.js',
+      structuredPatch: [{
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: [
+          '-before',
+          '+after\n[CC Relay truncated 12 characters]',
+          '[CC Relay truncated 3 array items]',
+        ],
+      }],
+    },
+    message: {
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'tool-edit-truncated',
+        content: 'Updated app.js.',
+      }],
+    },
+  }, context);
+
+  assert.deepEqual(completed.event.item.changes, [{
+    path: '/tmp/repo/app.js',
+    kind: { type: 'update' },
+    hunks: [{
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ['-before', '+after'],
+    }],
+    exactTruncated: true,
+  }]);
+});
+
+test('a Claude Write keeps its create classification when the result omits a type', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage({
+    type: 'assistant',
+    message: {
+      content: [{
+        type: 'tool_use',
+        id: 'tool-write-untyped',
+        name: 'Write',
+        input: { file_path: '/tmp/repo/new.txt', content: 'new\n' },
+      }],
+    },
+  }, context);
+
+  const [completed] = consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: {
+      filePath: '/tmp/repo/new.txt',
+      content: 'new\n',
+      structuredPatch: [],
+    },
+    message: {
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'tool-write-untyped',
+        content: 'Wrote new.txt.',
+      }],
+    },
+  }, context);
+
+  assert.equal(completed.event.item.changes[0].kind.type, 'create');
+  assert.equal(completed.event.item.changes[0].content, 'new\n');
+});
+
 test('a task notification resolves the sub-agent that its tool use launched', () => {
   const context = turnContext();
   const emitted = consumeClaudeStreamMessage({

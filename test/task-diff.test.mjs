@@ -17,6 +17,7 @@ import {
   resolveRepositoryRoot,
   snapshotWorkingTree,
   validateDiffPath,
+  validateDiffScope,
 } from '../src/task-diff.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -66,6 +67,30 @@ function fakeDatabase(task, { overlapping = 0 } = {}) {
       return state.task;
     },
     countOverlappingRepoTasks: () => overlapping,
+  };
+}
+
+function exactEvent(id, changes, {
+  provider = 'codex',
+  status = 'completed',
+  type = 'item/completed',
+} = {}) {
+  return {
+    id,
+    kind: provider,
+    created_at: `2026-08-19T10:00:0${id}.000Z`,
+    payload: {
+      type,
+      provider,
+      item: { id: `change-${id}`, type: 'fileChange', status, changes },
+    },
+  };
+}
+
+function exactDatabase(task, events) {
+  return {
+    ...fakeDatabase(task),
+    listTaskFileChangeEvents: (_taskId, limit) => events.slice(0, limit),
   };
 }
 
@@ -142,6 +167,32 @@ test('a patch parses into numbered side-by-side rows', () => {
     { type: 'context', oldNumber: 12, newNumber: 13, text: 'const four = 4;' },
     { type: 'context', oldNumber: 13, newNumber: 14, text: '' },
   ]);
+});
+
+test('a provider patch without a git file header still parses as one section', () => {
+  const { sections, truncated } = parsePatchSections([
+    '@@ -4,2 +4,3 @@',
+    ' before',
+    '-old',
+    '+new',
+    '+extra',
+    '',
+  ].join('\n'));
+
+  assert.equal(truncated, false);
+  assert.equal(sections.length, 1);
+  assert.deepEqual(sections[0].hunks[0].lines.map((line) => line.type), [
+    'context', 'del', 'add', 'add',
+  ]);
+});
+
+test('a provider binary marker without a git file header still parses as exact evidence', () => {
+  const { sections, truncated } = parsePatchSections('Binary files before.bin and after.bin differ\n');
+
+  assert.equal(truncated, false);
+  assert.equal(sections.length, 1);
+  assert.equal(sections[0].binary, true);
+  assert.deepEqual(sections[0].hunks, []);
 });
 
 test('a single line hunk header without counts still numbers its rows', () => {
@@ -304,6 +355,171 @@ test('a diff path is rejected before it can reach git', () => {
   assert.equal(validateDiffPath('a file with spaces and ..dots.txt'), 'a file with spaces and ..dots.txt');
 });
 
+test('only the exact and workspace diff scopes are accepted', () => {
+  assert.equal(validateDiffScope(null), 'workspace');
+  assert.equal(validateDiffScope('workspace'), 'workspace');
+  assert.equal(validateDiffScope('exact'), 'exact');
+  assert.throws(() => validateDiffScope('everything'), (error) => error.statusCode === 400);
+});
+
+test('exact scope groups successful provider patches without including workspace-only files', async () => {
+  const task = {
+    id: 7,
+    provider: 'codex',
+    status: 'complete',
+    repo_path: '/projects/demo',
+    started_at: '2026-08-19T10:00:00.000Z',
+    finished_at: '2026-08-19T10:05:00.000Z',
+    diffState: { root: '/projects/demo', baseline: null, end: null, error: null },
+  };
+  const events = [
+    exactEvent(1, [{
+      path: '/projects/demo/src/app.js',
+      kind: { type: 'update', move_path: null },
+      diff: '@@ -2,2 +2,3 @@\n keep\n-old\n+new\n+extra\n',
+    }]),
+    exactEvent(2, [{
+      path: '/projects/demo/src/app.js',
+      kind: { type: 'update', move_path: null },
+      diff: '@@ -8 +8 @@\n-before\n+after\n',
+    }]),
+    exactEvent(3, [{
+      path: '/projects/demo/src/new.js',
+      kind: { type: 'add' },
+      diff: 'one\ntwo\n',
+    }]),
+    // Claude tasks recorded paths before Relay retained structured patches. This is coverage
+    // evidence, but it cannot be presented as an exact edit.
+    exactEvent(4, [{
+      path: '/projects/demo/legacy-claude.js',
+      kind: { type: 'update' },
+    }], { provider: 'claude' }),
+    exactEvent(5, [{
+      path: '/projects/demo/failed.js',
+      kind: { type: 'add' },
+      diff: 'not applied\n',
+    }], { status: 'failed' }),
+    exactEvent(6, [{
+      path: '/outside/not-this-project.js',
+      kind: { type: 'add' },
+      diff: 'outside\n',
+    }]),
+  ];
+  const database = exactDatabase(task, events);
+
+  const summary = await buildTaskDiffSummary({ database, task, scope: 'exact' });
+
+  assert.equal(summary.available, true);
+  assert.equal(summary.scope, 'exact');
+  assert.equal(summary.coverage, 'provider-reported');
+  assert.equal(summary.unreportedChanges, 2);
+  assert.equal(summary.totalAdditions, 5);
+  assert.equal(summary.totalDeletions, 2);
+  assert.deepEqual(summary.files.map((file) => [file.path, file.editCount]), [
+    ['src/app.js', 2],
+    ['src/new.js', 1],
+  ]);
+
+  const file = await buildTaskDiffFile({
+    database,
+    task,
+    scope: 'exact',
+    path: 'src/app.js',
+  });
+  assert.equal(file.source, 'exact');
+  assert.equal(file.edits.length, 2);
+  assert.deepEqual(file.edits.map((edit) => edit.provider), ['codex', 'codex']);
+  assert.deepEqual(file.edits[0].hunks[0].lines.map((line) => line.text), [
+    'keep', 'old', 'new', 'extra',
+  ]);
+});
+
+test('future Claude structured patches and file creations are exact task evidence', async () => {
+  const task = {
+    id: 8,
+    provider: 'claude',
+    status: 'running',
+    repo_path: '/projects/demo',
+    diffState: { root: '/projects/demo', baseline: null, end: null, error: null },
+  };
+  const database = exactDatabase(task, [
+    exactEvent(1, [{
+      path: '/projects/demo/readme.md',
+      kind: { type: 'update' },
+      hunks: [{
+        oldStart: 3,
+        oldLines: 1,
+        newStart: 3,
+        newLines: 1,
+        lines: ['-before', '+after'],
+      }],
+    }], { provider: 'claude' }),
+    exactEvent(2, [{
+      path: '/projects/demo/new.txt',
+      kind: { type: 'create' },
+      content: 'created by Claude\n',
+    }], { provider: 'claude' }),
+  ]);
+
+  const summary = await buildTaskDiffSummary({ database, task, scope: 'exact' });
+  assert.equal(summary.available, true);
+  assert.equal(summary.live, true);
+  assert.equal(summary.totalAdditions, 2);
+  assert.equal(summary.totalDeletions, 1);
+  assert.deepEqual(summary.files.map((file) => file.path), ['new.txt', 'readme.md']);
+});
+
+test('a provider-reported rename is exact evidence even when it has no text patch', async () => {
+  const task = {
+    id: 10,
+    provider: 'codex',
+    status: 'complete',
+    repo_path: '/projects/demo',
+    diffState: null,
+  };
+  const database = exactDatabase(task, [exactEvent(1, [{
+    path: '/projects/demo/old.txt',
+    kind: { type: 'update', move_path: '/projects/demo/new.txt' },
+  }])]);
+
+  const summary = await buildTaskDiffSummary({ database, task, scope: 'exact' });
+  assert.equal(summary.available, true);
+  assert.equal(summary.unreportedChanges, 0);
+  assert.deepEqual(summary.files, [{
+    path: 'new.txt',
+    oldPath: 'old.txt',
+    status: 'renamed',
+    additions: 0,
+    deletions: 0,
+    binary: false,
+    editCount: 1,
+  }]);
+});
+
+test('exact scope states when a provider reported no usable patches', async () => {
+  const task = {
+    id: 9,
+    provider: 'claude',
+    status: 'complete',
+    repo_path: '/projects/demo',
+    diffState: null,
+  };
+  const database = exactDatabase(task, [exactEvent(1, [{
+    path: '/projects/demo/app.js',
+    kind: { type: 'update' },
+  }], { provider: 'claude' })]);
+
+  const summary = await buildTaskDiffSummary({ database, task, scope: 'exact' });
+  assert.equal(summary.available, false);
+  assert.equal(summary.reason, 'exact-changes-unavailable');
+  assert.equal(summary.unreportedChanges, 1);
+  assert.deepEqual(summary.files, []);
+  await assert.rejects(
+    buildTaskDiffFile({ database, task, scope: 'exact', path: 'app.js' }),
+    (error) => error.statusCode === 404,
+  );
+});
+
 test('a task without a baseline reports the fixed unavailable shape', async () => {
   const summary = await buildTaskDiffSummary({
     database: fakeDatabase({ id: 1, status: 'complete', repo_path: '/projects/demo', diffState: null }),
@@ -314,6 +530,7 @@ test('a task without a baseline reports the fixed unavailable shape', async () =
   assert.deepEqual(summary, {
     available: false,
     reason: 'captured-before-diff-support',
+    scope: 'workspace',
     live: false,
     capturedAt: null,
     endedAt: null,

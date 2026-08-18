@@ -18,6 +18,7 @@ test('project composer sessions isolate prompts, images, workflow state, and ter
     taskName: 'Alpha release',
     prompt: 'Alpha task',
     attachments: [{ id: 'alpha-image', data: 'data:image/png;base64,alpha' }],
+    taskReferences: [{ taskId: 12, scope: 'both', title: 'Earlier task' }],
     selectedTaskId: 41,
     selectedThreadId: 'alpha-relay',
     selectedProvider: 'codex',
@@ -54,6 +55,7 @@ test('project composer sessions isolate prompts, images, workflow state, and ter
   assert.equal(alpha.taskName, 'Alpha release');
   assert.equal(alpha.prompt, 'Alpha task');
   assert.equal(alpha.attachments[0].id, 'alpha-image');
+  assert.equal(alpha.taskReferences[0].taskId, 12);
   assert.equal(alpha.selectedTaskId, 41);
   assert.equal(alpha.selectedThreadId, 'alpha-relay');
   assert.equal(alpha.taskMode, 'turbo');
@@ -69,8 +71,10 @@ test('project composer sessions isolate prompts, images, workflow state, and ter
   assert.equal(beta.terminalSettings.layout.columns, 5);
 
   alpha.attachments[0].id = 'mutated';
+  alpha.taskReferences[0].scope = 'prompts';
   alpha.terminalSettings.layout.columns = 8;
   assert.equal(store.load('/work/alpha').attachments[0].id, 'alpha-image');
+  assert.equal(store.load('/work/alpha').taskReferences[0].scope, 'both');
   assert.equal(store.load('/work/alpha').terminalSettings.layout.columns, 2);
 });
 
@@ -84,6 +88,7 @@ test('a project without a saved session receives an independent blank composer',
   assert.equal(second.taskName, '');
   assert.equal(second.prompt, '');
   assert.deepEqual(second.attachments, []);
+  assert.deepEqual(second.taskReferences, []);
   assert.equal(second.selectedTaskId, null);
   assert.equal(second.selectedProvider, 'codex');
   assert.equal(second.taskMode, 'execute');

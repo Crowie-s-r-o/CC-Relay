@@ -1007,6 +1007,7 @@ export const server = createServer(async (request, response) => {
           parallelClaudeExecution: true,
           imageAttachments: true,
           taskDiffPreview: true,
+          taskExactDiff: true,
           planCouncil: true,
           planCouncilProviderOrder: true,
           planCouncilTerminalExecution: PLAN_COUNCIL_TERMINAL_EXECUTION,
@@ -2410,9 +2411,9 @@ export const server = createServer(async (request, response) => {
       return;
     }
 
-    // The diff preview reads git through bounded child processes and never writes to the
-    // repository. Both routes answer for a finished task as well as a running one: a terminal
-    // task is compared against the tree captured when it ended, so the payload stops moving.
+    // Workspace-window diffs read git through bounded child processes and never write to the
+    // repository. The exact scope reads immutable provider file-change events instead. Both
+    // routes answer for a finished task as well as a running one.
     if (request.method === 'GET' && /^\/api\/tasks\/\d+\/diff$/.test(pathname)) {
       const taskId = taskIdFromPath(pathname);
       const task = database.getTask(taskId);
@@ -2420,7 +2421,11 @@ export const server = createServer(async (request, response) => {
         sendError(response, 404, 'Task not found.');
         return;
       }
-      sendJson(response, 200, await buildTaskDiffSummary({ database, task }));
+      sendJson(response, 200, await buildTaskDiffSummary({
+        database,
+        task,
+        scope: url.searchParams.get('scope') || 'workspace',
+      }));
       return;
     }
 
@@ -2437,6 +2442,7 @@ export const server = createServer(async (request, response) => {
         database,
         task,
         path: url.searchParams.get('path'),
+        scope: url.searchParams.get('scope') || 'workspace',
       }));
       return;
     }

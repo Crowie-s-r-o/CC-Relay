@@ -1,15 +1,20 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import {
+  isAbsolute,
+  join,
+  relative,
+  resolve as resolvePath,
+  sep,
+} from 'node:path';
 import { promisify } from 'node:util';
 
 const execFile = promisify(execFileCallback);
 
-// Per-task diff preview. A task records the git tree of its project working state when it
-// starts and again when it reaches a terminal status. The preview always compares two trees:
-// the baseline against the live working state while the task runs, and against the stored end
-// tree once it has finished, so a finished task keeps showing what it changed.
+// Per-task change evidence. Exact scope reads the successful provider file-change patches owned
+// by the task. Workspace scope records the git tree of the project when the task starts and again
+// when it reaches a terminal status, then compares the baseline with the live or frozen end tree.
 //
 // Every git invocation is asynchronous, bounded, argument-array based, and reads through a
 // throwaway index outside the repository. The user's index, worktree, refs, and HEAD are never
@@ -19,10 +24,16 @@ export const TASK_DIFF_STATE_VERSION = 1;
 export const LIVE_TASK_STATUSES = new Set(['running', 'open']);
 export const TERMINAL_TASK_STATUSES = new Set(['complete', 'failed', 'cancelled', 'interrupted']);
 
-// Bounds. A diff is untrusted input: it is produced by whatever the provider wrote to disk.
+// Bounds. A diff is untrusted input: it is produced by a provider or by repository contents.
 export const MAX_SUMMARY_FILES = 500;
 export const MAX_PATCH_LINES = 5000;
 export const MAX_PATCH_BYTES = 2 * 1024 * 1024;
+
+// Exact task edits come from provider-reported file-change payloads. The event query is
+// deliberately separate from the repository-window snapshot, and bounded so a long-running
+// manual session cannot make one Changes request parse an unlimited history.
+export const MAX_EXACT_CHANGE_EVENTS = 2000;
+export const MAX_EXACT_CHANGES = 5000;
 
 const GIT_TIMEOUT_MS = 15_000;
 // execFile defaults to a 1MB buffer and throws ERR_CHILD_PROCESS_STDIO_MAXBUFFER past it, which
@@ -100,6 +111,7 @@ function isBufferOverflow(error) {
 const rootCache = new Map();
 const treeCache = new Map();
 const summaryCache = new Map();
+const exactCache = new Map();
 // Both captures are started fire and forget from more than one place, so each task id is
 // claimed for the length of its snapshot.
 const baselineCaptures = new Set();
@@ -111,6 +123,7 @@ export function clearTaskDiffCaches() {
   rootCache.clear();
   treeCache.clear();
   summaryCache.clear();
+  exactCache.clear();
 }
 
 function cachedPromise(cache, key, ttlMs, at, factory) {
@@ -478,6 +491,20 @@ export function parsePatchSections(patchText, { maxLines = MAX_PATCH_LINES } = {
       hunk = null;
       continue;
     }
+    // Codex file-change items carry one file's exact patch without the outer `diff --git`
+    // header. Treat the first hunk as an implicit section so the same bounded parser can read
+    // both provider patches and git-generated workspace patches.
+    if (
+      !section
+      && (
+        HUNK_HEADER.test(line)
+        || line.startsWith('Binary files ')
+        || line.startsWith('GIT binary patch')
+      )
+    ) {
+      section = { renamed: false, binary: false, hunks: [] };
+      sections.push(section);
+    }
     if (!section) continue;
     if (line.startsWith('rename from ') || line.startsWith('rename to ')) {
       section.renamed = true;
@@ -550,10 +577,340 @@ function cachedTreeDiff(root, base, target, { run = execFile, clock = Date.now }
   return cachedPromise(summaryCache, key, SUMMARY_CACHE_TTL_MS, clock(), () => readTreeDiff(root, base, target, { run }));
 }
 
+const MAX_EXACT_TOTAL_LINES = 50_000;
+
+function exactChangeEvents(database, taskId) {
+  if (typeof database?.listTaskFileChangeEvents === 'function') {
+    return database.listTaskFileChangeEvents(taskId, MAX_EXACT_CHANGE_EVENTS + 1);
+  }
+  if (typeof database?.listEvents === 'function') {
+    return database.listEvents(taskId, (MAX_EXACT_CHANGE_EVENTS * 4) + 1).filter((event) => (
+      event?.payload?.type === 'item/completed'
+      && event.payload?.item?.type === 'fileChange'
+    ));
+  }
+  return [];
+}
+
+function exactRelativePath(value, task, root) {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!raw) return null;
+  const base = typeof task?.repo_path === 'string' && task.repo_path.trim()
+    ? task.repo_path
+    : root;
+  if (!base || !root) return null;
+  const absolute = isAbsolute(raw) ? resolvePath(raw) : resolvePath(base, raw);
+  const path = relative(root, absolute);
+  if (!path || path === '..' || path.startsWith(`..${sep}`) || isAbsolute(path)) return null;
+  return path.split(sep).join('/');
+}
+
+function exactKind(change) {
+  const value = typeof change?.kind === 'string' ? change.kind : change?.kind?.type;
+  if (value === 'add' || value === 'create') return 'added';
+  if (value === 'delete') return 'deleted';
+  return 'modified';
+}
+
+function splitExactContent(value) {
+  const lines = String(value ?? '').split('\n');
+  if (lines.length > 0 && lines.at(-1) === '') lines.pop();
+  return lines;
+}
+
+function exactContentPatch(content, status, maxLines) {
+  if (Buffer.byteLength(content, 'utf8') > MAX_PATCH_BYTES) {
+    return { exact: true, hunks: [], tooLarge: true, truncated: true };
+  }
+  const allLines = splitExactContent(content);
+  const lines = allLines.slice(0, Math.max(0, maxLines));
+  const added = status === 'added';
+  return {
+    exact: true,
+    hunks: lines.length === 0 ? [] : [{
+      oldStart: added ? 0 : 1,
+      oldLines: added ? 0 : allLines.length,
+      newStart: added ? 1 : 0,
+      newLines: added ? allLines.length : 0,
+      lines: lines.map((text, index) => ({
+        type: added ? 'add' : 'del',
+        oldNumber: added ? null : index + 1,
+        newNumber: added ? index + 1 : null,
+        text,
+      })),
+    }],
+    tooLarge: false,
+    truncated: allLines.length > lines.length,
+  };
+}
+
+function finiteWhole(value, fallback = 0) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : fallback;
+}
+
+function exactStructuredPatch(hunks, maxLines) {
+  const normalized = [];
+  let remaining = Math.max(0, maxLines);
+  let truncated = false;
+  for (const value of hunks || []) {
+    if (!value || typeof value !== 'object' || !Array.isArray(value.lines)) continue;
+    let oldNumber = finiteWhole(value.oldStart);
+    let newNumber = finiteWhole(value.newStart);
+    const lines = [];
+    for (const raw of value.lines) {
+      if (typeof raw !== 'string') continue;
+      if (remaining <= 0) {
+        truncated = true;
+        continue;
+      }
+      const marker = raw[0] ?? ' ';
+      const text = raw.length > 0 ? raw.slice(1) : '';
+      if (marker === '+') {
+        lines.push({ type: 'add', oldNumber: null, newNumber, text });
+        newNumber += 1;
+      } else if (marker === '-') {
+        lines.push({ type: 'del', oldNumber, newNumber: null, text });
+        oldNumber += 1;
+      } else if (marker === ' ' || raw.length === 0) {
+        lines.push({ type: 'context', oldNumber, newNumber, text });
+        oldNumber += 1;
+        newNumber += 1;
+      } else {
+        continue;
+      }
+      remaining -= 1;
+    }
+    normalized.push({
+      oldStart: finiteWhole(value.oldStart),
+      oldLines: finiteWhole(value.oldLines),
+      newStart: finiteWhole(value.newStart),
+      newLines: finiteWhole(value.newLines),
+      lines,
+    });
+  }
+  return { exact: true, hunks: normalized, tooLarge: false, truncated };
+}
+
+function exactChangePatch(change, status, maxLines) {
+  if (change?.exactTooLarge === true) {
+    return { exact: true, hunks: [], tooLarge: true, truncated: true };
+  }
+  if (Array.isArray(change?.hunks)) {
+    const patch = exactStructuredPatch(change.hunks, maxLines);
+    return { ...patch, truncated: patch.truncated || change.exactTruncated === true };
+  }
+  const hasContent = Object.prototype.hasOwnProperty.call(change || {}, 'content');
+  const hasDiff = typeof change?.diff === 'string';
+  if ((status === 'added' || status === 'deleted') && (hasContent || hasDiff)) {
+    const patch = exactContentPatch(hasContent ? change.content : change.diff, status, maxLines);
+    return { ...patch, truncated: patch.truncated || change.exactTruncated === true };
+  }
+  if (change?.kind?.move_path && (!hasDiff || !change.diff)) {
+    return { exact: true, hunks: [], tooLarge: false, truncated: false };
+  }
+  if (!hasDiff || !change.diff) return { exact: false, hunks: [], tooLarge: false, truncated: false };
+  if (Buffer.byteLength(change.diff, 'utf8') > MAX_PATCH_BYTES) {
+    return { exact: true, hunks: [], tooLarge: true, truncated: true };
+  }
+  const parsed = parsePatchSections(change.diff, { maxLines });
+  const section = parsed.sections[0] || null;
+  if (!section) return { exact: false, hunks: [], tooLarge: false, truncated: false };
+  return {
+    exact: true,
+    hunks: section.hunks,
+    binary: section.binary === true,
+    tooLarge: false,
+    truncated: parsed.truncated,
+  };
+}
+
+function exactLineTotals(hunks) {
+  let additions = 0;
+  let deletions = 0;
+  let lines = 0;
+  for (const hunk of hunks || []) {
+    for (const line of hunk.lines || []) {
+      if (line.type === 'add') additions += 1;
+      if (line.type === 'del') deletions += 1;
+      lines += 1;
+    }
+  }
+  return { additions, deletions, lines };
+}
+
+function mergedExactStatus(current, next) {
+  if (!current) return next;
+  if (current === 'added' && next === 'modified') return 'added';
+  if (next === 'deleted') return 'deleted';
+  if (current === 'deleted' && next === 'added') return 'modified';
+  if (current === 'renamed' || next === 'renamed') return 'renamed';
+  return current === next ? current : 'modified';
+}
+
+function exactEvidence(database, task) {
+  const revision = typeof database?.latestEventId === 'function'
+    ? database.latestEventId(task.id)
+    : null;
+  const cacheKey = revision === null ? null : `${task.id}:${revision}`;
+  if (cacheKey && exactCache.has(cacheKey)) return exactCache.get(cacheKey);
+
+  const queried = exactChangeEvents(database, task.id);
+  const historyTruncated = queried.length > MAX_EXACT_CHANGE_EVENTS;
+  const events = queried.slice(0, MAX_EXACT_CHANGE_EVENTS);
+  const root = task.diffState?.root || task.repo_path;
+  const groups = new Map();
+  const exactEventIds = [];
+  let unreportedChanges = 0;
+  let changeCount = 0;
+  let remainingLines = MAX_EXACT_TOTAL_LINES;
+  let patchesTruncated = false;
+
+  for (const event of events) {
+    const payload = event?.payload;
+    const item = payload?.item;
+    if (
+      payload?.type !== 'item/completed'
+      || item?.type !== 'fileChange'
+      || item.status !== 'completed'
+      || !Array.isArray(item.changes)
+    ) continue;
+    let eventContributed = false;
+    for (const change of item.changes) {
+      if (changeCount >= MAX_EXACT_CHANGES) {
+        patchesTruncated = true;
+        break;
+      }
+      changeCount += 1;
+      const sourcePath = exactRelativePath(change?.path, task, root);
+      const movePath = exactRelativePath(change?.kind?.move_path, task, root);
+      const path = movePath || sourcePath;
+      if (!path) {
+        unreportedChanges += 1;
+        continue;
+      }
+      const baseStatus = exactKind(change);
+      const status = movePath ? 'renamed' : baseStatus;
+      const patch = exactChangePatch(change, baseStatus, remainingLines);
+      if (!patch.exact) {
+        unreportedChanges += 1;
+        continue;
+      }
+      const totals = exactLineTotals(patch.hunks);
+      remainingLines = Math.max(0, remainingLines - totals.lines);
+      if (patch.truncated) patchesTruncated = true;
+      let group = groups.get(path);
+      if (!group) {
+        group = {
+          path,
+          oldPath: movePath ? sourcePath : null,
+          status,
+          additions: 0,
+          deletions: 0,
+          binary: false,
+          edits: [],
+        };
+        groups.set(path, group);
+      }
+      group.status = mergedExactStatus(group.status, status);
+      if (movePath && sourcePath) group.oldPath = sourcePath;
+      group.additions += totals.additions;
+      group.deletions += totals.deletions;
+      group.binary ||= patch.binary === true;
+      group.edits.push({
+        eventId: event.id,
+        provider: payload.provider || event.kind || task.provider || 'provider',
+        createdAt: event.created_at || null,
+        hunks: patch.hunks,
+        binary: patch.binary === true,
+        tooLarge: patch.tooLarge === true,
+        truncated: patch.truncated === true,
+      });
+      eventContributed = true;
+    }
+    if (eventContributed) exactEventIds.push(event.id);
+    if (changeCount >= MAX_EXACT_CHANGES) break;
+  }
+
+  const files = [...groups.values()].sort((left, right) => (
+    left.path === right.path ? 0 : left.path < right.path ? -1 : 1
+  ));
+  const evidence = {
+    files,
+    historyTruncated,
+    patchesTruncated,
+    unreportedChanges,
+    signature: exactEventIds.length > 0
+      ? `exact:${exactEventIds.join(',')}:${changeCount}`
+      : `exact:unavailable:${revision ?? 'none'}`,
+  };
+  if (cacheKey) {
+    exactCache.set(cacheKey, evidence);
+    while (exactCache.size > CACHE_LIMIT) exactCache.delete(exactCache.keys().next().value);
+  }
+  return evidence;
+}
+
+function exactUnavailableSummary(task, evidence) {
+  return {
+    available: false,
+    reason: 'exact-changes-unavailable',
+    scope: 'exact',
+    live: LIVE_TASK_STATUSES.has(task.status),
+    capturedAt: task.diffState?.baseline?.at || task.started_at || null,
+    endedAt: task.diffState?.end?.at || task.finished_at || null,
+    sharedTree: false,
+    coverage: 'provider-reported',
+    unreportedChanges: evidence.unreportedChanges,
+    historyTruncated: evidence.historyTruncated,
+    patchesTruncated: evidence.patchesTruncated,
+    totalAdditions: 0,
+    totalDeletions: 0,
+    truncated: false,
+    signature: evidence.signature,
+    files: [],
+  };
+}
+
+function buildTaskExactDiffSummary({ database, task }) {
+  const evidence = exactEvidence(database, task);
+  if (evidence.files.length === 0) return exactUnavailableSummary(task, evidence);
+  const totalAdditions = evidence.files.reduce((total, file) => total + file.additions, 0);
+  const totalDeletions = evidence.files.reduce((total, file) => total + file.deletions, 0);
+  const truncated = evidence.files.length > MAX_SUMMARY_FILES;
+  return {
+    available: true,
+    reason: null,
+    scope: 'exact',
+    live: LIVE_TASK_STATUSES.has(task.status),
+    capturedAt: task.diffState?.baseline?.at || task.started_at || null,
+    endedAt: task.diffState?.end?.at || task.finished_at || null,
+    sharedTree: false,
+    coverage: 'provider-reported',
+    unreportedChanges: evidence.unreportedChanges,
+    historyTruncated: evidence.historyTruncated,
+    patchesTruncated: evidence.patchesTruncated,
+    totalAdditions,
+    totalDeletions,
+    truncated,
+    signature: `${evidence.signature}:${evidence.files.length}${truncated ? ':t' : ''}`,
+    files: evidence.files.slice(0, MAX_SUMMARY_FILES).map((file) => ({
+      path: file.path,
+      oldPath: file.oldPath,
+      status: file.status,
+      additions: file.additions,
+      deletions: file.deletions,
+      binary: file.binary,
+      editCount: file.edits.length,
+    })),
+  };
+}
+
 function unavailableSummary(reason, { live = false, capturedAt = null, endedAt = null } = {}) {
   return {
     available: false,
     reason,
+    scope: 'workspace',
     live,
     capturedAt,
     endedAt,
@@ -615,7 +972,16 @@ async function resolveDiffTarget({ database, task, run = execFile, clock = Date.
   return { state, root, base: state.baseline.tree, target: end.tree, live: false, endedAt: end.at };
 }
 
-export async function buildTaskDiffSummary({ database, task, run = execFile, clock = Date.now, now = isoNow } = {}) {
+export async function buildTaskDiffSummary({
+  database,
+  task,
+  scope = 'workspace',
+  run = execFile,
+  clock = Date.now,
+  now = isoNow,
+} = {}) {
+  const requestedScope = validateDiffScope(scope);
+  if (requestedScope === 'exact') return buildTaskExactDiffSummary({ database, task });
   const resolved = await resolveDiffTarget({ database, task, run, clock, now });
   if (resolved.reason) {
     return unavailableSummary(resolved.reason, {
@@ -643,6 +1009,7 @@ export async function buildTaskDiffSummary({ database, task, run = execFile, clo
   return {
     available: true,
     reason: null,
+    scope: 'workspace',
     live: resolved.live,
     capturedAt: resolved.state.baseline.at,
     endedAt: resolved.endedAt,
@@ -665,6 +1032,14 @@ function notFound(message) {
   return Object.assign(new Error(message), { statusCode: 404 });
 }
 
+export function validateDiffScope(value) {
+  const scope = typeof value === 'string' && value.trim() ? value.trim() : 'workspace';
+  if (scope !== 'workspace' && scope !== 'exact') {
+    throw badRequest('That change scope is not valid.');
+  }
+  return scope;
+}
+
 export function validateDiffPath(value) {
   const path = typeof value === 'string' ? value : '';
   if (!path) throw badRequest('A file path is required.');
@@ -677,8 +1052,68 @@ export function validateDiffPath(value) {
   return path;
 }
 
-export async function buildTaskDiffFile({ database, task, path, run = execFile, clock = Date.now, now = isoNow } = {}) {
+function boundedExactHunks(hunks, budget) {
+  const bounded = [];
+  let truncated = false;
+  for (const hunk of hunks || []) {
+    const remaining = Math.max(0, budget.remaining);
+    const lines = (hunk.lines || []).slice(0, remaining);
+    budget.remaining -= lines.length;
+    if (lines.length < (hunk.lines || []).length) truncated = true;
+    bounded.push({ ...hunk, lines });
+  }
+  return { hunks: bounded, truncated };
+}
+
+function buildTaskExactDiffFile({ database, task, path }) {
+  const evidence = exactEvidence(database, task);
+  const entry = evidence.files.find((file) => file.path === path);
+  if (!entry) throw notFound('That file is not part of this diff.');
+
+  const budget = { remaining: MAX_PATCH_LINES };
+  let truncated = evidence.patchesTruncated;
+  const edits = entry.edits.map((edit, index) => {
+    const bounded = boundedExactHunks(edit.hunks, budget);
+    truncated ||= bounded.truncated || edit.truncated;
+    return {
+      sequence: index + 1,
+      provider: edit.provider,
+      createdAt: edit.createdAt,
+      binary: edit.binary,
+      tooLarge: edit.tooLarge,
+      truncated: bounded.truncated || edit.truncated,
+      hunks: bounded.hunks,
+    };
+  });
+  return {
+    path: entry.path,
+    oldPath: entry.oldPath,
+    status: entry.status,
+    source: 'exact',
+    binary: entry.binary,
+    tooLarge: false,
+    truncated,
+    signature: `${evidence.signature}:${entry.path}`,
+    edits,
+    // Older renderers do not know the edit timeline, so keep a bounded flat fallback.
+    hunks: edits.flatMap((edit) => edit.hunks),
+  };
+}
+
+export async function buildTaskDiffFile({
+  database,
+  task,
+  path,
+  scope = 'workspace',
+  run = execFile,
+  clock = Date.now,
+  now = isoNow,
+} = {}) {
   const requestedPath = validateDiffPath(path);
+  const requestedScope = validateDiffScope(scope);
+  if (requestedScope === 'exact') {
+    return buildTaskExactDiffFile({ database, task, path: requestedPath });
+  }
   const resolved = await resolveDiffTarget({ database, task, run, clock, now });
   if (resolved.reason) throw notFound('That file is not part of this diff.');
 

@@ -34,6 +34,8 @@ Results rank exact task numbers first, then exact or complete task-name matches,
 
 The renderer debounces input by 180 milliseconds. Slash focuses and selects the search field when no form control or dialog owns the key. Escape clears the query, and Enter runs the current query immediately. The query is session-only and is not stored in local storage.
 
+The rounded search rail owns the complete light and dark surface. Its native search input remains transparent and drops the generic dark-theme input focus shadow, so the editable text does not appear as a rectangular field nested inside the rail. Focus remains visible on the rail through `.task-search:focus-within`.
+
 While a query is active:
 
 - Date filtering and the History statistics ledger are suspended, but the chosen Queue or History preference is preserved for when search clears.

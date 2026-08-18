@@ -675,6 +675,105 @@ function toolItem(block, cwd) {
   return item;
 }
 
+const CLAUDE_EXACT_PATCH_MAX_BYTES = 2 * 1024 * 1024;
+const CLAUDE_EXACT_PATCH_MAX_LINES = 5000;
+const CLAUDE_EXACT_PATCH_MAX_HUNKS = 5000;
+const RELAY_HOOK_TRUNCATION = /\n?\[CC Relay truncated \d+ (?:characters|array items)\]$/;
+
+function recordedClaudeString(value) {
+  const text = String(value ?? '');
+  const match = text.match(RELAY_HOOK_TRUNCATION);
+  return {
+    text: match ? text.slice(0, match.index) : text,
+    truncated: Boolean(match),
+  };
+}
+
+function recordedClaudeCoordinate(value) {
+  const coordinate = Number(value);
+  return Number.isFinite(coordinate) && coordinate >= 0 ? Math.trunc(coordinate) : 0;
+}
+
+function recordedClaudeHunks(value) {
+  if (!Array.isArray(value)) return { hunks: [], truncated: false };
+  const hunks = [];
+  let linesRecorded = 0;
+  let bytesRecorded = 0;
+  let truncated = false;
+  for (const candidate of value) {
+    if (hunks.length >= CLAUDE_EXACT_PATCH_MAX_HUNKS) {
+      truncated = true;
+      break;
+    }
+    if (!candidate || typeof candidate !== 'object' || !Array.isArray(candidate.lines)) {
+      if (typeof candidate === 'string' && RELAY_HOOK_TRUNCATION.test(candidate)) truncated = true;
+      continue;
+    }
+    if (candidate.__relayTruncated) truncated = true;
+    const lines = [];
+    for (const line of candidate.lines) {
+      if (typeof line !== 'string') continue;
+      const recorded = recordedClaudeString(line);
+      if (recorded.truncated) truncated = true;
+      if (!recorded.text && recorded.truncated) continue;
+      const bytes = Buffer.byteLength(recorded.text, 'utf8');
+      if (
+        linesRecorded >= CLAUDE_EXACT_PATCH_MAX_LINES
+        || bytesRecorded + bytes > CLAUDE_EXACT_PATCH_MAX_BYTES
+      ) {
+        truncated = true;
+        continue;
+      }
+      lines.push(recorded.text);
+      linesRecorded += 1;
+      bytesRecorded += bytes;
+    }
+    hunks.push({
+      oldStart: recordedClaudeCoordinate(candidate.oldStart),
+      oldLines: recordedClaudeCoordinate(candidate.oldLines),
+      newStart: recordedClaudeCoordinate(candidate.newStart),
+      newLines: recordedClaudeCoordinate(candidate.newLines),
+      lines,
+    });
+  }
+  return { hunks, truncated };
+}
+
+function completedClaudeFileChange(item, record) {
+  const reported = record?.toolUseResult;
+  if (!reported || typeof reported !== 'object' || Array.isArray(reported)) return item;
+  const original = item.changes?.[0] || {};
+  const path = typeof reported.filePath === 'string' && reported.filePath.trim()
+    ? reported.filePath
+    : original.path;
+  const reportedType = reported.type === 'create' || reported.type === 'update'
+    ? reported.type
+    : null;
+  const originalType = original.kind?.type === 'create' || original.kind?.type === 'update'
+    ? original.kind.type
+    : 'update';
+  const effectiveType = reportedType || originalType;
+  const change = {
+    ...original,
+    path,
+    kind: { type: effectiveType },
+  };
+  const structured = recordedClaudeHunks(reported.structuredPatch);
+  if (structured.hunks.length > 0) {
+    change.hunks = structured.hunks;
+    if (structured.truncated) change.exactTruncated = true;
+  } else if (effectiveType === 'create' && typeof reported.content === 'string') {
+    const recorded = recordedClaudeString(reported.content);
+    if (Buffer.byteLength(recorded.text, 'utf8') <= CLAUDE_EXACT_PATCH_MAX_BYTES) {
+      change.content = recorded.text;
+      if (recorded.truncated) change.exactTruncated = true;
+    } else {
+      change.exactTooLarge = true;
+    }
+  }
+  return { ...item, changes: [change] };
+}
+
 function completedToolItem(item, block, record = null) {
   const text = resultText(block.content);
   const failed = Boolean(block.is_error);
@@ -687,7 +786,11 @@ function completedToolItem(item, block, record = null) {
     };
   }
   if (item.type === 'fileChange') {
-    return { ...item, status: failed ? 'failed' : 'completed', result: text };
+    return {
+      ...completedClaudeFileChange(item, record),
+      status: failed ? 'failed' : 'completed',
+      result: text,
+    };
   }
   const completed = {
     ...item,

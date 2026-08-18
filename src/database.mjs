@@ -951,6 +951,27 @@ export class RelayDatabase {
     }));
   }
 
+  // Exact task diffs need only successful provider file-change records, not the complete
+  // activity stream. Filtering in SQLite keeps a long command and reasoning history from
+  // consuming the bounded evidence window before its edit records are reached.
+  listTaskFileChangeEvents(taskId, limit = 2001) {
+    return this.database.prepare(`
+      SELECT id, task_id, kind, payload, created_at
+      FROM events
+      WHERE task_id = ?
+        AND payload IS NOT NULL
+        AND json_valid(payload) = 1
+        AND json_extract(payload, '$.type') = 'item/completed'
+        AND json_extract(payload, '$.item.type') = 'fileChange'
+        AND json_extract(payload, '$.item.status') = 'completed'
+      ORDER BY id ASC
+      LIMIT ?
+    `).all(taskId, limit).map((event) => ({
+      ...event,
+      payload: JSON.parse(event.payload),
+    }));
+  }
+
   listTaskPrompts(taskId) {
     const task = this.getTask(taskId);
     if (!task) return [];

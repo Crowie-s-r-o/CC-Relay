@@ -538,6 +538,17 @@
             <textarea id="task-prompt" name="prompt" required rows="8" aria-describedby="prompt-shortcut" placeholder="Describe the outcome, constraints, and how the agent should verify the work."></textarea>
           </label>
 
+          <section id="task-references" class="task-references" aria-labelledby="task-references-heading" hidden>
+            <div class="task-references-heading">
+              <div>
+                <span id="task-references-heading">Task references</span>
+                <small>Right-click another task to attach its conversation.</small>
+              </div>
+              <span id="task-reference-count">0 tasks</span>
+            </div>
+            <div id="task-reference-list" class="task-reference-list" aria-live="polite"></div>
+          </section>
+
           <section class="attachment-composer" aria-labelledby="attachment-heading">
             <div class="attachment-heading-row">
               <div>
@@ -1117,13 +1128,23 @@
       <div class="terminal-settings-card task-diff-modal-card">
         <div class="terminal-settings-header task-diff-modal-header">
           <div>
-            <span class="eyebrow">Working tree changes</span>
+            <span class="eyebrow">Task change evidence</span>
             <h2 id="task-diff-title">Changes</h2>
-            <p id="task-diff-subtitle">Files this task edited since it started.</p>
+            <p id="task-diff-subtitle">Exact task edits and the surrounding workspace window.</p>
           </div>
           <button id="task-diff-close" class="terminal-settings-close" type="button" aria-label="Close changes">×</button>
         </div>
         <div class="task-diff-surface">
+          <div class="task-diff-scopes" role="group" aria-label="Change evidence scope">
+            <button type="button" data-task-diff-scope="exact" aria-pressed="false" hidden>
+              <strong>Exact task edits</strong>
+              <span>Provider-reported patches</span>
+            </button>
+            <button type="button" data-task-diff-scope="workspace" aria-pressed="true">
+              <strong>Workspace window</strong>
+              <span>All disk changes during the task</span>
+            </button>
+          </div>
           <div class="task-diff-summary">
             <span id="task-diff-totals" class="task-diff-totals"></span>
             <span id="task-diff-live" class="task-diff-live" hidden>LIVE</span>
@@ -1138,6 +1159,28 @@
         </div>
       </div>
     </dialog>
+
+    <div id="task-reference-menu" class="task-reference-menu" role="menu" aria-labelledby="task-reference-menu-title" hidden>
+      <div class="task-reference-menu-heading">
+        <span id="task-reference-menu-title">Attach to new task</span>
+        <strong id="task-reference-menu-name">Task</strong>
+      </div>
+      <button type="button" role="menuitem" data-task-reference-scope="prompts">
+        <span aria-hidden="true">Y</span>
+        <strong>My messages</strong>
+        <small>Attach every prompt and follow-up</small>
+      </button>
+      <button type="button" role="menuitem" data-task-reference-scope="responses">
+        <span aria-hidden="true">AI</span>
+        <strong>AI responses</strong>
+        <small>Attach every saved agent response</small>
+      </button>
+      <button type="button" role="menuitem" data-task-reference-scope="both">
+        <span aria-hidden="true">↔</span>
+        <strong>Both</strong>
+        <small>Attach the complete exchange</small>
+      </button>
+    </div>
 
     <script type="module" src="/app.js"></script>
   </body>

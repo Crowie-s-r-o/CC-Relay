@@ -97,6 +97,7 @@ import {
   rememberThreadExecution,
 } from './project-composer-state.js';
 import {
+  ContinuationAttachmentDrafts,
   continuationDispatchOutcome,
   continuationPresentation,
   continuationRetryRestore,
@@ -110,6 +111,14 @@ import {
   taskPromptHistoryPreview,
   taskPromptHistoryText,
 } from './task-prompt-history.js';
+import {
+  createTaskReference,
+  taskReferenceCounts,
+  taskReferencePrompt,
+  taskReferencePromptIssue,
+  taskReferenceScopeLabel,
+  updateTaskReferenceScope,
+} from './task-references.js';
 import {
   buildSessionTurns,
   sessionConversationText,
@@ -438,6 +447,9 @@ const state = {
   terminalSettings: initialComposerState.terminalSettings,
   parallelTaskIds: new Set(),
   attachments: initialComposerState.attachments,
+  taskReferences: initialComposerState.taskReferences,
+  taskReferenceMenuTaskId: null,
+  taskReferenceLoadSequences: new Map(),
   eventFilter: 'all',
   eventFollow: true,
   eventTaskId: null,
@@ -447,7 +459,7 @@ const state = {
   expandedEventDetails: new Set(),
   eventOutputScroll: new Map(),
   continuationDrafts: new Map(),
-  continuationAttachments: new Map(),
+  continuationAttachments: new ContinuationAttachmentDrafts(),
   continuationSubmitting: false,
   continuationSteerPending: new Map(),
   continuationRetryDrafts: new Map(),
@@ -471,6 +483,7 @@ const state = {
    */
   taskDiff: {
     taskId: null,
+    scope: 'workspace',
     summary: null,
     selectedPath: null,
     file: null,
@@ -703,6 +716,7 @@ const elements = {
   taskDiffTitle: document.querySelector('#task-diff-title'),
   taskDiffSubtitle: document.querySelector('#task-diff-subtitle'),
   taskDiffClose: document.querySelector('#task-diff-close'),
+  taskDiffScopeButtons: [...document.querySelectorAll('[data-task-diff-scope]')],
   taskDiffTotals: document.querySelector('#task-diff-totals'),
   taskDiffLive: document.querySelector('#task-diff-live'),
   taskDiffCaptured: document.querySelector('#task-diff-captured'),
@@ -796,6 +810,12 @@ const elements = {
   attachmentDropzone: document.querySelector('#attachment-dropzone'),
   attachmentInput: document.querySelector('#image-input'),
   attachmentList: document.querySelector('#attachment-list'),
+  taskReferences: document.querySelector('#task-references'),
+  taskReferenceCount: document.querySelector('#task-reference-count'),
+  taskReferenceList: document.querySelector('#task-reference-list'),
+  taskReferenceMenu: document.querySelector('#task-reference-menu'),
+  taskReferenceMenuTitle: document.querySelector('#task-reference-menu-title'),
+  taskReferenceMenuName: document.querySelector('#task-reference-menu-name'),
   detailAttachmentsSection: document.querySelector('#detail-attachments-section'),
   detailAttachmentsCount: document.querySelector('#detail-attachments-count'),
   detailAttachments: document.querySelector('#detail-attachments'),
@@ -1317,6 +1337,7 @@ function saveProjectComposerState(path = state.activeProjectPath) {
     taskName: elements.taskName.value,
     prompt: elements.prompt.value,
     attachments: state.attachments,
+    taskReferences: state.taskReferences,
     selectedTaskId: state.selectedTaskId,
     selectedThreadId: state.selectedThreadId,
     selectedProvider: state.selectedProvider,
@@ -1339,6 +1360,7 @@ function restoreProjectComposerState(path) {
   elements.formMessage.textContent = '';
   setComposerAlert('');
   state.attachments = session.attachments;
+  state.taskReferences = session.taskReferences || [];
   const selectedTask = state.tasks.find((task) => (
     task.id === session.selectedTaskId
     && sameProjectPath(task.repo_path, path)
@@ -1826,6 +1848,114 @@ function renderAttachmentComposer() {
   }
 }
 
+function renderTaskReferences() {
+  const references = state.taskReferences;
+  elements.taskReferences.hidden = references.length === 0;
+  elements.taskReferenceCount.textContent = `${references.length} task${references.length === 1 ? '' : 's'}`;
+  elements.taskReferenceList.innerHTML = references.map((reference) => {
+    const counts = taskReferenceCounts(reference);
+    const number = String(reference.taskId).padStart(3, '0');
+    return `
+      <article class="task-reference-item" data-task-reference-id="${reference.taskId}">
+        <span class="task-reference-ticket" aria-hidden="true">#${number}</span>
+        <span class="task-reference-copy">
+          <strong title="${escapeHtml(reference.title)}">${escapeHtml(reference.title)}</strong>
+          <small>${counts.prompts} message${counts.prompts === 1 ? '' : 's'} · ${counts.responses} response${counts.responses === 1 ? '' : 's'}</small>
+        </span>
+        <label class="task-reference-scope">
+          <span>Include</span>
+          <select aria-label="Content from task ${number}">
+            <option value="prompts" ${reference.scope === 'prompts' ? 'selected' : ''}>My messages</option>
+            <option value="responses" ${reference.scope === 'responses' ? 'selected' : ''} ${counts.responses === 0 ? 'disabled' : ''}>AI responses</option>
+            <option value="both" ${reference.scope === 'both' ? 'selected' : ''} ${counts.responses === 0 ? 'disabled' : ''}>Both</option>
+          </select>
+        </label>
+        <button type="button" data-remove-task-reference="${reference.taskId}" aria-label="Remove task ${number} reference">×</button>
+      </article>
+    `;
+  }).join('');
+
+  for (const item of elements.taskReferenceList.querySelectorAll('[data-task-reference-id]')) {
+    const taskId = Number(item.dataset.taskReferenceId);
+    item.querySelector('select')?.addEventListener('input', (event) => {
+      state.taskReferences = state.taskReferences.map((reference) => (
+        reference.taskId === taskId
+          ? updateTaskReferenceScope(reference, event.target.value)
+          : reference
+      ));
+      setComposerAlert('');
+      renderTaskReferences();
+      updateSubmitState();
+    });
+    item.querySelector('[data-remove-task-reference]')?.addEventListener('click', () => {
+      state.taskReferences = state.taskReferences.filter((reference) => reference.taskId !== taskId);
+      setComposerAlert('');
+      renderTaskReferences();
+      updateSubmitState();
+    });
+  }
+}
+
+function closeTaskReferenceMenu({ restoreFocus = false } = {}) {
+  const taskId = state.taskReferenceMenuTaskId;
+  elements.taskReferenceMenu.hidden = true;
+  state.taskReferenceMenuTaskId = null;
+  if (restoreFocus && taskId !== null) {
+    elements.taskList.querySelector(`[data-task-id="${taskId}"]`)?.focus();
+  }
+}
+
+function openTaskReferenceMenu(task, { x, y, focus = false }) {
+  if (!task) return;
+  state.taskReferenceMenuTaskId = task.id;
+  elements.taskReferenceMenuName.textContent = `#${String(task.id).padStart(3, '0')} · ${taskDisplayName(task)}`;
+  elements.taskReferenceMenu.hidden = false;
+  elements.taskReferenceMenu.style.left = '0px';
+  elements.taskReferenceMenu.style.top = '0px';
+  const rect = elements.taskReferenceMenu.getBoundingClientRect();
+  const edge = 8;
+  const left = Math.max(edge, Math.min(x, window.innerWidth - rect.width - edge));
+  const top = Math.max(edge, Math.min(y, window.innerHeight - rect.height - edge));
+  elements.taskReferenceMenu.style.left = `${left}px`;
+  elements.taskReferenceMenu.style.top = `${top}px`;
+  if (focus) elements.taskReferenceMenu.querySelector('[role="menuitem"]')?.focus();
+}
+
+async function attachTaskReference(taskId, scope) {
+  const sourceTask = state.tasks.find((task) => task.id === taskId);
+  if (!sourceTask) {
+    setComposerAlert('That task is no longer available.');
+    return;
+  }
+  const projectPath = state.activeProjectPath;
+  const sequence = (state.taskReferenceLoadSequences.get(taskId) || 0) + 1;
+  state.taskReferenceLoadSequences.set(taskId, sequence);
+  closeTaskReferenceMenu();
+  setComposerAlert(`Attaching task ${taskId} ${taskReferenceScopeLabel(scope).toLowerCase()}...`, 'notice');
+  try {
+    const detail = await api(`/api/tasks/${taskId}`);
+    if (state.taskReferenceLoadSequences.get(taskId) !== sequence) return;
+    if (!sameProjectPath(projectPath, state.activeProjectPath)) return;
+    if (!sameProjectPath(detail.task?.repo_path, state.activeProjectPath)) {
+      throw new Error('Task references must come from the active project.');
+    }
+    const reference = createTaskReference(detail, scope);
+    const existingIndex = state.taskReferences.findIndex((item) => item.taskId === taskId);
+    if (existingIndex === -1) state.taskReferences = [...state.taskReferences, reference];
+    else state.taskReferences = state.taskReferences.map((item, index) => (
+      index === existingIndex ? reference : item
+    ));
+    renderTaskReferences();
+    const issue = taskReferencePromptIssue(elements.prompt.value, state.taskReferences);
+    setComposerAlert(issue || `Task ${taskId} attached with ${taskReferenceScopeLabel(scope).toLowerCase()}.`, issue ? 'validation' : 'notice');
+    updateSubmitState();
+    elements.prompt.focus();
+  } catch (error) {
+    if (state.taskReferenceLoadSequences.get(taskId) !== sequence) return;
+    setComposerAlert(error.message, 'validation');
+  }
+}
+
 async function mergeImageFiles(fileList, existingAttachments) {
   const files = [...fileList];
   const attachments = [...existingAttachments];
@@ -1904,12 +2034,18 @@ async function addContinuationImageFiles(fileList) {
     renderTaskContinuation(task);
     return;
   }
-  const current = state.continuationAttachments.get(task.id) || [];
-  const result = await mergeImageFiles(fileList, current);
-  state.continuationAttachments.set(task.id, result.attachments);
+  // Copy the FileList before the input is reset. Per-task serialization preserves quick
+  // consecutive additions, while Clear images invalidates every merge already in flight.
+  const files = [...fileList];
+  const update = await state.continuationAttachments.merge(
+    task.id,
+    (current) => mergeImageFiles(files, current),
+  );
+  if (!update.committed || state.selectedTaskForEvents?.id !== task.id) return;
+  const { result } = update;
   elements.continuationMessage.dataset.kind = result.errors.length > 0 ? 'error' : 'hint';
   if (result.errors.length > 0) elements.continuationMessage.textContent = result.errors.join(' ');
-  renderTaskContinuation(task);
+  renderTaskContinuation(state.selectedTaskForEvents);
 }
 
 function formatTime(value) {
@@ -4643,6 +4779,8 @@ function providerInstallationIssue() {
  */
 function composerValidationIssue() {
   if (!elements.prompt.value.trim()) return 'Write a prompt before adding the task.';
+  const taskReferenceIssue = taskReferencePromptIssue(elements.prompt.value, state.taskReferences);
+  if (taskReferenceIssue) return taskReferenceIssue;
   if (elements.taskName.value.trim() && state.status && !taskNamingSupported()) {
     return 'Restart CC Relay before naming a task.';
   }
@@ -4741,6 +4879,7 @@ function selectMode(mode, { focus = false } = {}) {
   // the panel even when the fold has not moved.
   renderTurboControls({ force: true });
   renderAttachmentComposer();
+  renderTaskReferences();
   renderThreads();
   updateSubmitState();
   if (focus) {
@@ -5311,7 +5450,18 @@ function renderTasks() {
   }).join('');
 
   for (const card of elements.taskList.querySelectorAll('.task-card')) {
-    const select = () => selectTask(Number(card.dataset.taskId));
+    const select = () => {
+      closeTaskReferenceMenu();
+      selectTask(Number(card.dataset.taskId));
+    };
+    card.addEventListener('contextmenu', (event) => {
+      // Preserve the browser's native Copy menu when the operator right-clicks text they
+      // selected inside a card. The custom task menu owns only an unselected card surface.
+      if (textSelectionGuard.isActive() || event.target.closest('input, select, textarea')) return;
+      event.preventDefault();
+      const task = state.tasks.find((item) => item.id === Number(card.dataset.taskId));
+      openTaskReferenceMenu(task, { x: event.clientX, y: event.clientY });
+    });
     card.addEventListener('click', (event) => {
       // Mouseup after dragging across card text also emits a click. Do not turn that
       // completed text selection into task activation and an immediate card rebuild.
@@ -5321,6 +5471,17 @@ function renderTasks() {
     });
     card.addEventListener('keydown', (event) => {
       if (event.target.closest('button, input')) {
+        return;
+      }
+      if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+        event.preventDefault();
+        const task = state.tasks.find((item) => item.id === Number(card.dataset.taskId));
+        const rect = card.getBoundingClientRect();
+        openTaskReferenceMenu(task, {
+          x: rect.left + Math.min(36, rect.width / 2),
+          y: rect.top + Math.min(36, rect.height / 2),
+          focus: true,
+        });
         return;
       }
       if (event.key === 'Enter' || event.key === ' ') {
@@ -5702,6 +5863,9 @@ async function keepRunningTaskTerminalOpen(task) {
 
 function openTaskDetailModal() {
   if (!state.selectedTaskId || elements.taskDetail.hidden) return;
+  // A fresh visit to the full record should expose the operator's request immediately.
+  // Readers may still collapse Prompts while the dialog remains open.
+  if (!elements.promptSection.hidden) elements.promptSection.open = true;
   if (!elements.taskDetailModal.open) elements.taskDetailModal.showModal();
 }
 
@@ -5764,9 +5928,18 @@ function markTaskDiffSelection() {
   }
 }
 
-function resetTaskDiffView(taskId) {
-  stopTaskDiffPolling();
-  state.taskDiff.taskId = taskId;
+function taskExactDiffSupported() {
+  return state.status?.capabilities?.taskExactDiff === true;
+}
+
+function renderTaskDiffScope() {
+  for (const button of elements.taskDiffScopeButtons) {
+    if (button.dataset.taskDiffScope === 'exact') button.hidden = !taskExactDiffSupported();
+    button.setAttribute('aria-pressed', String(button.dataset.taskDiffScope === state.taskDiff.scope));
+  }
+}
+
+function clearTaskDiffSurface() {
   state.taskDiff.summary = null;
   state.taskDiff.selectedPath = null;
   state.taskDiff.file = null;
@@ -5786,6 +5959,25 @@ function resetTaskDiffView(taskId) {
   elements.taskDiffCaptured.textContent = '';
   elements.taskDiffLive.hidden = true;
   setTaskDiffMessage('');
+}
+
+function resetTaskDiffView(taskId) {
+  stopTaskDiffPolling();
+  state.taskDiff.taskId = taskId;
+  state.taskDiff.scope = taskExactDiffSupported() ? 'exact' : 'workspace';
+  state.taskDiff.stopped = false;
+  clearTaskDiffSurface();
+  renderTaskDiffScope();
+}
+
+function selectTaskDiffScope(scope) {
+  if (scope === 'exact' && !taskExactDiffSupported()) return;
+  if (!['exact', 'workspace'].includes(scope) || state.taskDiff.scope === scope) return;
+  state.taskDiff.scope = scope;
+  state.taskDiff.stopped = false;
+  clearTaskDiffSurface();
+  renderTaskDiffScope();
+  refreshTaskDiff().catch(console.error);
 }
 
 function renderTaskDiffSummary(summary) {
@@ -5820,12 +6012,17 @@ function renderTaskDiffTree(summary) {
 async function loadTaskDiffFile(path) {
   const taskId = state.taskDiff.taskId;
   if (taskId === null || !path) return;
+  const scope = state.taskDiff.scope;
   const sequence = ++state.taskDiff.fileRequest;
   let file;
   try {
-    file = await api(`/api/tasks/${taskId}/diff/file?path=${encodeURIComponent(path)}`);
+    file = await api(`/api/tasks/${taskId}/diff/file?scope=${encodeURIComponent(scope)}&path=${encodeURIComponent(path)}`);
   } catch (error) {
-    if (sequence !== state.taskDiff.fileRequest || state.taskDiff.taskId !== taskId) return;
+    if (
+      sequence !== state.taskDiff.fileRequest
+      || state.taskDiff.taskId !== taskId
+      || state.taskDiff.scope !== scope
+    ) return;
     if (error?.status === 404) {
       /*
        * The file was reverted or renamed away while the task kept working. Only this pane
@@ -5848,6 +6045,7 @@ async function loadTaskDiffFile(path) {
   if (
     sequence !== state.taskDiff.fileRequest
     || state.taskDiff.taskId !== taskId
+    || state.taskDiff.scope !== scope
     || state.taskDiff.selectedPath !== path
   ) return;
   state.taskDiff.file = file;
@@ -5876,12 +6074,17 @@ function selectTaskDiffFile(path) {
 async function refreshTaskDiff() {
   const taskId = state.taskDiff.taskId;
   if (taskId === null || state.taskDiff.stopped) return;
+  const scope = state.taskDiff.scope;
   const sequence = ++state.taskDiff.summaryRequest;
   let summary;
   try {
-    summary = await api(`/api/tasks/${taskId}/diff`);
+    summary = await api(`/api/tasks/${taskId}/diff?scope=${encodeURIComponent(scope)}`);
   } catch (error) {
-    if (sequence !== state.taskDiff.summaryRequest || state.taskDiff.taskId !== taskId) return;
+    if (
+      sequence !== state.taskDiff.summaryRequest
+      || state.taskDiff.taskId !== taskId
+      || state.taskDiff.scope !== scope
+    ) return;
     if (error?.status === 404) {
       stopTaskDiffPolling();
       state.taskDiff.stopped = true;
@@ -5893,7 +6096,11 @@ async function refreshTaskDiff() {
   }
   // Browser selections reference concrete nodes, so a poll must never rewrite under one.
   await textSelectionGuard.waitForClear();
-  if (sequence !== state.taskDiff.summaryRequest || state.taskDiff.taskId !== taskId) return;
+  if (
+    sequence !== state.taskDiff.summaryRequest
+    || state.taskDiff.taskId !== taskId
+    || state.taskDiff.scope !== scope
+  ) return;
   setTaskDiffMessage('');
   state.taskDiff.summary = summary;
   renderTaskDiffSummary(summary);
@@ -6891,6 +7098,7 @@ async function loadSnapshot() {
   renderPlanControls();
   renderTurboControls();
   renderAttachmentComposer();
+  renderTaskReferences();
   updateSubmitState();
   if (state.selectedTaskId) {
     await selectTask(state.selectedTaskId);
@@ -9401,6 +9609,7 @@ elements.form.addEventListener('submit', async (event) => {
     }
   }
   const formData = new FormData(elements.form);
+  const submittedPrompt = taskReferencePrompt(formData.get('prompt'), state.taskReferences);
   const execution = {
     model: elements.modelSelect.value,
     effort: JSON.parse(elements.effortSelect.dataset.values || '[]')[Number(elements.effortSelect.value)] || '',
@@ -9442,7 +9651,7 @@ elements.form.addEventListener('submit', async (event) => {
       ? `automatic:${state.activeProjectPath || ''}`
       : state.selectedThreadId,
     title: formData.get('title'),
-    prompt: formData.get('prompt'),
+    prompt: submittedPrompt,
     execution,
     planSettings: state.planSettings,
     turboSettings: state.turboSettings,
@@ -9516,7 +9725,7 @@ elements.form.addEventListener('submit', async (event) => {
         ...(isPlanCouncilTerminalExecutionEnabled() && !automaticTerminals
           ? { authorThreadId: councilSettings.authorThreadId }
           : {}),
-        prompt: formData.get('prompt'),
+        prompt: submittedPrompt,
         ...planCouncilRequest(councilSettings, planCouncilCatalogs()),
         attachments,
         runNow,
@@ -9532,7 +9741,7 @@ elements.form.addEventListener('submit', async (event) => {
               terminalLayout: terminalLayout(),
             }
             : { threadId: routedThreadId }),
-          prompt: formData.get('prompt'),
+          prompt: submittedPrompt,
           plannerModel: state.turboSettings.plannerModel,
           plannerEffort: state.turboSettings.plannerEffort || null,
           workerModel: state.turboSettings.workerModel,
@@ -9556,7 +9765,7 @@ elements.form.addEventListener('submit', async (event) => {
             terminalLayout: terminalLayout(),
           }
           : { threadId: routedThreadId }),
-        prompt: formData.get('prompt'),
+        prompt: submittedPrompt,
         model: execution.model,
         effort: execution.effort || null,
         attachments,
@@ -9641,6 +9850,7 @@ elements.form.addEventListener('submit', async (event) => {
   localStorage.setItem('relay.taskView', state.taskView);
   elements.taskName.value = '';
   elements.prompt.value = '';
+  state.taskReferences = [];
   if (councilRequested) {
     state.planSettings.enabled = false;
     renderPlanControls();
@@ -9649,6 +9859,7 @@ elements.form.addEventListener('submit', async (event) => {
   }
   state.attachments = [];
   renderAttachmentComposer();
+  renderTaskReferences();
   updateSubmitState();
   if (duplicateSubmission) {
     // Still waiting or running, so this is the same live task the user already asked for.
@@ -9859,6 +10070,9 @@ elements.taskDetailModal.addEventListener('click', (event) => {
 });
 
 elements.taskDiffClose.addEventListener('click', closeTaskDiffModal);
+for (const button of elements.taskDiffScopeButtons) {
+  button.addEventListener('click', () => selectTaskDiffScope(button.dataset.taskDiffScope));
+}
 elements.taskDiffModal.addEventListener('click', (event) => {
   if (event.target === elements.taskDiffModal) closeTaskDiffModal();
 });
@@ -10255,6 +10469,40 @@ elements.prompt.addEventListener('keydown', (event) => {
   state.prioritySubmit = event.ctrlKey;
   elements.form.requestSubmit();
 });
+elements.taskReferenceMenu.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-task-reference-scope]');
+  if (!button || state.taskReferenceMenuTaskId === null) return;
+  attachTaskReference(state.taskReferenceMenuTaskId, button.dataset.taskReferenceScope);
+});
+elements.taskReferenceMenu.addEventListener('keydown', (event) => {
+  const items = [...elements.taskReferenceMenu.querySelectorAll('[role="menuitem"]')];
+  const current = items.indexOf(document.activeElement);
+  if (event.key === 'Escape') {
+    event.preventDefault();
+    closeTaskReferenceMenu({ restoreFocus: true });
+    return;
+  }
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+  event.preventDefault();
+  const next = event.key === 'Home'
+    ? 0
+    : event.key === 'End'
+      ? items.length - 1
+      : (current + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+  items[next]?.focus();
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!elements.taskReferenceMenu.hidden && !elements.taskReferenceMenu.contains(event.target)) {
+    closeTaskReferenceMenu();
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !elements.taskReferenceMenu.hidden) {
+    closeTaskReferenceMenu({ restoreFocus: true });
+  }
+});
+window.addEventListener('resize', closeTaskReferenceMenu);
+window.addEventListener('scroll', closeTaskReferenceMenu, true);
 elements.form.addEventListener('paste', async (event) => {
   const imageFiles = clipboardImageFiles(event.clipboardData);
   if (imageFiles.length === 0) {
@@ -10684,6 +10932,7 @@ renderExecutionControls();
 renderPlanControls();
 renderTurboControls();
 renderAttachmentComposer();
+renderTaskReferences();
 updateSubmitState();
 Promise.all([rendererStateReady, rendererStateReady.then(() => load()), loadThreads({ silent: false }), loadModels('codex'), loadModels('claude'), loadTerminalDisplays()]).catch((error) => {
   elements.queueSummary.textContent = error.message;
