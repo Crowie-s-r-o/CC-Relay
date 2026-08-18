@@ -2,6 +2,17 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.17] - 2026-08-19
+
+### Added
+
+- Task details now include exact task diffs.
+- Tasks now support references.
+
+### Fixed
+
+- Image merging is now race-safe.
+
 ## [0.2.16] - 2026-08-18
 
 ### Changed
