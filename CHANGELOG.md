@@ -2,6 +2,22 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.15] - 2026-08-18
+
+### Added
+
+- The relay now requires an additional verification pass.
+
+### Changed
+
+- Desktop updater retries are more robust.
+- Install-on-quit tracking is improved.
+- The splash screen uses updated branding.
+
+### Fixed
+
+- The relay no longer falls back to Fable.
+
 ## [0.2.14] - 2026-08-17
 
 ### Changed
