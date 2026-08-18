@@ -6,6 +6,16 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 18: Daily Standup now attributes completed work to when each task started.** Both the
+> renderer preselection and the server-authoritative filter use persisted `started_at`, with
+> `created_at` only for legacy completed rows that have no valid start timestamp. `finished_at`
+> never selects the Standup day, so a task that crosses midnight stays on its start date and a task
+> that began earlier does not move to its completion date. The additive `aiStandupStartDate`
+> capability prevents refreshed renderer assets from mixing this rule with an older backend. The
+> 23 focused Standup checks and all 1,582 repository tests pass, and `release:check` is green for
+> v0.2.15. See [[daily-standup]] and [[task-history]].
+
 > [!important]
 > **August 18: automatic tasks now require one extra verification pass before completion.** Task
 > 806 ended normally after 30 minutes and 27 seconds; its `70/70 signals` label was a visible and

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 const root = new URL('../', import.meta.url);
 
-test('task queue exposes one date-driven, CHANGELOG-style AI standup dialog', async () => {
+test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialog', async () => {
   const [html, app, style, server] = await Promise.all([
     readFile(new URL('public/index.html', root), 'utf8'),
     readFile(new URL('public/app.js', root), 'utf8'),
@@ -16,6 +16,7 @@ test('task queue exposes one date-driven, CHANGELOG-style AI standup dialog', as
   assert.match(html, /id="standup-button"[^>]+aria-controls="standup-modal"/);
   assert.match(html, /<dialog id="standup-modal"[^>]+aria-labelledby="standup-title"/);
   assert.match(html, /id="standup-date" type="date"/);
+  assert.match(html, /Task start date/);
   assert.doesNotMatch(html, /id="standup-length"|All tasks|Short<\/option>|Standard<\/option>|Detailed<\/option>/);
   assert.match(html, /Added, Changed, Fixed, and Security/);
   assert.match(html, /id="standup-generator-provider"/);
@@ -42,14 +43,17 @@ test('task queue exposes one date-driven, CHANGELOG-style AI standup dialog', as
   assert.match(app, /copied with chat formatting/);
   assert.match(app, /capabilities\?\.aiStandupGeneration === true/);
   assert.match(app, /capabilities\?\.aiStandupChangelog === true/);
+  assert.match(app, /capabilities\?\.aiStandupStartDate === true/);
   assert.doesNotMatch(app, /aiStandupConfiguration|aiStandupAllTasks/);
 
   assert.match(standupRoute, /pathname === '\/api\/standup\/generate'/);
   assert.match(server, /database\.listTaskPrompts\(task\.id\)/);
   assert.match(server, /database\.listTaskResponses\(task\.id\)/);
+  assert.match(server, /startedAt: task\.started_at \|\| task\.created_at/);
   assert.doesNotMatch(standupRoute, /validateStandupLength|body\.length/);
   assert.match(server, /aiStandupGeneration: true/);
   assert.match(server, /aiStandupChangelog: true/);
+  assert.match(server, /aiStandupStartDate: true/);
 
   assert.match(style, /\.standup-modal/);
   assert.match(style, /\.standup-list li/);

@@ -13,7 +13,7 @@ tags:
 
 # Daily Standup
 
-The Task queue heading exposes **Standup** beside Queue and History. Opening the modal does not start AI. The date is intentionally blank, and selecting a local calendar day starts one generation run.
+The Task queue heading exposes **Standup** beside Queue and History. Opening the modal does not start AI. The task start date is intentionally blank, and selecting a local calendar day starts one generation run.
 
 Standup has one output contract. It synthesizes completed work into the same nonempty sections used by [[open-source-releases|deploy]]:
 
@@ -34,11 +34,13 @@ Standup follows the selected Launchpad:
 - Every CC Relay in the selected project contributes eligible tasks.
 - Exact resolved project paths are enforced again by `POST /api/standup/generate`.
 - With no selected project, the Standup button remains disabled.
-- A refreshed renderer requires both `capabilities.aiStandupGeneration` and `capabilities.aiStandupChangelog`.
+- A refreshed renderer requires `capabilities.aiStandupGeneration`, `capabilities.aiStandupChangelog`, and `capabilities.aiStandupStartDate`.
 
 The dedicated `aiStandupChangelog` capability is a mixed-version guard. A new renderer does not send the categorized request to an older backend, and an old renderer does not silently request a retired length mode from the new backend.
 
-Only tasks with status `complete` are eligible. Failed, queued, running, interrupted, and cancelled rows are excluded because a changelog records confirmed outcomes, not unresolved attempts. A task belongs to the day of its latest terminal outcome. `finished_at` is authoritative, with `created_at` retained only as a compatibility fallback.
+`aiStandupStartDate` separately guards the date-attribution contract. It prevents refreshed renderer assets from preselecting tasks by start time while an older backend still filters the same request by completion time.
+
+Only tasks with status `complete` are eligible. Failed, queued, running, interrupted, and cancelled rows are excluded because a changelog records confirmed outcomes, not unresolved attempts. A completed task belongs to the local calendar day containing its persisted `started_at`. `created_at` is the compatibility fallback for legacy completed rows without a valid start timestamp. `finished_at` never chooses the Standup day, so work that crosses midnight remains attributed to the day it started.
 
 The browser sends the selected local interval as `[local midnight, next local midnight)`. The backend accepts a 22 through 26 hour interval so normal daylight-saving transitions remain valid.
 
@@ -46,14 +48,15 @@ See [[task-history]] for the shared project-wide visibility invariant.
 
 ## Conversation source
 
-The browser sends the project, a null Relay id, selected provider, date label, and ISO day boundaries. It never sends task text as authority.
+The browser sends the project, a null Relay id, selected provider, task start date label, and ISO day boundaries. It never sends task text as authority.
 
 The backend reloads source data from SQLite:
 
-1. `database.listTaskPrompts(task.id)` returns the original request and every recorded same-task follow-up.
-2. `database.listTaskResponses(task.id)` extracts completed Codex agent messages and saved Claude messages in event order.
-3. The latest task result is added when no matching response event exists.
-4. The final result is included separately as the authoritative outcome.
+1. The selected row contributes its persisted start timestamp, using creation time only for legacy compatibility.
+2. `database.listTaskPrompts(task.id)` returns the original request and every recorded same-task follow-up.
+3. `database.listTaskResponses(task.id)` extracts completed Codex agent messages and saved Claude messages in event order.
+4. The latest task result is added when no matching response event exists.
+5. The final result is included separately as the authoritative outcome.
 
 This keeps generation grounded in actual saved conversations, including the one-task, one-conversation continuation history described in [[same-task-session-continuation]].
 
@@ -122,7 +125,7 @@ No standup is cached or persisted. **Regenerate changelog** always starts a fres
 
 The modal provides:
 
-- a single workday control with no output options;
+- a single task start date control with no output options;
 - a visible provider route explaining that a fresh isolated CLI process is used;
 - a disabled date control and skeleton ledger while AI is working;
 - a clear empty state when no completed work exists;
@@ -177,7 +180,7 @@ The endpoint validates the pinned project, optional Relay id length, provider, l
 - `test/standup-ui.test.mjs`
 - `test/release-tooling.test.mjs`
 
-Focused tests cover local dates, daylight-saving day lengths, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, escaped rich-chat clipboard HTML and its plain-text fallback, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
+Focused tests cover local dates, daylight-saving day lengths, start-time attribution across midnight, creation-time compatibility fallback, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, escaped rich-chat clipboard HTML and its plain-text fallback, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
 
 See [[daily-standup-review]] for the historical review of the retired length-configurable implementation.
 

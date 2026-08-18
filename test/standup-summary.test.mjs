@@ -26,42 +26,61 @@ test('standup date values round trip through the local calendar', () => {
   assert.equal(dateFromLocalInput('not-a-date'), null);
 });
 
-test('standup source selection uses terminal outcome time and exclusive local day boundaries', () => {
+test('standup source selection uses task start time and exclusive local day boundaries', () => {
   const selectedDay = new Date(2026, 6, 29, 12);
   const tasks = [
     {
       id: 1,
       status: 'complete',
       created_at: localIso(2026, 6, 28, 22),
-      finished_at: localIso(2026, 6, 29, 1),
+      started_at: localIso(2026, 6, 29, 1),
+      finished_at: localIso(2026, 6, 30, 1),
     },
     {
       id: 2,
       status: 'complete',
       created_at: localIso(2026, 6, 29, 8),
+      started_at: localIso(2026, 6, 29, 8),
       finished_at: localIso(2026, 6, 29, 9),
     },
     {
       id: 3,
       status: 'complete',
       created_at: localIso(2026, 6, 29, 23),
+      started_at: localIso(2026, 6, 29, 23),
       finished_at: localIso(2026, 6, 30, 1),
     },
     {
       id: 4,
       status: 'running',
       created_at: localIso(2026, 6, 29, 10),
+      started_at: localIso(2026, 6, 29, 10),
       finished_at: null,
     },
     {
       id: 5,
       status: 'cancelled',
       created_at: localIso(2026, 6, 29, 11),
+      started_at: localIso(2026, 6, 29, 11),
       finished_at: null,
+    },
+    {
+      id: 6,
+      status: 'complete',
+      created_at: localIso(2026, 6, 28, 22),
+      started_at: localIso(2026, 6, 28, 23),
+      finished_at: localIso(2026, 6, 29, 12),
+    },
+    {
+      id: 7,
+      status: 'complete',
+      created_at: localIso(2026, 6, 29, 7),
+      started_at: null,
+      finished_at: localIso(2026, 6, 30, 7),
     },
   ];
 
-  assert.deepEqual(tasksForStandupDay(tasks, selectedDay).map((task) => task.id), [1, 2]);
+  assert.deepEqual(tasksForStandupDay(tasks, selectedDay).map((task) => task.id), [1, 7, 2, 3]);
 });
 
 test('AI standup output is split into changelog categories', () => {

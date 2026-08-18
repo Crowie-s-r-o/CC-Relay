@@ -16,8 +16,8 @@ function validTimestamp(value) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-function standupTimestamp(task) {
-  return validTimestamp(task?.finished_at) ?? validTimestamp(task?.created_at);
+function standupStartTimestamp(task) {
+  return validTimestamp(task?.started_at) ?? validTimestamp(task?.created_at);
 }
 
 export function localDateInputValue(date = new Date()) {
@@ -49,11 +49,11 @@ export function tasksForStandupDay(tasks, anchor = new Date()) {
   return (Array.isArray(tasks) ? tasks : [])
     .filter((task) => STANDUP_STATUSES.has(task?.status))
     .filter((task) => {
-      const timestamp = standupTimestamp(task);
+      const timestamp = standupStartTimestamp(task);
       return timestamp !== null && timestamp >= start.getTime() && timestamp < end.getTime();
     })
     .sort((left, right) => (
-      standupTimestamp(left) - standupTimestamp(right)
+      standupStartTimestamp(left) - standupStartTimestamp(right)
       || Number(left?.id || 0) - Number(right?.id || 0)
     ));
 }

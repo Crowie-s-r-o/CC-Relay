@@ -65,7 +65,7 @@ The combined adversarial passes found three concrete defects and fixed all three
 
 - LLM wording is nondeterministic. The prompt strongly requires grouping and grounded what-plus-how bullets, but a model can still choose different phrasing on regeneration.
 - The classifier accepts unlabelled legacy bullets as Tasks for compatibility. Current prompts require exact `Task:` and `Blocker:` labels, and real provider smoke checks honored them.
-- A same-task continuation is assigned to its latest `finished_at` day and includes earlier prompts and responses as context. This matches the existing one-task continuation contract but is not a per-turn historical ledger.
+- The reviewed implementation assigned a same-task continuation to its latest `finished_at` day. That behavior is retired. Current Standup attribution uses the task's persisted `started_at`, with `created_at` only as a legacy fallback; see [[daily-standup]].
 - Closing the modal does not cancel an active provider run. Reopening shows that run's eventual result, while the global slot prevents duplicate generation.
 - If the preferred provider becomes unusable after readiness probing, the current request fails visibly instead of starting a second provider and potentially doubling latency.
 

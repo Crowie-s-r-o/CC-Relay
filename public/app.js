@@ -3739,7 +3739,8 @@ function resetStandupOutput() {
 
 function standupGenerationSupported() {
   return state.status?.capabilities?.aiStandupGeneration === true
-    && state.status?.capabilities?.aiStandupChangelog === true;
+    && state.status?.capabilities?.aiStandupChangelog === true
+    && state.status?.capabilities?.aiStandupStartDate === true;
 }
 
 function standupScopeLabel() {
@@ -3792,7 +3793,7 @@ function renderStandup() {
   const itemCount = standupItemCount();
   const activeGenerator = providerLabel(state.standupProvider || state.selectedProvider);
 
-  elements.standupSubtitle.textContent = `Select a workday to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
+  elements.standupSubtitle.textContent = `Select when tasks started to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
   elements.standupScopeLabel.textContent = `${projectName} · ${standupScopeLabel()}`;
   elements.standupDateLabel.textContent = anchor ? standupDateLabel(anchor) : 'Select a workday';
   elements.standupGeneratorProvider.textContent = state.standupProvider
@@ -3863,15 +3864,15 @@ function renderStandup() {
     elements.standupGenerate.textContent = supported ? 'Retry' : 'Restart required';
   } else if (sourceTasks.length === 0) {
     elements.standupEmpty.dataset.state = 'empty';
-    elements.standupEmptyTitle.textContent = 'No finished work recorded';
-    elements.standupEmptyMessage.textContent = 'Choose another day or finish a task to generate a standup.';
+    elements.standupEmptyTitle.textContent = 'No completed tasks started on this date';
+    elements.standupEmptyMessage.textContent = 'Choose another start date or finish a task that began on this date.';
     elements.standupCount.textContent = '0 source tasks';
-    elements.standupSourceNote.textContent = 'Only completed outcomes are eligible';
+    elements.standupSourceNote.textContent = 'Only completed tasks whose start falls on this date are eligible';
     elements.standupGenerate.textContent = 'Generate changelog';
   } else {
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = 'Ready to generate';
-    elements.standupEmptyMessage.textContent = 'Generate concise Added, Changed, Fixed, and Security bullets for the selected workday.';
+    elements.standupEmptyMessage.textContent = 'Generate concise Added, Changed, Fixed, and Security bullets for tasks started on this date.';
     elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
     elements.standupSourceNote.textContent = 'The output uses the same categories and limits as deploy';
     elements.standupGenerate.textContent = 'Generate changelog';

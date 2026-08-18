@@ -52,27 +52,51 @@ test('standup window accepts local-day DST lengths and rejects arbitrary ranges'
   }), /one local calendar day/);
 });
 
-test('standup task selection is exact for project, relay, completed status, and outcome time', () => {
+test('standup task selection is exact for project, relay, completed status, and start time', () => {
   const start = '2026-07-29T00:00:00.000Z';
   const end = '2026-07-30T00:00:00.000Z';
   const tasks = [
-    { id: 1, repo_path: '/repo/alpha', thread_id: 'one', status: 'complete', finished_at: '2026-07-29T09:00:00.000Z' },
-    { id: 2, repo_path: '/repo/alpha', thread_id: 'two', status: 'failed', finished_at: '2026-07-29T10:00:00.000Z' },
-    { id: 3, repo_path: '/repo/beta', thread_id: 'one', status: 'complete', finished_at: '2026-07-29T11:00:00.000Z' },
-    { id: 4, repo_path: '/repo/alpha', thread_id: 'one', status: 'running', created_at: '2026-07-29T12:00:00.000Z' },
-    { id: 5, repo_path: '/repo/alpha', thread_id: 'one', status: 'complete', finished_at: end },
-    { id: 6, repo_path: '/repo/alpha', thread_id: 'two', status: 'complete', finished_at: '2026-07-29T11:00:00.000Z' },
+    {
+      id: 1,
+      repo_path: '/repo/alpha',
+      thread_id: 'one',
+      status: 'complete',
+      started_at: '2026-07-29T09:00:00.000Z',
+      finished_at: '2026-07-30T09:00:00.000Z',
+    },
+    { id: 2, repo_path: '/repo/alpha', thread_id: 'two', status: 'failed', started_at: '2026-07-29T10:00:00.000Z' },
+    { id: 3, repo_path: '/repo/beta', thread_id: 'one', status: 'complete', started_at: '2026-07-29T11:00:00.000Z' },
+    { id: 4, repo_path: '/repo/alpha', thread_id: 'one', status: 'running', started_at: '2026-07-29T12:00:00.000Z' },
+    { id: 5, repo_path: '/repo/alpha', thread_id: 'one', status: 'complete', started_at: end },
+    { id: 6, repo_path: '/repo/alpha', thread_id: 'two', status: 'complete', started_at: '2026-07-29T11:00:00.000Z' },
+    {
+      id: 7,
+      repo_path: '/repo/alpha',
+      thread_id: 'one',
+      status: 'complete',
+      created_at: '2026-07-29T08:00:00.000Z',
+      started_at: null,
+      finished_at: '2026-07-30T08:00:00.000Z',
+    },
+    {
+      id: 8,
+      repo_path: '/repo/alpha',
+      thread_id: 'one',
+      status: 'complete',
+      started_at: '2026-07-28T23:00:00.000Z',
+      finished_at: '2026-07-29T12:00:00.000Z',
+    },
   ];
 
   assert.deepEqual(
     selectStandupTasks(tasks, { projectPath: '/repo/alpha', threadId: 'one', start, end })
       .map((task) => task.id),
-    [1],
+    [7, 1],
   );
   assert.deepEqual(
     selectStandupTasks(tasks, { projectPath: '/repo/alpha', start, end })
       .map((task) => task.id),
-    [1, 6],
+    [7, 1, 6],
   );
 });
 
@@ -83,7 +107,7 @@ test('standup prompt grounds synthesis in every saved prompt, response, and outc
     status: 'complete',
     provider: 'codex',
     mode: 'execute',
-    finishedAt: '2026-07-29T12:00:00.000Z',
+    startedAt: '2026-07-29T12:00:00.000Z',
     prompts: [
       { kind: 'original', text: 'Add standup generation.' },
       { kind: 'follow-up', text: 'Use prompts and responses, not a mechanical list.' },
@@ -109,6 +133,9 @@ test('standup prompt grounds synthesis in every saved prompt, response, and outc
   assert.match(prompt, /Use Added for new capabilities, Changed for improvements or behavior changes, Fixed for resolved defects/);
   assert.match(prompt, /one short, plain sentence of at most 180 characters/);
   assert.match(prompt, /There is no item-count limit/);
+  assert.match(prompt, /belongs to the selected workday by its recorded start time/);
+  assert.match(prompt, /"startedAt": "2026-07-29T12:00:00.000Z"/);
+  assert.doesNotMatch(prompt, /"finishedAt"/);
 });
 
 test('standup prompt requests one compact categorized changelog', () => {

@@ -781,7 +781,7 @@ function standupRecord(task) {
     status: task.status,
     provider: task.provider,
     mode: task.mode,
-    finishedAt: task.finished_at || task.created_at,
+    startedAt: task.started_at || task.created_at,
     prompts: database.listTaskPrompts(task.id),
     responses: database.listTaskResponses(task.id),
     outcome: task.status === 'failed'
@@ -1047,6 +1047,7 @@ export const server = createServer(async (request, response) => {
           projectColors: true,
           aiStandupGeneration: true,
           aiStandupChangelog: true,
+          aiStandupStartDate: true,
           crossProcessLaunchOwnership: true,
           desktopUpdates: IS_DESKTOP,
           desktopZoomControls: IS_DESKTOP && typeof desktopZoomHandler === 'function',
@@ -1285,7 +1286,7 @@ export const server = createServer(async (request, response) => {
         end: window.end,
       });
       if (tasks.length === 0) {
-        throw new StandupGenerationError('No completed work was recorded for that day and scope.');
+        throw new StandupGenerationError('No completed task started on that day in the selected scope.');
       }
       const includedTasks = tasks.slice(-MAX_STANDUP_SOURCE_TASKS);
       const omittedTaskCount = tasks.length - includedTasks.length;
