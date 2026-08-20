@@ -15,6 +15,7 @@ import {
   CLAUDE_RESUME_PICKER_FALLBACK_KEYS,
   CLAUDE_RESUME_PICKER_KEYS,
   CLAUDE_SCREEN_RULE_PATTERN,
+  CLAUDE_TRUST_DIALOG_KEYS,
   ClaudeTerminalExecutor,
   classifyClaudeScreen,
   claudeComposerContent,
@@ -1135,6 +1136,13 @@ test('the folder trust prompt is its own classification, never a composer', () =
   ].join('\n');
   assert.equal(classifyClaudeScreen(trust), 'trust-dialog');
   assert.equal(claudeComposerContent(trust).found, false);
+  assert.equal(classifyClaudeScreen(CURRENT_TRUST_DIALOG_FRAME), 'trust-dialog');
+  assert.equal(claudeComposerContent(CURRENT_TRUST_DIALOG_FRAME).found, false);
+
+  // A complete quotation above a live composer is transcript text, not an active trust prompt.
+  // The composer status row is the decisive negative signal, so option 1 is never sent here.
+  const quotedAboveComposer = `${CURRENT_TRUST_DIALOG_FRAME}\n${EMPTY_COMPOSER_FRAME}`;
+  assert.equal(classifyClaudeScreen(quotedAboveComposer), 'composer');
 });
 
 test('a multi-line composer keeps its whole text, including a separator line inside the prompt', () => {
@@ -1555,6 +1563,25 @@ const TRUST_DIALOG_FRAME = [
   '',
   ' ❯ 1. Yes, I trust this folder',
   '   2. No, exit',
+  '',
+  ' Enter to confirm · Esc to cancel',
+].join('\n');
+// Claude Code 2.1.237 added a middle choice that continues without project-provided permissions.
+// Trust remains explicit option 1, while exit moved from option 2 to option 3.
+const CURRENT_TRUST_DIALOG_FRAME = [
+  ' Accessing workspace:',
+  '',
+  ' /repo',
+  '',
+  ' Quick safety check: Is this a project you created or one you trust? (Like your own code, a',
+  ' well-known open source project, or work from your team). If not, take a moment to review what',
+  " is in this folder first.",
+  '',
+  " Claude Code'll be able to read, edit, and execute files here.",
+  '',
+  ' ❯ 1. Yes, I trust this folder',
+  '   2. No, continue without these permissions',
+  '   3. No, exit',
   '',
   ' Enter to confirm · Esc to cancel',
 ].join('\n');
@@ -3021,6 +3048,7 @@ test('a live update that stays held exhausts the bounded submit limit', async ()
   });
   const request = unacknowledgedSteerRequest(deliveredPrompt);
   let screenReads = 0;
+  let clock = 0;
   const { executor, submitted } = makeExecutor({
     sessions: {
       readConnectedSession: async () => ({
@@ -3041,11 +3069,11 @@ test('a live update that stays held exhausts the bounded submit limit', async ()
         text: screenReads === 1 ? EMPTY_COMPOSER_FRAME : heldPasteFrame(deliveredPrompt),
       };
     },
-    now: Date.now,
-    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    // A deterministic clock proves the bounded schedule without losing an action when unrelated
+    // parallel tests delay the real event loop beyond this intentionally tiny test window.
+    now: () => clock,
+    wait: async (milliseconds) => { clock += milliseconds; },
     steerSubmitNudgeMs: 3,
-    // Leave enough real-clock slack that scheduler load cannot consume the final guarded action.
-    // The production schedule contract is covered separately with the default 80 second window.
     steerAcceptanceTimeoutMs: 100,
     submitRetryMs: 3,
     submitRetryBackoffMs: 0,
@@ -6734,30 +6762,30 @@ test('the resume picker is answered on the pre-configured launch path that never
   assert.equal(resolved.event.resumePickerChoice, 'continue');
 });
 
-test('the folder trust dialog still fails closed on the pre-configured launch path', async () => {
+test('the current folder trust dialog is approved on the pre-configured launch path', async () => {
   const harness = continuationHarness({
-    beforePaste: [TRUST_DIALOG_FRAME],
+    beforePaste: [CURRENT_TRUST_DIALOG_FRAME, EMPTY_COMPOSER_FRAME],
     hookBridge: preappliedHookBridge(),
     terminateProcess: async () => { throw new Error('the terminal must not be restarted'); },
     relaunch: async () => { throw new Error('the terminal must not be restarted'); },
   });
+  const io = collect();
 
-  await assert.rejects(
-    () => harness.executor.runTurn(
-      configuredTask,
-      { cancelRequested: false },
-      { id: SESSION_ID },
-      { ...TERMINAL, launchSettings: recordedLaunchSettings() },
-      collect(),
-    ),
-    (error) => {
-      assert.equal(error.retryable, false);
-      assert.match(error.message, /trust/i);
-      return true;
-    },
+  const outcome = await harness.executor.runTurn(
+    configuredTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    { ...TERMINAL, launchSettings: recordedLaunchSettings() },
+    io,
   );
-  assert.equal(harness.keys.length, 0);
-  assert.equal(harness.injected.length, 0);
+
+  assert.equal(outcome.finalResponse, 'Continuation delivered after the resume dialog.');
+  assert.deepEqual(harness.keys, [{ windowId: WINDOW_ID, value: CLAUDE_TRUST_DIALOG_KEYS }]);
+  assert.equal(harness.injected.length, 1);
+  assert.deepEqual(harness.timeline.map((entry) => entry.action), ['keys', 'inject']);
+  const approved = io.events.find((entry) => entry.event.deliveryState === 'folder-trust-approved');
+  assert.equal(approved.event.folderTrustChoice, 'trust');
+  assert.equal(approved.event.folderTrustAttempt, 1);
 });
 
 test('a recorded launch that does not match the task settings still restarts the terminal', async () => {
@@ -6827,24 +6855,47 @@ test('a resume picker that survives the digit falls back to the arrow exactly on
   assert.equal(harness.submitted.length, 0);
 });
 
-test('the folder trust prompt is never answered and never typed into', async () => {
+test('the legacy folder trust prompt is approved before the task prompt is typed', async () => {
   const harness = continuationHarness({
-    beforePaste: [TRUST_DIALOG_FRAME],
+    beforePaste: [TRUST_DIALOG_FRAME, EMPTY_COMPOSER_FRAME],
   });
+  const io = collect();
+
+  const outcome = await harness.executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, 'Continuation delivered after the resume dialog.');
+  assert.equal(CLAUDE_TRUST_DIALOG_KEYS, '1');
+  assert.deepEqual(harness.keys, [{ windowId: WINDOW_ID, value: CLAUDE_TRUST_DIALOG_KEYS }]);
+  assert.equal(harness.injected.length, 1);
+  assert.deepEqual(harness.timeline.slice(0, 2).map((entry) => entry.action), ['keys', 'inject']);
+  assert.equal(
+    io.events.filter((entry) => entry.event.deliveryState === 'folder-trust-approved').length,
+    1,
+  );
+});
+
+test('a folder trust prompt that survives one explicit approval fails without a second key', async () => {
+  const harness = continuationHarness({ beforePaste: [CURRENT_TRUST_DIALOG_FRAME] });
 
   await assert.rejects(
     () => harness.executor.runTurn(baseTask, { cancelRequested: false }, { id: SESSION_ID }, TERMINAL, collect()),
     (error) => {
       assert.equal(error.retryable, false);
-      assert.match(error.message, /folder trust prompt/i);
-      assert.match(error.message, /never answers that prompt for you/i);
+      assert.match(error.message, /kept showing the folder trust prompt/i);
+      assert.match(error.message, /did not paste the task prompt/i);
       return true;
     },
   );
 
-  // Trusting a folder grants read, edit, and execute access. That decision belongs to the user.
-  assert.equal(harness.keys.length, 0);
+  assert.deepEqual(harness.keys, [{ windowId: WINDOW_ID, value: CLAUDE_TRUST_DIALOG_KEYS }]);
   assert.equal(harness.injected.length, 0);
+  assert.equal(harness.submitted.length, 0);
 });
 
 test('an unknown dialog is never typed into, never answered, and names itself in the failure', async () => {
@@ -6997,7 +7048,7 @@ test('task 39 end to end: the picker swallows the paste, CC Relay answers it and
   assert.equal(started.event.submitAttempts, 0);
 });
 
-test('a trust dialog discovered after the paste fails closed with a message that admits the paste', async () => {
+test('a trust dialog discovered after the paste is approved and the swallowed prompt is re-armed', async () => {
   const fake = fakeTranscript();
   fake.append({ type: 'mode' });
   let harness = null;
@@ -7007,29 +7058,38 @@ test('a trust dialog discovered after the paste fails closed with a message that
     sessions,
     openTranscript: () => fake.source,
     readScreen: async (windowId) => reader.current(windowId),
+    inject: async (windowId, value) => {
+      harness.injected.push({ windowId, value });
+      harness.timeline.push({ action: 'inject', windowId, value });
+      if (harness.injected.length === 2) {
+        fake.append(userPrompt(deliveredPrompt()));
+        fake.append(assistant('end_turn', [text('Trust startup recovery completed.')]));
+      }
+    },
   });
   reader.current = phasedScreenFrames(
     [EMPTY_COMPOSER_FRAME],
-    [TRUST_DIALOG_FRAME],
+    [CURRENT_TRUST_DIALOG_FRAME, EMPTY_COMPOSER_FRAME, EMPTY_COMPOSER_FRAME],
     () => harness.injected.length > 0,
   );
+  const io = collect();
 
-  await assert.rejects(
-    () => harness.executor.runTurn(baseTask, { cancelRequested: false }, { id: SESSION_ID }, TERMINAL, collect()),
-    (error) => {
-      assert.equal(error.retryable, false);
-      // Post-injection wording: claiming nothing was typed would be false here.
-      assert.match(error.message, /had already pasted this task's prompt/i);
-      assert.match(error.message, /will not retry automatically/i);
-      assert.equal(/did not type anything/i.test(error.message), false);
-      assert.match(error.message, /never answers the trust prompt for you/i);
-      return true;
-    },
+  const outcome = await harness.executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
   );
 
-  assert.equal(harness.submitted.length, 0); // never a Return at a security question
-  assert.equal(harness.keys.length, 0); // and never an answer to it
-  assert.equal(harness.injected.length, 1); // no re-arm into a dialog
+  assert.equal(outcome.finalResponse, 'Trust startup recovery completed.');
+  assert.deepEqual(harness.timeline.map((entry) => entry.action), ['inject', 'keys', 'inject']);
+  assert.deepEqual(harness.keys, [{ windowId: WINDOW_ID, value: CLAUDE_TRUST_DIALOG_KEYS }]);
+  assert.equal(harness.submitted.length, 0);
+  assert.equal(harness.injected.length, 2);
+  assert.equal(harness.injected[0].value, harness.injected[1].value);
+  assert.equal(io.events.filter((entry) => entry.event.deliveryState === 'folder-trust-approved').length, 1);
+  assert.equal(io.events.filter((entry) => entry.event.deliveryState === 're-injected').length, 1);
 });
 
 test('an unreadable screen after a junk clear never lets a Return follow the junk', async () => {
@@ -8408,6 +8468,7 @@ test('the screen verification defaults leave room to answer the resume dialog an
   assert.equal(executor.relaunchTimeoutMs, 30_000);
   assert.equal(executor.screenSettleMs, 1_500);
   assert.equal(executor.maxResumePickerResolutions, 2);
+  assert.equal(executor.maxTrustDialogResolutions, 1);
   assert.equal(executor.maxPromptReinjections, 1);
   // Claude exits on a second Ctrl+C inside its own exit-hint window, which lasts a couple of
   // seconds, so the enforced spacing has to be comfortably wider than that.

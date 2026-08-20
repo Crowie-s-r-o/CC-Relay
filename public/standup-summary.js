@@ -44,8 +44,16 @@ export function dateFromLocalInput(value) {
   return date;
 }
 
-export function tasksForStandupDay(tasks, anchor = new Date()) {
-  const { start, end } = periodRange('day', anchor);
+export function standupDateRange(anchor = new Date(), dayCount = 1) {
+  const { start } = periodRange('day', anchor);
+  const days = Number(dayCount) === 2 ? 2 : 1;
+  const end = new Date(start);
+  end.setDate(end.getDate() + days);
+  return { start, end, dayCount: days };
+}
+
+export function tasksForStandupDays(tasks, anchor = new Date(), dayCount = 1) {
+  const { start, end } = standupDateRange(anchor, dayCount);
   return (Array.isArray(tasks) ? tasks : [])
     .filter((task) => STANDUP_STATUSES.has(task?.status))
     .filter((task) => {
@@ -56,6 +64,10 @@ export function tasksForStandupDay(tasks, anchor = new Date()) {
       standupStartTimestamp(left) - standupStartTimestamp(right)
       || Number(left?.id || 0) - Number(right?.id || 0)
     ));
+}
+
+export function tasksForStandupDay(tasks, anchor = new Date()) {
+  return tasksForStandupDays(tasks, anchor, 1);
 }
 
 function cleanStandupItem(value) {

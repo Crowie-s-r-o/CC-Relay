@@ -7,6 +7,16 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 20: new Claude workspaces no longer strand queued tasks at the folder trust prompt.**
+> Claude does not register the interactive session while that first-use dialog is open, so task
+> execution could time out before the executor had a session to control. Relay now recognizes only
+> the exact legacy or current trust screen on its fresh owned Terminal.app tab, compares the whole
+> screen again before choosing option 1, latches the action so it cannot repeat, and gives Claude a
+> fresh binding window afterward. Unknown or changed screens receive no key. The executor shares
+> the same strict classifier for later prompts and can re-arm one swallowed paste. Restart Relay to
+> activate the fix. See [[claude-folder-trust-startup]] and [[claude-resume-picker-guard]].
+
+> [!important]
 > **August 20: an accepted desktop update now follows the newest release that becomes ready before
 > exit.** A long-running v0.2.16 process staged v0.2.17, then missed v0.2.18 because both the
 > downloaded state and a pending restart paused every five-minute check. Relay now keeps checking
@@ -512,13 +522,13 @@ type: hot
 > an empty composer. Readiness by `claude agents --json` alone cannot see the picker, so the
 > executor now reads the exact owned terminal viewport before typing: the resume picker is
 > answered with `2` (Resume full session as-is, never `1`, never the preference-writing `3`), a
-> folder-trust dialog fails with instructions and is never auto-answered, unknown screens fail
-> closed with an excerpt, visible residue is cleared with one spaced Ctrl+C, every guarded submit
+> recognized folder trust dialog is approved once for the selected workspace, unknown screens
+> fail closed with an excerpt, visible residue is cleared with one spaced Ctrl+C, every guarded submit
 > action first verifies the held `[Pasted text #N +M lines]` placeholder on screen, a provably
 > lost paste is re-injected once, and a junk-positive composer can never receive a blind Return
-> (the junkUnproven latch). Snapshot failures degrade to the pre-change behavior. 878 tests green,
+> (the junkUnproven latch). Snapshot failures degrade to the pre-change behavior. 1,636 tests green,
 > classifier validated against 36 live-captured frames, adversarial review verdict Ship. See
-> [[claude-resume-picker-guard]].
+> [[claude-resume-picker-guard]] and [[claude-folder-trust-startup]].
 
 > [!important]
 > **Restart CC Relay to activate this fix.** The guarded Claude submit action is no longer one-shot.

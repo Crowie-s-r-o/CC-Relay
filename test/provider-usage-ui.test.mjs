@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import {
   PROVIDER_USAGE_METERS,
+  combinedWeeklyUsagePresentation,
   providerUsagePresentation,
 } from '../public/provider-usage.js';
 
@@ -210,4 +211,38 @@ test('usage strip has four semantic colors, dark mode, and mobile layout', () =>
   const reducedMotion = style.lastIndexOf('@media (prefers-reduced-motion: reduce)');
   assert.ok(reducedMotion > baseTrack);
   assert.match(style.slice(reducedMotion), /\.provider-usage-track i \{\s*transition: none;/);
+});
+
+test('combined weekly bottom fill averages Claude and Codex weekly windows', () => {
+  const both = combinedWeeklyUsagePresentation({
+    claude: { status: 'ok', weekly: { usedPercent: 14 } },
+    codex: { status: 'ok', weekly: { usedPercent: 11 } },
+  });
+  assert.equal(both.usedPercent, 13);
+  assert.equal(both.level, 'normal');
+  assert.match(both.title, /Claude and Codex averaged/);
+
+  const single = combinedWeeklyUsagePresentation({
+    claude: { status: 'ok', weekly: { usedPercent: 92 } },
+    codex: { status: 'unavailable' },
+  });
+  assert.equal(single.usedPercent, 92);
+  assert.equal(single.level, 'critical');
+  assert.match(single.title, /one provider reporting/);
+
+  const none = combinedWeeklyUsagePresentation({
+    claude: { status: 'checking' },
+    codex: { status: 'checking' },
+  });
+  assert.equal(none.usedPercent, null);
+  assert.equal(none.level, 'unavailable');
+
+  assert.match(app, /combinedWeeklyUsagePresentation\(usage\)/);
+  assert.match(app, /--provider-usage-combined/);
+  assert.match(app, /dataset\.combinedLevel/);
+  assert.match(style, /\.provider-usage::after \{[\s\S]*?width: var\(--provider-usage-combined, 0%\)/);
+  assert.match(style, /\.provider-usage\[data-combined-level="critical"\]/);
+  assert.match(style, /html\[data-theme="dark"\] \.provider-usage\[data-combined-level="critical"\]/);
+  const reducedMotion = style.lastIndexOf('@media (prefers-reduced-motion: reduce)');
+  assert.match(style.slice(reducedMotion), /\.provider-usage::after \{\s*transition: none;/);
 });

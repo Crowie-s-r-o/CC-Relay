@@ -132,6 +132,81 @@ test('Claude binding uses the launch UUID and ignores another new session in the
   assert.deepEqual(bound, [['launch-claude', 'launch-claude']]);
 });
 
+test('Claude startup trust is approved before the first discoverable session binds', async () => {
+  const calls = [];
+  const diagnostics = [];
+  let clock = 0;
+  let trusted = false;
+  const launcher = {
+    launch: async () => ({
+      launchId: 'launch-claude-trust',
+      expectedThreadId: 'launch-claude-trust',
+      provider: 'claude',
+      path: '/work/project',
+    }),
+    resolveClaudeFolderTrust: async (launchId) => {
+      calls.push(`trust:${launchId}`);
+      trusted = true;
+      return { status: 'accepted' };
+    },
+    bindOwnedTerminal: (launchId, thread) => calls.push(`bind:${launchId}:${thread.id}`),
+  };
+  const coordinator = new TerminalLaunchCoordinator({
+    launcher,
+    diagnostic: (...args) => diagnostics.push(args),
+    now: () => clock,
+    timeoutMs: 10,
+    pollMs: 1,
+    delay: async (milliseconds) => { clock += milliseconds; },
+    listSessions: async () => (trusted ? [{
+      id: 'launch-claude-trust',
+      provider: 'claude',
+      cwd: '/work/project',
+    }] : []),
+  });
+
+  const launched = await coordinator.launch('/work/project', 'claude');
+
+  assert.equal(launched.threadId, 'launch-claude-trust');
+  assert.deepEqual(calls, [
+    'trust:launch-claude-trust',
+    'bind:launch-claude-trust:launch-claude-trust',
+  ]);
+  assert.equal(
+    diagnostics.some(([event]) => event === 'terminal.binding.claude_folder_trust_accepted'),
+    true,
+  );
+});
+
+test('an approved Claude trust prompt gets one fresh binding window and no second approval', async () => {
+  let clock = 0;
+  let trustCalls = 0;
+  const coordinator = new TerminalLaunchCoordinator({
+    launcher: {
+      launch: async () => ({
+        launchId: 'trusted-but-missing',
+        provider: 'claude',
+        path: '/work/project',
+      }),
+      resolveClaudeFolderTrust: async () => {
+        trustCalls += 1;
+        return { status: 'accepted' };
+      },
+    },
+    now: () => clock,
+    timeoutMs: 4,
+    pollMs: 2,
+    delay: async (milliseconds) => { clock += milliseconds; },
+    listSessions: async () => [],
+  });
+
+  const launched = await coordinator.launch('/work/project', 'claude');
+
+  assert.equal(trustCalls, 1);
+  assert.equal(launched.connectionStatus, 'timed_out');
+  assert.match(launched.bindingError, /accepted the selected workspace/i);
+});
+
 test('resumed Claude binding uses the conversation ID while retaining a fresh native launch ID', async () => {
   const calls = [];
   const coordinator = new TerminalLaunchCoordinator({

@@ -93,10 +93,11 @@ All in `src/claude-terminal-executor.mjs`, all constants exported and frame-test
    on at least one matched row (the pointer requirement narrows, but does not eliminate, the
    false positive from a byte-verbatim quoted dialog in the replayed transcript; the bounded
    consequence is two stray keystrokes and a fail-closed error). An unknown screen polls to the
-   deadline and fails non-retryably with a sanitized excerpt. A trust dialog fails immediately
-   with instructions; CC Relay never answers a trust decision. A snapshot failure degrades to the
-   pre-change readiness behavior, announced once per turn as `screen-unverified`, because the
-   gate must never become a new failure source.
+   deadline and fails non-retryably with a sanitized excerpt. The exact legacy or current folder
+   trust dialog is approved once for the task-selected workspace; every other prompt remains
+   unknown and receives no key. A snapshot failure degrades to the pre-change readiness behavior,
+   announced once per turn as `screen-unverified`, because the gate must never become a new failure
+   source. See [[claude-folder-trust-startup]] for the earlier pre-discovery gate.
 2. **Picker resolution.** The digit `2` is sent (its appended Return lands on the now-empty
    composer, a verified no-op), the screen is re-read after `screenSettleMs`, and a still-present
    picker gets one down-arrow fallback. At most `maxResumePickerResolutions` (2) resolutions per
@@ -128,11 +129,12 @@ All in `src/claude-terminal-executor.mjs`, all constants exported and frame-test
    busy before accepting the prompt instead of claiming the turn is running.
 
 New constructor options: `readScreen`, `sendKeys`, `screenSettleMs` 1500,
-`maxResumePickerResolutions` 2, `maxPromptReinjections` 1, `composerClearSpacingMs` 5000, and
+`maxResumePickerResolutions` 2, `maxTrustDialogResolutions` 1,
+`maxPromptReinjections` 1, `composerClearSpacingMs` 5000, and
 `relaunchTimeoutMs` raised 20000 to 30000 to cover picker resolution plus a large full-session
-load. New `claude/progress` deliveryStates: `resume-picker-resolved`, `composer-cleared`,
-`re-injected`, `screen-unverified`. Nothing outside the executor consumes `deliveryState`, so no
-renderer change was needed.
+load. New `claude/progress` deliveryStates include `resume-picker-resolved`,
+`folder-trust-approved`, `composer-cleared`, `re-injected`, and `screen-unverified`. Nothing
+outside the executor consumes `deliveryState`, so no renderer change was needed.
 
 ## Verification
 

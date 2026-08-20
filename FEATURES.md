@@ -145,7 +145,7 @@ The monitor uses each installed, authenticated provider CLI. It does not add API
 
 ### AI daily standup
 
-The Task queue includes a **Standup** action. Opening it does not run AI. Each Launchpad can save an optional default custom prompt for its Standups, such as preferred terminology, emphasis, or exclusions. Select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved project prompt plus the prompts, assistant responses, and final results from completed work in that project. It never uses a task terminal.
+The Task queue includes a **Standup** action. Opening it does not run AI. Each Launchpad can save an optional default custom prompt for its Standups, such as preferred terminology, emphasis, or exclusions. Choose a one-day or two-day range, then select its local-calendar start date to begin generation. A two-day range includes the selected date and the following date, and its latest allowed start keeps the whole range at or before today. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved project prompt plus the prompts, assistant responses, and final results from completed work in that project. It never uses a task terminal.
 
 Standup has one output type: the same concise changelog structure used by deploy. Related work is synthesized into short Added, Changed, Fixed, and Security sentences. Empty categories are omitted, facts are deduplicated, and the result copies as ready-to-paste Markdown headings and bullet points. Standup generation does not create a queue task, resume an existing task conversation, or add itself to history.
 

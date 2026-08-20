@@ -225,6 +225,32 @@ export function providerUsageMeterPresentation(providerUsage, meter, {
   };
 }
 
+// The container's bottom strip shows one combined weekly runway: the average of the Claude and
+// Codex all-model weekly windows, or the single reported one while the other is unavailable.
+export function combinedWeeklyUsagePresentation(providerUsage) {
+  const percents = ['claude', 'codex']
+    .map((provider) => finitePercent(providerUsage?.[provider]?.weekly?.usedPercent))
+    .filter((percent) => percent !== null);
+  if (percents.length === 0) {
+    return { usedPercent: null, level: 'unavailable', title: '' };
+  }
+  const usedPercent = Math.round(
+    percents.reduce((total, percent) => total + percent, 0) / percents.length,
+  );
+  const level = usedPercent >= 90
+    ? 'critical'
+    : usedPercent >= 75
+      ? 'elevated'
+      : usedPercent >= 50 ? 'warning' : 'normal';
+  return {
+    usedPercent,
+    level,
+    title: percents.length === 2
+      ? `Combined weekly usage: ${usedPercent}% (Claude and Codex averaged).`
+      : `Combined weekly usage: ${usedPercent}% (one provider reporting).`,
+  };
+}
+
 export function providerUsagePresentation(providerUsage, options) {
   return PROVIDER_USAGE_METERS.map((meter) => (
     providerUsageMeterPresentation(providerUsage, meter, options)

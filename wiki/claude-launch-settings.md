@@ -125,9 +125,11 @@ production evidence that the churn is gone.
 The picker classification and resolution were never inside `relaunchForTask` alone.
 `ensureComposerScreen()` runs on **every** path before the injection offset is captured: it
 classifies the exact owned viewport, answers a resume picker with the verified digit `2`
-("Resume full session as-is"), fails closed on a folder-trust dialog, and fails closed on an
-unknown screen with a sanitized excerpt. Skipping the relaunch changes nothing about that gate.
-See [[claude-resume-picker-guard]].
+("Resume full session as-is"), approves the exact known folder trust prompt for the task-selected
+workspace once, and fails closed on an unknown screen with a sanitized excerpt. Skipping the
+relaunch changes nothing about that gate. Pre-discovery trust handling lives in the launch binding
+coordinator because Claude does not register while that prompt is open. See
+[[claude-folder-trust-startup]] and [[claude-resume-picker-guard]].
 
 One deadline did move. `relaunchTimeoutMs` was widened from 20 s to 30 s specifically to cover
 "answer the picker, then load a large full session". On the skip path that window no longer exists,

@@ -57,8 +57,9 @@ import {
   STANDUP_CHANGELOG_SECTIONS,
   standupCopyHtml,
   standupCopyText,
+  standupDateRange,
   standupSections,
-  tasksForStandupDay,
+  tasksForStandupDays,
 } from './standup-summary.js';
 import { resolveSubmissionId, submissionIntentSignature } from './submission-intent.js';
 import {
@@ -143,7 +144,7 @@ import {
   availableProviderSelection,
   providerInstallationState,
 } from './provider-availability.js';
-import { providerUsagePresentation } from './provider-usage.js';
+import { combinedWeeklyUsagePresentation, providerUsagePresentation } from './provider-usage.js';
 import { createTextSelectionGuard } from './text-selection-guard.js';
 import { defaultEffortForModel } from './model-effort.js';
 import { desktopUpdatePresentation } from './desktop-update-state.js';
@@ -378,6 +379,7 @@ const state = {
   taskSearchTimer: null,
   taskSearchSequence: 0,
   standupDate: '',
+  standupDays: 1,
   standupChanges: emptyStandupSections(),
   standupClipboardText: '',
   standupTaskCount: 0,
@@ -692,6 +694,8 @@ const elements = {
   standupClose: document.querySelector('#standup-close'),
   standupCancel: document.querySelector('#standup-cancel'),
   standupDate: document.querySelector('#standup-date'),
+  standupDaysField: document.querySelector('#standup-days-field'),
+  standupDays: document.querySelector('#standup-days'),
   standupCustomPromptField: document.querySelector('#standup-custom-prompt-field'),
   standupCustomPrompt: document.querySelector('#standup-custom-prompt'),
   standupCustomPromptStatus: document.querySelector('#standup-custom-prompt-status'),
@@ -4017,6 +4021,26 @@ function standupCustomPromptSupported() {
   return state.status?.capabilities?.projectStandupPrompt === true;
 }
 
+function standupTwoDayRangeSupported() {
+  return state.status?.capabilities?.aiStandupTwoDayRange === true;
+}
+
+function selectedStandupDays() {
+  return standupTwoDayRangeSupported() && Number(elements.standupDays.value) === 2 ? 2 : 1;
+}
+
+function updateStandupDateMaximum() {
+  const maximum = new Date();
+  maximum.setHours(0, 0, 0, 0);
+  maximum.setDate(maximum.getDate() - (selectedStandupDays() - 1));
+  const value = localDateInputValue(maximum);
+  elements.standupDate.max = value;
+  if (elements.standupDate.value && elements.standupDate.value > value) {
+    elements.standupDate.value = value;
+    state.standupDate = value;
+  }
+}
+
 function projectStandupCustomPrompt(project = activeProject()) {
   return typeof project?.standup_custom_prompt === 'string' ? project.standup_custom_prompt : '';
 }
@@ -4113,13 +4137,17 @@ function standupScopeLabel() {
   return 'All Relays';
 }
 
-function standupDateLabel(anchor) {
-  return new Intl.DateTimeFormat(undefined, {
+function standupDateLabel(anchor, dayCount = 1) {
+  const formatter = new Intl.DateTimeFormat(undefined, {
     weekday: 'long',
     month: 'long',
     day: 'numeric',
     year: 'numeric',
-  }).format(anchor);
+  });
+  if (dayCount === 1) return formatter.format(anchor);
+  const finalDay = new Date(anchor);
+  finalDay.setDate(finalDay.getDate() + 1);
+  return `${formatter.format(anchor)} to ${formatter.format(finalDay)}`;
 }
 
 function standupItemCount(sections = state.standupChanges) {
@@ -4153,8 +4181,9 @@ function standupResultsMarkup(sections) {
 
 function renderStandup() {
   const anchor = dateFromLocalInput(elements.standupDate.value);
+  const dayCount = selectedStandupDays();
   const supported = standupGenerationSupported();
-  const sourceTasks = anchor ? tasksForStandupDay(projectTasks(), anchor) : [];
+  const sourceTasks = anchor ? tasksForStandupDays(projectTasks(), anchor, dayCount) : [];
   const projectName = workspaceName(state.activeProjectPath);
   const itemCount = standupItemCount();
   const activeGenerator = providerLabel(state.standupProvider || state.selectedProvider);
@@ -4164,9 +4193,11 @@ function renderStandup() {
     : customPromptPresent;
 
   renderStandupCustomPrompt();
-  elements.standupSubtitle.textContent = `Select when tasks started to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
+  elements.standupDaysField.hidden = !standupTwoDayRangeSupported();
+  elements.standupDays.disabled = state.standupGenerating || state.standupPromptSaving;
+  elements.standupSubtitle.textContent = `Select one or two days when tasks started to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
   elements.standupScopeLabel.textContent = `${projectName} · ${standupScopeLabel()}`;
-  elements.standupDateLabel.textContent = anchor ? standupDateLabel(anchor) : 'Select a workday';
+  elements.standupDateLabel.textContent = anchor ? standupDateLabel(anchor, dayCount) : 'Select a workday';
   elements.standupGeneratorProvider.textContent = state.standupProvider
     ? `${activeGenerator} used`
     : `${activeGenerator} preferred`;
@@ -4191,8 +4222,8 @@ function renderStandup() {
     elements.standupEmpty.hidden = false;
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = 'Select a workday';
-    elements.standupEmptyMessage.textContent = 'Select a date to generate short Added, Changed, Fixed, and Security bullets.';
-    elements.standupCount.textContent = 'Waiting for a date';
+    elements.standupEmptyMessage.textContent = 'Select a start date to generate short Added, Changed, Fixed, and Security bullets.';
+    elements.standupCount.textContent = 'Waiting for a start date';
     elements.standupSourceNote.textContent = 'CHANGELOG-style AI synthesis from recorded prompts and responses';
     elements.standupGenerate.textContent = 'Select a date';
     return;
@@ -4236,15 +4267,23 @@ function renderStandup() {
     elements.standupGenerate.textContent = supported ? 'Retry' : 'Restart required';
   } else if (sourceTasks.length === 0) {
     elements.standupEmpty.dataset.state = 'empty';
-    elements.standupEmptyTitle.textContent = 'No completed tasks started on this date';
-    elements.standupEmptyMessage.textContent = 'Choose another start date or finish a task that began on this date.';
+    elements.standupEmptyTitle.textContent = dayCount === 2
+      ? 'No completed tasks started in this range'
+      : 'No completed tasks started on this date';
+    elements.standupEmptyMessage.textContent = dayCount === 2
+      ? 'Choose another start date or finish a task that began during these two days.'
+      : 'Choose another start date or finish a task that began on this date.';
     elements.standupCount.textContent = '0 source tasks';
-    elements.standupSourceNote.textContent = 'Only completed tasks whose start falls on this date are eligible';
+    elements.standupSourceNote.textContent = dayCount === 2
+      ? 'Only completed tasks whose start falls in these two days are eligible'
+      : 'Only completed tasks whose start falls on this date are eligible';
     elements.standupGenerate.textContent = 'Generate changelog';
   } else {
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = 'Ready to generate';
-    elements.standupEmptyMessage.textContent = 'Generate concise Added, Changed, Fixed, and Security bullets for tasks started on this date.';
+    elements.standupEmptyMessage.textContent = dayCount === 2
+      ? 'Generate concise Added, Changed, Fixed, and Security bullets for tasks started during these two days.'
+      : 'Generate concise Added, Changed, Fixed, and Security bullets for tasks started on this date.';
     elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
     elements.standupSourceNote.textContent = 'The output uses the same categories and limits as deploy';
     elements.standupGenerate.textContent = 'Generate changelog';
@@ -4257,8 +4296,10 @@ function openStandup() {
     state.standupDate = '';
     resetStandupOutput();
   }
+  if (!standupTwoDayRangeSupported()) state.standupDays = 1;
   elements.standupDate.value = state.standupDate;
-  elements.standupDate.max = localDateInputValue(new Date());
+  elements.standupDays.value = String(state.standupDays);
+  updateStandupDateMaximum();
   elements.standupCustomPrompt.value = projectStandupCustomPrompt();
   state.standupPromptEdited = false;
   state.standupPromptStatus = '';
@@ -4275,7 +4316,9 @@ function closeStandup() {
 async function generateStandup() {
   if (state.standupGenerating || state.standupPromptSaving) return;
   const anchor = dateFromLocalInput(elements.standupDate.value);
+  const dayCount = selectedStandupDays();
   state.standupDate = elements.standupDate.value;
+  state.standupDays = dayCount;
   resetStandupCopyFeedback();
   resetStandupOutput();
   if (!anchor) {
@@ -4291,7 +4334,7 @@ async function generateStandup() {
     renderStandup();
     return;
   }
-  const sourceTasks = tasksForStandupDay(projectTasks(), anchor);
+  const sourceTasks = tasksForStandupDays(projectTasks(), anchor, dayCount);
   state.standupTaskCount = sourceTasks.length;
   if (sourceTasks.length === 0) {
     renderStandup();
@@ -4303,7 +4346,9 @@ async function generateStandup() {
     return;
   }
 
-  const { start, end } = periodRange('day', anchor);
+  const { start, end } = standupDateRange(anchor, dayCount);
+  const finalDay = new Date(end);
+  finalDay.setDate(finalDay.getDate() - 1);
   const sequence = ++state.standupRequestSequence;
   state.standupGenerating = true;
   renderStandup();
@@ -4315,6 +4360,7 @@ async function generateStandup() {
         threadId: null,
         provider: state.selectedProvider,
         date: state.standupDate,
+        dateEnd: localDateInputValue(finalDay),
         start: start.toISOString(),
         end: end.toISOString(),
       }),
@@ -5409,6 +5455,16 @@ function renderProviderUsage() {
     }
   }
   elements.providerUsage.setAttribute('aria-busy', String(checking));
+  const combined = combinedWeeklyUsagePresentation(usage);
+  if (combined.usedPercent === null) {
+    elements.providerUsage.style.removeProperty('--provider-usage-combined');
+    delete elements.providerUsage.dataset.combinedLevel;
+    elements.providerUsage.removeAttribute('title');
+  } else {
+    elements.providerUsage.style.setProperty('--provider-usage-combined', `${combined.usedPercent}%`);
+    elements.providerUsage.dataset.combinedLevel = combined.level;
+    elements.providerUsage.title = combined.title;
+  }
 }
 
 function renderStatus() {
@@ -10325,6 +10381,11 @@ elements.standupCustomPromptSave.addEventListener('click', () => {
 });
 elements.standupDate.addEventListener('change', () => {
   state.standupDate = elements.standupDate.value;
+  void generateStandup();
+});
+elements.standupDays.addEventListener('change', () => {
+  state.standupDays = selectedStandupDays();
+  updateStandupDateMaximum();
   void generateStandup();
 });
 elements.standupModal.addEventListener('click', (event) => {

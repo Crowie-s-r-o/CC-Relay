@@ -898,8 +898,15 @@
         <div class="standup-body">
           <div class="standup-controls">
             <label class="standup-date-field" for="standup-date">
-              <span>Task start date</span>
+              <span>Start date</span>
               <input id="standup-date" type="date">
+            </label>
+            <label id="standup-days-field" class="standup-date-field" for="standup-days" hidden>
+              <span>Range</span>
+              <select id="standup-days">
+                <option value="1">1 day</option>
+                <option value="2">2 days</option>
+              </select>
             </label>
             <div class="standup-scope">
               <span id="standup-scope-label">Selected Launchpad</span>

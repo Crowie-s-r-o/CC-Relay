@@ -18,6 +18,7 @@ type: index
 - [[macos-terminal-grid-coordinates]]
 - [[disposable-terminal-pools]]
 - [[claude-launch-settings]]
+- [[claude-folder-trust-startup]]
 - [[claude-current-model-routing]]
 - [[claude-current-model-routing-review]]
 - [[dual-backend-ownership-guard]]

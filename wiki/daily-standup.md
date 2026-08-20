@@ -13,7 +13,10 @@ tags:
 
 # Daily Standup
 
-The Task queue heading exposes **Standup** beside Queue and History. Opening the modal does not start AI. The modal also exposes an optional **Default custom prompt** saved on the selected Launchpad. The task start date is intentionally blank, and selecting a local calendar day saves any prompt edit before starting one generation run.
+The Task queue heading exposes **Standup** beside Queue and History. Opening the modal does not start AI. The modal also exposes an optional **Default custom prompt** saved on the selected Launchpad. The range can be one or two consecutive local calendar days. The start date is intentionally blank, and selecting it saves any prompt edit before starting one generation run. A two-day range includes the selected date and the following date; its latest allowed start is yesterday so the complete range ends today.
+
+> [!note]
+> The range selector defaults to one day. Changing it after selecting a date starts a fresh generation, and changing from one day to two days clamps a current-day start to yesterday. This keeps future dates out of the source interval.
 
 Standup has one output contract. It synthesizes completed work into the same nonempty sections used by [[open-source-releases|deploy]]:
 
@@ -35,23 +38,26 @@ Standup follows the selected Launchpad:
 - Exact resolved project paths are enforced again by `POST /api/standup/generate`.
 - With no selected project, the Standup button remains disabled.
 - A refreshed renderer requires `capabilities.aiStandupGeneration`, `capabilities.aiStandupChangelog`, and `capabilities.aiStandupStartDate` for generation.
+- The two-day option appears only with `capabilities.aiStandupTwoDayRange`; an older backend retains the one-day flow.
 - The default prompt editor appears only with `capabilities.projectStandupPrompt`.
 
 The dedicated `aiStandupChangelog` capability is a mixed-version guard. A new renderer does not send the categorized request to an older backend, and an old renderer does not silently request a retired length mode from the new backend.
 
 `aiStandupStartDate` separately guards the date-attribution contract. It prevents refreshed renderer assets from preselecting tasks by start time while an older backend still filters the same request by completion time.
 
+`aiStandupTwoDayRange` guards the wider request window. Without it, the renderer hides the range selector and sends the established one-day interval, so refreshed static assets cannot send a two-day request to a backend that still rejects it.
+
 `projectStandupPrompt` is an additive mixed-version guard. A refreshed renderer paired with an older backend keeps normal Standup generation available but hides the unsupported prompt editor instead of issuing a failing save request.
 
 Only tasks with status `complete` are eligible. Failed, queued, running, interrupted, and cancelled rows are excluded because a changelog records confirmed outcomes, not unresolved attempts. A completed task belongs to the local calendar day containing its persisted `started_at`. `created_at` is the compatibility fallback for legacy completed rows without a valid start timestamp. `finished_at` never chooses the Standup day, so work that crosses midnight remains attributed to the day it started.
 
-The browser sends the selected local interval as `[local midnight, next local midnight)`. The backend accepts a 22 through 26 hour interval so normal daylight-saving transitions remain valid.
+The browser sends the selected local interval with an exclusive end. One day is `[local midnight, next local midnight)`; two days end at local midnight after the following date. The backend accepts 22 through 26 elapsed hours for one day and 46 through 50 elapsed hours for two days so normal daylight-saving transitions remain valid. Durations between or beyond those bounds fail closed.
 
 See [[task-history]] for the shared project-wide visibility invariant.
 
 ## Conversation source
 
-The browser sends the project, a null Relay id, selected provider, task start date label, and ISO day boundaries. It never sends task text or the custom prompt as generation authority.
+The browser sends the project, a null Relay id, selected provider, start and inclusive end date labels, and ISO range boundaries. It never sends task text or the custom prompt as generation authority.
 
 The backend reloads source data from SQLite:
 
@@ -135,7 +141,7 @@ No generated standup is cached or persisted. The optional default prompt is dura
 
 The modal provides:
 
-- a single task start date control with no output options;
+- a task start date plus a one-day or two-day range control, with no output options;
 - a project-specific default custom prompt editor with explicit save feedback;
 - a visible provider route explaining that a fresh isolated CLI process is used;
 - a disabled date control and skeleton ledger while AI is working;
@@ -167,6 +173,8 @@ Every generated sentence enters the DOM through `escapeHtml`. Clipboard failure 
   "provider": "codex",
   "customPromptApplied": true,
   "date": "2026-08-12",
+  "dateEnd": "2026-08-13",
+  "dayCount": 2,
   "taskCount": 4,
   "includedTaskCount": 4,
   "promptCount": 6,
@@ -174,7 +182,7 @@ Every generated sentence enters the DOM through `escapeHtml`. Clipboard failure 
 }
 ```
 
-The endpoint validates the pinned project, optional Relay id length, provider, local-day interval, eligible completed source tasks, provider readiness, and global generation slot before returning normalized structured output. `customPromptApplied` records whether that exact run used saved project guidance, so a concurrent shared-config edit cannot make the completion note describe the wrong input. `PATCH /api/projects/:id/standup-prompt` separately validates and saves the 4,000-character project prompt.
+The endpoint validates the pinned project, optional Relay id length, provider, one-day or two-day local interval, eligible completed source tasks, provider readiness, and global generation slot before returning normalized structured output. `customPromptApplied` records whether that exact run used saved project guidance, so a concurrent shared-config edit cannot make the completion note describe the wrong input. `PATCH /api/projects/:id/standup-prompt` separately validates and saves the 4,000-character project prompt.
 
 ## Files and verification
 
@@ -193,7 +201,7 @@ The endpoint validates the pinned project, optional Relay id length, provider, l
 - `test/standup-ui.test.mjs`
 - `test/release-tooling.test.mjs`
 
-Focused tests cover local dates, daylight-saving day lengths, start-time attribution across midnight, creation-time compatibility fallback, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, project-prompt bounds and precedence, legacy project-table migration, project isolation, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, escaped rich-chat clipboard HTML and its plain-text fallback, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
+Focused tests cover local dates, one-day and two-day daylight-saving lengths, two-day exclusive boundaries, start-time attribution across midnight, creation-time compatibility fallback, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, project-prompt bounds and precedence, legacy project-table migration, project isolation, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, escaped rich-chat clipboard HTML and its plain-text fallback, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
 
 See [[daily-standup-review]] for the historical review of the retired length-configurable implementation.
 

@@ -10529,7 +10529,7 @@ html[data-running-task-width="360"] {
 
 .standup-controls {
   display: grid;
-  grid-template-columns: minmax(170px, 210px) minmax(0, 1fr);
+  grid-template-columns: minmax(170px, 210px) minmax(100px, 130px) minmax(0, 1fr);
   gap: 12px;
   align-items: end;
   margin-bottom: 10px;
@@ -10612,6 +10612,10 @@ html[data-running-task-width="360"] {
   gap: 6px;
 }
 
+.standup-date-field[hidden] {
+  display: none;
+}
+
 .standup-date-field span,
 .standup-scope span,
 .standup-sheet-heading small,
@@ -10624,7 +10628,7 @@ html[data-running-task-width="360"] {
   text-transform: uppercase;
 }
 
-.standup-date-field input {
+.standup-date-field :is(input, select) {
   width: 100%;
   height: 36px;
   min-width: 0;
@@ -10638,12 +10642,16 @@ html[data-running-task-width="360"] {
   font-weight: 700;
 }
 
-.standup-date-field input:focus-visible {
+.standup-date-field select {
+  cursor: pointer;
+}
+
+.standup-date-field :is(input, select):focus-visible {
   outline: 2px solid #6daff4;
   outline-offset: 1px;
 }
 
-.standup-date-field input:disabled {
+.standup-date-field :is(input, select):disabled {
   color: #8b94a4;
   background: #f1f3f7;
   cursor: progress;
@@ -12338,7 +12346,7 @@ html[data-theme="dark"] .planner-step-title,
 html[data-theme="dark"] .planner-step-prompt,
 html[data-theme="dark"] .turbo-council-step select,
 html[data-theme="dark"] .agent-tab-pool-input,
-html[data-theme="dark"] .standup-date-field input {
+html[data-theme="dark"] .standup-date-field :is(input, select) {
   border-color: var(--app-border);
   color: var(--app-text);
   background: var(--app-control);
@@ -15568,16 +15576,43 @@ html[data-theme="dark"] .about-footer strong {
 /* Subscription runway replaces the queue pause action in the global header. Five small
    instrument bars keep provider limits visible without competing with the live task rail. */
 .provider-usage {
+  --provider-usage-combined-accent: #2f855a;
+  position: relative;
   display: grid;
   flex: 0 0 320px;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
+  overflow: hidden;
   width: 320px;
   min-height: 38px;
   padding: 5px 8px 6px;
   border: 1px solid #dfe3ec;
   border-radius: 9px;
   background: #f8f9fb;
+}
+
+/* One combined weekly runway (Claude + Codex averaged) fills the container's bottom edge. */
+.provider-usage::after {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  width: var(--provider-usage-combined, 0%);
+  height: 2px;
+  background: var(--provider-usage-combined-accent);
+  content: "";
+  transition: width 180ms ease, background-color 140ms ease;
+}
+
+.provider-usage[data-combined-level="warning"] {
+  --provider-usage-combined-accent: #c58b00;
+}
+
+.provider-usage[data-combined-level="elevated"] {
+  --provider-usage-combined-accent: #dd6b20;
+}
+
+.provider-usage[data-combined-level="critical"] {
+  --provider-usage-combined-accent: var(--danger);
 }
 
 .provider-usage-meter {
@@ -15660,8 +15695,21 @@ html[data-theme="dark"] .about-footer strong {
 }
 
 html[data-theme="dark"] .provider-usage {
+  --provider-usage-combined-accent: var(--app-green);
   border-color: #30333a;
   background: #17181c;
+}
+
+html[data-theme="dark"] .provider-usage[data-combined-level="warning"] {
+  --provider-usage-combined-accent: var(--app-amber);
+}
+
+html[data-theme="dark"] .provider-usage[data-combined-level="elevated"] {
+  --provider-usage-combined-accent: var(--app-orange);
+}
+
+html[data-theme="dark"] .provider-usage[data-combined-level="critical"] {
+  --provider-usage-combined-accent: var(--app-red);
 }
 
 html[data-theme="dark"] .provider-usage-meter {
@@ -15979,6 +16027,10 @@ html[data-theme="dark"] .task-search-match mark {
   }
 
   .provider-usage-track i {
+    transition: none;
+  }
+
+  .provider-usage::after {
     transition: none;
   }
 

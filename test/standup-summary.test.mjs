@@ -6,8 +6,10 @@ import {
   standupBullets,
   standupCopyHtml,
   standupCopyText,
+  standupDateRange,
   standupSections,
   tasksForStandupDay,
+  tasksForStandupDays,
 } from '../public/standup-summary.js';
 
 function localIso(year, month, day, hour = 12) {
@@ -81,6 +83,22 @@ test('standup source selection uses task start time and exclusive local day boun
   ];
 
   assert.deepEqual(tasksForStandupDay(tasks, selectedDay).map((task) => task.id), [1, 7, 2, 3]);
+});
+
+test('standup source selection can span two consecutive local calendar days', () => {
+  const selectedDay = new Date(2026, 6, 29, 12);
+  const tasks = [
+    { id: 1, status: 'complete', started_at: localIso(2026, 6, 28, 23) },
+    { id: 2, status: 'complete', started_at: localIso(2026, 6, 29, 1) },
+    { id: 3, status: 'complete', started_at: localIso(2026, 6, 30, 23) },
+    { id: 4, status: 'complete', started_at: localIso(2026, 6, 31, 0) },
+  ];
+  const range = standupDateRange(selectedDay, 2);
+
+  assert.equal(range.dayCount, 2);
+  assert.equal(localDateInputValue(range.start), '2026-07-29');
+  assert.equal(localDateInputValue(range.end), '2026-07-31');
+  assert.deepEqual(tasksForStandupDays(tasks, selectedDay, 2).map((task) => task.id), [2, 3]);
 });
 
 test('AI standup output is split into changelog categories', () => {

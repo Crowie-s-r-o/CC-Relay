@@ -4,6 +4,10 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import { TerminalRuntimeResolver, normalizeTerminalTty } from './terminal-runtime-resolver.mjs';
+import {
+  CLAUDE_TRUST_DIALOG_KEYS,
+  isClaudeTrustDialogScreen,
+} from './claude-folder-trust.mjs';
 import { claudeLaunchSettingsRecord } from './claude-launch-settings.mjs';
 
 const execFile = promisify(execFileCallback);
@@ -14,7 +18,56 @@ const TERMINAL_ATTENTION_TIMEOUT_MS = 10_000;
 const TERMINAL_SHELL_READY_POLL_COUNT = 200;
 const TERMINAL_SHELL_READY_POLL_MS = 50;
 const TERMINAL_WINDOW_MISSING = '__CC_RELAY_TERMINAL_WINDOW_MISSING__';
+const CLAUDE_TRUST_SCREEN_TIMEOUT_MS = 5_000;
 const SHARED_CODEX_ENDPOINT = 'ws://127.0.0.1:4769';
+
+const DARWIN_CLAUDE_LAUNCH_SCREEN = `function run(argv) {
+  var result = { ok: false, reason: 'unknown', text: '' };
+  try {
+    var id = parseInt(argv[0], 10);
+    var terminal = Application('Terminal');
+    if (!terminal.running()) { result.reason = 'terminal-not-running'; return JSON.stringify(result); }
+    var window = terminal.windows.byId(id);
+    var tabs = window.tabs();
+    if (!tabs || tabs.length !== 1) { result.reason = 'tabs-unreadable'; return JSON.stringify(result); }
+    var contents = tabs[0].contents();
+    if (typeof contents !== 'string') { result.reason = 'contents-unreadable'; return JSON.stringify(result); }
+    result.ok = true;
+    result.reason = 'read';
+    result.text = contents;
+    return JSON.stringify(result);
+  } catch (error) {
+    result.reason = String(error);
+    return JSON.stringify(result);
+  }
+}`;
+
+// The second screen comparison closes the read-to-key race. If Claude redraws, the window closes,
+// or the tab changes after classification, this script sends nothing and the coordinator polls
+// again from a fresh snapshot.
+const DARWIN_CLAUDE_TRUST_ACCEPT = `function run(argv) {
+  var result = { ok: false, status: 'unknown' };
+  try {
+    var id = parseInt(argv[0], 10);
+    var expected = argv[1];
+    var keys = argv[2];
+    var terminal = Application('Terminal');
+    if (!terminal.running()) { result.status = 'terminal-not-running'; return JSON.stringify(result); }
+    var window = terminal.windows.byId(id);
+    var tabs = window.tabs();
+    if (!tabs || tabs.length !== 1) { result.status = 'tabs-unreadable'; return JSON.stringify(result); }
+    var contents = tabs[0].contents();
+    if (typeof contents !== 'string') { result.status = 'contents-unreadable'; return JSON.stringify(result); }
+    if (contents !== expected) { result.status = 'screen-changed'; return JSON.stringify(result); }
+    terminal.doScript(keys, { in: tabs[0] });
+    result.ok = true;
+    result.status = 'accepted';
+    return JSON.stringify(result);
+  } catch (error) {
+    result.status = String(error);
+    return JSON.stringify(result);
+  }
+}`;
 // A pending Codex CLI release makes the interactive TUI stop on an "Update available" prompt
 // before it dials --remote, so a CC Relay-owned turn would wait forever for a session that never
 // binds. The override is interactive-only: `codex exec` never shows the prompt and keeps its
@@ -71,6 +124,38 @@ function terminalTtyName(value) {
   if (!tty?.startsWith('/dev/')) return null;
   const name = tty.slice('/dev/'.length);
   return /^[a-zA-Z0-9._-]+$/.test(name) ? name : null;
+}
+
+async function defaultReadClaudeLaunchScreen(run, terminalWindowId) {
+  const { stdout = '' } = await run(
+    'osascript',
+    ['-l', 'JavaScript', '-e', DARWIN_CLAUDE_LAUNCH_SCREEN, String(terminalWindowId)],
+    { timeout: CLAUDE_TRUST_SCREEN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
+  );
+  const parsed = JSON.parse(stdout || '{}');
+  return parsed?.ok && typeof parsed.text === 'string'
+    ? { ok: true, reason: 'read', text: parsed.text }
+    : { ok: false, reason: String(parsed?.reason || 'unreadable'), text: '' };
+}
+
+async function defaultAcceptClaudeFolderTrust(run, terminalWindowId, expectedScreen) {
+  const { stdout = '' } = await run(
+    'osascript',
+    [
+      '-l',
+      'JavaScript',
+      '-e',
+      DARWIN_CLAUDE_TRUST_ACCEPT,
+      String(terminalWindowId),
+      expectedScreen,
+      CLAUDE_TRUST_DIALOG_KEYS,
+    ],
+    { timeout: CLAUDE_TRUST_SCREEN_TIMEOUT_MS, maxBuffer: 2 * 1024 * 1024 },
+  );
+  const parsed = JSON.parse(stdout || '{}');
+  return parsed?.ok && parsed.status === 'accepted'
+    ? { ok: true, status: 'accepted' }
+    : { ok: false, status: String(parsed?.status || 'unreadable') };
 }
 
 // Grid placement reads every Terminal window rectangle. The same window that answers null for
@@ -313,6 +398,8 @@ export class ProjectLauncher {
     recoveryRetryMs = 15_000,
     claudeBinary = 'claude',
     claudeSettingsForSession = () => null,
+    readClaudeLaunchScreen = null,
+    acceptClaudeFolderTrust = null,
     // Cross-process launch ownership. Without it every guard below degrades to the historical
     // single-process behavior, which is exactly what the unit suites exercise.
     launchRegistry = null,
@@ -323,6 +410,12 @@ export class ProjectLauncher {
     this.launchRegistry = launchRegistry;
     this.claudeBinary = claudeBinary;
     this.claudeSettingsForSession = claudeSettingsForSession;
+    this.readClaudeLaunchScreen = readClaudeLaunchScreen
+      || ((terminalWindowId) => defaultReadClaudeLaunchScreen(this.run, terminalWindowId));
+    this.acceptClaudeFolderTrust = acceptClaudeFolderTrust
+      || ((terminalWindowId, expectedScreen) => (
+        defaultAcceptClaudeFolderTrust(this.run, terminalWindowId, expectedScreen)
+      ));
     this.ensureCodexReady = ensureCodexReady;
     this.reserveCodexLaunch = reserveCodexLaunch;
     this.createId = createId;
@@ -422,6 +515,9 @@ export class ProjectLauncher {
       ownershipSource,
       cancelWorkspaceReservation,
       launchSettings,
+      // Folder trust input is bounded per exact native launch. The coordinator already latches a
+      // successful resolution, and this state makes the launcher method itself idempotent too.
+      folderTrustResolution: null,
       // The runtime pid observed the FIRST time this launch resolved a live provider process.
       // It is what binds `launchSettings` to a specific process: if the pid later differs, some
       // other process is on that tty and the recorded settings prove nothing about it.
@@ -782,6 +878,105 @@ export class ProjectLauncher {
       provider: terminal.provider,
       path: terminal.path,
     };
+  }
+
+  // Claude does not register a discoverable interactive session until its first-use folder trust
+  // prompt is answered. The binding coordinator calls this only for the exact fresh launch it is
+  // already waiting on. Unknown screens receive no input, and the default key sender compares the
+  // complete screen again immediately before it sends the explicit option 1.
+  async resolveClaudeFolderTrust(launchId) {
+    const terminal = this.ownedTerminals.get(launchId);
+    if (
+      this.closing
+      || this.platform !== 'darwin'
+      || !terminal
+      || terminal.provider !== 'claude'
+      || terminal.ownershipSource !== 'launch'
+      || terminal.threadId
+      || !Number.isInteger(Number(terminal.terminalWindowId))
+      || Number(terminal.terminalWindowId) <= 0
+    ) {
+      return { status: 'not-eligible' };
+    }
+    if (terminal.folderTrustResolution === 'accepted') {
+      return { status: 'already-accepted' };
+    }
+    if (terminal.folderTrustResolution === 'resolving') {
+      return { status: 'resolution-in-progress' };
+    }
+    if (terminal.folderTrustResolution === 'ambiguous') {
+      return { status: 'ambiguous' };
+    }
+
+    let screen;
+    try {
+      screen = await this.readClaudeLaunchScreen(terminal.terminalWindowId);
+    } catch (error) {
+      this.diagnostic('terminal.launch.claude_folder_trust_inspection_failed', {
+        launchId,
+        path: terminal.path,
+        error: error.message,
+      });
+      return { status: 'unreadable' };
+    }
+    if (!screen?.ok || typeof screen.text !== 'string') {
+      return { status: 'unreadable' };
+    }
+    // The screen read is an await. Re-prove that this exact launch is still owned and unbound
+    // before any classification can authorize an input action.
+    if (
+      this.closing
+      || this.ownedTerminals.get(launchId) !== terminal
+      || terminal.threadId
+    ) {
+      return { status: 'not-eligible' };
+    }
+    if (!isClaudeTrustDialogScreen(screen.text)) {
+      return { status: 'not-present' };
+    }
+
+    this.diagnostic('terminal.launch.claude_folder_trust_detected', {
+      launchId,
+      path: terminal.path,
+    });
+    terminal.folderTrustResolution = 'resolving';
+    let accepted;
+    try {
+      accepted = await this.acceptClaudeFolderTrust(
+        terminal.terminalWindowId,
+        screen.text,
+      );
+    } catch (error) {
+      // An osascript timeout can happen after Terminal accepted the Apple Event. Do not risk a
+      // second option key when delivery is ambiguous.
+      terminal.folderTrustResolution = 'ambiguous';
+      this.diagnostic('terminal.launch.claude_folder_trust_failed', {
+        launchId,
+        path: terminal.path,
+        error: error.message,
+      });
+      return { status: 'unreadable' };
+    }
+    if (!accepted?.ok || accepted.status !== 'accepted') {
+      // Every structured non-success result is returned before doScript in the atomic JXA. It is
+      // therefore safe for a later poll to inspect a new screen and try again if still needed.
+      terminal.folderTrustResolution = null;
+      const status = accepted?.status === 'screen-changed' ? 'screen-changed' : 'unreadable';
+      this.diagnostic('terminal.launch.claude_folder_trust_not_sent', {
+        launchId,
+        path: terminal.path,
+        reason: String(accepted?.status || 'unreadable'),
+      });
+      return { status };
+    }
+
+    terminal.folderTrustResolution = 'accepted';
+    this.diagnostic('terminal.launch.claude_folder_trust_accepted', {
+      launchId,
+      path: terminal.path,
+      choice: 'trust',
+    });
+    return { status: 'accepted' };
   }
 
   retainOwnedLaunch(launchId) {

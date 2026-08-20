@@ -114,6 +114,23 @@ The probe now waits up to 22 seconds after observing **Refreshing**, inside a 40
 - `test/provider-usage-ui.test.mjs` covers the five-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units for both five-hour meters, timezone-aware Claude labels, expired five-hour rollover, shared Fable presentation, explicit model-breakdown failures, accessible fallback text, absent windows, dark mode, and the mobile layout.
 - `test/codex-app-server.test.mjs` protects the authenticated rate-limit method and proves its null parameters pass through the actual request serializer.
 
+## Combined weekly bottom fill
+
+The `#provider-usage` container itself doubles as a sixth, combined meter: a 2px `::after` strip
+along its bottom edge fills left to right with the average of the Claude and Codex all-model
+weekly `usedPercent` values (`combinedWeeklyUsagePresentation` in `public/provider-usage.js`).
+
+- With both weekly windows reporting, the fill is their rounded average; with one reporting, it
+  mirrors that single window; with neither, the strip, `data-combined-level`, and the container
+  `title` are removed entirely.
+- Thresholds and colors reuse the per-meter semantics (normal / warning 50 / elevated 75 /
+  critical 90) via `--provider-usage-combined-accent`, themed for light and dark together.
+- The container gained `position: relative` and `overflow: hidden` so the strip clips to the 9px
+  rounded corners, and the strip's width transition is disabled inside the existing
+  `prefers-reduced-motion` block (a rule was added inside that block, never a new block, per the
+  last-reduce-block test trap).
+- Covered by the combined-fill test in `test/provider-usage-ui.test.mjs`.
+
 The August 19 Codex five-hour addition passed 76 focused usage and app-server tests, all 1,620 repository tests, `release:check` for v0.2.17, and rendered checks at 1680px and the 1344px responsive boundary. Both rendered sizes kept all five compact labels visible without clipping.
 
 The adversarial completion verdict is recorded in [[provider-usage-fable-correction-review]].

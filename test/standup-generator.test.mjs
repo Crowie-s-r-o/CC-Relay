@@ -37,7 +37,7 @@ function categorizedNotes({ added = [], changed = [], fixed = [], security = [] 
   return JSON.stringify({ added, changed, fixed, security });
 }
 
-test('standup window accepts local-day DST lengths and rejects arbitrary ranges', () => {
+test('standup window accepts one or two local days across DST and rejects arbitrary ranges', () => {
   const spring = validateStandupWindow({
     start: '2026-03-29T00:00:00.000Z',
     end: '2026-03-29T23:00:00.000Z',
@@ -46,12 +46,30 @@ test('standup window accepts local-day DST lengths and rejects arbitrary ranges'
     start: '2026-10-25T00:00:00.000Z',
     end: '2026-10-26T01:00:00.000Z',
   });
+  const springTwoDays = validateStandupWindow({
+    start: '2026-03-28T00:00:00.000Z',
+    end: '2026-03-29T23:00:00.000Z',
+  });
+  const autumnTwoDays = validateStandupWindow({
+    start: '2026-10-24T00:00:00.000Z',
+    end: '2026-10-26T01:00:00.000Z',
+  });
   assert.equal(spring.endMs - spring.startMs, 23 * 60 * 60 * 1000);
   assert.equal(autumn.endMs - autumn.startMs, 25 * 60 * 60 * 1000);
+  assert.equal(spring.dayCount, 1);
+  assert.equal(autumn.dayCount, 1);
+  assert.equal(springTwoDays.endMs - springTwoDays.startMs, 47 * 60 * 60 * 1000);
+  assert.equal(autumnTwoDays.endMs - autumnTwoDays.startMs, 49 * 60 * 60 * 1000);
+  assert.equal(springTwoDays.dayCount, 2);
+  assert.equal(autumnTwoDays.dayCount, 2);
   assert.throws(() => validateStandupWindow({
     start: '2026-07-29T00:00:00.000Z',
-    end: '2026-07-31T00:00:00.000Z',
-  }), /one local calendar day/);
+    end: '2026-07-30T12:00:00.000Z',
+  }), /one or two local calendar days/);
+  assert.throws(() => validateStandupWindow({
+    start: '2026-07-29T00:00:00.000Z',
+    end: '2026-08-01T00:00:00.000Z',
+  }), /one or two local calendar days/);
 });
 
 test('standup custom prompts are trimmed, bounded, and required to be text', () => {
@@ -103,6 +121,14 @@ test('standup task selection is exact for project, relay, completed status, and 
       started_at: '2026-07-28T23:00:00.000Z',
       finished_at: '2026-07-29T12:00:00.000Z',
     },
+    {
+      id: 9,
+      repo_path: '/repo/alpha',
+      thread_id: 'one',
+      status: 'complete',
+      started_at: '2026-07-30T12:00:00.000Z',
+      finished_at: '2026-07-30T13:00:00.000Z',
+    },
   ];
 
   assert.deepEqual(
@@ -114,6 +140,14 @@ test('standup task selection is exact for project, relay, completed status, and 
     selectStandupTasks(tasks, { projectPath: '/repo/alpha', start, end })
       .map((task) => task.id),
     [7, 1, 6],
+  );
+  assert.deepEqual(
+    selectStandupTasks(tasks, {
+      projectPath: '/repo/alpha',
+      start,
+      end: '2026-07-31T00:00:00.000Z',
+    }).map((task) => task.id),
+    [7, 1, 6, 5, 9],
   );
 });
 
@@ -150,7 +184,7 @@ test('standup prompt grounds synthesis in every saved prompt, response, and outc
   assert.match(prompt, /Use Added for new capabilities, Changed for improvements or behavior changes, Fixed for resolved defects/);
   assert.match(prompt, /one short, plain sentence of at most 180 characters/);
   assert.match(prompt, /There is no item-count limit/);
-  assert.match(prompt, /belongs to the selected workday by its recorded start time/);
+  assert.match(prompt, /belongs to the selected workday range by its recorded start time/);
   assert.match(prompt, /"startedAt": "2026-07-29T12:00:00.000Z"/);
   assert.doesNotMatch(prompt, /"finishedAt"/);
 });
@@ -161,7 +195,7 @@ test('standup prompt requests one compact categorized changelog', () => {
     { id: 2, status: 'complete', outcome: 'Fixed task retry routing.' },
   ]);
 
-  assert.match(prompt, /daily CHANGELOG entry/);
+  assert.match(prompt, /compact CHANGELOG entry/);
   assert.match(prompt, /Put each confirmed fact in the most specific section and do not repeat it/);
   assert.match(prompt, /Prefer direct action-led wording/);
   assert.match(prompt, /Omit requests, attempts, and failures/);

@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 
 const root = new URL('../', import.meta.url);
 
-test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialog', async () => {
+test('task queue exposes one-day and two-day, CHANGELOG-style AI standup ranges', async () => {
   const [html, app, style, server] = await Promise.all([
     readFile(new URL('public/index.html', root), 'utf8'),
     readFile(new URL('public/app.js', root), 'utf8'),
@@ -16,7 +16,10 @@ test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialo
   assert.match(html, /id="standup-button"[^>]+aria-controls="standup-modal"/);
   assert.match(html, /<dialog id="standup-modal"[^>]+aria-labelledby="standup-title"/);
   assert.match(html, /id="standup-date" type="date"/);
-  assert.match(html, /Task start date/);
+  assert.match(html, /Start date/);
+  assert.match(html, /id="standup-days"/);
+  assert.match(html, /<option value="1">1 day<\/option>/);
+  assert.match(html, /<option value="2">2 days<\/option>/);
   assert.match(html, /id="standup-custom-prompt"[^>]*maxlength="4000"/);
   assert.match(html, /Default custom prompt/);
   assert.match(html, /Added to every Standup generated for this Launchpad/);
@@ -36,9 +39,14 @@ test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialo
   assert.match(app, /projectStandupPrompt === true/);
   assert.match(app, /standup_custom_prompt/);
   assert.match(app, /state\.standupCustomPromptApplied = body\.customPromptApplied === true/);
-  assert.match(app, /tasksForStandupDay\(projectTasks\(\), anchor\)/);
+  assert.match(app, /tasksForStandupDays\(projectTasks\(\), anchor, dayCount\)/);
   assert.doesNotMatch(app, /buildStandupSummary/);
   assert.match(app, /elements\.standupDate\.addEventListener\('change'/);
+  assert.match(app, /elements\.standupDays\.addEventListener\('change'/);
+  assert.match(app, /standupDateRange\(anchor, dayCount\)/);
+  assert.match(app, /dateEnd: localDateInputValue\(finalDay\)/);
+  assert.match(app, /maximum\.getDate\(\) - \(selectedStandupDays\(\) - 1\)/);
+  assert.match(app, /elements\.standupDate\.max = value/);
   const openStandup = app.match(/function openStandup\(\) \{([\s\S]*?)\n\}\n\nfunction closeStandup/)?.[1] || '';
   assert.doesNotMatch(openStandup, /generateStandup/);
   assert.match(app, /state\.standupGenerating = true/);
@@ -54,6 +62,7 @@ test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialo
   assert.match(app, /capabilities\?\.aiStandupGeneration === true/);
   assert.match(app, /capabilities\?\.aiStandupChangelog === true/);
   assert.match(app, /capabilities\?\.aiStandupStartDate === true/);
+  assert.match(app, /capabilities\?\.aiStandupTwoDayRange === true/);
   assert.doesNotMatch(app, /aiStandupConfiguration|aiStandupAllTasks/);
 
   assert.match(standupRoute, /pathname === '\/api\/standup\/generate'/);
@@ -64,16 +73,20 @@ test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialo
   assert.match(server, /aiStandupGeneration: true/);
   assert.match(server, /aiStandupChangelog: true/);
   assert.match(server, /aiStandupStartDate: true/);
+  assert.match(server, /aiStandupTwoDayRange: true/);
   assert.match(server, /projectStandupPrompt: true/);
   assert.match(server, /updateProjectStandupCustomPrompt/);
   assert.match(standupRoute, /customPrompt: project\.standup_custom_prompt/);
   assert.match(standupRoute, /customPromptApplied: Boolean\(project\.standup_custom_prompt\)/);
+  assert.match(standupRoute, /dayCount: window\.dayCount/);
 
   assert.match(style, /\.standup-modal/);
   assert.match(style, /\.standup-list li/);
   assert.match(style, /\.standup-item-marker/);
   assert.match(style, /\.standup-generator-route/);
   assert.match(style, /\.standup-custom-prompt-field/);
+  assert.match(style, /\.standup-date-field :is\(input, select\)/);
+  assert.match(style, /@media \(max-width: 620px\) \{[\s\S]*?\.standup-controls \{[\s\S]*?grid-template-columns: 1fr/);
   assert.match(style, /html\[data-theme="dark"\] \.standup-custom-prompt-field textarea/);
   assert.match(style, /\.standup-result-group/);
   assert.match(style, /\.standup-loading-line/);

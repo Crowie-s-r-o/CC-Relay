@@ -44,9 +44,10 @@ export class TerminalLaunchCoordinator {
     }
 
     try {
-      const deadline = this.now() + this.timeoutMs;
+      let deadline = this.now() + this.timeoutMs;
       let candidateId = null;
       let observations = 0;
+      let folderTrustAccepted = false;
       while (this.now() < deadline) {
         let sessions;
         try {
@@ -97,6 +98,36 @@ export class TerminalLaunchCoordinator {
           }
           return { ...launched, threadId: thread.id, thread };
         }
+        if (
+          !thread
+          && provider === 'claude'
+          && !folderTrustAccepted
+          && typeof this.launcher.resolveClaudeFolderTrust === 'function'
+        ) {
+          let trust = null;
+          try {
+            trust = await this.launcher.resolveClaudeFolderTrust(launched.launchId);
+          } catch (error) {
+            this.diagnostic('terminal.binding.claude_folder_trust_failed', {
+              launchId: launched.launchId,
+              provider,
+              path: launched.path,
+              error: error.message,
+            });
+          }
+          if (trust?.status === 'accepted') {
+            folderTrustAccepted = true;
+            // Claude starts session registration only after this prompt closes. Give that normal
+            // startup its complete binding window instead of spending the pre-approval wait from
+            // the same deadline.
+            deadline = this.now() + this.timeoutMs;
+            this.diagnostic('terminal.binding.claude_folder_trust_accepted', {
+              launchId: launched.launchId,
+              provider,
+              path: launched.path,
+            });
+          }
+        }
         await this.delay(this.pollMs);
       }
       this.diagnostic('terminal.binding.timed_out', {
@@ -104,7 +135,13 @@ export class TerminalLaunchCoordinator {
         provider,
         path: launched.path,
       });
-      return { ...launched, connectionStatus: 'timed_out' };
+      return folderTrustAccepted
+        ? {
+          ...launched,
+          connectionStatus: 'timed_out',
+          bindingError: 'Claude accepted the selected workspace, but its terminal session did not connect to CC Relay in time.',
+        }
+        : { ...launched, connectionStatus: 'timed_out' };
     } finally {
       this.launcher.releaseLaunchReservation?.(launched.launchId);
     }

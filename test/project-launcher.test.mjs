@@ -249,6 +249,232 @@ test('project launcher reports an exact owned window when the macOS shell never 
   }
 });
 
+test('project launcher approves only the exact Claude folder trust screen on its fresh owned tab', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-folder-trust-'));
+  const calls = [];
+  const diagnostics = [];
+  const trustScreen = [
+    ' Accessing workspace:',
+    '',
+    ` ${directory}`,
+    '',
+    ' Quick safety check: Is this a project you created or one you trust? (Like your own code, a',
+    ' well-known open source project, or work from your team). If not, take a moment to review what',
+    ' is in this folder first.',
+    '',
+    " Claude Code'll be able to read, edit, and execute files here.",
+    '',
+    ' ❯ 1. Yes, I trust this folder',
+    '   2. No, continue without these permissions',
+    '   3. No, exit',
+    '',
+    ' Enter to confirm · Esc to cancel',
+  ].join('\n');
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    diagnostic: (...args) => diagnostics.push(args),
+    run: async (command, args) => {
+      calls.push([command, args]);
+      if (args.at(-1) === '701') {
+        return { stdout: JSON.stringify({ ok: true, reason: 'read', text: trustScreen }) };
+      }
+      assert.equal(args.at(-3), '701');
+      assert.equal(args.at(-2), trustScreen);
+      assert.equal(args.at(-1), '1');
+      return { stdout: JSON.stringify({ ok: true, status: 'accepted' }) };
+    },
+  });
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'fresh-claude-trust',
+      provider: 'claude',
+      path: directory,
+      terminalWindowId: 701,
+    });
+
+    const result = await launcher.resolveClaudeFolderTrust('fresh-claude-trust');
+
+    assert.deepEqual(result, { status: 'accepted' });
+    assert.equal(calls.length, 2);
+    const acceptScript = calls[1][1][3];
+    assert.ok(acceptScript.indexOf('contents !== expected') >= 0);
+    assert.ok(acceptScript.indexOf('contents !== expected') < acceptScript.indexOf('terminal.doScript'));
+    assert.equal(
+      diagnostics.some(([event]) => event === 'terminal.launch.claude_folder_trust_accepted'),
+      true,
+    );
+    assert.deepEqual(
+      await launcher.resolveClaudeFolderTrust('fresh-claude-trust'),
+      { status: 'already-accepted' },
+    );
+    assert.equal(calls.length, 2);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher retries only when the atomic trust action proves it sent no key', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-folder-trust-race-'));
+  const trustScreen = [
+    'Accessing workspace:',
+    'Quick safety check: Is this a project you created or one you trust?',
+    "Claude Code'll be able to read, edit, and execute files here.",
+    '❯ 1. Yes, I trust this folder',
+    '2. No, continue without these permissions',
+    '3. No, exit',
+    'Enter to confirm · Esc to cancel',
+  ].join('\n');
+  let acceptCalls = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    readClaudeLaunchScreen: async () => ({ ok: true, reason: 'read', text: trustScreen }),
+    acceptClaudeFolderTrust: async () => {
+      acceptCalls += 1;
+      return acceptCalls === 1
+        ? { ok: false, status: 'screen-changed' }
+        : { ok: true, status: 'accepted' };
+    },
+  });
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'fresh-claude-race',
+      provider: 'claude',
+      path: directory,
+      terminalWindowId: 703,
+    });
+
+    assert.deepEqual(
+      await launcher.resolveClaudeFolderTrust('fresh-claude-race'),
+      { status: 'screen-changed' },
+    );
+    assert.deepEqual(
+      await launcher.resolveClaudeFolderTrust('fresh-claude-race'),
+      { status: 'accepted' },
+    );
+    assert.equal(acceptCalls, 2);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher never repeats an ambiguous folder trust action', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-folder-trust-ambiguous-'));
+  const trustScreen = [
+    'Accessing workspace:',
+    'Quick safety check: Is this a project you created or one you trust?',
+    "Claude Code'll be able to read, edit, and execute files here.",
+    '❯ 1. Yes, I trust this folder',
+    '2. No, exit',
+    'Enter to confirm · Esc to cancel',
+  ].join('\n');
+  let acceptCalls = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    readClaudeLaunchScreen: async () => ({ ok: true, reason: 'read', text: trustScreen }),
+    acceptClaudeFolderTrust: async () => {
+      acceptCalls += 1;
+      throw new Error('Apple Event result was lost');
+    },
+  });
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'fresh-claude-ambiguous',
+      provider: 'claude',
+      path: directory,
+      terminalWindowId: 704,
+    });
+
+    assert.deepEqual(
+      await launcher.resolveClaudeFolderTrust('fresh-claude-ambiguous'),
+      { status: 'unreadable' },
+    );
+    assert.deepEqual(
+      await launcher.resolveClaudeFolderTrust('fresh-claude-ambiguous'),
+      { status: 'ambiguous' },
+    );
+    assert.equal(acceptCalls, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher sends no key for an unknown Claude startup screen', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-folder-trust-unknown-'));
+  let acceptCalls = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    readClaudeLaunchScreen: async () => ({
+      ok: true,
+      reason: 'read',
+      text: 'A different startup warning\nEnter to continue',
+    }),
+    acceptClaudeFolderTrust: async () => {
+      acceptCalls += 1;
+      return { ok: true, status: 'accepted' };
+    },
+  });
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'fresh-claude-unknown',
+      provider: 'claude',
+      path: directory,
+      terminalWindowId: 702,
+    });
+
+    assert.deepEqual(
+      await launcher.resolveClaudeFolderTrust('fresh-claude-unknown'),
+      { status: 'not-present' },
+    );
+    assert.equal(acceptCalls, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher sends no trust key when ownership disappears during the screen read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-folder-trust-ownership-'));
+  let acceptCalls = 0;
+  let launcher = null;
+  launcher = new ProjectLauncher({
+    platform: 'darwin',
+    readClaudeLaunchScreen: async () => {
+      launcher.forgetTrackedTerminal('forgotten-claude-trust');
+      return {
+        ok: true,
+        reason: 'read',
+        text: [
+          'Accessing workspace:',
+          'Quick safety check: Is this a project you created or one you trust?',
+          "Claude Code'll be able to read, edit, and execute files here.",
+          '❯ 1. Yes, I trust this folder',
+          '2. No, exit',
+          'Enter to confirm · Esc to cancel',
+        ].join('\n'),
+      };
+    },
+    acceptClaudeFolderTrust: async () => {
+      acceptCalls += 1;
+      return { ok: true, status: 'accepted' };
+    },
+  });
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'forgotten-claude-trust',
+      provider: 'claude',
+      path: directory,
+      terminalWindowId: 705,
+    });
+
+    assert.deepEqual(
+      await launcher.resolveClaudeFolderTrust('forgotten-claude-trust'),
+      { status: 'not-eligible' },
+    );
+    assert.equal(acceptCalls, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('project launcher can open a terminal in the background', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-background-'));
   const calls = [];

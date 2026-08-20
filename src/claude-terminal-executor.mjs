@@ -29,6 +29,16 @@ import {
   claudeTaskAttachmentPaths,
   claudeTerminalExecutionSettings,
 } from './claude-launch-settings.mjs';
+import {
+  CLAUDE_TRUST_DIALOG_KEYS,
+  CLAUDE_TRUST_DIALOG_OPTION_PATTERN,
+  isClaudeTrustDialogScreen,
+} from './claude-folder-trust.mjs';
+
+export {
+  CLAUDE_TRUST_DIALOG_KEYS,
+  CLAUDE_TRUST_DIALOG_OPTION_PATTERN,
+} from './claude-folder-trust.mjs';
 
 const execFile = promisify(execFileCallback);
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
@@ -335,10 +345,6 @@ export const CLAUDE_DIALOG_FOOTER_PATTERN = /enter to confirm/i;
 // U+276F and marks the selected row only. "Don't" carries an ASCII apostrophe, never a curly one.
 // The title and the body sentence are deliberately NOT matched: both wrap below 100 columns.
 export const CLAUDE_RESUME_PICKER_OPTION_PATTERN = /^\s*(?:❯\s*)?[123][.)]\s+(?:Resume from summary|Resume full session|Don't ask me again)/;
-// The folder trust prompt. Same chrome, same select widget, shown before any resume picker for an
-// untrusted directory. CC Relay classifies it only to refuse it: trusting a folder is a user
-// security decision and is never automated.
-export const CLAUDE_TRUST_DIALOG_OPTION_PATTERN = /^\s*(?:❯\s*)?[12][.)]\s+(?:Yes, I trust this folder|No, exit)/;
 // At least this many distinct option rows, plus the footer, plus the selection pointer on one of
 // those rows, before a screen counts as that dialog.
 export const CLAUDE_DIALOG_MIN_OPTION_ROWS = 2;
@@ -485,10 +491,6 @@ export function isClaudeResumePickerScreen(lines) {
   return matchesDialog(lines, CLAUDE_RESUME_PICKER_OPTION_PATTERN);
 }
 
-export function isClaudeTrustDialogScreen(lines) {
-  return matchesDialog(lines, CLAUDE_TRUST_DIALOG_OPTION_PATTERN);
-}
-
 // The text currently sitting in the composer, or found:false when the composer box is not visible.
 // found:false is never treated as evidence of anything: the caller keeps its pre-change behavior.
 function composerFromLines(lines, { requireOpeningRule }) {
@@ -570,16 +572,15 @@ export function claudeComposerContent(text) {
 }
 
 // 'composer' means CC Relay positively saw the input prompt and may type. 'resume-picker' and
-// 'trust-dialog' are the two known blocking dialogs: the first has a defined safe resolution, the
-// second is a user security decision CC Relay refuses to make. 'unknown' is everything else,
-// including a dialog nobody has seen yet, and CC Relay must never type into it.
+// 'trust-dialog' are known blocking dialogs with narrow, bounded resolutions. 'unknown' is
+// everything else, including a dialog nobody has seen yet, and CC Relay must never type into it.
 export function classifyClaudeScreen(text) {
   const lines = claudeScreenTailLines(text);
   if (lines.length === 0) return 'unknown';
   // Dialogs first, always. Their selected row carries the same pointer glyph as the composer
   // caret, so composer detection cannot be allowed to see them.
   if (isClaudeResumePickerScreen(lines)) return 'resume-picker';
-  if (isClaudeTrustDialogScreen(lines)) return 'trust-dialog';
+  if (isClaudeTrustDialogScreen(text)) return 'trust-dialog';
   // Positive composer evidence: the bottom status row family, or the composer box itself. Read the
   // disjunction as narrow, not wide. Since the box scan gained its status-row corroboration, the
   // second term buys nothing for a BOXED composer: the chrome bound keeps the status row inside
@@ -777,6 +778,9 @@ export class ClaudeTerminalExecutor {
     // Resolution attempts for one displayed resume picker. Two means one retry; after that the
     // user is told to resolve it by hand rather than having CC Relay keep pressing keys blindly.
     maxResumePickerResolutions = 2,
+    // A folder trust prompt is approved once for an exact task-owned workspace. Never repeat the
+    // key after a reported success, because a delayed redraw could otherwise put it in composer.
+    maxTrustDialogResolutions = 1,
     // A lost paste is re-delivered at most this many times per turn, ever. Re-injection is
     // recovery from a provably empty composer, never a general retry.
     maxPromptReinjections = 1,
@@ -860,6 +864,7 @@ export class ClaudeTerminalExecutor {
     this.relaunchTimeoutMs = relaunchTimeoutMs;
     this.screenSettleMs = screenSettleMs;
     this.maxResumePickerResolutions = maxResumePickerResolutions;
+    this.maxTrustDialogResolutions = maxTrustDialogResolutions;
     this.maxPromptReinjections = maxPromptReinjections;
     this.composerClearSpacingMs = composerClearSpacingMs;
     this.relaunchSettleMs = relaunchSettleMs;
@@ -1066,6 +1071,7 @@ export class ClaudeTerminalExecutor {
   createScreenState() {
     return {
       pickerResolutions: 0,
+      trustResolutions: 0,
       degradedAnnounced: false,
       reinjections: 0,
       // When the last Ctrl+C was sent into this terminal, which is what keeps two presses from
@@ -1081,6 +1087,9 @@ export class ClaudeTerminalExecutor {
       // is shared with the pre-injection gates and exists to bound total answers, not to date
       // them.
       pickerResolvedAfterPaste: false,
+      // The exact folder trust prompt was approved after the paste. Like the post-paste resume
+      // picker case, this proves the dialog owned the input and swallowed the pending prompt.
+      trustResolvedAfterPaste: false,
       // Positive paste-loss evidence, each latched for the whole turn once it is observed. An
       // empty composer on its own is NOT evidence (task 92, 2026-08-03); the empty-composer branch
       // in the guarded submit schedule explains why each of these is, and why an empty screen is
@@ -1154,20 +1163,46 @@ export class ClaudeTerminalExecutor {
     );
   }
 
-  // The folder trust prompt. CC Relay classifies it only in order to refuse it: answering it would
-  // grant Claude read, edit, and execute access to a directory on the user's behalf, which is a
-  // security decision that belongs to the user and to nobody else.
-  // `pasted` is true when this is reached from the guarded submit schedule, where the prompt is
-  // already in the terminal. Claiming "nothing was typed" there would be false and would send the
-  // user to a retry that ignores an in-flight paste.
-  trustDialogError(task, { pasted = false } = {}) {
-    const name = task.thread_name || task.thread_id;
-    return new ClaudeExecutionError(
-      pasted
-        ? `The ${name} Claude terminal is showing the folder trust prompt, and CC Relay had already pasted this task's prompt. That paste may still be held in the composer or may already be running, so CC Relay did not press Return and will not retry automatically. CC Relay never answers the trust prompt for you. Answer it in the terminal, check the prompt, then retry.`
-        : `The ${name} Claude terminal is waiting on the folder trust prompt, so CC Relay did not type anything. CC Relay never answers that prompt for you. Answer it in the terminal, then retry.`,
-      { retryable: false },
-    );
+  // A Relay task already names one exact Launchpad workspace and authorizes unattended provider
+  // work there. On that exact owned terminal, the narrow folder trust prompt is therefore startup
+  // confirmation rather than a new scope decision. Option 1 is explicit and stable across the
+  // legacy two-option prompt and the current three-option prompt.
+  async resolveTrustDialogScreen(task, terminalWindowId, onEvent, screenState, { pasted = false } = {}) {
+    const sessionId = task.thread_id;
+    const name = task.thread_name || sessionId;
+    if (screenState.trustResolutions >= this.maxTrustDialogResolutions) {
+      throw new ClaudeExecutionError(
+        pasted
+          ? `The ${name} Claude terminal kept showing the folder trust prompt after CC Relay approved this task's selected workspace. CC Relay had already pasted this task's prompt, so it did not send any further key or retry automatically. Check the terminal before retrying.`
+          : `The ${name} Claude terminal kept showing the folder trust prompt after CC Relay approved this task's selected workspace. CC Relay did not paste the task prompt. Check the terminal before retrying.`,
+        { retryable: false },
+      );
+    }
+    screenState.trustResolutions += 1;
+    try {
+      await this.sendKeys(terminalWindowId, CLAUDE_TRUST_DIALOG_KEYS);
+    } catch (error) {
+      throw new ClaudeExecutionError(
+        pasted
+          ? `CC Relay could not approve the selected workspace in the ${name} Claude terminal: ${error.message}. CC Relay had already pasted this task's prompt, so it will not retry automatically. Check the terminal before retrying.`
+          : `CC Relay could not approve the selected workspace in the ${name} Claude terminal: ${error.message}. CC Relay did not paste the task prompt. Check the terminal before retrying.`,
+        { retryable: false },
+      );
+    }
+    if (pasted) screenState.trustResolvedAfterPaste = true;
+    onEvent({
+      event: {
+        type: 'claude/progress',
+        provider: 'claude',
+        sessionId,
+        deliveryState: 'folder-trust-approved',
+        folderTrustAttempt: screenState.trustResolutions,
+        folderTrustChoice: 'trust',
+      },
+      message: `The terminal showed Claude's folder trust prompt. CC Relay approved the task's selected workspace before continuing.`,
+    });
+    await this.wait(this.screenSettleMs);
+    return this.inspectTerminalScreen(terminalWindowId);
   }
 
   // One Ctrl+C, never two close together. A second press inside Claude's own "Press Ctrl-C again to
@@ -1328,7 +1363,30 @@ export class ClaudeTerminalExecutor {
         return { verified: true, degraded: false };
       }
       if (screen.classification === 'trust-dialog') {
-        throw this.trustDialogError(task);
+        // The snapshot above is the proof that option 1 means trust for this exact known prompt.
+        // Re-check cancellation before sending any key for work the operator just stopped.
+        if (active.cancelRequested) {
+          throw new ClaudeExecutionError('Task cancelled.', { cancelled: true });
+        }
+        const after = await this.resolveTrustDialogScreen(
+          task,
+          terminalWindowId,
+          onEvent,
+          screenState,
+        );
+        if (!after.ok) {
+          this.announceDegradedScreenVerification(task, onEvent, screenState, after.reason);
+          return { verified: false, degraded: true };
+        }
+        if (after.classification === 'composer') {
+          return { verified: true, degraded: false };
+        }
+        lastExcerpt = after.excerpt || lastExcerpt;
+        if (this.now() >= deadlineAt) {
+          throw this.blockedScreenError(task, lastExcerpt);
+        }
+        await this.wait(this.restartPollMs);
+        continue;
       }
       if (screen.classification === 'resume-picker') {
         // The snapshot above is an await. Re-prove cancellation before answering a dialog for a
@@ -1520,7 +1578,10 @@ export class ClaudeTerminalExecutor {
             throw new ClaudeExecutionError('Task cancelled.', { cancelled: true });
           }
           if (screen.ok && screen.classification === 'trust-dialog') {
-            throw this.trustDialogError(task);
+            await this.resolveTrustDialogScreen(task, fresh.terminalWindowId, onEvent, screens);
+            // Re-prove process identity, idle status, and screen state after the prompt closes.
+            await this.wait(this.restartPollMs);
+            continue;
           }
           if (screen.ok && screen.classification === 'resume-picker') {
             await this.resolveResumePickerScreen(task, fresh.terminalWindowId, onEvent, screens);
@@ -1613,10 +1674,11 @@ export class ClaudeTerminalExecutor {
     );
   }
 
-  // Readiness: the session must be present in claude agents --json and idle. A folder-trust
-  // prompt session is not registered at all, so registration plus idle is a sufficient
-  // input-ready signal (empirically verified). The transcript may not exist yet on a fresh
-  // terminal's first turn; the tail reads from offset 0 once the file is created.
+  // Readiness: the session must be present in claude agents --json and idle. A folder trust
+  // prompt session is not registered at all, so the launch coordinator handles that prompt
+  // before this executor exists. Registration plus idle then reaches the viewport gate before
+  // typing. The transcript may not exist yet on a fresh terminal's first turn; the tail reads
+  // from offset 0 once the file is created.
   async ensureReady(task, active, onEvent) {
     const sessionId = task.thread_id;
     const deadline = this.now() + this.readinessTimeoutMs;
@@ -3492,9 +3554,17 @@ export class ClaudeTerminalExecutor {
             continue;
           }
           if (screen.ok && screen.classification === 'trust-dialog') {
-            // Positively identified dialog: a Return here answers a security question on the
-            // user's behalf. The paste is already lost, so end the turn instead.
-            throw this.trustDialogError(task, { pasted: true });
+            // The known startup prompt owned the screen when this paste arrived, so approve the
+            // task workspace and let the next pass prove the empty composer before re-delivery.
+            await this.resolveTrustDialogScreen(
+              task,
+              terminal.terminalWindowId,
+              onEvent,
+              screens,
+              { pasted: true },
+            );
+            await this.waitForTranscriptOrPoll(source, reader.offset, this.pollMs);
+            continue;
           }
           if (screen.ok && screen.classification === 'resume-picker') {
             // The dialog that destroyed task 39 is on screen right now, which proves the paste
@@ -3631,6 +3701,7 @@ export class ClaudeTerminalExecutor {
             // screen read that preceded it.
             const pasteProvenLost = screens.pasteSeenHeld
               || screens.pickerResolvedAfterPaste
+              || screens.trustResolvedAfterPaste
               || screens.composerClearProven
               || screens.compactionObserved;
             if (!pasteProvenLost) {
@@ -3693,7 +3764,7 @@ export class ClaudeTerminalExecutor {
                 promptReinjection: screens.reinjections,
                 promptReinjectionLimit: this.maxPromptReinjections,
               },
-              message: `The ${task.thread_name || sessionId} composer was empty, so the held paste was lost, most likely to a resume dialog or a compaction. CC Relay pasted the exact same prompt again and is verifying that Claude accepted it.`,
+              message: `The ${task.thread_name || sessionId} composer was empty, so the held paste was lost, most likely to a startup dialog or a compaction. CC Relay pasted the exact same prompt again and is verifying that Claude accepted it.`,
             });
             await this.waitForTranscriptOrPoll(source, reader.offset, this.pollMs);
             continue;

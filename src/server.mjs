@@ -1052,6 +1052,7 @@ export const server = createServer(async (request, response) => {
           aiStandupGeneration: true,
           aiStandupChangelog: true,
           aiStandupStartDate: true,
+          aiStandupTwoDayRange: true,
           projectStandupPrompt: true,
           crossProcessLaunchOwnership: true,
           desktopUpdates: IS_DESKTOP,
@@ -1284,6 +1285,12 @@ export const server = createServer(async (request, response) => {
       const date = typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
         ? body.date
         : window.start.slice(0, 10);
+      const dateEnd = typeof body.dateEnd === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.dateEnd)
+        ? body.dateEnd
+        : date;
+      const dateLabel = window.dayCount === 2 && dateEnd !== date
+        ? `${date} to ${dateEnd}`
+        : date;
       const tasks = selectStandupTasks(database.listTasks(), {
         projectPath: project.path,
         threadId,
@@ -1291,7 +1298,7 @@ export const server = createServer(async (request, response) => {
         end: window.end,
       });
       if (tasks.length === 0) {
-        throw new StandupGenerationError('No completed task started on that day in the selected scope.');
+        throw new StandupGenerationError('No completed task started in the selected date range.');
       }
       const includedTasks = tasks.slice(-MAX_STANDUP_SOURCE_TASKS);
       const omittedTaskCount = tasks.length - includedTasks.length;
@@ -1300,7 +1307,7 @@ export const server = createServer(async (request, response) => {
       const responseCount = records.reduce((total, record) => total + record.responses.length, 0);
       const availability = await standupProviderAvailability(preferredProvider);
       const generated = await standupGenerator.generate(buildStandupPrompt(records, {
-        date,
+        date: dateLabel,
         projectName: project.name,
         scopeLabel: threadId ? 'This CC Relay' : 'All Relays',
         customPrompt: project.standup_custom_prompt,
@@ -1318,6 +1325,8 @@ export const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         ...generated,
         date,
+        dateEnd,
+        dayCount: window.dayCount,
         customPromptApplied: Boolean(project.standup_custom_prompt),
         taskCount: tasks.length,
         includedTaskCount: includedTasks.length,
