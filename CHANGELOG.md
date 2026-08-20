@@ -2,6 +2,18 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.18] - 2026-08-20
+
+### Added
+
+- Tasks can now be starred.
+- Tasks can now be renamed inline.
+- Standup prompts are now available.
+
+### Changed
+
+- Releases are now atomic.
+
 ## [0.2.17] - 2026-08-19
 
 ### Added
