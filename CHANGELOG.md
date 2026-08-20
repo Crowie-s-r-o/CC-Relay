@@ -2,6 +2,16 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.19] - 2026-08-20
+
+### Added
+
+- Desktop sends now show explicit progress.
+
+### Changed
+
+- Desktop updates now follow newer releases when an update is superseded.
+
 ## [0.2.18] - 2026-08-20
 
 ### Added
