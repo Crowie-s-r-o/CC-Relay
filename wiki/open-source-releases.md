@@ -71,8 +71,9 @@ Automatic version intent is deterministic:
 10. Build the macOS DMG and updater ZIP locally, verify their signature lineage and metadata, and create `mac-release.json`.
 11. Create `chore(release): vX.Y.Z` and an annotated `vX.Y.Z` tag.
 12. Push `main` and the tag with one atomic Git operation.
-13. Wait for the exact GitHub Actions run to publish the Windows artifacts and release notes.
-14. Upload the verified local macOS assets and confirm their names and byte sizes through the GitHub Release API.
+13. Wait for the exact GitHub Actions run to upload the Windows artifacts and release notes to a draft release.
+14. Upload and verify the signed macOS payloads, then upload `latest-mac.yml` and `mac-release.json` in that order.
+15. Publish the complete draft as the new stable release.
 
 The version files are restored if a gate fails before the release commit. If the commit and tag are valid but GitHub rejects the push, they remain locally. After GitHub access is corrected, rerunning `npm run deploy` recovers that release and any older unpublished releases without regenerating notes or changing their versions.
 
@@ -107,7 +108,8 @@ annotated tag reachable from `main`, point to an ordered `chore(release): vX.Y.Z
 matching package, lockfile, and changelog versions. It then handles the suffix in ascending SemVer
 order. For each version it atomically advances `main` when needed, pushes the tag when missing, and
 waits for the exact GitHub workflow before proceeding. It builds an older tag in an isolated detached
-worktree, uploads its verified macOS assets after the Windows release exists, and cleans the worktree.
+worktree, uploads its verified macOS assets after the Windows draft handoff exists, publishes the
+complete draft, and cleans the worktree.
 A tag already on GitHub resumes its existing publication watch. Completed releases are skipped on
 another retry.
 
@@ -138,9 +140,12 @@ This invocation follows the official Codex non-interactive pattern and reuses th
 
 ## GitHub release handoff
 
-Pushing `vX.Y.Z` starts `.github/workflows/build-desktop.yml`. The Ubuntu release job runs `release:check -- --tag`, extracts only the matching changelog body, downloads the Windows artifacts, and publishes that body with the GitHub Release. GitHub's automatically generated notes are disabled so there is one canonical compact narrative.
+Pushing `vX.Y.Z` starts `.github/workflows/build-desktop.yml`. The Ubuntu release job runs `release:check -- --tag`, extracts only the matching changelog body, downloads the Windows artifacts, and places those files and that body in a draft GitHub Release. GitHub's automatically generated notes are disabled so there is one canonical compact narrative. A workflow rerun proves every required desktop asset is fully uploaded before it leaves an already published release untouched.
 
-The hosted macOS job runs the full tests and packaging command as validation, but uploads no macOS output because the runner has no continuity identity. The Windows job transfers the EXE files, blockmaps, and `latest.yml`. NSIS and portable targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. After the exact workflow succeeds, local deploy uploads the signed arm64 DMG, desktop ZIP, both blockmaps, `latest-mac.yml`, and `mac-release.json`. GitHub still adds its generated source-code ZIP and tarball to every release; those generic archives are not desktop updater payloads.
+The hosted macOS job runs the full tests and packaging command as validation, but uploads no macOS output because the runner has no continuity identity. The Windows job transfers the EXE files, blockmaps, and `latest.yml`. NSIS and portable targets have distinct `-Setup.exe` and `-Portable.exe` names, preventing one target from overwriting the other before publication. After the exact workflow succeeds, local deploy uploads the signed arm64 DMG, desktop ZIP, and both blockmaps, verifies their uploaded state and exact byte sizes, then uploads `latest-mac.yml` and the final `mac-release.json` marker. It publishes the draft only after every stage passes. GitHub still adds its generated source-code ZIP and tarball to every published release; those generic archives are not desktop updater payloads.
+
+> [!important]
+> Draft visibility is the atomic boundary. GitHub's latest-release endpoint excludes drafts, while authenticated release listings expose them to the maintainer. `scripts/deploy.mjs` therefore falls back from the published tag endpoint to the authenticated listing when it resumes a draft. Asset presence alone is insufficient: every required asset must also report `state: uploaded` and the expected size. See [[desktop-updates]] for the v0.2.17 feed-before-payload incident that established this rule.
 
 > [!note]
 > Signed packaged macOS builds consume `latest-mac.yml`, and installed Windows NSIS builds consume `latest.yml`. Both download in the background, offer an immediate restart, and otherwise install on normal quit. Windows portable builds keep the independent latest-release API and manual download path. See [[desktop-updates]].

@@ -19,7 +19,7 @@ The public README leads with seven benefits, in this order:
 4. Prompts queued while other work is still running, with queue editing, ordering, and provider switching before dispatch.
 5. Plan council, where one provider authors, the other challenges, and the author revises the reviewed plan.
 6. Forward-planning Turbo, where a stronger planner builds the dependency graph and faster, lower-cost Codex workers execute it.
-7. A compact subscription runway that keeps Claude session, Claude weekly, Fable weekly, and Codex weekly usage visible while work runs, including percentage used and the remaining time until each window resets.
+7. A compact subscription runway that keeps Claude session, Claude weekly, Fable weekly, Codex five-hour, and Codex weekly usage visible while work runs, including percentage used and the remaining time until each window resets.
 
 > [!important]
 > These are the primary product story, not an unordered feature inventory. The README follows them
@@ -32,7 +32,7 @@ The public README leads with seven benefits, in this order:
 The top strip has two complementary jobs and public copy should preserve both:
 
 1. Compact task cards keep running work and open terminal sessions visible across projects.
-2. The provider runway shows four percentage-used meters plus countdowns to reset.
+2. The provider runway shows five percentage-used meters plus countdowns to reset.
 
 > [!note]
 > Describe the meters as **percentage used** and **time left until reset**. Calling the displayed

@@ -232,28 +232,45 @@ test('Claude usage probe reports unsupported platforms without spawning', async 
   assert.equal(spawned, false);
 });
 
-test('Codex usage normalization selects the Codex seven-day bucket', () => {
-  const resetsAt = 1_786_743_600;
+test('Codex usage normalization selects exact five-hour and seven-day Codex buckets', () => {
+  const fiveHourResetsAt = 1_786_500_000;
+  const weeklyResetsAt = 1_786_743_600;
   assert.deepEqual(normalizeCodexUsage({
     rateLimitsByLimitId: {
       codex: {
-        primary: { usedPercent: 6, windowDurationMins: 10_080, resetsAt },
+        primary: { usedPercent: 18.4, windowDurationMins: 300, resetsAt: fiveHourResetsAt },
+        secondary: { usedPercent: 6, windowDurationMins: 10_080, resetsAt: weeklyResetsAt },
       },
       spark: {
-        primary: { usedPercent: 92, windowDurationMins: 10_080, resetsAt: resetsAt + 100 },
+        primary: { usedPercent: 91, windowDurationMins: 300, resetsAt: fiveHourResetsAt + 100 },
+        secondary: { usedPercent: 92, windowDurationMins: 10_080, resetsAt: weeklyResetsAt + 100 },
       },
     },
   }), {
-    weekly: { usedPercent: 6, resetsAt, resetLabel: null },
+    fiveHour: { usedPercent: 18, resetsAt: fiveHourResetsAt, resetLabel: null },
+    weekly: { usedPercent: 6, resetsAt: weeklyResetsAt, resetLabel: null },
   });
 
   assert.deepEqual(normalizeCodexUsage({
     rateLimits: {
-      primary: { usedPercent: 25, windowDurationMins: 300 },
-      secondary: { usedPercent: 41.6, windowDurationMins: 10_080, resetsAt },
+      primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: fiveHourResetsAt },
+      secondary: { usedPercent: 41.6, windowDurationMins: 10_080, resetsAt: weeklyResetsAt },
     },
   }), {
-    weekly: { usedPercent: 42, resetsAt, resetLabel: null },
+    fiveHour: { usedPercent: 25, resetsAt: fiveHourResetsAt, resetLabel: null },
+    weekly: { usedPercent: 42, resetsAt: weeklyResetsAt, resetLabel: null },
+  });
+
+  assert.deepEqual(normalizeCodexUsage({
+    rateLimitsByLimitId: {
+      codex: {
+        primary: { usedPercent: 55, windowDurationMins: 240 },
+        secondary: { usedPercent: 8, windowDurationMins: 10_080, resetsAt: weeklyResetsAt },
+      },
+    },
+  }), {
+    fiveHour: null,
+    weekly: { usedPercent: 8, resetsAt: weeklyResetsAt, resetLabel: null },
   });
 });
 
@@ -277,6 +294,7 @@ test('provider usage monitor deduplicates refreshes and preserves last-known val
       codexReads += 1;
       if (shouldFail) throw new Error('offline');
       return {
+        fiveHour: { usedPercent: 18, resetsAt: 1_786_500_000, resetLabel: null },
         weekly: { usedPercent: 6, resetsAt: 1_786_743_600, resetLabel: null },
       };
     },
@@ -298,6 +316,7 @@ test('provider usage monitor deduplicates refreshes and preserves last-known val
   assert.equal(stale.claude.status, 'stale');
   assert.equal(stale.codex.status, 'stale');
   assert.equal(stale.claude.fableWeekly.usedPercent, 87);
+  assert.equal(stale.codex.fiveHour.usedPercent, 18);
   assert.equal(stale.codex.weekly.usedPercent, 6);
   assert.equal(changes.length, 2);
 

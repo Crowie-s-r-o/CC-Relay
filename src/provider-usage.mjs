@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events';
 
 export const PROVIDER_USAGE_REFRESH_MS = 30_000;
 const CLAUDE_USAGE_TIMEOUT_MS = 40_000;
+const FIVE_HOUR_MINUTES = 5 * 60;
 const WEEK_MINUTES = 7 * 24 * 60;
 const MAX_SCREEN_BYTES = 256 * 1_024;
 const EXPECT_USAGE_SCRIPT = String.raw`
@@ -152,12 +153,25 @@ export function parseClaudeUsageScreen(value) {
   };
 }
 
-function codexWeeklyWindow(snapshot) {
+function codexWindow(snapshot, durationMinutes, { allowLonger = false } = {}) {
   const windows = [snapshot?.primary, snapshot?.secondary]
     .filter((window) => window && typeof window === 'object');
-  return windows.find((window) => Number(window.windowDurationMins) === WEEK_MINUTES)
-    || windows.find((window) => Number(window.windowDurationMins) >= WEEK_MINUTES)
+  return windows.find((window) => Number(window.windowDurationMins) === durationMinutes)
+    || (allowLonger
+      ? windows.find((window) => Number(window.windowDurationMins) >= durationMinutes)
+      : null)
     || null;
+}
+
+function normalizeCodexWindow(window) {
+  const usedPercent = finitePercent(window?.usedPercent);
+  return usedPercent === null
+    ? null
+    : {
+      usedPercent,
+      resetsAt: finiteTimestamp(window?.resetsAt),
+      resetLabel: null,
+    };
 }
 
 export function normalizeCodexUsage(value) {
@@ -165,16 +179,9 @@ export function normalizeCodexUsage(value) {
   const snapshot = byId && typeof byId === 'object' && byId.codex
     ? byId.codex
     : value?.rateLimits;
-  const weekly = codexWeeklyWindow(snapshot);
-  const usedPercent = finitePercent(weekly?.usedPercent);
   return {
-    weekly: usedPercent === null
-      ? null
-      : {
-        usedPercent,
-        resetsAt: finiteTimestamp(weekly?.resetsAt),
-        resetLabel: null,
-      },
+    fiveHour: normalizeCodexWindow(codexWindow(snapshot, FIVE_HOUR_MINUTES)),
+    weekly: normalizeCodexWindow(codexWindow(snapshot, WEEK_MINUTES, { allowLonger: true })),
   };
 }
 
@@ -341,6 +348,7 @@ function emptyCodexState() {
   return {
     status: 'checking',
     checkedAt: null,
+    fiveHour: null,
     weekly: null,
   };
 }

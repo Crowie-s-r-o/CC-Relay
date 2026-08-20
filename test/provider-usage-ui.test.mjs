@@ -11,16 +11,17 @@ const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8');
 
-test('header places four accessible usage meters before the rightmost display cog', () => {
-  assert.equal(PROVIDER_USAGE_METERS.length, 4);
+test('header places five accessible usage meters before the rightmost display cog', () => {
+  assert.equal(PROVIDER_USAGE_METERS.length, 5);
   assert.deepEqual(PROVIDER_USAGE_METERS.map(({ label }) => label), [
     'Cla 5h',
     'Cla Week',
     'Fable',
+    'Cod 5h',
     'Cod Week',
   ]);
-  assert.equal((html.match(/data-usage-key=/g) || []).length, 4);
-  assert.equal((html.match(/class="provider-usage-reset"/g) || []).length, 4);
+  assert.equal((html.match(/data-usage-key=/g) || []).length, 5);
+  assert.equal((html.match(/class="provider-usage-reset"/g) || []).length, 5);
   for (const meter of PROVIDER_USAGE_METERS) {
     assert.match(html, new RegExp(`data-usage-key="${meter.key}"`));
     assert.match(html, new RegExp(`<span>${meter.label}</span>`));
@@ -53,6 +54,7 @@ test('usage meter presentation exposes threshold, stale, and unavailable states'
     },
     codex: {
       status: 'unavailable',
+      fiveHour: null,
       weekly: null,
     },
   }, {
@@ -64,12 +66,13 @@ test('usage meter presentation exposes threshold, stale, and unavailable states'
     { value: '70%', level: 'warning' },
     { value: '79%', level: 'elevated' },
     { value: '--', level: 'unavailable' },
+    { value: '--', level: 'unavailable' },
   ]);
   assert.match(presentations[0].title, /Resets 1:20am/);
   assert.match(presentations[0].title, /Last known value/);
   assert.equal(presentations[2].shared, false);
-  assert.match(presentations[3].title, /unavailable/);
-  assert.equal(presentations[3].countdown, '');
+  assert.match(presentations[4].title, /unavailable/);
+  assert.equal(presentations[4].countdown, '');
 });
 
 test('reset countdowns use hours and minutes for 5-hour usage and days and hours otherwise', () => {
@@ -83,6 +86,7 @@ test('reset countdowns use hours and minutes for 5-hour usage and days and hours
     },
     codex: {
       status: 'ready',
+      fiveHour: { usedPercent: 18, resetsAt: Date.parse('2026-08-13T04:00:00Z') / 1_000 },
       weekly: { usedPercent: 6, resetsAt: Date.parse('2026-08-16T14:00:00Z') / 1_000 },
     },
   }, { now });
@@ -91,10 +95,12 @@ test('reset countdowns use hours and minutes for 5-hour usage and days and hours
     '4h 15m',
     '2d 14h',
     '1d 14h',
+    '3h 30m',
     '3d 14h',
   ]);
   assert.equal(presentations[0].countdownLabel, 'Resets in 4 hours and 15 minutes');
   assert.equal(presentations[1].countdownLabel, 'Resets in 2 days and 14 hours');
+  assert.equal(presentations[3].countdownLabel, 'Resets in 3 hours and 30 minutes');
 });
 
 test('a time-only Claude reset uses its timezone and rolls into the next day', () => {
@@ -139,18 +145,21 @@ test('usage thresholds are green below 50, yellow from 50, orange from 75, and r
   assert.equal(levelAt(90), 'critical');
 });
 
-test('Codex epoch reset times are formatted for the meter tooltip', () => {
-  const [,,, codex] = providerUsagePresentation({
+test('Codex epoch reset times are formatted for both meter tooltips', () => {
+  const [,,, codexFiveHour, codexWeekly] = providerUsagePresentation({
     claude: { status: 'checking' },
     codex: {
       status: 'ready',
+      fiveHour: { usedPercent: 18, resetsAt: 1_786_500_000, resetLabel: null },
       weekly: { usedPercent: 6, resetsAt: 1_786_743_600, resetLabel: null },
     },
   }, {
     formatDate: () => 'Aug 19, 2:00 PM',
   });
-  assert.equal(codex.value, '6%');
-  assert.match(codex.title, /Resets Aug 19, 2:00 PM/);
+  assert.equal(codexFiveHour.value, '18%');
+  assert.equal(codexWeekly.value, '6%');
+  assert.match(codexFiveHour.title, /Resets Aug 19, 2:00 PM/);
+  assert.match(codexWeekly.title, /Resets Aug 19, 2:00 PM/);
 });
 
 test('an absent model-specific window uses Claude weekly runway instead of implying Fable is unavailable', () => {

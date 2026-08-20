@@ -608,8 +608,15 @@ test('database persists, deduplicates, launches, and removes pinned projects', (
     assert.equal(first.prefer_idle_terminal, false);
     assert.equal(first.terminal_layout, null);
     assert.equal(first.color, null);
+    assert.equal(first.standup_custom_prompt, '');
     assert.equal(database.updateProjectColor(first.id, '#f04fc3').color, '#f04fc3');
     assert.equal(database.updateProjectColor(first.id, null).color, null);
+    const prompted = database.updateProjectStandupCustomPrompt(
+      first.id,
+      'Focus on customer-visible changes.',
+    );
+    assert.equal(prompted.standup_custom_prompt, 'Focus on customer-visible changes.');
+    assert.equal(database.getProject(second.id).standup_custom_prompt, '');
     const resized = database.updateProjectInstanceLimits(first.id, { codex: 4, claude: 2 });
     assert.equal(resized.max_codex_instances, 4);
     assert.equal(resized.max_claude_instances, 2);

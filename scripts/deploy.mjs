@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   providerCommandInvocation,
@@ -21,6 +21,7 @@ import {
   formatChangelogEntry,
   inferReleaseType,
   localCalendarDate,
+  MAC_RELEASE_MANIFEST_NAME,
   nextVersion,
   normalizeReleaseTags,
   normalizeReleaseNotes,
@@ -34,6 +35,7 @@ import {
   releaseTagsFromCompletePublishedReleases,
   releaseTagsFromRemoteRefs,
   selectReleaseWorkflowRun,
+  windowsReleaseArtifactNames,
 } from './release-core.mjs';
 import {
   assertMacReleaseHost,
@@ -48,6 +50,7 @@ const RELEASE_REPOSITORY = 'Crowie-s-r-o/CC-Relay';
 const RELEASE_WATCH_TIMEOUT_MS = 45 * 60_000;
 const RELEASE_WATCH_INTERVAL_MS = 20_000;
 const RELEASE_SETTLE_POLLS = 6;
+const MAC_RELEASE_FEED_NAME = 'latest-mac.yml';
 
 function usage() {
   return `CC Relay deploy
@@ -409,7 +412,7 @@ async function generateReleaseNotes(prompt, providerPreference) {
 
 // The GitHub CLI carries the maintainer credential, so deploy never handles a token itself.
 // REST reads keep workflow selection deterministic, while `gh release upload` transfers the
-// locally verified macOS artifacts after the hosted Windows release exists.
+// locally verified macOS artifacts after the hosted Windows draft handoff exists.
 function ghJson(path) {
   const resolved = resolveExecutableOnPath('gh');
   const invocation = providerCommandInvocation(resolved, [
@@ -439,11 +442,78 @@ function gh(args, { inherit = false } = {}) {
   });
 }
 
+function uploadReleaseAssets(tag, paths) {
+  if (paths.length === 0) return;
+  gh([
+    'release',
+    'upload',
+    tag,
+    ...paths,
+    '--repo',
+    RELEASE_REPOSITORY,
+    '--clobber',
+  ], { inherit: true });
+}
+
+function removeReleaseAssets(tag, release, names) {
+  const existing = new Set((Array.isArray(release?.assets) ? release.assets : [])
+    .map((asset) => String(asset?.name || ''))
+    .filter(Boolean));
+  for (const name of names) {
+    if (!existing.has(name)) continue;
+    gh([
+      'release',
+      'delete-asset',
+      tag,
+      name,
+      '--repo',
+      RELEASE_REPOSITORY,
+      '--yes',
+    ], { inherit: true });
+  }
+}
+
+function releaseAssetsByName(release) {
+  return new Map((Array.isArray(release?.assets) ? release.assets : [])
+    .map((asset) => [String(asset?.name || ''), asset]));
+}
+
+function assertFinishedReleaseAssets(tag, release, names) {
+  const remoteAssets = releaseAssetsByName(release);
+  for (const name of names) {
+    const asset = remoteAssets.get(name);
+    if (!asset || asset.state !== 'uploaded' || Number(asset.size || 0) <= 0) {
+      throw new Error(`GitHub Release ${tag} has not finished uploading ${name}.`);
+    }
+  }
+}
+
+function assertUploadedReleaseAssets(tag, release, expectedSizes, names) {
+  assertFinishedReleaseAssets(tag, release, names);
+  const remoteAssets = releaseAssetsByName(release);
+  for (const name of names) {
+    const asset = remoteAssets.get(name);
+    if (Number(asset.size || 0) !== expectedSizes[name]) {
+      throw new Error(`GitHub Release ${tag} has the wrong uploaded size for ${name}.`);
+    }
+  }
+}
+
 // A missing release and an unusable CLI both fail the same way, so probe the repository once and
 // treat only a positive answer as permission to interpret later 404s as "not published yet".
 function releaseWatchAvailable() {
   const repository = ghJson(`repos/${RELEASE_REPOSITORY}`);
   return String(repository?.full_name || '') === RELEASE_REPOSITORY;
+}
+
+function releaseByTag(tag) {
+  const published = ghJson(`repos/${RELEASE_REPOSITORY}/releases/tags/${tag}`);
+  if (published) return published;
+  // GitHub's tag endpoint exposes published releases only. An authenticated listing also includes
+  // drafts for users with push access, which is how local deploy finds the staged handoff.
+  const releases = ghJson(`repos/${RELEASE_REPOSITORY}/releases?per_page=100`);
+  if (!Array.isArray(releases)) return null;
+  return releases.find((release) => String(release?.tag_name || '') === tag) || null;
 }
 
 function publishedReleaseTags() {
@@ -453,29 +523,67 @@ function publishedReleaseTags() {
 }
 
 function publishSignedMacRelease(tag, signedRelease) {
-  console.log(`Uploading verified signed macOS artifacts for ${tag}...`);
-  gh([
-    'release',
-    'upload',
-    tag,
-    ...signedRelease.paths,
-    '--repo',
-    RELEASE_REPOSITORY,
-    '--clobber',
-  ], { inherit: true });
+  const pathByName = new Map(signedRelease.paths.map((path) => [basename(path), path]));
+  const expectedNames = Object.keys(signedRelease.sizes);
+  const feedPath = pathByName.get(MAC_RELEASE_FEED_NAME);
+  const manifestPath = pathByName.get(MAC_RELEASE_MANIFEST_NAME);
+  const payloadPaths = signedRelease.paths.filter((path) => {
+    const name = basename(path);
+    return name !== MAC_RELEASE_FEED_NAME && name !== MAC_RELEASE_MANIFEST_NAME;
+  });
+  if (!feedPath || !manifestPath || payloadPaths.length + 2 !== signedRelease.paths.length) {
+    throw new Error(`Verified macOS artifacts for ${tag} do not have one feed and one manifest.`);
+  }
 
-  const release = ghJson(`repos/${RELEASE_REPOSITORY}/releases/tags/${tag}`);
-  if (!releaseHasSignedMacArtifacts(release)) {
-    throw new Error(`GitHub Release ${tag} is missing one or more verified macOS assets after upload.`);
+  let release = releaseByTag(tag);
+  if (!release) throw new Error(`GitHub Release ${tag} does not exist.`);
+  const windowsNames = windowsReleaseArtifactNames(tag.slice(1));
+  assertFinishedReleaseAssets(tag, release, windowsNames);
+
+  console.log(`Uploading verified signed macOS payloads for ${tag}...`);
+  // A partial public release from the older pipeline may already have a feed. Remove that feed
+  // and the completion marker before replacing payloads so no updater can observe mixed assets.
+  removeReleaseAssets(tag, release, [MAC_RELEASE_FEED_NAME, MAC_RELEASE_MANIFEST_NAME]);
+  uploadReleaseAssets(tag, payloadPaths);
+  release = releaseByTag(tag);
+  assertUploadedReleaseAssets(
+    tag,
+    release,
+    signedRelease.sizes,
+    payloadPaths.map((path) => basename(path)),
+  );
+
+  // Publish the updater feed only after every payload is complete, then publish the manifest as
+  // the release-completeness marker. Future releases stay draft until all three stages pass.
+  uploadReleaseAssets(tag, [feedPath]);
+  release = releaseByTag(tag);
+  assertUploadedReleaseAssets(tag, release, signedRelease.sizes, [
+    ...payloadPaths.map((path) => basename(path)),
+    MAC_RELEASE_FEED_NAME,
+  ]);
+
+  uploadReleaseAssets(tag, [manifestPath]);
+  release = releaseByTag(tag);
+  assertUploadedReleaseAssets(tag, release, signedRelease.sizes, expectedNames);
+
+  if (release.draft) {
+    gh([
+      'release',
+      'edit',
+      tag,
+      '--repo',
+      RELEASE_REPOSITORY,
+      '--draft=false',
+    ], { inherit: true });
   }
-  const remoteSizes = new Map((Array.isArray(release.assets) ? release.assets : [])
-    .map((asset) => [String(asset?.name || ''), Number(asset?.size || 0)]));
-  for (const [name, size] of Object.entries(signedRelease.sizes)) {
-    if (remoteSizes.get(name) !== size) {
-      throw new Error(`GitHub Release ${tag} has the wrong uploaded size for ${name}.`);
-    }
+
+  const publishedRelease = releaseByTag(tag);
+  if (!releaseHasSignedMacArtifacts(publishedRelease)) {
+    throw new Error(`GitHub Release ${tag} is not published with every verified macOS asset.`);
   }
-  console.log(`Published verified signed macOS artifacts for ${tag}.`);
+  assertFinishedReleaseAssets(tag, publishedRelease, windowsNames);
+  assertUploadedReleaseAssets(tag, publishedRelease, signedRelease.sizes, expectedNames);
+  console.log(`Published complete desktop release ${tag}.`);
 }
 
 function removeReleaseWorktree(root, workspace) {
@@ -534,13 +642,14 @@ async function watchReleasePublication(tag, sha) {
   let settleRemaining = RELEASE_SETTLE_POLLS;
   let lastMessage = '';
   while (Date.now() < deadline) {
-    const release = ghJson(`repos/${RELEASE_REPOSITORY}/releases/tags/${tag}`);
+    const release = releaseByTag(tag);
     const runs = ghJson(`repos/${RELEASE_REPOSITORY}/actions/runs?per_page=30&head_sha=${sha}`);
     const run = selectReleaseWorkflowRun(runs, { tag, sha });
     const status = releasePublishStatus({
       tag,
       run,
       releaseUrl: release?.html_url || '',
+      releaseDraft: release?.draft === true,
       settleRemaining,
     });
     if (status.done) return status;
@@ -616,7 +725,7 @@ async function recoverPendingReleases(localTags, options) {
         console.log(`${record.tag} is already pushed; resuming its publication watch.`);
       }
 
-      console.log(`Waiting for GitHub Actions to publish the Windows artifacts for ${record.tag}...`);
+      console.log(`Waiting for GitHub Actions to prepare the Windows release draft for ${record.tag}...`);
       const outcome = await watchReleasePublication(record.tag, record.sha);
       if (!outcome.ok) {
         throw new Error(`${outcome.message}\nRecovery stopped at ${record.tag}; later pending releases were not pushed.`);
@@ -756,7 +865,7 @@ async function main() {
   }
 
   const sha = gitText(['rev-parse', 'HEAD']).trim();
-  console.log(`Waiting for GitHub Actions to publish the Windows artifacts for ${tag}...`);
+  console.log(`Waiting for GitHub Actions to prepare the Windows release draft for ${tag}...`);
   const outcome = await watchReleasePublication(tag, sha);
   if (!outcome.ok) {
     throw new Error(`${outcome.message}\nThe commit and ${tag} are already pushed. Fix the build, then re-run the workflow for ${tag}.`);

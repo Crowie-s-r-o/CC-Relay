@@ -13,7 +13,7 @@ tags:
 
 # Daily Standup
 
-The Task queue heading exposes **Standup** beside Queue and History. Opening the modal does not start AI. The task start date is intentionally blank, and selecting a local calendar day starts one generation run.
+The Task queue heading exposes **Standup** beside Queue and History. Opening the modal does not start AI. The modal also exposes an optional **Default custom prompt** saved on the selected Launchpad. The task start date is intentionally blank, and selecting a local calendar day saves any prompt edit before starting one generation run.
 
 Standup has one output contract. It synthesizes completed work into the same nonempty sections used by [[open-source-releases|deploy]]:
 
@@ -34,11 +34,14 @@ Standup follows the selected Launchpad:
 - Every CC Relay in the selected project contributes eligible tasks.
 - Exact resolved project paths are enforced again by `POST /api/standup/generate`.
 - With no selected project, the Standup button remains disabled.
-- A refreshed renderer requires `capabilities.aiStandupGeneration`, `capabilities.aiStandupChangelog`, and `capabilities.aiStandupStartDate`.
+- A refreshed renderer requires `capabilities.aiStandupGeneration`, `capabilities.aiStandupChangelog`, and `capabilities.aiStandupStartDate` for generation.
+- The default prompt editor appears only with `capabilities.projectStandupPrompt`.
 
 The dedicated `aiStandupChangelog` capability is a mixed-version guard. A new renderer does not send the categorized request to an older backend, and an old renderer does not silently request a retired length mode from the new backend.
 
 `aiStandupStartDate` separately guards the date-attribution contract. It prevents refreshed renderer assets from preselecting tasks by start time while an older backend still filters the same request by completion time.
+
+`projectStandupPrompt` is an additive mixed-version guard. A refreshed renderer paired with an older backend keeps normal Standup generation available but hides the unsupported prompt editor instead of issuing a failing save request.
 
 Only tasks with status `complete` are eligible. Failed, queued, running, interrupted, and cancelled rows are excluded because a changelog records confirmed outcomes, not unresolved attempts. A completed task belongs to the local calendar day containing its persisted `started_at`. `created_at` is the compatibility fallback for legacy completed rows without a valid start timestamp. `finished_at` never chooses the Standup day, so work that crosses midnight remains attributed to the day it started.
 
@@ -48,15 +51,16 @@ See [[task-history]] for the shared project-wide visibility invariant.
 
 ## Conversation source
 
-The browser sends the project, a null Relay id, selected provider, task start date label, and ISO day boundaries. It never sends task text as authority.
+The browser sends the project, a null Relay id, selected provider, task start date label, and ISO day boundaries. It never sends task text or the custom prompt as generation authority.
 
 The backend reloads source data from SQLite:
 
-1. The selected row contributes its persisted start timestamp, using creation time only for legacy compatibility.
-2. `database.listTaskPrompts(task.id)` returns the original request and every recorded same-task follow-up.
-3. `database.listTaskResponses(task.id)` extracts completed Codex agent messages and saved Claude messages in event order.
-4. The latest task result is added when no matching response event exists.
-5. The final result is included separately as the authoritative outcome.
+1. The pinned project row contributes `standup_custom_prompt`, defaulting to an empty string.
+2. The selected task row contributes its persisted start timestamp, using creation time only for legacy compatibility.
+3. `database.listTaskPrompts(task.id)` returns the original request and every recorded same-task follow-up.
+4. `database.listTaskResponses(task.id)` extracts completed Codex agent messages and saved Claude messages in event order.
+5. The latest task result is added when no matching response event exists.
+6. The final result is included separately as the authoritative outcome.
 
 This keeps generation grounded in actual saved conversations, including the one-task, one-conversation continuation history described in [[same-task-session-continuation]].
 
@@ -88,6 +92,11 @@ Deterministic normalization then enforces:
 
 The prompt asks for every distinct confirmed fact supported by the evidence and explicitly states that there is no item-count limit. Related tasks, retries, and follow-ups are synthesized instead of being emitted mechanically. A request or attempt is omitted unless a saved response or final outcome confirms it as completed.
 
+An optional project prompt can refine emphasis, terminology, or exclusions. It is operator-authored guidance, capped at 4,000 characters, and placed before the recorded-work boundary. The prompt explicitly keeps the JSON output shape, evidence grounding, category definitions, and security rules authoritative over project guidance.
+
+> [!important]
+> `POST /api/standup/generate` always reads the saved prompt from the exact pinned project row. Do not accept a browser-submitted custom prompt on the generation route, because that would weaken project isolation and allow an unsaved or stale draft to target the wrong Launchpad.
+
 > [!important]
 > Standup must not fail because the provider returned more than eight facts or more than four facts in one section. Item-count constraints are absent from both the provider JSON Schema and deterministic normalization. The 180-character per-fact and 2 MB provider-output safety bounds remain.
 
@@ -114,18 +123,20 @@ Generation is intentionally bounded:
 - At most the latest 40 eligible completed tasks are sent to the model.
 - For each included task, the original and latest five prompts plus the latest six assistant responses are retained.
 - Individual text and the complete recorded-work source are progressively shortened to keep the source under 120,000 characters.
+- The saved project prompt is trimmed, strips null bytes, and is capped at 4,000 characters.
 - Provider stdout is capped at 2 MB.
 - A provider run times out after 120 seconds.
 - Each normalized fact is capped at 180 characters, but the number of facts and facts per section is not capped.
 - Only one standup generation may run at a time. A concurrent request receives HTTP 409.
 
-No standup is cached or persisted. **Regenerate changelog** always starts a fresh isolated synthesis from current saved data.
+No generated standup is cached or persisted. The optional default prompt is durable project configuration. **Regenerate changelog** always starts a fresh isolated synthesis from current saved data.
 
 ## Interface
 
 The modal provides:
 
 - a single task start date control with no output options;
+- a project-specific default custom prompt editor with explicit save feedback;
 - a visible provider route explaining that a fresh isolated CLI process is used;
 - a disabled date control and skeleton ledger while AI is working;
 - a clear empty state when no completed work exists;
@@ -154,6 +165,7 @@ Every generated sentence enters the DOM through `escapeHtml`. Clipboard failure 
   ],
   "security": [],
   "provider": "codex",
+  "customPromptApplied": true,
   "date": "2026-08-12",
   "taskCount": 4,
   "includedTaskCount": 4,
@@ -162,11 +174,12 @@ Every generated sentence enters the DOM through `escapeHtml`. Clipboard failure 
 }
 ```
 
-The endpoint validates the pinned project, optional Relay id length, provider, local-day interval, eligible completed source tasks, provider readiness, and global generation slot before returning normalized structured output.
+The endpoint validates the pinned project, optional Relay id length, provider, local-day interval, eligible completed source tasks, provider readiness, and global generation slot before returning normalized structured output. `customPromptApplied` records whether that exact run used saved project guidance, so a concurrent shared-config edit cannot make the completion note describe the wrong input. `PATCH /api/projects/:id/standup-prompt` separately validates and saves the 4,000-character project prompt.
 
 ## Files and verification
 
 - `src/changelog-notes.mjs`
+- `src/project-config-store.mjs`
 - `src/standup-generator.mjs`
 - `src/database.mjs`
 - `src/server.mjs`
@@ -180,7 +193,7 @@ The endpoint validates the pinned project, optional Relay id length, provider, l
 - `test/standup-ui.test.mjs`
 - `test/release-tooling.test.mjs`
 
-Focused tests cover local dates, daylight-saving day lengths, start-time attribution across midnight, creation-time compatibility fallback, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, escaped rich-chat clipboard HTML and its plain-text fallback, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
+Focused tests cover local dates, daylight-saving day lengths, start-time attribution across midnight, creation-time compatibility fallback, exact project and Relay filtering, completed-status filtering, prompt and response history, source bounds, project-prompt bounds and precedence, legacy project-table migration, project isolation, prompt-injection framing, category semantics, unlimited item counts, shared deploy validation, cross-section deduplication, ready-to-paste Markdown, escaped rich-chat clipboard HTML and its plain-text fallback, date-gated UI wiring, mixed-version capability gating, structured Codex and Claude output, process isolation, timeouts, provider fallback, and concurrency.
 
 See [[daily-standup-review]] for the historical review of the retired length-configurable implementation.
 

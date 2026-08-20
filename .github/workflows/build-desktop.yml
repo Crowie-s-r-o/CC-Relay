@@ -67,9 +67,47 @@ jobs:
           pattern: cc-relay-Windows
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v3
+      - id: release-state
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const releases = await github.paginate(github.rest.repos.listReleases, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              per_page: 100,
+            });
+            const tag = context.ref.replace('refs/tags/', '');
+            const existing = releases.find((release) => release.tag_name === tag);
+            const version = tag.startsWith('v') ? tag.slice(1) : '';
+            const expected = [
+              `CC-Relay-${version}-mac-arm64.dmg`,
+              `CC-Relay-${version}-mac-arm64.dmg.blockmap`,
+              `CC-Relay-${version}-mac-arm64.zip`,
+              `CC-Relay-${version}-mac-arm64.zip.blockmap`,
+              `CC-Relay-${version}-win-x64-Portable.exe`,
+              `CC-Relay-${version}-win-x64-Setup.exe`,
+              `CC-Relay-${version}-win-x64-Setup.exe.blockmap`,
+              'latest-mac.yml',
+              'latest.yml',
+              'mac-release.json',
+            ];
+            const uploaded = new Set((existing?.assets || [])
+              .filter((asset) => asset.state === 'uploaded' && asset.size > 0)
+              .map((asset) => asset.name));
+            if (existing && !existing.draft && expected.every((name) => uploaded.has(name))) {
+              return 'published-complete';
+            }
+            return existing ? (existing.draft ? 'draft' : 'published-incomplete') : 'missing';
+          result-encoding: string
+      # A rerun for an already complete tag must not replace live updater assets. Missing, draft,
+      # and legacy incomplete releases remain resumable through the guarded local deploy handoff.
+      - if: steps.release-state.outputs.result != 'published-complete'
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
+          # Keep the release invisible to desktop updaters until local deploy has uploaded and
+          # verified every signed macOS payload. Local deploy publishes the complete draft.
+          draft: true
           files: |
             dist/*.exe
             dist/*.blockmap

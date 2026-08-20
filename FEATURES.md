@@ -10,7 +10,7 @@ CC Relay is designed to make AI development work easier to control:
 
 - Pin projects and set separate maximum Codex and Claude instances for each one.
 - Queue prompts instead of waiting for one task to finish before preparing the next.
-- Give tasks recognizable names and rename them without replacing queued work.
+- Give tasks recognizable names, star important records to keep them at the top, and rename titles at any stage.
 - Search every saved task command and assistant response inside the selected project.
 - Attach earlier task messages, AI responses, or both as context for new work.
 - Choose the provider, model, and reasoning effort without keeping a target terminal open.
@@ -21,7 +21,7 @@ CC Relay is designed to make AI development work easier to control:
 - Retry a failed direct task with a newly selected Codex or Claude executor, model, and effort.
 - Attach screenshots and other reference images to tasks.
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
-- Monitor Claude session, Claude weekly, Fable weekly, and Codex weekly subscription usage in the global header.
+- Monitor Claude session, Claude weekly, Fable weekly, Codex five-hour, and Codex weekly subscription usage in the global header.
 - Persist prompts, events, results, plans, errors, and attachments locally.
 - Generate a date-selected daily changelog from saved prompts and AI responses.
 - Reorder, prioritize, reassign, cancel, retry, and delete tasks.
@@ -101,11 +101,17 @@ Pin frequently used folders and treat each one as a workspace. A project card sc
 
 Tasks are stored in SQLite and survive restarts. Each project owns its queue order, pause state, FIFO barriers, and provider limits. Waiting tasks can be reordered. Disposable tasks are not assigned manually because the pool creates their terminal when they start. Legacy persistent tasks retain compatible reassignment support.
 
-The task-list search checks task names, original commands, every accepted Relay follow-up, every saved Codex and Claude response, final results, and recorded errors. Search is case, accent, and punctuation insensitive, supports quoted phrases and task numbers, and ranks the strongest evidence first. Matching cards show a highlighted command or response excerpt. Search spans all dates in the selected project; filtered results stay inspectable but do not expose reorder, assignment, or parallel-batch controls.
+The task-list search checks task names, original commands, every accepted Relay follow-up, every saved Codex and Claude response, final results, and recorded errors. Search is case, accent, and punctuation insensitive, supports quoted phrases and task numbers, and ranks the strongest evidence first. Starred matches form a stable group above other matches while preserving relevance order inside each group. Matching cards show a highlighted command or response excerpt. Search spans all dates in the selected project; filtered results stay inspectable but do not expose reorder, assignment, or parallel-batch controls.
 
-Task names are optional and fall back to a compact form of the request. A waiting task can be
-renamed in place while its task ID, prompt, position, routing, workflow configuration, and images
-remain unchanged.
+Task names are optional and fall back to a compact form of the request. The pencil beside every
+ordinary task title opens a focused inline editor, including while a task is running or after it
+finishes. Renaming preserves its task ID, prompt, status, position, routing, workflow configuration,
+conversation, outcomes, and images. Planner breakdown titles remain linked to their plan steps.
+
+The star beside a task title persists in SQLite and groups that task at the top of Queue, History,
+search, and the active-task monitor. Starring is display organization only. It does not change a
+queued task's execution position, FIFO barriers, provider capacity, or scheduler priority. Queue
+reordering remains available inside the starred and unstarred groups.
 
 Task Activity includes a compact continuation dock for direct tasks. A follow-up always reuses the selected task row and saved conversation. While a direct task is running, Codex and interactive Claude accept exact active-turn updates without creating queue work. Running Claude keeps the dock editable while earlier updates are being delivered, captures every send in order, and sends a stable native Claude draft before the next Relay update instead of blocking the operator. Attachment-bearing updates remain recognizable after Claude converts their path lines into cumulative image chips and shortens the collapsed paste, so the guarded submit schedule does not leave them waiting for manual Enter. After a task finishes, CC Relay uses a live retained session immediately, or reserves a free provider slot, relaunches the saved conversation, and sends the next turn without creating a task. If no slot is free, submission stays on the finished task and asks the user to try again. The Prompts disclosure above the event rail lists the original request and every accepted follow-up.
 
@@ -139,7 +145,7 @@ The monitor uses each installed, authenticated provider CLI. It does not add API
 
 ### AI daily standup
 
-The Task queue includes a **Standup** action. Opening it does not run AI. Select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved prompts, assistant responses, and final results from completed work in that project. It never uses a task terminal.
+The Task queue includes a **Standup** action. Opening it does not run AI. Each Launchpad can save an optional default custom prompt for its Standups, such as preferred terminology, emphasis, or exclusions. Select a local calendar day to start generation. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved project prompt plus the prompts, assistant responses, and final results from completed work in that project. It never uses a task terminal.
 
 Standup has one output type: the same concise changelog structure used by deploy. Related work is synthesized into short Added, Changed, Fixed, and Security sentences. Empty categories are omitted, facts are deduplicated, and the result copies as ready-to-paste Markdown headings and bullet points. Standup generation does not create a queue task, resume an existing task conversation, or add itself to history.
 

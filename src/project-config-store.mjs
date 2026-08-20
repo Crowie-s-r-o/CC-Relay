@@ -33,6 +33,9 @@ function normalizeProject(row) {
     ...project,
     keep_terminal_open: row.keep_terminal_open === 1 || row.keep_terminal_open === true,
     prefer_idle_terminal: row.prefer_idle_terminal === 1 || row.prefer_idle_terminal === true,
+    standup_custom_prompt: typeof row.standup_custom_prompt === 'string'
+      ? row.standup_custom_prompt
+      : '',
     terminal_layout: parseTerminalLayout(terminalLayoutJson),
   };
 }
@@ -51,6 +54,7 @@ function projectRows(database) {
       keep_terminal_open,
       prefer_idle_terminal,
       color,
+      standup_custom_prompt,
       terminal_layout_json
     FROM projects
     ORDER BY position ASC, id ASC
@@ -93,12 +97,14 @@ export class ProjectConfigStore {
         keep_terminal_open INTEGER NOT NULL DEFAULT 0,
         prefer_idle_terminal INTEGER NOT NULL DEFAULT 0,
         color TEXT,
+        standup_custom_prompt TEXT NOT NULL DEFAULT '',
         terminal_layout_json TEXT
       );
     `);
     ensureProjectColumn(this.database, 'keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
     ensureProjectColumn(this.database, 'prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
     ensureProjectColumn(this.database, 'color', 'TEXT');
+    ensureProjectColumn(this.database, 'standup_custom_prompt', "TEXT NOT NULL DEFAULT ''");
     ensureProjectColumn(this.database, 'terminal_layout_json', 'TEXT');
 
     this.legacyDatabase = legacyDatabase && legacyDatabase !== this.database
@@ -108,6 +114,7 @@ export class ProjectConfigStore {
       ensureProjectColumn(this.legacyDatabase, 'keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
       ensureProjectColumn(this.legacyDatabase, 'prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
       ensureProjectColumn(this.legacyDatabase, 'color', 'TEXT');
+      ensureProjectColumn(this.legacyDatabase, 'standup_custom_prompt', "TEXT NOT NULL DEFAULT ''");
       ensureProjectColumn(this.legacyDatabase, 'terminal_layout_json', 'TEXT');
       this.migrateLegacyProjects();
       this.syncLegacyMirror();
@@ -147,8 +154,9 @@ export class ProjectConfigStore {
             keep_terminal_open,
             prefer_idle_terminal,
             color,
+            standup_custom_prompt,
             terminal_layout_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const project of legacyProjects) {
           if (existingByPath.get(project.path)) continue;
@@ -163,6 +171,7 @@ export class ProjectConfigStore {
             project.keep_terminal_open ? 1 : 0,
             project.prefer_idle_terminal ? 1 : 0,
             project.color || null,
+            project.standup_custom_prompt || '',
             project.terminal_layout ? JSON.stringify(project.terminal_layout) : null,
           );
         }
@@ -210,8 +219,9 @@ export class ProjectConfigStore {
             keep_terminal_open,
             prefer_idle_terminal,
             color,
+            standup_custom_prompt,
             terminal_layout_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const project of projects) {
           insert.run(
@@ -226,6 +236,7 @@ export class ProjectConfigStore {
             project.keep_terminal_open ? 1 : 0,
             project.prefer_idle_terminal ? 1 : 0,
             project.color || null,
+            project.standup_custom_prompt || '',
             project.terminal_layout ? JSON.stringify(project.terminal_layout) : null,
           );
         }
@@ -390,6 +401,19 @@ export class ProjectConfigStore {
       SET color = ?
       WHERE id = ?
     `).run(color || null, id);
+    const updated = this.getProject(id);
+    this.syncLegacyMirror();
+    return updated;
+  }
+
+  updateProjectStandupCustomPrompt(id, prompt) {
+    const project = this.getProject(id);
+    if (!project) throw new Error('Pinned project not found.');
+    this.database.prepare(`
+      UPDATE projects
+      SET standup_custom_prompt = ?
+      WHERE id = ?
+    `).run(prompt || '', id);
     const updated = this.getProject(id);
     this.syncLegacyMirror();
     return updated;

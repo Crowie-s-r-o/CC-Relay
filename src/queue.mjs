@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { now } from './database.mjs';
 import { captureTaskDiffBaseline } from './task-diff.mjs';
+import { taskTitleFromInput } from './task-title.mjs';
 
 const RETRYABLE_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_SOURCE_STATUSES = new Set(['open', 'complete', 'failed', 'cancelled', 'interrupted']);
@@ -655,6 +656,54 @@ export class TaskQueue extends EventEmitter {
     );
     this.changed(taskId);
     this.schedule();
+    return updated;
+  }
+
+  rename(taskId, title) {
+    const task = this.database.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    if (task.mode === 'breakdown') {
+      throw new Error('Planner breakdown tasks keep the name of their linked plan step.');
+    }
+    if (this.activePreparations.has(taskId)) {
+      throw new Error('This task is already being prepared. Wait for preparation to finish before renaming it.');
+    }
+    const nextTitle = taskTitleFromInput(title, task.prompt);
+    if (nextTitle === task.title) return task;
+
+    const updated = this.database.updateTask(taskId, { title: nextTitle });
+    try {
+      this.artifacts.updateTaskTitle(updated);
+    } catch (error) {
+      this.database.updateTask(taskId, { title: task.title });
+      throw error;
+    }
+    if (this.activeTasks.has(taskId)) {
+      this.activeTasks.set(taskId, { ...this.activeTasks.get(taskId), title: updated.title });
+    }
+    const dispatchGuard = this.dispatchGuards.get(taskId);
+    if (dispatchGuard) dispatchGuard.task = { ...dispatchGuard.task, title: updated.title };
+    this.database.addEvent(
+      taskId,
+      'queue',
+      `Task renamed from "${task.title}" to "${updated.title}".`,
+    );
+    this.changed(taskId);
+    return updated;
+  }
+
+  setStarred(taskId, starred) {
+    if (typeof starred !== 'boolean') throw new Error('Task starred state must be true or false.');
+    const task = this.database.getTask(taskId);
+    if (!task) throw new Error('Task not found.');
+    if (task.starred === starred) return task;
+    const updated = this.database.updateTask(taskId, { starred: starred ? 1 : 0 });
+    this.database.addEvent(
+      taskId,
+      'queue',
+      starred ? 'Task starred and moved to the top of task views.' : 'Task removed from Starred.',
+    );
+    this.changed(taskId);
     return updated;
   }
 

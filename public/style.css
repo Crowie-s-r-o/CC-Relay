@@ -8204,6 +8204,7 @@ body[data-resizing-terminal="true"] {
 }
 
 .detail-panel .detail-identity {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -8293,16 +8294,18 @@ body[data-resizing-terminal="true"] {
 }
 
 .detail-panel .detail-task-name {
-  display: block;
+  display: -webkit-box;
   max-width: 100%;
   margin-top: 6px;
   overflow: hidden;
+  overflow-wrap: anywhere;
   color: #252b36;
   font-size: 12px;
   font-weight: 700;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  white-space: normal;
 }
 
 .detail-panel .detail-execution-profile {
@@ -10496,6 +10499,78 @@ html[data-running-task-width="360"] {
   margin-bottom: 10px;
 }
 
+.standup-custom-prompt-field {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 10px;
+  padding: 11px 12px;
+  border: 1px solid #e0e5ef;
+  border-radius: 10px;
+  background: #f7f9fd;
+}
+
+.standup-custom-prompt-field[hidden] {
+  display: none;
+}
+
+.standup-custom-prompt-field label > span {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.standup-custom-prompt-field label strong {
+  color: #29334a;
+  font-size: 10px;
+}
+
+.standup-custom-prompt-field label small,
+.standup-custom-prompt-footer small {
+  color: #697489;
+  font-size: 9px;
+  line-height: 1.45;
+}
+
+.standup-custom-prompt-field textarea {
+  width: 100%;
+  min-height: 66px;
+  resize: vertical;
+  padding: 8px 10px;
+  border: 1px solid #dbe3ef;
+  border-radius: 8px;
+  color: #20293a;
+  background: #fff;
+  font: 10px/1.5 var(--font-sans);
+}
+
+.standup-custom-prompt-field textarea:focus-visible {
+  outline: 2px solid #6daff4;
+  outline-offset: 1px;
+}
+
+.standup-custom-prompt-field textarea:disabled {
+  color: #8b94a4;
+  background: #f1f3f7;
+  cursor: progress;
+}
+
+.standup-custom-prompt-footer {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.standup-custom-prompt-footer small {
+  min-width: 0;
+}
+
+.standup-custom-prompt-footer .button {
+  flex: 0 0 auto;
+}
+
 .standup-date-field {
   display: grid;
   gap: 6px;
@@ -10914,6 +10989,13 @@ html[data-running-task-width="360"] {
   .standup-scope {
     justify-items: start;
     text-align: left;
+  }
+
+  .standup-custom-prompt-field label > span,
+  .standup-custom-prompt-footer {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
   }
 
   .standup-sheet-heading {
@@ -11924,6 +12006,7 @@ html[data-theme="dark"] .standup-body {
 }
 
 html[data-theme="dark"] .standup-generator-route,
+html[data-theme="dark"] .standup-custom-prompt-field,
 html[data-theme="dark"] .standup-result-heading,
 html[data-theme="dark"] .history-ledger,
 html[data-theme="dark"] .history-metric,
@@ -11940,8 +12023,25 @@ html[data-theme="dark"] .standup-result-group + .standup-result-group {
 
 html[data-theme="dark"] .standup-item-copy p,
 html[data-theme="dark"] .standup-scope strong,
+html[data-theme="dark"] .standup-custom-prompt-field label strong,
 html[data-theme="dark"] .standup-generator-route strong {
   color: #ccd0d7;
+}
+
+html[data-theme="dark"] .standup-custom-prompt-field label small,
+html[data-theme="dark"] .standup-custom-prompt-footer small {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .standup-custom-prompt-field textarea {
+  border-color: var(--app-border);
+  color: var(--app-text-body);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .standup-custom-prompt-field textarea:disabled {
+  color: var(--app-text-muted);
+  background: var(--app-control);
 }
 
 html[data-theme="dark"] .turbo-graph-node[data-state="running"],
@@ -15429,14 +15529,14 @@ html[data-theme="dark"] .about-footer strong {
   }
 }
 
-/* Subscription runway replaces the queue pause action in the global header. Four small
+/* Subscription runway replaces the queue pause action in the global header. Five small
    instrument bars keep provider limits visible without competing with the live task rail. */
 .provider-usage {
   display: grid;
-  flex: 0 0 258px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex: 0 0 320px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 8px;
-  width: 258px;
+  width: 320px;
   min-height: 38px;
   padding: 5px 8px 6px;
   border: 1px solid #dfe3ec;
@@ -16522,4 +16622,212 @@ html[data-theme="dark"] .task-reference-menu > button > span { color: var(--app-
     grid-column: 3;
     grid-row: 1 / 3;
   }
+}
+
+/* Star and rename sit on the name line because both organize the task record. The star is
+   the one warm signal in this otherwise neutral instrument strip, so priority stays visible
+   without repainting project selection, completion review, or terminal-session states. */
+.task-name-row {
+  display: flex;
+  gap: 7px;
+  align-items: flex-start;
+  min-width: 0;
+  margin-top: 8px;
+}
+
+.task-name-row .task-name {
+  min-width: 0;
+  margin: 3px 0 0;
+  flex: 1 1 auto;
+}
+
+.task-star-button,
+.task-name-row .task-rename-button {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  padding: 0;
+  border-radius: 7px;
+  cursor: pointer;
+}
+
+.task-star-button {
+  border: 1px solid #d5dbe5;
+  color: #778297;
+  background: #fff;
+}
+
+.task-star-button::before {
+  width: 14px;
+  height: 14px;
+  content: "";
+  background: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linejoin='round' stroke-width='1.45' d='m8 1.45 1.9 3.86 4.26.62-3.08 3 .73 4.24L8 11.17l-3.81 2 .73-4.24-3.08-3 4.26-.62L8 1.45Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linejoin='round' stroke-width='1.45' d='m8 1.45 1.9 3.86 4.26.62-3.08 3 .73 4.24L8 11.17l-3.81 2 .73-4.24-3.08-3 4.26-.62L8 1.45Z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.task-star-button[aria-pressed="true"] {
+  border-color: #d7a94f;
+  color: #9a6200;
+  background: #fff7dc;
+}
+
+.task-star-button[aria-pressed="true"]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m8 1.45 1.9 3.86 4.26.62-3.08 3 .73 4.24L8 11.17l-3.81 2 .73-4.24-3.08-3 4.26-.62L8 1.45Z'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='m8 1.45 1.9 3.86 4.26.62-3.08 3 .73 4.24L8 11.17l-3.81 2 .73-4.24-3.08-3 4.26-.62L8 1.45Z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.task-star-button:hover:not(:disabled) {
+  border-color: #c6a45f;
+  color: #8a5b00;
+  background: #fff9e8;
+}
+
+.task-star-button:disabled {
+  cursor: wait;
+  opacity: .5;
+}
+
+.task-star-button:focus-visible,
+.task-inline-rename button:focus-visible,
+.task-inline-rename input:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+.task-inline-rename {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 26px 26px;
+  gap: 5px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.task-inline-rename input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 4px 8px;
+  border: 1px solid #8fa0ee;
+  border-radius: 7px;
+  color: #25324a;
+  background: #fff;
+  box-shadow: inset 0 1px 2px rgb(32 45 76 / 8%);
+  font: 750 13px/1.2 var(--font-body);
+}
+
+.task-inline-rename button {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid #cfd7e6;
+  border-radius: 7px;
+  color: #4357bc;
+  cursor: pointer;
+  background: #fff;
+}
+
+.task-inline-rename button::before {
+  width: 11px;
+  height: 11px;
+  content: "";
+  background: currentColor;
+}
+
+.task-inline-rename [data-save-task-title]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m3 8.2 3 3L13 4.5'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m3 8.2 3 3L13 4.5'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.task-inline-rename [data-cancel-task-title] {
+  color: #737e91;
+}
+
+.task-inline-rename [data-cancel-task-title]::before {
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-width='2' d='m4 4 8 8m0-8-8 8'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='none' stroke='%23000' stroke-linecap='round' stroke-width='2' d='m4 4 8 8m0-8-8 8'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+.task-inline-rename button:hover:not(:disabled) {
+  border-color: #aebcf5;
+  color: #263ec0;
+  background: #f2f4ff;
+}
+
+.task-inline-rename button:disabled,
+.task-inline-rename input:disabled {
+  cursor: wait;
+  opacity: .58;
+}
+
+.task-inline-rename-message {
+  grid-column: 1 / -1;
+  margin: 0 2px;
+  color: var(--danger);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.queue-starred-heading {
+  color: #8a5b00;
+}
+
+.queue-starred-heading i {
+  background: linear-gradient(90deg, #d5a13b, #eee0bb);
+}
+
+html[data-theme="dark"] .task-star-button {
+  border-color: var(--app-border-strong);
+  color: var(--app-text-muted);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .task-star-button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, #f2bf5a 58%, var(--app-border));
+  color: #f2bf5a;
+  background: color-mix(in srgb, #f2bf5a 12%, var(--app-control));
+}
+
+html[data-theme="dark"] .task-star-button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #f2bf5a 50%, var(--app-border));
+  color: #f2bf5a;
+  background: color-mix(in srgb, #f2bf5a 9%, var(--app-control));
+}
+
+html[data-theme="dark"] .task-inline-rename input {
+  border-color: color-mix(in srgb, var(--app-blue) 58%, var(--app-border));
+  color: var(--app-text);
+  background: var(--app-well);
+  box-shadow: inset 0 1px 2px rgb(0 0 0 / 28%);
+}
+
+html[data-theme="dark"] .task-inline-rename button {
+  border-color: var(--app-border-strong);
+  color: var(--app-blue);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .task-inline-rename [data-cancel-task-title] {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .task-inline-rename button:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--app-blue) 58%, var(--app-border));
+  color: #d6dfff;
+  background: color-mix(in srgb, var(--app-blue) 14%, var(--app-control));
+}
+
+html[data-theme="dark"] .queue-starred-heading {
+  color: #f2bf5a;
+}
+
+html[data-theme="dark"] .queue-starred-heading i {
+  background: linear-gradient(90deg, #c9983f, var(--app-border));
 }

@@ -61,6 +61,9 @@ The shared `relayShutdown` path also closes every native terminal launched by th
 > [!important]
 > Squirrel.Mac requires a consistently code-signed application. Hosted GitHub runners do not own the continuity identity used by installed CC Relay builds, so the workflow must never publish their unsigned macOS output. `npm run deploy` builds the public arm64 DMG and ZIP on the maintainer Mac, verifies the app directory and the app extracted from the ZIP against the exact installed signature lineage, verifies the DMG and update metadata, and only then uploads the macOS feed.
 
+> [!important]
+> A new GitHub Release stays draft while its desktop assets are assembled. The hosted workflow uploads the Windows files to that draft, then local deploy uploads and verifies the signed macOS payloads before adding `latest-mac.yml`. It adds `mac-release.json` last and publishes only the complete draft. Drafts are not selected by GitHub's latest-release endpoint, so no installed updater can observe a feed whose payload is still uploading.
+
 ## Release contract
 
 The build configuration lives in [[../electron-builder.yml|electron-builder.yml]], the package metadata lives in [[../package.json|package.json]], and the native matrix plus GitHub release job live in [[../.github/workflows/build-desktop.yml|build-desktop.yml]]. The publisher is GitHub with owner `Crowie-s-r-o`, repository `CC-Relay`, and release type `release`.
@@ -88,7 +91,7 @@ git tag:             v0.2.0
 ```
 
 > [!important]
-> Deploy does not stop at the push. It requires the exact Apple Development continuity identity and readable GitHub CLI access before changing a release, polls the GitHub REST API for the exact workflow run by tag and head SHA, waits for its Windows release to succeed, then uploads the already verified local macOS artifacts with `gh release upload`. The command exits non-zero if any stage fails. There is no push-and-stop mode because a tag without its signed macOS feed is an incomplete release.
+> Deploy does not stop at the push. It requires the exact Apple Development continuity identity and readable GitHub CLI access before changing a release, polls the GitHub REST API for the exact workflow run by tag and head SHA, waits for its Windows draft handoff to succeed, then uploads the already verified local macOS artifacts with `gh release upload`. Payloads are uploaded and confirmed as `state: uploaded` with exact byte sizes before `latest-mac.yml`; `mac-release.json` is the final completion marker. Only then does deploy publish the draft. The command exits non-zero if any stage fails. There is no push-and-stop mode because a tag without its signed macOS feed is an incomplete release.
 
 > [!important]
 > A rerun after a rejected or partial push compares reachable local tags with complete stable GitHub
@@ -99,9 +102,9 @@ git tag:             v0.2.0
 > and cleans the worktree before advancing to the next version.
 
 > [!important]
-> The desktop build workflow runs `npm test` on the macOS matrix entry only. CC Relay is validated on macOS, and the suite simulates Windows paths, shims, and `cmd.exe` invocation from POSIX, so 75 of those cases fail on a real Windows runner. The hosted macOS job remains packaging validation but uploads nothing. The Windows job uploads the NSIS and portable artifacts, and the release job publishes those files before local deploy adds the signed macOS set. Because the release job declares `needs: build`, any red matrix job prevents the Windows handoff.
+> The desktop build workflow runs `npm test` on the macOS matrix entry only. CC Relay is validated on macOS, and the suite simulates Windows paths, shims, and `cmd.exe` invocation from POSIX, so 75 of those cases fail on a real Windows runner. The hosted macOS job remains packaging validation but uploads nothing. The Windows job uploads the NSIS and portable artifacts, and the release job stages those files in a draft before local deploy adds the signed macOS set and publishes it. Because the release job declares `needs: build`, any red matrix job prevents the Windows handoff.
 
-The release job rejects any tag, package, lockfile, changelog, publisher, or Windows target-name mismatch before downloading or publishing artifacts. It extracts the matching AI-written changelog entry as the GitHub Release body. Hosted builds upload only Windows packaged deliverables from `dist/`; unpacked application directories and builder diagnostics never become release assets. Local deploy owns every public macOS deliverable. The expected feed metadata and artifacts are:
+The release job rejects any tag, package, lockfile, changelog, publisher, or Windows target-name mismatch before staging artifacts. It extracts the matching AI-written changelog entry as the draft GitHub Release body. Hosted builds stage only Windows packaged deliverables from `dist/`; unpacked application directories and builder diagnostics never become release assets. Local deploy owns every public macOS deliverable and the final publication step. The expected feed metadata and artifacts are:
 
 | Platform | Update metadata | Installable artifacts |
 | --- | --- | --- |
@@ -166,7 +169,7 @@ The release boundary now prevents recurrence:
 2. It builds the DMG, ZIP, blockmaps, and `latest-mac.yml` locally after all release gates pass.
 3. `scripts/mac-release.mjs` strictly verifies the build app and the app extracted from the updater ZIP, including bundle ID, team, authority, designated requirement, and bundle version. It also verifies the DMG, feed path, feed SHA-512, and every required file.
 4. The verifier writes `mac-release.json` with the frozen identity and artifact hashes. Starting at v0.2.15, a stable release without that marker remains pending.
-5. GitHub Actions publishes only the Windows artifacts. Deploy waits for that exact run to succeed, uploads the verified macOS set, then confirms all asset names and byte sizes through the release API.
+5. GitHub Actions stages only the Windows artifacts in a draft. Deploy waits for that exact run to succeed, uploads the verified macOS set, confirms every required asset through the release API, then publishes the complete draft.
 
 Recovery follows the same rule. If the tag is already pushed or the Windows-only release already exists, rerunning deploy builds the tagged source in an isolated temporary worktree and completes the missing signed macOS handoff. It never treats a partial v0.2.15 or later release as finished.
 
@@ -174,16 +177,32 @@ The updater now sends its internal logger to persistent desktop diagnostics. A f
 
 Validation rebuilt v0.2.14 from the current source and passed the new verifier against the signed app directory, the application extracted from the ZIP, the DMG, both blockmaps, and `latest-mac.yml`. This local build is proof of the repaired pipeline, not a replacement for the already published unsigned v0.2.14 asset. The complete repository suite passes 1,577 of 1,577 tests, `release:check`, attribution checking, YAML parsing, dependency audit, and `git diff --check` all pass, and the audit reports zero vulnerabilities.
 
+## August 19, 2026 atomic release visibility
+
+The v0.2.16 application discovered v0.2.17 at `2026-08-18T22:40:57Z` and immediately received HTTP 404 for `CC-Relay-0.2.17-mac-arm64.zip`. Persistent updater diagnostics proved a publication race:
+
+1. GitHub published the stable release at `22:40:12Z`.
+2. Local deploy began all macOS uploads together at `22:40:29Z`.
+3. The small `latest-mac.yml` asset finished at `22:40:30Z` and advertised the ZIP.
+4. The 119 MB ZIP did not finish until `22:41:10Z`.
+5. The app checked inside that 40-second gap, so both the differential request and its full-download fallback received 404.
+
+This was not a signature or Squirrel.Mac installation rejection. The unchanged five-minute retry started at `22:45:56Z`, downloaded the now-available ZIP, passed native handoff, and reached ready state at `22:46:03Z`.
+
+The release boundary now prevents the gap. The hosted workflow creates or resumes a draft release and leaves an already complete published release unchanged during a workflow rerun. Local deploy can find authenticated drafts through the release listing, uploads the DMG, ZIP, and blockmaps first, requires every asset to report `state: uploaded` with the verified byte size, uploads `latest-mac.yml` second, uploads `mac-release.json` last, and then publishes the draft. Recovery from an older partial public release removes any feed and completion marker before replacing payloads. A draft or an asset still in GitHub's upload state cannot count as a complete release.
+
+The 45 focused updater and release checks pass, the complete repository suite passes 1,613 of 1,613 tests, `release:check` is green for v0.2.17, workflow YAML and JavaScript syntax checks pass, the live v0.2.17 ZIP responds with HTTP 200, and `git diff --check` is clean.
+
 ## Troubleshooting
 
 - **No check during development:** expected. Use a packaged build; `npm run desktop` is intentionally ineligible.
 - **No header indicator:** expected in development, while the packaged app is current, while its check is still running, or when GitHub release discovery is unavailable. A valid newer version is required before the link appears on macOS, Windows NSIS, and Windows portable builds.
 - **Portable Windows build does not update:** expected. Download the latest portable artifact manually or install the NSIS build for automatic updates.
 - **No update after a tag:** confirm the tag is `vX.Y.Z`, the package version is `X.Y.Z`, and a stable GitHub Release exists. macOS requires `latest-mac.yml`, the desktop ZIP, and a compatible code signature. Windows automatic installation requires `latest.yml`, its blockmap, and the NSIS installer.
-- **The tag is pushed but the Releases page is empty:** the desktop build workflow failed, so `needs: build` skipped the release job. Open the run that deploy names in its failure message. A tag whose run already failed cannot be recovered by re-running the workflow, because the dispatch uses the workflow file at that ref; release the fix under the next version instead of retagging.
+- **The tag is pushed but the Releases page is empty:** expected publicly while the hosted workflow and local deploy are still assembling the draft. If deploy has stopped, inspect the exact workflow run and the local deploy error it named. A failed build leaves no usable handoff. Re-running the unchanged tag workflow cannot apply a source fix that is absent from that tag, so release the fix under the next version instead of retagging.
 - **The atomic push fails with `Permission ... denied` and HTTP 403:** GitHub authenticated the named HTTPS user but that identity lacks effective write permission. The commit author and committer do not select the GitHub account used for a push; the credential-helper identity named in the remote error is authoritative. Confirm the active identity with `gh auth status -h github.com` and the repository grant with `gh repo view Crowie-s-r-o/CC-Relay --json viewerPermission`. A `READ` result requires the organization or repository owner to restore a direct or team `Write` grant. If GitHub already shows that grant, refresh the GitHub CLI credential and its organization SSO authorization. Do not recreate tags or push only the newest one. Rerun `npm run deploy`; it validates and publishes every pending release in order, skips completed releases on another retry, and continues with a new release only after the backlog is published. See [[open-source-releases]].
 - **An older macOS build still asks for a DMG:** expected once. Install the first release containing the automatic updater manually. Later signed releases use the GitHub updater feed.
-- **An automatic build says Retrying:** Relay will run another check on its five-minute cadence. If the state repeats, verify that the published ZIP is signed by a compatible identity; retrying cannot make an unsigned replacement compatible.
+- **An automatic build says Retrying:** Relay will run another check on its five-minute cadence. Inspect `desktop.updater.log` first. A payload 404 can recover after publication finishes, while a signature rejection repeats until a compatible release is published. New releases remain draft until every updater payload is complete, preventing the v0.2.17 visibility race.
 - **Packaged startup reports that the `autoUpdater` named export is missing:** inspect `src/electron-main.mjs` and keep the CommonJS default-import interop described above.
 - **Signing reports that `CC Relay.app` could not be found, or packaging reports `ENOTEMPTY` for `dist/mac-arm64`:** confirm that only one `electron-builder` process is running and that no app is running from the output bundle. Concurrent builds share and replace the same `dist/mac-arm64` directory, so one build can remove the bundle while another signs it.
 - **Dock icon but no window:** inspect `relay-diagnostics.jsonl` for the `desktop.start.*`, `desktop.server.*`, `relay.listen.*`, and `desktop.window.*` sequence. Current builds use dynamic embedded ports and reject startup failures instead of waiting forever.

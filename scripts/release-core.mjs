@@ -77,6 +77,17 @@ export function macReleaseArtifactNames(version, { includeManifest = true } = {}
   ];
 }
 
+export function windowsReleaseArtifactNames(version) {
+  parseVersion(version);
+  const prefix = `CC-Relay-${version}-win-x64`;
+  return [
+    `${prefix}-Portable.exe`,
+    `${prefix}-Setup.exe`,
+    `${prefix}-Setup.exe.blockmap`,
+    'latest.yml',
+  ];
+}
+
 export function releaseHasSignedMacArtifacts(release) {
   if (!release || release.draft || release.prerelease) return false;
   const tag = String(release.tag_name || '');
@@ -85,7 +96,7 @@ export function releaseHasSignedMacArtifacts(release) {
   const version = tag.slice(1);
   if (compareVersions(version, FIRST_SIGNED_MAC_RELEASE_VERSION) < 0) return true;
   const assetNames = new Set((Array.isArray(release.assets) ? release.assets : [])
-    .filter((asset) => Number(asset?.size || 0) > 0)
+    .filter((asset) => asset?.state === 'uploaded' && Number(asset?.size || 0) > 0)
     .map((asset) => String(asset?.name || ''))
     .filter(Boolean));
   return macReleaseArtifactNames(version).every((name) => assetNames.has(name));
@@ -272,6 +283,7 @@ export function releasePublishStatus({
   tag,
   run = null,
   releaseUrl = '',
+  releaseDraft = false,
   settleRemaining = 0,
 } = {}) {
   const label = String(tag || 'the release tag');
@@ -288,11 +300,12 @@ export function releasePublishStatus({
     return {
       done: true,
       ok: false,
-      message: `The desktop build workflow for ${label} ended as ${conclusion || 'unsuccessful'}, so GitHub published no release. Inspect ${url}`,
+      message: `The desktop build workflow for ${label} ended as ${conclusion || 'unsuccessful'}, so GitHub prepared no release handoff. Inspect ${url}`,
     };
   }
   if (releaseUrl) {
-    return { done: true, ok: true, message: `Published ${label}: ${releaseUrl}` };
+    const action = releaseDraft ? 'Prepared draft' : 'Published';
+    return { done: true, ok: true, message: `${action} ${label}: ${releaseUrl}` };
   }
   if (settleRemaining > 0) {
     return { done: false, ok: false, message: `Desktop build succeeded for ${label}; waiting for the release assets...` };

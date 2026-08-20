@@ -43,7 +43,7 @@ import {
   supportedClaudeModelCatalog,
 } from './claude-model-selection.js';
 import { idleExecutionThreadId, runningDirectTask, selectedExecutionProvider, selectedWorkflowMode } from './task-routing.js';
-import { activityBuckets, isFinishedTaskStatus, periodRange, shiftPeriod, sortOperationalTasks, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
+import { activityBuckets, isFinishedTaskStatus, periodRange, prioritizeStarredTasks, shiftPeriod, sortOperationalTasks, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
 import {
   TASK_SEARCH_DEBOUNCE_MS,
   taskSearchActive,
@@ -212,6 +212,7 @@ const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 const MAX_PROJECT_INSTANCES = 8;
 const MAX_TURBO_WORKERS = 8;
 const MAX_POOL_TURBO_WORKERS = MAX_PROJECT_INSTANCES - 1;
+const MAX_STANDUP_CUSTOM_PROMPT_LENGTH = 4_000;
 
 const API_TIMEOUT_MS = 20_000;
 const RUNNING_TASK_LAYOUT_DEFAULTS = Object.freeze({ rows: 1, width: 286 });
@@ -382,10 +383,14 @@ const state = {
   standupTaskCount: 0,
   standupIncludedTaskCount: 0,
   standupProvider: null,
+  standupCustomPromptApplied: false,
   standupGenerating: false,
   standupError: '',
   standupRequestSequence: 0,
   standupCopyTimer: null,
+  standupPromptSaving: false,
+  standupPromptEdited: false,
+  standupPromptStatus: '',
   panelWidths: (() => {
     try {
       const saved = JSON.parse(localStorage.getItem('relay.panelWidths') || '{}');
@@ -471,6 +476,8 @@ const state = {
   taskEditOriginalProvider: null,
   taskEditExecutionDirty: false,
   taskEditSettings: null,
+  taskTitleRename: null,
+  taskStarSavingIds: new Set(),
   planExecutionTargets: new Map(),
   detailCopyContent: {},
   detailCopyTimers: new Map(),
@@ -685,6 +692,10 @@ const elements = {
   standupClose: document.querySelector('#standup-close'),
   standupCancel: document.querySelector('#standup-cancel'),
   standupDate: document.querySelector('#standup-date'),
+  standupCustomPromptField: document.querySelector('#standup-custom-prompt-field'),
+  standupCustomPrompt: document.querySelector('#standup-custom-prompt'),
+  standupCustomPromptStatus: document.querySelector('#standup-custom-prompt-status'),
+  standupCustomPromptSave: document.querySelector('#standup-custom-prompt-save'),
   standupScopeLabel: document.querySelector('#standup-scope-label'),
   standupCount: document.querySelector('#standup-count'),
   standupGeneratorProvider: document.querySelector('#standup-generator-provider'),
@@ -1246,6 +1257,14 @@ function usesDisposableTerminalPools() {
 
 function taskNamingSupported() {
   return state.status?.capabilities?.queuedTaskNaming === true;
+}
+
+function taskTitleRenamingSupported() {
+  return state.status?.capabilities?.taskTitleRenaming === true;
+}
+
+function taskStarringSupported() {
+  return state.status?.capabilities?.taskStarring === true;
 }
 
 function terminalRetentionRequest(enabled = state.keepTerminalOpen) {
@@ -2096,8 +2115,117 @@ function taskDisplayName(task) {
   return String(task?.title || '').trim() || compactText(task?.prompt, 80) || 'Untitled task';
 }
 
+function taskInspectorDefinition(task) {
+  const title = String(task?.title || '').replace(/\s+/g, ' ').trim();
+  const prompt = String(task?.prompt || '').replace(/\s+/g, ' ').trim();
+  const generatedTitle = compactText(prompt, 80);
+  return title && title !== generatedTitle ? title : prompt || title || 'Untitled task';
+}
+
 function taskHasCustomName(task) {
   return taskDisplayName(task) !== compactText(task?.prompt, 80);
+}
+
+function focusTaskCardControl(taskId, selector) {
+  requestAnimationFrame(() => {
+    elements.taskList
+      .querySelector(`[data-task-id="${taskId}"] ${selector}`)
+      ?.focus();
+  });
+}
+
+function mergeTaskUpdate(updated) {
+  if (!updated) return;
+  state.tasks = state.tasks.map((task) => task.id === updated.id ? { ...task, ...updated } : task);
+  state.runningTasks = state.runningTasks.map((task) => task.id === updated.id ? { ...task, ...updated } : task);
+  if (state.selectedTaskForEvents?.id === updated.id) {
+    state.selectedTaskForEvents = { ...state.selectedTaskForEvents, ...updated };
+    elements.detailTaskName.textContent = taskInspectorDefinition(updated);
+    elements.detailTaskName.title = taskInspectorDefinition(updated);
+  }
+}
+
+function startTaskTitleRename(task) {
+  if (!taskTitleRenamingSupported() || task?.mode === 'breakdown') return;
+  state.taskTitleRename = {
+    taskId: task.id,
+    value: taskDisplayName(task),
+    saving: false,
+    error: '',
+  };
+  renderTasks();
+  requestAnimationFrame(() => {
+    const input = elements.taskList.querySelector(
+      `[data-task-id="${task.id}"] [data-task-title-input]`,
+    );
+    input?.focus();
+    input?.select();
+  });
+}
+
+function cancelTaskTitleRename(taskId) {
+  if (state.taskTitleRename?.taskId !== taskId || state.taskTitleRename.saving) return;
+  state.taskTitleRename = null;
+  renderTasks();
+  focusTaskCardControl(taskId, '[data-rename-task]');
+}
+
+async function saveTaskTitleRename(taskId) {
+  const rename = state.taskTitleRename;
+  if (!rename || rename.taskId !== taskId || rename.saving) return;
+  rename.saving = true;
+  rename.error = '';
+  const form = elements.taskList.querySelector(
+    `[data-task-id="${taskId}"] [data-task-title-form]`,
+  );
+  for (const control of form?.querySelectorAll('input, button') || []) control.disabled = true;
+  try {
+    const body = await api(`/api/tasks/${taskId}/title`, {
+      method: 'PATCH',
+      body: JSON.stringify({ title: rename.value }),
+    });
+    mergeTaskUpdate(body.task);
+    state.taskTitleRename = null;
+    renderHeaderRunningTasks();
+    renderTasks();
+    elements.queueSummary.textContent = `Task ${String(taskId).padStart(3, '0')} renamed`;
+    if (taskSearchActive(state.taskSearchQuery)) scheduleTaskSearch(0);
+    focusTaskCardControl(taskId, '[data-rename-task]');
+  } catch (error) {
+    rename.saving = false;
+    rename.error = error.message;
+    for (const control of form?.querySelectorAll('input, button') || []) control.disabled = false;
+    const message = form?.querySelector('.task-inline-rename-message');
+    if (message) {
+      message.hidden = false;
+      message.textContent = error.message;
+    }
+    form?.querySelector('[data-task-title-input]')?.focus();
+  }
+}
+
+async function toggleTaskStar(task) {
+  if (!taskStarringSupported() || state.taskStarSavingIds.has(task.id)) return;
+  const nextStarred = task.starred !== true;
+  state.taskStarSavingIds.add(task.id);
+  renderTasks();
+  try {
+    const body = await api(`/api/tasks/${task.id}/star`, {
+      method: 'PATCH',
+      body: JSON.stringify({ starred: nextStarred }),
+    });
+    mergeTaskUpdate(body.task);
+    renderHeaderRunningTasks();
+    elements.queueSummary.textContent = nextStarred
+      ? `Task ${String(task.id).padStart(3, '0')} moved to Starred`
+      : `Task ${String(task.id).padStart(3, '0')} removed from Starred`;
+  } catch (error) {
+    elements.queueSummary.textContent = error.message;
+  } finally {
+    state.taskStarSavingIds.delete(task.id);
+    renderTasks();
+    focusTaskCardControl(task.id, '[data-star-task]');
+  }
 }
 
 function formatBytes(value) {
@@ -3870,6 +3998,7 @@ function resetStandupOutput() {
   state.standupTaskCount = 0;
   state.standupIncludedTaskCount = 0;
   state.standupProvider = null;
+  state.standupCustomPromptApplied = false;
   state.standupError = '';
 }
 
@@ -3877,6 +4006,102 @@ function standupGenerationSupported() {
   return state.status?.capabilities?.aiStandupGeneration === true
     && state.status?.capabilities?.aiStandupChangelog === true
     && state.status?.capabilities?.aiStandupStartDate === true;
+}
+
+function standupCustomPromptSupported() {
+  return state.status?.capabilities?.projectStandupPrompt === true;
+}
+
+function projectStandupCustomPrompt(project = activeProject()) {
+  return typeof project?.standup_custom_prompt === 'string' ? project.standup_custom_prompt : '';
+}
+
+function standupCustomPromptDraft() {
+  return elements.standupCustomPrompt.value.trim();
+}
+
+function standupCustomPromptDirty() {
+  return standupCustomPromptDraft() !== projectStandupCustomPrompt();
+}
+
+function renderStandupCustomPrompt() {
+  const supported = standupCustomPromptSupported();
+  const project = activeProject();
+  if (supported && project && !state.standupPromptEdited && !state.standupPromptSaving) {
+    elements.standupCustomPrompt.value = projectStandupCustomPrompt(project);
+  }
+  const dirty = supported && project && standupCustomPromptDirty();
+  elements.standupCustomPromptField.hidden = !supported;
+  if (!supported) return;
+
+  elements.standupCustomPrompt.disabled = state.standupGenerating || state.standupPromptSaving || !project;
+  elements.standupCustomPromptSave.disabled = (
+    state.standupGenerating
+    || state.standupPromptSaving
+    || !project
+    || !dirty
+  );
+  elements.standupCustomPromptSave.textContent = state.standupPromptSaving ? 'Saving...' : 'Save prompt';
+  if (state.standupPromptStatus) {
+    elements.standupCustomPromptStatus.textContent = state.standupPromptStatus;
+    return;
+  }
+  if (dirty) {
+    elements.standupCustomPromptStatus.textContent = 'Unsaved changes will be saved before generation.';
+  } else if (projectStandupCustomPrompt(project)) {
+    elements.standupCustomPromptStatus.textContent = `Applied by default to ${project.name} standups.`;
+  } else {
+    elements.standupCustomPromptStatus.textContent = `No custom prompt saved for ${project?.name || 'this project'}.`;
+  }
+}
+
+async function saveStandupCustomPrompt() {
+  const project = activeProject();
+  if (!project || state.standupPromptSaving) return false;
+  if (!standupCustomPromptSupported()) {
+    state.standupPromptStatus = 'Restart CC Relay to save a project Standup prompt.';
+    renderStandupCustomPrompt();
+    return false;
+  }
+  const prompt = standupCustomPromptDraft();
+  if (prompt.length > MAX_STANDUP_CUSTOM_PROMPT_LENGTH) {
+    state.standupPromptStatus = `Keep the custom prompt under ${MAX_STANDUP_CUSTOM_PROMPT_LENGTH.toLocaleString()} characters.`;
+    renderStandupCustomPrompt();
+    return false;
+  }
+  if (prompt === projectStandupCustomPrompt(project)) {
+    state.standupPromptEdited = false;
+    elements.standupCustomPrompt.value = projectStandupCustomPrompt(project);
+    renderStandupCustomPrompt();
+    return true;
+  }
+
+  state.standupPromptSaving = true;
+  state.standupPromptStatus = 'Saving project prompt...';
+  renderStandup();
+  try {
+    const body = await api(`/api/projects/${project.id}/standup-prompt`, {
+      method: 'PATCH',
+      body: JSON.stringify({ prompt }),
+    });
+    state.projects = state.projects.map((item) => (
+      item.id === body.project.id ? body.project : item
+    ));
+    if (sameProjectPath(state.activeProjectPath, project.path)) {
+      elements.standupCustomPrompt.value = projectStandupCustomPrompt(body.project);
+      state.standupPromptEdited = false;
+      state.standupPromptStatus = projectStandupCustomPrompt(body.project)
+        ? `Saved for ${body.project.name}.`
+        : `Cleared for ${body.project.name}.`;
+    }
+    return true;
+  } catch (error) {
+    state.standupPromptStatus = `Could not save the project prompt: ${error.message}`;
+    return false;
+  } finally {
+    state.standupPromptSaving = false;
+    renderStandup();
+  }
 }
 
 function standupScopeLabel() {
@@ -3928,7 +4153,12 @@ function renderStandup() {
   const projectName = workspaceName(state.activeProjectPath);
   const itemCount = standupItemCount();
   const activeGenerator = providerLabel(state.standupProvider || state.selectedProvider);
+  const customPromptPresent = Boolean(projectStandupCustomPrompt());
+  const customPromptApplied = state.standupProvider
+    ? state.standupCustomPromptApplied
+    : customPromptPresent;
 
+  renderStandupCustomPrompt();
   elements.standupSubtitle.textContent = `Select when tasks started to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
   elements.standupScopeLabel.textContent = `${projectName} · ${standupScopeLabel()}`;
   elements.standupDateLabel.textContent = anchor ? standupDateLabel(anchor) : 'Select a workday';
@@ -3936,12 +4166,13 @@ function renderStandup() {
     ? `${activeGenerator} used`
     : `${activeGenerator} preferred`;
   elements.standupGeneratorNote.textContent = state.standupProvider
-    ? `A fresh isolated ${activeGenerator} CLI process generated this result. No task terminal was used.`
-    : `Generation uses a fresh isolated CLI process, with the other signed-in provider as fallback. It never uses a task terminal.`;
+    ? `A fresh isolated ${activeGenerator} CLI process generated this result. No task terminal was used.${customPromptApplied ? ' The project prompt was applied.' : ''}`
+    : `Generation uses a fresh isolated CLI process, with the other signed-in provider as fallback. It never uses a task terminal.${customPromptApplied ? ' The saved project prompt will be applied.' : ''}`;
   elements.standupSheet.setAttribute('aria-busy', String(state.standupGenerating));
-  elements.standupDate.disabled = state.standupGenerating;
+  elements.standupDate.disabled = state.standupGenerating || state.standupPromptSaving;
   elements.standupGenerate.disabled = (
     state.standupGenerating
+    || state.standupPromptSaving
     || !supported
     || !anchor
     || sourceTasks.length === 0
@@ -4023,6 +4254,9 @@ function openStandup() {
   }
   elements.standupDate.value = state.standupDate;
   elements.standupDate.max = localDateInputValue(new Date());
+  elements.standupCustomPrompt.value = projectStandupCustomPrompt();
+  state.standupPromptEdited = false;
+  state.standupPromptStatus = '';
   resetStandupCopyFeedback();
   if (!elements.standupModal.open) elements.standupModal.showModal();
   renderStandup();
@@ -4034,12 +4268,21 @@ function closeStandup() {
 }
 
 async function generateStandup() {
-  if (state.standupGenerating) return;
+  if (state.standupGenerating || state.standupPromptSaving) return;
   const anchor = dateFromLocalInput(elements.standupDate.value);
   state.standupDate = elements.standupDate.value;
   resetStandupCopyFeedback();
   resetStandupOutput();
   if (!anchor) {
+    renderStandup();
+    return;
+  }
+  if (
+    standupCustomPromptSupported()
+    && standupCustomPromptDirty()
+    && !await saveStandupCustomPrompt()
+  ) {
+    state.standupError = 'Save the default project prompt before generating this Standup.';
     renderStandup();
     return;
   }
@@ -4085,6 +4328,7 @@ async function generateStandup() {
     state.standupTaskCount = Number(body.taskCount || sourceTasks.length);
     state.standupIncludedTaskCount = Number(body.includedTaskCount || state.standupTaskCount);
     state.standupProvider = body.provider || null;
+    state.standupCustomPromptApplied = body.customPromptApplied === true;
     if (standupItemCount(sections) === 0) {
       state.standupError = 'The AI returned no usable standup items. Try generating it again.';
       state.standupChanges = emptyStandupSections();
@@ -5019,7 +5263,7 @@ function isActiveProjectPaused() {
 }
 
 function renderHeaderRunningTasks() {
-  const running = state.runningTasks || [];
+  const running = prioritizeStarredTasks(state.runningTasks || []);
   if (running.length === 0) {
     if (
       elements.headerRunningTasks.dataset.signature === 'empty'
@@ -5043,6 +5287,7 @@ function renderHeaderRunningTasks() {
       task.thread_id,
       task.thread_name,
       task.title,
+      task.starred,
       task.prompt,
       task.latestAgentUpdate?.provider,
       task.status,
@@ -5068,7 +5313,7 @@ function renderHeaderRunningTasks() {
     const relay = taskRelayLabel(task);
     const monitor = taskMonitorPresentation(task);
     const response = taskMonitorResponse(task, monitor);
-    const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}, ${project}, ${relay}`;
+    const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}${task.starred ? ', starred' : ''}, ${project}, ${relay}`;
     return `
       <button
         class="header-running-task ${projectIdentityColorClass(task.repo_path)}${monitor.terminalSession ? ' header-terminal-session' : ''}"
@@ -5270,13 +5515,29 @@ function renderTasks() {
   const scopedTasks = projectTasks();
   const searching = taskSearchActive(state.taskSearchQuery);
   const visibleTasks = searching
-    ? tasksForSearchResults(scopedTasks, state.taskSearchResults)
+    ? prioritizeStarredTasks(tasksForSearchResults(scopedTasks, state.taskSearchResults))
     : state.taskView === 'history'
-    ? tasksInPeriod(scopedTasks, state.historyPeriod, state.historyAnchor)
-      .sort((left, right) => new Date(right.created_at) - new Date(left.created_at))
+    ? prioritizeStarredTasks(
+      tasksInPeriod(scopedTasks, state.historyPeriod, state.historyAnchor)
+        .sort((left, right) => new Date(right.created_at) - new Date(left.created_at)),
+    )
     : sortOperationalTasks(scopedTasks, {
       isReadyForReview: (task) => state.projectCompletionNotifications.includes(task.repo_path, task.id),
     });
+  const activeRenameForm = document.activeElement?.closest?.('[data-task-title-form]');
+  if (
+    activeRenameForm
+    && elements.taskList.contains(activeRenameForm)
+    && visibleTasks.some((task) => task.id === state.taskTitleRename?.taskId)
+  ) {
+    return;
+  }
+  if (
+    state.taskTitleRename
+    && !visibleTasks.some((task) => task.id === state.taskTitleRename.taskId)
+  ) {
+    state.taskTitleRename = null;
+  }
   renderHistoryLedger(scopedTasks, visibleTasks);
   if (visibleTasks.length === 0) {
     state.parallelTaskIds.clear();
@@ -5309,6 +5570,10 @@ function renderTasks() {
   const operationalQueue = !historyActive && !searching;
   const searchMatches = taskSearchMatches();
   const queuedIds = operationalQueue ? visibleTasks.filter((task) => task.status === 'queued').map((task) => task.id) : [];
+  const queuedIdsByStar = {
+    starred: visibleTasks.filter((task) => task.status === 'queued' && task.starred === true).map((task) => task.id),
+    unstarred: visibleTasks.filter((task) => task.status === 'queued' && task.starred !== true).map((task) => task.id),
+  };
   // Reordering applies to every queued task; batching applies only to direct
   // execute work, so the batch selection is pruned against its own narrower set.
   const batchableIds = operationalQueue ? visibleTasks
@@ -5322,26 +5587,36 @@ function renderTasks() {
   renderParallelBatchBar();
   let previousHistoryDate = '';
   let previousQueueSection = '';
+  let searchStarredHeadingShown = false;
   elements.taskList.innerHTML = visibleTasks.map((task) => {
     const unread = state.projectCompletionNotifications.includes(task.repo_path, task.id);
+    const starred = task.starred === true;
     const historyDate = historyActive ? new Date(task.created_at).toDateString() : '';
     const queuePeriod = historyActive || searching
       ? ''
       : new Date(task.created_at).toDateString() === new Date().toDateString() ? 'today' : 'past';
     const queueSection = operationalQueue
-      ? task.status === 'running' ? 'running' : unread ? 'review' : queuePeriod
+      ? starred ? 'starred' : task.status === 'running' ? 'running' : unread ? 'review' : queuePeriod
       : '';
-    const dateHeading = historyActive && historyDate !== previousHistoryDate
+    const dateHeading = (historyActive && starred && previousHistoryDate !== 'starred')
+      || (operationalQueue && queueSection === 'starred' && previousQueueSection !== 'starred')
+      || (searching && starred && !searchStarredHeadingShown)
+      ? '<div class="queue-date-heading queue-starred-heading" data-period="starred"><span>Starred</span><i></i></div>'
+      : historyActive && !starred && historyDate !== previousHistoryDate
       ? `<div class="history-date-heading"><span>${escapeHtml(historyDateHeading(task.created_at))}</span><i></i></div>`
       : operationalQueue && queueSection !== previousQueueSection && queueSection === 'review'
         ? '<div class="queue-date-heading queue-review-heading" data-period="review"><span>Ready for review</span><i></i></div>'
       : operationalQueue && queueSection !== previousQueueSection && queueSection !== 'running'
         ? `<div class="queue-date-heading" data-period="${queueSection}"><span>${queueSection === 'today' ? 'Today' : 'Past'}</span><i></i></div>`
         : '';
-    previousHistoryDate = historyDate;
+    previousHistoryDate = starred ? 'starred' : historyDate;
     previousQueueSection = queueSection;
-    const queueIndex = queuedIds.indexOf(task.id);
-    const queued = queueIndex !== -1;
+    if (searching && starred) searchStarredHeadingShown = true;
+    const queued = queuedIds.includes(task.id);
+    const queuedGroupIds = queued
+      ? queuedIdsByStar[starred ? 'starred' : 'unstarred']
+      : [];
+    const queueIndex = queuedGroupIds.indexOf(task.id);
     /*
      * The parallel batch replaces the selected tasks with one combined Codex
      * task, destroying the original rows. A breakdown, Plan council, or Turbo
@@ -5377,9 +5652,13 @@ function renderTasks() {
     const sessionWord = sessionCard ? sessionBadgeWord(sessionState) : '';
     const displayName = taskDisplayName(task);
     const preparing = state.status?.planningTaskIds?.includes(task.id) === true;
-    const renameable = queued
+    const quickRenameable = task.mode !== 'breakdown' && taskTitleRenamingSupported();
+    const legacyRenameable = queued
       && task.mode !== 'breakdown'
       && taskNamingSupported();
+    const renameable = quickRenameable || legacyRenameable;
+    const renameState = state.taskTitleRename?.taskId === task.id ? state.taskTitleRename : null;
+    const starSaving = state.taskStarSavingIds.has(task.id);
     const searchMatch = searchMatches.get(task.id);
     const searchMatchCard = searchMatch ? `
       <div class="task-search-match" data-source="${escapeHtml(searchMatch.source)}">
@@ -5390,7 +5669,7 @@ function renderTasks() {
     const reorderControls = reorderable ? `
       <span class="queue-reorder" aria-label="Reorder queued task">
         <button type="button" data-move="up" aria-label="Move task ${task.id} up" ${queueIndex === 0 ? 'disabled' : ''}>↑</button>
-        <button type="button" data-move="down" aria-label="Move task ${task.id} down" ${queueIndex === queuedIds.length - 1 ? 'disabled' : ''}>↓</button>
+        <button type="button" data-move="down" aria-label="Move task ${task.id} down" ${queueIndex === queuedGroupIds.length - 1 ? 'disabled' : ''}>↓</button>
       </span>
     ` : '';
     return `${dateHeading}
@@ -5400,12 +5679,13 @@ function renderTasks() {
         data-task-id="${task.id}"
         data-status="${escapeHtml(task.status)}"
         data-mode="${escapeHtml(task.mode || 'execute')}"
+        data-starred="${starred}"
         data-unread="${unread}"
         ${searchMatch ? 'data-search-result="true"' : ''}
         ${sessionCard ? `data-session="true" data-session-state="${escapeHtml(sessionState)}"` : ''}
         ${manualSessionCard ? 'data-manual-completion="true"' : ''}
         tabindex="0"
-        aria-label="Task ${task.id}, ${escapeHtml(displayName)}, ${escapeHtml(task.status)}${manualSessionCard ? ', terminal session with manual completion' : sessionCard ? ', retained session' : ''}${sessionCard ? `, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', ready for review' : ''}${queued ? ', draggable queue item' : ''}"
+        aria-label="Task ${task.id}, ${escapeHtml(displayName)}, ${escapeHtml(task.status)}${starred ? ', starred' : ''}${manualSessionCard ? ', terminal session with manual completion' : sessionCard ? ', retained session' : ''}${sessionCard ? `, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', ready for review' : ''}${queued ? ', draggable queue item' : ''}"
       >
         ${manualSessionCard ? `
           <div class="task-session-modebar">
@@ -5420,18 +5700,55 @@ function renderTasks() {
             ${agentBadgeMarkup(task, 'task-agent-icon')}
             <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
             ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>${manualSessionCard ? 'Terminal' : 'Session'} · ${escapeHtml(sessionWord)}</span>` : ''}
-            ${unread && !operationalQueue ? '<span class="task-unread-marker">Ready for review</span>' : ''}
+            ${unread && (!operationalQueue || starred) ? '<span class="task-unread-marker">Ready for review</span>' : ''}
             ${task.continued_from_task_id ? `<span class="task-parent-link">↳ #${String(task.continued_from_task_id).padStart(3, '0')}</span>` : ''}
           </span>
           <span class="task-top-actions">
-            ${renameable ? `<button class="task-rename-button" type="button" data-rename-task ${preparing ? 'disabled title="This task is already being prepared."' : ''}>Rename</button>` : ''}
             ${assignmentTargets.length ? `<button class="task-assign-button" type="button" data-show-assignment aria-expanded="${state.assigningTaskId === task.id}">Assign</button>` : ''}
             ${reorderControls}
             ${turboMarker ? `<span class="turbo-plan-marker turbo-plan-marker-${escapeHtml(turboMarker.phase)}" title="${escapeHtml(turboMarker.label)}" aria-label="Turbo stage: ${escapeHtml(turboMarker.label)}">${escapeHtml(turboMarker.label)}</span>` : ''}
             <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
           </span>
         </div>
-        <h3 class="task-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</h3>
+        <div class="task-name-row" data-editing="${Boolean(renameState)}">
+          ${taskStarringSupported() ? `
+            <button
+              class="task-star-button"
+              type="button"
+              data-star-task
+              aria-label="${starred ? 'Remove star from' : 'Star'} task ${task.id}"
+              aria-pressed="${starred}"
+              title="${starred ? 'Remove from Starred' : 'Star and move to top'}"
+              ${starSaving ? 'disabled' : ''}
+            ><span class="sr-only">${starred ? 'Unstar' : 'Star'}</span></button>
+          ` : ''}
+          ${renameState ? `
+            <form class="task-inline-rename" data-task-title-form aria-label="Rename task ${task.id}">
+              <input
+                type="text"
+                data-task-title-input
+                value="${escapeHtml(renameState.value)}"
+                maxlength="120"
+                aria-label="Task ${task.id} name"
+                ${renameState.saving ? 'disabled' : ''}
+              >
+              <button type="submit" data-save-task-title aria-label="Save task name" title="Save task name" ${renameState.saving ? 'disabled' : ''}><span class="sr-only">Save</span></button>
+              <button type="button" data-cancel-task-title aria-label="Cancel rename" title="Cancel rename" ${renameState.saving ? 'disabled' : ''}><span class="sr-only">Cancel</span></button>
+              <span class="task-inline-rename-message" role="status" ${renameState.error ? '' : 'hidden'}>${escapeHtml(renameState.error || '')}</span>
+            </form>
+          ` : `<h3 class="task-name" title="${escapeHtml(displayName)}">${escapeHtml(displayName)}</h3>`}
+          ${renameable && !renameState ? `
+            <button
+              class="task-rename-button"
+              type="button"
+              data-rename-task
+              data-quick-rename="${quickRenameable}"
+              aria-label="Rename task ${task.id}"
+              title="${preparing ? 'This task is already being prepared.' : 'Rename task'}"
+              ${preparing ? 'disabled' : ''}
+            ><span class="sr-only">Rename</span></button>
+          ` : ''}
+        </div>
         ${searchMatchCard}
         ${taskHasCustomName(task) ? `<p class="task-prompt">${escapeHtml(task.prompt)}</p>` : ''}
         ${turboFleetMarkup(task)}
@@ -5465,12 +5782,12 @@ function renderTasks() {
     card.addEventListener('click', (event) => {
       // Mouseup after dragging across card text also emits a click. Do not turn that
       // completed text selection into task activation and an immediate card rebuild.
-      if (!textSelectionGuard.isActive() && !event.target.closest('button, input')) {
+      if (!textSelectionGuard.isActive() && !event.target.closest('button, input, form')) {
         select();
       }
     });
     card.addEventListener('keydown', (event) => {
-      if (event.target.closest('button, input')) {
+      if (event.target.closest('button, input, form')) {
         return;
       }
       if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
@@ -5500,7 +5817,39 @@ function renderTasks() {
     card.querySelector('[data-rename-task]')?.addEventListener('click', (event) => {
       event.stopPropagation();
       const task = state.tasks.find((item) => item.id === Number(card.dataset.taskId));
-      if (task) openTaskEditor(task);
+      if (!task) return;
+      if (event.currentTarget.dataset.quickRename === 'true') startTaskTitleRename(task);
+      else openTaskEditor(task);
+    });
+
+    card.querySelector('[data-star-task]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const task = state.tasks.find((item) => item.id === Number(card.dataset.taskId));
+      if (task) void toggleTaskStar(task);
+    });
+
+    const titleForm = card.querySelector('[data-task-title-form]');
+    const titleInput = titleForm?.querySelector('[data-task-title-input]');
+    titleInput?.addEventListener('input', () => {
+      if (state.taskTitleRename?.taskId !== Number(card.dataset.taskId)) return;
+      state.taskTitleRename.value = titleInput.value;
+      state.taskTitleRename.error = '';
+      const message = titleForm.querySelector('.task-inline-rename-message');
+      message.hidden = true;
+      message.textContent = '';
+    });
+    titleInput?.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || state.taskTitleRename?.saving) return;
+      event.preventDefault();
+      cancelTaskTitleRename(Number(card.dataset.taskId));
+    });
+    titleForm?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      void saveTaskTitleRename(Number(card.dataset.taskId));
+    });
+    titleForm?.querySelector('[data-cancel-task-title]')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      cancelTaskTitleRename(Number(card.dataset.taskId));
     });
 
     card.querySelector('[data-show-assignment]')?.addEventListener('click', (event) => {
@@ -5531,9 +5880,14 @@ function renderTasks() {
           event.preventDefault();
           return;
         }
-        const projectQueueIds = queuedTaskIds(projectTasks());
-        const snapshot = createQueueSnapshot(projectQueueIds);
         const draggedId = Number(card.dataset.taskId);
+        const projectQueueTasks = projectTasks();
+        const draggedTask = projectQueueTasks.find((task) => task.id === draggedId);
+        const projectQueueIds = queuedTaskIds(projectQueueTasks);
+        const visibleQueueIds = queuedTaskIds(projectQueueTasks.filter((task) => (
+          task.starred === (draggedTask?.starred === true)
+        )));
+        const snapshot = createQueueSnapshot(projectQueueIds, visibleQueueIds);
         state.queueDrag = { snapshot, draggedId, expectedTaskIds: snapshot.expectedTaskIds, visibleTaskIds: snapshot.visibleTaskIds, targetId: null, edge: null, submitted: false };
         state.draggedTaskId = draggedId;
         event.dataTransfer.effectAllowed = 'move';
@@ -5547,6 +5901,10 @@ function renderTasks() {
         const drag = state.queueDrag;
         const targetId = Number(card.dataset.taskId);
         if (!drag || drag.submitted) {
+          return;
+        }
+        if (!drag.snapshot.visibleTaskIds.includes(targetId)) {
+          clearQueueDropMarkers();
           return;
         }
         if (drag.draggedId === targetId) {
@@ -5572,7 +5930,12 @@ function renderTasks() {
         event.preventDefault();
         const drag = state.queueDrag;
         const targetId = Number(card.dataset.taskId);
-        if (!drag || drag.draggedId === targetId || drag.submitted) {
+        if (
+          !drag
+          || drag.draggedId === targetId
+          || drag.submitted
+          || !drag.snapshot.visibleTaskIds.includes(targetId)
+        ) {
           cleanupQueueDrag();
           return;
         }
@@ -5807,7 +6170,14 @@ function moveQueuedTask(taskId, direction) {
     return;
   }
   if (!state.activeProjectPath) return;
-  const snapshot = createQueueSnapshot(queuedTaskIds(projectTasks()));
+  const tasks = projectTasks();
+  const task = tasks.find((item) => item.id === taskId);
+  if (!task || task.status !== 'queued') return;
+  const globalTaskIds = queuedTaskIds(tasks);
+  const visibleTaskIds = queuedTaskIds(tasks.filter((item) => (
+    item.starred === (task.starred === true)
+  )));
+  const snapshot = createQueueSnapshot(globalTaskIds, visibleTaskIds);
   const nextProjectIds = moveVisibleTask(snapshot, taskId, direction);
   if (nextProjectIds) reorderQueuedTasks(snapshot, nextProjectIds);
 }
@@ -6826,8 +7196,8 @@ async function selectTask(taskId) {
   const detailButtonLabel = task.mode === 'plan' ? 'Council details' : manualSessionSurface ? 'Session details' : 'Full details';
   elements.taskDetail.dataset.sessionMode = String(manualSessionSurface);
   elements.detailTitle.textContent = taskTitle;
-  elements.detailTaskName.textContent = compactText(taskDisplayName(task), 110);
-  elements.detailTaskName.title = taskDisplayName(task);
+  elements.detailTaskName.textContent = taskInspectorDefinition(task);
+  elements.detailTaskName.title = taskInspectorDefinition(task);
   elements.detailExecutionProfile.innerHTML = `
     <span class="detail-agent">
       ${agentBadgeMarkup(task, 'detail-agent-icon')}
@@ -9938,6 +10308,16 @@ elements.standupGenerate.addEventListener('click', () => {
   void generateStandup();
 });
 elements.standupCopy.addEventListener('click', copyStandup);
+elements.standupCustomPrompt.addEventListener('input', () => {
+  state.standupPromptEdited = (
+    standupCustomPromptDraft() !== projectStandupCustomPrompt()
+  );
+  state.standupPromptStatus = '';
+  renderStandupCustomPrompt();
+});
+elements.standupCustomPromptSave.addEventListener('click', () => {
+  void saveStandupCustomPrompt();
+});
 elements.standupDate.addEventListener('change', () => {
   state.standupDate = elements.standupDate.value;
   void generateStandup();

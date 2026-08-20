@@ -18,6 +18,16 @@ export function tasksForScope(tasks, { projectPath = null } = {}) {
   return tasks.filter((task) => normalizedProjectPath(task.repo_path) === normalizedProjectPath(projectPath));
 }
 
+export function prioritizeStarredTasks(tasks) {
+  return (Array.isArray(tasks) ? tasks : [])
+    .map((task, index) => ({ task, index }))
+    .sort((left, right) => (
+      Number(right.task?.starred === true) - Number(left.task?.starred === true)
+      || left.index - right.index
+    ))
+    .map(({ task }) => task);
+}
+
 function operationalTaskRank(task, readyForReview) {
   if (task.status === 'running') return 0;
   if (task.status === 'complete' && readyForReview) return 1;
@@ -32,7 +42,7 @@ function operationalTaskRank(task, readyForReview) {
  * operator opens them and the notification store acknowledges the review.
  */
 export function sortOperationalTasks(tasks, { isReadyForReview = () => false } = {}) {
-  return [...tasks].sort((left, right) => {
+  return prioritizeStarredTasks([...tasks].sort((left, right) => {
     const leftRank = operationalTaskRank(left, isReadyForReview(left));
     const rightRank = operationalTaskRank(right, isReadyForReview(right));
     const rankDifference = leftRank - rightRank;
@@ -41,7 +51,7 @@ export function sortOperationalTasks(tasks, { isReadyForReview = () => false } =
       return left.position - right.position || left.id - right.id;
     }
     return right.id - left.id;
-  });
+  }));
 }
 
 function validPeriod(period) {

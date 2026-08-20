@@ -2,6 +2,7 @@ export const PROVIDER_USAGE_METERS = Object.freeze([
   Object.freeze({ key: 'claude-five-hour', provider: 'claude', window: 'fiveHour', label: 'Cla 5h' }),
   Object.freeze({ key: 'claude-weekly', provider: 'claude', window: 'weekly', label: 'Cla Week' }),
   Object.freeze({ key: 'claude-fable', provider: 'claude', window: 'fableWeekly', label: 'Fable' }),
+  Object.freeze({ key: 'codex-five-hour', provider: 'codex', window: 'fiveHour', label: 'Cod 5h' }),
   Object.freeze({ key: 'codex-weekly', provider: 'codex', window: 'weekly', label: 'Cod Week' }),
 ]);
 

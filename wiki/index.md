@@ -33,6 +33,7 @@ type: index
 - [[task-history]]
 - [[task-search]]
 - [[task-naming]]
+- [[task-starring]]
 - [[task-references]]
 - [[localhost-task-import]]
 - [[daily-standup]]

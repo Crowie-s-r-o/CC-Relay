@@ -17,6 +17,10 @@ test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialo
   assert.match(html, /<dialog id="standup-modal"[^>]+aria-labelledby="standup-title"/);
   assert.match(html, /id="standup-date" type="date"/);
   assert.match(html, /Task start date/);
+  assert.match(html, /id="standup-custom-prompt"[^>]*maxlength="4000"/);
+  assert.match(html, /Default custom prompt/);
+  assert.match(html, /Added to every Standup generated for this Launchpad/);
+  assert.match(html, /id="standup-custom-prompt-save"[^>]*>Save prompt/);
   assert.doesNotMatch(html, /id="standup-length"|All tasks|Short<\/option>|Standard<\/option>|Detailed<\/option>/);
   assert.match(html, /Added, Changed, Fixed, and Security/);
   assert.match(html, /id="standup-generator-provider"/);
@@ -26,6 +30,12 @@ test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialo
   assert.match(html, /Task terminals are never used/);
 
   assert.match(app, /api\('\/api\/standup\/generate'/);
+  assert.match(app, /api\(`\/api\/projects\/\$\{project\.id\}\/standup-prompt`/);
+  assert.match(app, /standupCustomPromptSupported\(\)[\s\S]*standupCustomPromptDirty\(\)[\s\S]*!await saveStandupCustomPrompt\(\)/);
+  assert.match(app, /!state\.standupPromptEdited && !state\.standupPromptSaving/);
+  assert.match(app, /projectStandupPrompt === true/);
+  assert.match(app, /standup_custom_prompt/);
+  assert.match(app, /state\.standupCustomPromptApplied = body\.customPromptApplied === true/);
   assert.match(app, /tasksForStandupDay\(projectTasks\(\), anchor\)/);
   assert.doesNotMatch(app, /buildStandupSummary/);
   assert.match(app, /elements\.standupDate\.addEventListener\('change'/);
@@ -54,11 +64,17 @@ test('task queue exposes one start-date-driven, CHANGELOG-style AI standup dialo
   assert.match(server, /aiStandupGeneration: true/);
   assert.match(server, /aiStandupChangelog: true/);
   assert.match(server, /aiStandupStartDate: true/);
+  assert.match(server, /projectStandupPrompt: true/);
+  assert.match(server, /updateProjectStandupCustomPrompt/);
+  assert.match(standupRoute, /customPrompt: project\.standup_custom_prompt/);
+  assert.match(standupRoute, /customPromptApplied: Boolean\(project\.standup_custom_prompt\)/);
 
   assert.match(style, /\.standup-modal/);
   assert.match(style, /\.standup-list li/);
   assert.match(style, /\.standup-item-marker/);
   assert.match(style, /\.standup-generator-route/);
+  assert.match(style, /\.standup-custom-prompt-field/);
+  assert.match(style, /html\[data-theme="dark"\] \.standup-custom-prompt-field textarea/);
   assert.match(style, /\.standup-result-group/);
   assert.match(style, /\.standup-loading-line/);
   assert.match(style, /\.standup-button:disabled/);

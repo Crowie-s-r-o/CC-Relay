@@ -21,7 +21,7 @@ Task Activity now treats the terminal as the primary monitoring surface. Selecti
 The compact identity header has three explicit levels:
 
 - Task number and status identify the record.
-- A single-line task name is derived from the saved prompt and keeps the complete prompt in its title.
+- The task definition preserves a genuine custom title. When the persisted title is the generated 80-character prompt label, the inspector substitutes the complete saved prompt, wraps it for up to three rows, and only then clamps visual overflow. JavaScript must not shorten prompt-derived definitions before CSS lays them out. The complete text also remains in its title.
 - Provider plus the complete execution label show model and effort at 13 pixels, larger than the 8 pixel workspace and lifecycle metadata.
 
 > [!note]
@@ -92,7 +92,7 @@ The far-right **Display** cog exposes Zoom out, the current percentage, and Zoom
 
 August 12 verification for the single-owner zoom change: a live Electron probe built the real menu template, confirmed the accelerator list, and stepped the loaded window through 1.0, 1.25, the 0.5 floor, the 2.0 ceiling, and the reset. `test/desktop-zoom.test.mjs` covers the stepper, the direction parser, the menu template, and the pre-load handler registration. The full suite reports three unrelated `style.css` reduced-motion failures from concurrent in-flight work; every other test passes and `release:check` is green.
 
-An isolated live renderer verified the 84 percent split, modal interaction, council content, dark-theme contrast, and zero browser console warnings. Focused modal, Markdown, and dark-mode tests cover the larger full-record typography. After the compact task-name and execution-profile refinement, the complete repository suite passes 1,069 tests.
+An isolated live renderer verified the 84 percent split, modal interaction, council content, dark-theme contrast, and zero browser console warnings. Focused modal, Markdown, and dark-mode tests cover the larger full-record typography. The compact identity preview now exposes three wrapped rows before overflow while the modal remains the home of long-form evidence.
 
 August 14 verification for the display cog used an isolated real Electron window and desktop-mode loopback server. The cog was the final header control in dark and light themes with zero horizontal overflow. Its visible level moved from `100%` to `90%` after Zoom out and returned to `100%` after Zoom in while the popover stayed open. Focused display, position, theme, and Electron checks pass 48 of 48; the complete suite passes 1,551 tests, `release:check` is green for v0.2.12, and `git diff --check` is clean.
 

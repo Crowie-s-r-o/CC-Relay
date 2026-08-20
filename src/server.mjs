@@ -97,6 +97,7 @@ import {
   selectStandupTasks,
   StandupGenerationError,
   StandupGenerator,
+  validateStandupCustomPrompt,
   validateStandupWindow,
 } from './standup-generator.mjs';
 
@@ -1026,6 +1027,8 @@ export const server = createServer(async (request, response) => {
           taskFollowUpAttachments: true,
           queuedTaskEditing: true,
           queuedTaskNaming: true,
+          taskTitleRenaming: true,
+          taskStarring: true,
           queuedTaskProviderSwitch: true,
           retryTaskExecutionSettings: true,
           queuedClaudeAssignment: true,
@@ -1049,6 +1052,7 @@ export const server = createServer(async (request, response) => {
           aiStandupGeneration: true,
           aiStandupChangelog: true,
           aiStandupStartDate: true,
+          projectStandupPrompt: true,
           crossProcessLaunchOwnership: true,
           desktopUpdates: IS_DESKTOP,
           desktopZoomControls: IS_DESKTOP && typeof desktopZoomHandler === 'function',
@@ -1299,6 +1303,7 @@ export const server = createServer(async (request, response) => {
         date,
         projectName: project.name,
         scopeLabel: threadId ? 'This CC Relay' : 'All Relays',
+        customPrompt: project.standup_custom_prompt,
         omittedTaskCount,
       }), {
         preferredProvider,
@@ -1313,6 +1318,7 @@ export const server = createServer(async (request, response) => {
       sendJson(response, 200, {
         ...generated,
         date,
+        customPromptApplied: Boolean(project.standup_custom_prompt),
         taskCount: tasks.length,
         includedTaskCount: includedTasks.length,
         promptCount,
@@ -1393,7 +1399,7 @@ export const server = createServer(async (request, response) => {
       return;
     }
 
-    const projectMatch = pathname.match(/^\/api\/projects\/(\d+)(?:\/(launch|settings|color))?$/);
+    const projectMatch = pathname.match(/^\/api\/projects\/(\d+)(?:\/(launch|settings|color|standup-prompt))?$/);
     if (request.method === 'PATCH' && projectMatch?.[2] === 'color') {
       const body = await readJson(request);
       const project = database.updateProjectColor(
@@ -1418,6 +1424,17 @@ export const server = createServer(async (request, response) => {
         preferIdleTerminal: body.preferIdleTerminal,
         terminalLayout: validateProjectTerminalLayout(body.terminalLayout),
       });
+      broadcast({ projects: true });
+      sendJson(response, 200, { project });
+      return;
+    }
+
+    if (request.method === 'PATCH' && projectMatch?.[2] === 'standup-prompt') {
+      const body = await readJson(request);
+      const project = database.updateProjectStandupCustomPrompt(
+        Number(projectMatch[1]),
+        validateStandupCustomPrompt(body.prompt),
+      );
       broadcast({ projects: true });
       sendJson(response, 200, { project });
       return;
@@ -2483,6 +2500,37 @@ export const server = createServer(async (request, response) => {
       }
       if (review.reviewed) broadcast({ tasks: true, taskId });
       sendJson(response, 200, review);
+      return;
+    }
+
+    if (request.method === 'PATCH' && /^\/api\/tasks\/\d+\/title$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const body = await readJson(request, 4 * 1024);
+      if (!Object.hasOwn(body, 'title')) throw new Error('A task name is required.');
+      const task = queue.rename(taskId, body.title);
+      diagnostic('api.task.renamed', {
+        taskId,
+        repoPath: task.repo_path,
+        status: task.status,
+        title: task.title,
+      });
+      sendJson(response, 200, { task });
+      return;
+    }
+
+    if (request.method === 'PATCH' && /^\/api\/tasks\/\d+\/star$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const body = await readJson(request, 1024);
+      if (typeof body.starred !== 'boolean') {
+        throw new Error('Task starred state must be true or false.');
+      }
+      const task = queue.setStarred(taskId, body.starred);
+      diagnostic('api.task.starred', {
+        taskId,
+        repoPath: task.repo_path,
+        starred: task.starred,
+      });
+      sendJson(response, 200, { task });
       return;
     }
 

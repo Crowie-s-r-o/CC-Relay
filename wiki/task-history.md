@@ -50,7 +50,7 @@ Every task card now has a dedicated lifecycle row with **Started** and **Complet
 
 After any successful composer submission, CC Relay switches to **Queue**, selects the newly created task card, and opens that task in Task Activity. This applies equally to Execute, Plan council, Turbo, normal Enter, and **Run now** submissions. Project-wide visibility ensures idle routing to another CC Relay cannot hide the new task.
 
-Task card selection and completion review are deliberately independent visual states. Selection owns the complete project-colored outline and tinted card surface. An unviewed completion uses a rose left rail, while the operational Queue collects every such card under one rose **Ready for review** divider directly below running work. Search and History preserve their own result order, so an unviewed card there carries an individual **Ready for review** badge. The unread card background rule is limited to `:not(.selected)` so it cannot replace the stronger selection treatment. Opening the task acknowledges only that completion and immediately returns it to its normal Today or Past position. **Mark reviewed** remains the explicit project-wide bulk acknowledgement.
+Task card selection and completion review are deliberately independent visual states. Selection owns the complete project-colored outline and tinted card surface. An unviewed completion uses a rose left rail, while the operational Queue collects every such card under one rose **Ready for review** divider directly below running work. Search and History preserve their own result order inside the starred and unstarred display groups, so an unviewed card there carries an individual **Ready for review** badge. The unread card background rule is limited to `:not(.selected)` so it cannot replace the stronger selection treatment. Opening the task acknowledges only that completion and immediately returns it to its normal Today or Past position. **Mark reviewed** remains the explicit project-wide bulk acknowledgement.
 
 The review distinction is persisted on the task row as `completion_reviewed` and exposed as
 `ready_for_review`. Review writes carry the exact displayed `finished_at`, including bulk review,
@@ -61,6 +61,25 @@ imports any still-reachable legacy unread IDs once. See
 
 > [!note]
 > The review divider is the Queue view's non-color cue. Keeping the repeated badge out of that already-grouped view prevents the longer label from crowding compact task metadata. The rose rail and accessible card label still identify each member of the group, and light and dark themes use matching review colors.
+
+## Starred display group
+
+The persistent `tasks.starred` boolean creates one stable **Starred** group at the top of Queue,
+History, search, and the active-task monitor. Existing operational, date, relevance, and monitor
+order remains intact inside each star group. The state is project-bounded only by the normal task
+scope, so switching Launchpads immediately replaces both starred and unstarred cards. A starred
+completion awaiting review carries its word badge because it no longer sits beneath the ordinary
+**Ready for review** divider; the rose rail and accessible label remain unchanged.
+
+> [!important]
+> Starred order is a display property. It cannot change a queued task's persisted `position`,
+> scheduler priority, FIFO barriers, provider capacity, or next runnable selection. **Run now** is
+> still the only composer shortcut that inserts work ahead of the waiting queue.
+
+Queued drag and arrow controls operate only inside the card's current star group. The immutable
+reorder snapshot still contains every queued ID in execution order, while `visibleTaskIds` contains
+only starred or only unstarred tasks. Merging the reordered subset back into its original slots
+preserves the other group's execution positions. See [[task-starring]].
 
 Task Activity selection is remembered independently for each Launchpad during the current browser session. Switching from Alpha to Beta and back reopens Alpha's previously selected task instead of discarding the selection. Restoration is bounded by the incoming project's normalized exact path, and missing or deleted tasks fall back to the existing running-task recovery or the empty detail state. This state is intentionally not persisted across an application restart. See [[project-workspaces]].
 

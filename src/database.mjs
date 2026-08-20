@@ -35,6 +35,7 @@ const TASK_FIELDS = new Set([
   'turbo_json',
   'attachments_json',
   'diff_state_json',
+  'starred',
   'status',
   'position',
   'started_at',
@@ -75,6 +76,7 @@ function normalizeTask(row) {
   try { terminalLayout = encodedTerminalLayout ? JSON.parse(encodedTerminalLayout) : null; } catch {}
   return {
     ...task,
+    starred: task.starred === 1 || task.starred === true,
     keep_terminal_open: task.keep_terminal_open === 1 || task.keep_terminal_open === true,
     manual_completion: task.manual_completion === 1 || task.manual_completion === true,
     attachments: Array.isArray(attachments) ? attachments : [],
@@ -210,6 +212,7 @@ export class RelayDatabase {
         terminal_layout_json TEXT,
         turbo_json TEXT,
         attachments_json TEXT NOT NULL DEFAULT '[]',
+        starred INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL DEFAULT 'queued',
         position INTEGER NOT NULL,
         created_at TEXT NOT NULL,
@@ -368,6 +371,7 @@ export class RelayDatabase {
     this.ensureColumn('turbo_json', 'TEXT');
     this.ensureColumn('attachments_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureColumn('diff_state_json', 'TEXT');
+    this.ensureColumn('starred', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('completion_reviewed', 'INTEGER NOT NULL DEFAULT 1');
     this.ensureColumn('prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureColumn('import_source', 'TEXT');
@@ -1160,6 +1164,10 @@ export class RelayDatabase {
 
   updateProjectColor(id, color) {
     return this.projectConfig.updateProjectColor(id, color);
+  }
+
+  updateProjectStandupCustomPrompt(id, prompt) {
+    return this.projectConfig.updateProjectStandupCustomPrompt(id, prompt);
   }
 
   activeProjectPath() {

@@ -128,4 +128,18 @@ dark surfaces. An isolated browser preview at the real 500px queue width rendere
 both themes with no wrapping and no console warnings or errors. The complete suite passes 1,184
 tests.
 
+## Task organization strip
+
+The task name row now uses a flexible three-part strip: a 26px star, the title or inline editor,
+and a 26px pencil. This keeps persistent organization beside the field it changes and leaves the
+top action row available for assignment, queued order, Turbo stage, and task status. The title
+retains the remaining width and its two-line clamp.
+
+The unstarred control is a neutral outline. The starred state and **Starred** divider use amber as
+the strip's one warm signal, with explicit graphite surfaces and a brighter amber in dark mode.
+Neither state adds card elevation, transform, or a broad background that could compete with
+project selection and Ready for review. The inline editor uses the existing 26px instrument scale,
+visible focus outlines, check and cancel masks, a 120-character limit, Enter save, and Escape
+cancel. See [[task-starring]] and [[task-naming]].
+
 #relay #ui #layout #density #color

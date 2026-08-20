@@ -59,7 +59,15 @@ test('the terminal is taller by default and new inspector geometry uses em units
 test('the compact inspector names the task and emphasizes its execution profile', () => {
   assert.match(markup, /id="detail-task-name" class="detail-task-name"/);
   assert.match(markup, /id="detail-execution-profile" class="detail-execution-profile"/);
-  assert.match(app, /elements\.detailTaskName\.textContent = compactText\(taskDisplayName\(task\), 110\);/);
+  assert.match(
+    app,
+    /function taskInspectorDefinition\(task\) \{[\s\S]*?const generatedTitle = compactText\(prompt, 80\);[\s\S]*?title !== generatedTitle \? title : prompt/,
+  );
+  assert.match(app, /elements\.detailTaskName\.textContent = taskInspectorDefinition\(task\);/);
+  assert.match(
+    style,
+    /\.detail-panel \.detail-task-name \{[\s\S]*?display: -webkit-box;[\s\S]*?overflow-wrap: anywhere;[\s\S]*?-webkit-line-clamp: 3;[\s\S]*?white-space: normal;/,
+  );
   assert.match(app, /elements\.detailExecutionProfile\.innerHTML = `[\s\S]*?executionLabel\(task\)/);
   assert.match(style, /\.detail-panel \.detail-execution-profile strong \{[\s\S]*?font-size: 13px;/);
 });

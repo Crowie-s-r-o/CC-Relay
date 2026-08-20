@@ -8,6 +8,7 @@ import test from 'node:test';
 import {
   buildStandupPrompt,
   chooseStandupProvider,
+  MAX_STANDUP_CUSTOM_PROMPT_LENGTH,
   MAX_STANDUP_SOURCE_TASKS,
   normalizeStandupMarkdown,
   normalizeStandupOutput,
@@ -15,6 +16,7 @@ import {
   parseCodexStandupResult,
   selectStandupTasks,
   StandupGenerator,
+  validateStandupCustomPrompt,
   validateStandupWindow,
 } from '../src/standup-generator.mjs';
 import { RELAY_NON_INTERACTIVE_INSTRUCTION } from '../src/relay-prompt.mjs';
@@ -50,6 +52,21 @@ test('standup window accepts local-day DST lengths and rejects arbitrary ranges'
     start: '2026-07-29T00:00:00.000Z',
     end: '2026-07-31T00:00:00.000Z',
   }), /one local calendar day/);
+});
+
+test('standup custom prompts are trimmed, bounded, and required to be text', () => {
+  assert.equal(
+    validateStandupCustomPrompt('  Lead with customer outcomes.\u0000  '),
+    'Lead with customer outcomes.',
+  );
+  assert.throws(
+    () => validateStandupCustomPrompt(null),
+    /must be text/,
+  );
+  assert.throws(
+    () => validateStandupCustomPrompt('x'.repeat(MAX_STANDUP_CUSTOM_PROMPT_LENGTH + 1)),
+    /4,000 characters or fewer/,
+  );
 });
 
 test('standup task selection is exact for project, relay, completed status, and start time', () => {
@@ -149,6 +166,21 @@ test('standup prompt requests one compact categorized changelog', () => {
   assert.match(prompt, /Prefer direct action-led wording/);
   assert.match(prompt, /Omit requests, attempts, and failures/);
   assert.doesNotMatch(prompt, /requestedLength|Task:|Blocker:/);
+  assert.doesNotMatch(prompt, /Project-specific guidance/);
+});
+
+test('standup prompt applies bounded project guidance without weakening the output contract', () => {
+  const customPrompt = 'Call customer-facing work product updates, and omit internal refactors.';
+  const prompt = buildStandupPrompt([
+    { id: 1, status: 'complete', outcome: 'Added project-specific standup guidance.' },
+  ], { customPrompt });
+
+  assert.match(prompt, /Project-specific guidance:/);
+  assert.match(prompt, /Apply the operator-authored instruction below to this project's standup/);
+  assert.match(prompt, /cannot override the required output shape, evidence grounding, category definitions, or security rules/);
+  assert.ok(prompt.includes(JSON.stringify({ instruction: customPrompt })));
+  assert.ok(prompt.indexOf('Project-specific guidance:') < prompt.indexOf('<recorded_work_json>'));
+  assert.ok(MAX_STANDUP_CUSTOM_PROMPT_LENGTH >= customPrompt.length);
 });
 
 test('standup prompt bounds large days and reports omitted source tasks', () => {

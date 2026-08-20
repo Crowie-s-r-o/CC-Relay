@@ -27,6 +27,7 @@ import {
   releaseTagsFromPublishedReleases,
   releaseTagsFromRemoteRefs,
   selectReleaseWorkflowRun,
+  windowsReleaseArtifactNames,
 } from '../scripts/release-core.mjs';
 
 const projectRoot = fileURLToPath(new URL('../', import.meta.url));
@@ -45,6 +46,9 @@ test('npm run deploy owns versioning, verification, tags, and the atomic push', 
   assert.match(deploy, /git\(\['push', '--atomic', 'origin', \.\.\.refspecs\]/);
   assert.doesNotMatch(deploy, /Retry with git push --atomic/);
   assert.match(deploy, /watchReleasePublication\(tag, sha\)/);
+  assert.match(deploy, /function releaseByTag\(tag\)/);
+  assert.match(deploy, /releases\?per_page=100/);
+  assert.match(deploy, /releaseByTag\(tag\)/);
   assert.match(deploy, /if \(!outcome\.ok\) \{/);
   assert.match(deploy, /buildSignedMacRelease\(/);
   assert.match(deploy, /publishSignedMacRelease\(tag, signedMacRelease\)/);
@@ -91,13 +95,86 @@ test('GitHub Releases publish locally verified macOS artifacts and hosted Window
   }
   assert.match(workflow, /if: runner\.os == 'Windows'\n\s+uses: actions\/upload-artifact/);
   assert.match(workflow, /pattern: cc-relay-Windows/);
+  assert.match(workflow, /uses: actions\/github-script@v9/);
+  assert.match(workflow, /github\.rest\.repos\.listReleases/);
+  assert.match(workflow, /published-complete/);
+  assert.match(workflow, /asset\.state === 'uploaded' && asset\.size > 0/);
+  assert.match(workflow, /if: steps\.release-state\.outputs\.result != 'published-complete'/);
+  assert.match(workflow, /softprops\/action-gh-release@v3[\s\S]*?draft: true/);
   assert.match(deploy, /'release',\s+'upload'/);
+  assert.match(deploy, /'release',\s+'delete-asset'/);
+  assert.match(deploy, /'release',\s+'edit'/);
   assert.match(deploy, /'--clobber'/);
+  assert.match(deploy, /'--draft=false'/);
+  const payloadUpload = deploy.indexOf('uploadReleaseAssets(tag, payloadPaths);');
+  const feedUpload = deploy.indexOf('uploadReleaseAssets(tag, [feedPath]);');
+  const manifestUpload = deploy.indexOf('uploadReleaseAssets(tag, [manifestPath]);');
+  const publishDraft = deploy.indexOf("'--draft=false'");
+  assert.ok(payloadUpload >= 0 && payloadUpload < feedUpload);
+  assert.ok(feedUpload < manifestUpload && manifestUpload < publishDraft);
+  assert.match(deploy, /assertUploadedReleaseAssets/);
+  assert.match(deploy, /assertFinishedReleaseAssets\(tag, release, windowsNames\)/);
   assert.match(macRelease, /codesign[\s\S]*?'--verify'[\s\S]*?'--deep'[\s\S]*?'--strict'/);
   assert.match(macRelease, /unzip[\s\S]*?'-q'[\s\S]*?verifySignedAppBundle\(join\(extractedRoot/);
   assert.match(macRelease, /hdiutil[\s\S]*?'verify'/);
   assert.match(macRelease, /_CodeSignature\/CodeResources/);
   assert.match(macRelease, /Apple Development: Patrik Kelemen \(SSUH7T22L8\)/);
+});
+
+test('the release workflow keeps only complete published desktop releases untouched', async () => {
+  const workflow = readFileSync(
+    join(projectRoot, '.github', 'workflows', 'build-desktop.yml'),
+    'utf8',
+  );
+  const source = workflow.match(
+    /- id: release-state[\s\S]*?script: \|\n([\s\S]*?)\n\s+result-encoding: string/,
+  )?.[1].replace(/^ {12}/gm, '') || '';
+  assert.match(source, /return 'published-complete'/);
+  const AsyncFunction = Object.getPrototypeOf(async function empty() {}).constructor;
+  const evaluate = async (release) => new AsyncFunction('github', 'context', source)(
+    {
+      paginate: async () => (release ? [release] : []),
+      rest: { repos: { listReleases() {} } },
+    },
+    {
+      ref: 'refs/tags/v1.2.3',
+      repo: { owner: 'Crowie-s-r-o', repo: 'CC-Relay' },
+    },
+  );
+  const expectedNames = [
+    'CC-Relay-1.2.3-mac-arm64.dmg',
+    'CC-Relay-1.2.3-mac-arm64.dmg.blockmap',
+    'CC-Relay-1.2.3-mac-arm64.zip',
+    'CC-Relay-1.2.3-mac-arm64.zip.blockmap',
+    'CC-Relay-1.2.3-win-x64-Portable.exe',
+    'CC-Relay-1.2.3-win-x64-Setup.exe',
+    'CC-Relay-1.2.3-win-x64-Setup.exe.blockmap',
+    'latest-mac.yml',
+    'latest.yml',
+    'mac-release.json',
+  ];
+  const complete = {
+    tag_name: 'v1.2.3',
+    draft: false,
+    assets: expectedNames.map((name) => ({ name, state: 'uploaded', size: 1 })),
+  };
+
+  assert.equal(await evaluate(null), 'missing');
+  assert.equal(await evaluate({ ...complete, draft: true }), 'draft');
+  assert.equal(await evaluate({ ...complete, assets: complete.assets.slice(1) }), 'published-incomplete');
+  assert.equal(await evaluate({
+    ...complete,
+    assets: complete.assets.map((asset, index) => (
+      index === 0 ? { ...asset, state: 'new' } : asset
+    )),
+  }), 'published-incomplete');
+  assert.equal(await evaluate({
+    ...complete,
+    assets: complete.assets.map((asset, index) => (
+      index === 0 ? { ...asset, size: 0 } : asset
+    )),
+  }), 'published-incomplete');
+  assert.equal(await evaluate(complete), 'published-complete');
 });
 
 test('the public README leads with platform truth, download, and the six core benefits', () => {
@@ -227,17 +304,25 @@ test('signed macOS release manifests separate complete releases from Windows-onl
     'latest-mac.yml',
     'mac-release.json',
   ]);
+  assert.deepEqual(windowsReleaseArtifactNames('0.2.15'), [
+    'CC-Relay-0.2.15-win-x64-Portable.exe',
+    'CC-Relay-0.2.15-win-x64-Setup.exe',
+    'CC-Relay-0.2.15-win-x64-Setup.exe.blockmap',
+    'latest.yml',
+  ]);
 
   const legacy = { tag_name: 'v0.2.14', draft: false, prerelease: false, assets: [] };
   const incomplete = {
     tag_name: 'v0.2.15',
     draft: false,
     prerelease: false,
-    assets: macReleaseArtifactNames('0.2.15').slice(0, -1).map((name) => ({ name, size: 1 })),
+    assets: macReleaseArtifactNames('0.2.15').slice(0, -1)
+      .map((name) => ({ name, size: 1, state: 'uploaded' })),
   };
   const complete = {
     ...incomplete,
-    assets: macReleaseArtifactNames('0.2.15').map((name) => ({ name, size: 1 })),
+    assets: macReleaseArtifactNames('0.2.15')
+      .map((name) => ({ name, size: 1, state: 'uploaded' })),
   };
   assert.equal(releaseHasSignedMacArtifacts(legacy), true);
   assert.equal(releaseHasSignedMacArtifacts(incomplete), false);
@@ -246,6 +331,12 @@ test('signed macOS release manifests separate complete releases from Windows-onl
     ...complete,
     assets: complete.assets.map((asset) => (
       asset.name === MAC_RELEASE_MANIFEST_NAME ? { ...asset, size: 0 } : asset
+    )),
+  }), false);
+  assert.equal(releaseHasSignedMacArtifacts({
+    ...complete,
+    assets: complete.assets.map((asset) => (
+      asset.name === 'latest-mac.yml' ? { ...asset, state: 'new' } : asset
     )),
   }), false);
   assert.deepEqual(releaseTagsFromCompletePublishedReleases([legacy, incomplete]), ['v0.2.14']);
@@ -445,5 +536,17 @@ test('release watching reports success only after the tag workflow and release b
     done: true,
     ok: true,
     message: 'Published v1.2.3: https://example.invalid/releases/v1.2.3',
+  });
+
+  const preparedDraft = releasePublishStatus({
+    tag: 'v1.2.3',
+    run: succeededRun,
+    releaseUrl: 'https://example.invalid/releases/v1.2.3',
+    releaseDraft: true,
+  });
+  assert.deepEqual(preparedDraft, {
+    done: true,
+    ok: true,
+    message: 'Prepared draft v1.2.3: https://example.invalid/releases/v1.2.3',
   });
 });

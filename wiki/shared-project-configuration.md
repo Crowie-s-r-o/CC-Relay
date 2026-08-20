@@ -12,7 +12,7 @@ CC Relay stores the Launchpad project catalog in a dedicated per-user SQLite dat
 - Windows: `~/AppData/Roaming/dual-agent-orchestrator/relay-config.sqlite`
 - Linux: `~/.config/dual-agent-orchestrator/relay-config.sqlite`
 
-The shared records include pinned project path, display name, order, last launch time, maximum Codex and Claude instances, terminal retention, legacy idle routing, terminal layout, and the active project path. The renderer reads projects and the active path from `GET /api/projects`, writes explicit selections through `POST /api/projects/active`, and saves terminal choices through `PATCH /api/projects/:id/settings`.
+The shared records include pinned project path, display name, order, last launch time, maximum Codex and Claude instances, terminal retention, legacy idle routing, terminal layout, the optional default Standup prompt, and the active project path. The renderer reads projects and the active path from `GET /api/projects`, writes explicit selections through `POST /api/projects/active`, saves terminal choices through `PATCH /api/projects/:id/settings`, and saves Standup guidance through `PATCH /api/projects/:id/standup-prompt`.
 
 ## Isolation boundary
 
@@ -28,11 +28,16 @@ Finished localhost task history could once be copied explicitly into the desktop
 > [!important]
 > Every terminal setting is stored on its own project row. Sharing the configuration database between localhost and desktop does not permit Alpha to inherit Beta's retention, idle-routing, grid, monitor, or background-launch choice. See [[project-terminal-settings]].
 
+> [!important]
+> `standup_custom_prompt` is also isolated on the exact project row. Standup generation reloads it server-side after resolving the requested pinned path, so Alpha cannot inherit a browser draft or saved prompt from Beta. See [[daily-standup]].
+
 ## Legacy migration
 
 `RelayDatabase` accepts a `projectConfigPath` and delegates project operations to `ProjectConfigStore`. On first use of a particular shared path, each local data database contributes any legacy `projects` rows that are not already present. A marker in that local database prevents stale legacy rows from resurrecting a project later removed through the other process.
 
 The shared rows are mirrored back into the local legacy table as a downgrade aid. Project paths are the migration identity. Shared integer IDs become authoritative after migration because tasks and plans reference a project by `repo_path`, not by project ID.
+
+The additive `standup_custom_prompt` column is created with a non-null empty-string default in both shared and legacy project tables. This keeps inserts from older schemas valid, preserves existing configuration, and makes an unconfigured project behaviorally identical to the previous Standup implementation.
 
 > [!note]
 > An empty desktop database may initialize the shared file before localhost starts. Migration is tracked per local data database, so that ordering does not suppress import from the existing localhost database.

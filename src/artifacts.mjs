@@ -106,6 +106,20 @@ export class ArtifactStore {
     );
   }
 
+  updateTaskTitle(task) {
+    const filePath = join(this.taskDirectory(task.id), 'task.md');
+    const content = readFileIfPresent(filePath);
+    if (content === null) {
+      this.initializeTask(task);
+      return;
+    }
+    const heading = `# ${task.title}`;
+    const updated = /^# .*$/m.test(content)
+      ? content.replace(/^# .*$/m, () => heading)
+      : `${heading}\n\n${content}`;
+    if (updated !== content) writeFileAtomically(filePath, updated);
+  }
+
   updateTaskAssignment(task) {
     const path = join(this.taskDirectory(task.id), 'task.md');
     if (!existsSync(path)) return;

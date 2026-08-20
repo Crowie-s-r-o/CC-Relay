@@ -6,6 +6,50 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 19: the restored Codex five-hour allowance is visible in the provider runway.** Relay
+> reads the exact 300-minute window from the authenticated general Codex rate-limit bucket and
+> keeps it independent from the 10,080-minute weekly value and model-specific buckets. The header
+> now shows **Cod 5h** beside **Cod Week**, with percentage-used coloring, an hours-and-minutes reset
+> countdown, stale preservation, and an honest unavailable state when that window is absent. See
+> [[provider-usage-monitor]] and [[interface-layout]].
+
+> [!note]
+> **August 19: Task Activity now shows three rows of the task definition before overflow.** The
+> compact inspector recognizes the persisted 80-character generated title and substitutes the
+> complete saved prompt while preserving genuine custom titles. It gives that definition the
+> available width, wraps long tokens safely, and clamps only after the third visible row while
+> retaining the full hover title. See
+> [[task-detail-modal-and-app-zoom]] and [[interface-layout]].
+
+> [!note]
+> **August 19: tasks can now be starred and renamed inline at any stage.** A persistent star
+> creates a stable top group in Queue, History, search, and the active-task monitor without
+> changing scheduler position or dispatch priority. The pencil edits queued, running, open, and
+> finished task titles in place while preserving live-refresh focus, identity, prompt,
+> conversation, outcomes, and artifacts. Planner breakdown names remain linked to plan steps,
+> and queued reorder gestures stay inside their current star group. See [[task-starring]] and
+> [[task-naming]].
+
+> [!important]
+> **August 19: desktop releases now become visible atomically.** v0.2.17 exposed
+> `latest-mac.yml` about 40 seconds before its 119 MB ZIP finished uploading, so v0.2.16 checked
+> inside the gap, received HTTP 404, and showed **Relay will try again**. Its normal five-minute
+> retry downloaded successfully and reached ready state. Future workflows keep Windows output and
+> release notes in a draft; local deploy verifies every signed macOS payload as fully uploaded,
+> adds the feed and completion marker last, then publishes the complete release. Workflow reruns
+> leave an already complete published tag untouched. See [[desktop-updates]] and
+> [[open-source-releases]].
+
+> [!note]
+> **August 19: each Launchpad can now save default Standup guidance.** The Standup modal stores an
+> optional 4,000-character custom prompt on the exact shared project row and saves a dirty edit
+> before date-triggered generation. The generation endpoint reloads that prompt server-side, then
+> applies it as subordinate guidance without weakening the categorized JSON, evidence, or security
+> contract. Existing project tables migrate to an empty default, older backends simply hide the
+> guarded editor, and focused persistence, migration, generator, and UI checks pass. See
+> [[daily-standup]] and [[shared-project-configuration]].
+
 > [!important]
 > **August 19: Changes now separates exact task edits from the shared workspace window.** A current
 > backend opens the dialog on successful provider-reported patches, keeps repeated edits to one

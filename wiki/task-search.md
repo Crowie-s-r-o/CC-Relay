@@ -23,7 +23,7 @@ The canonical search corpus contains:
 
 `src/task-search.mjs` normalizes Unicode with NFKD, removes combining marks, folds case, and treats punctuation as word boundaries. This makes `resume`, `Résumé`, and punctuation-separated code names searchable with the same terms. A query accepts up to 200 characters and twelve unique terms. Quoted phrases stay one normalized term. Every term must exist somewhere in the task, but terms may be split between a command and a response.
 
-Results rank exact task numbers first, then exact or complete task-name matches, command evidence, and response evidence. The strongest matching entry supplies a bounded excerpt and exact highlight ranges. The API returns at most 200 ranked rows plus the total match count so the renderer remains bounded.
+Results rank exact task numbers first, then exact or complete task-name matches, command evidence, and response evidence. The strongest matching entry supplies a bounded excerpt and exact highlight ranges. The API returns at most 200 ranked rows plus the total match count so the renderer remains bounded. The renderer then creates a stable starred-first partition, preserving this exact backend relevance order inside both groups. See [[task-starring]].
 
 > [!note]
 > The search is evaluated on request from one project-scoped document set. It does not add an FTS virtual table, duplicate prompts into browser storage, or enlarge the normal `/api/tasks` snapshot. This keeps SQLite as the source of truth and avoids making every two-second task refresh carry complete response history.
@@ -39,7 +39,7 @@ The rounded search rail owns the complete light and dark surface. Its native sea
 While a query is active:
 
 - Date filtering and the History statistics ledger are suspended, but the chosen Queue or History preference is preserved for when search clears.
-- Results keep backend relevance order and show the matching source label plus safely escaped highlighted evidence.
+- Starred results appear first; starred and unstarred groups each keep backend relevance order and show the matching source label plus safely escaped highlighted evidence.
 - Cards remain keyboard-selectable and open normal Task Activity.
 - Queue reorder, assignment, drag targets, and parallel-batch selection are hidden so a relevance-ranked subset cannot mutate execution order.
 - Project switching reruns the same query inside the new exact project boundary.

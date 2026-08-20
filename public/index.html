@@ -80,6 +80,12 @@
             <span class="provider-usage-track" role="progressbar" aria-label="Claude Fable weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
             <small class="provider-usage-reset"></small>
           </div>
+          <div class="provider-usage-meter" data-usage-key="codex-five-hour" data-provider="codex" data-level="checking">
+            <span>Cod 5h</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Codex 5-hour usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
+          </div>
           <div class="provider-usage-meter" data-usage-key="codex-weekly" data-provider="codex" data-level="checking">
             <span>Cod Week</span>
             <strong>--</strong>
@@ -898,6 +904,19 @@
             <div class="standup-scope">
               <span id="standup-scope-label">Selected Launchpad</span>
               <strong id="standup-count">Select a workday</strong>
+            </div>
+          </div>
+          <div id="standup-custom-prompt-field" class="standup-custom-prompt-field" hidden>
+            <label for="standup-custom-prompt">
+              <span>
+                <strong>Default custom prompt</strong>
+                <small>Added to every Standup generated for this Launchpad.</small>
+              </span>
+            </label>
+            <textarea id="standup-custom-prompt" rows="3" maxlength="4000" placeholder="Optional: describe project terminology, emphasis, or details to exclude."></textarea>
+            <div class="standup-custom-prompt-footer">
+              <small id="standup-custom-prompt-status" role="status" aria-live="polite">Saved per project.</small>
+              <button id="standup-custom-prompt-save" class="button compact" type="button" disabled>Save prompt</button>
             </div>
           </div>
           <div class="standup-generator-route">
