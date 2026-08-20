@@ -3488,6 +3488,8 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
     prompt: elements.continuationInput.value,
   });
   const relay = taskRelayLabel(task);
+  elements.continuationForm.dataset.submitting = String(submitting);
+  elements.continuationForm.setAttribute('aria-busy', String(submitting));
   elements.continuationContext.textContent = `${relay} · ${providerLabel(task.provider)} · ${task.model || 'session model'} · ${task.effort || 'default'} effort`;
   elements.continuationState.dataset.state = presentation.state;
   elements.continuationState.textContent = presentation.label;
@@ -3512,6 +3514,9 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
     && presentation.state === 'ready'
     ? 'Send command'
     : presentation.buttonLabel;
+  elements.continuationSend.title = submitting
+    ? 'Sending this message. Wait for confirmation before sending another.'
+    : '';
   // A dispatch outcome outlives the two-second refresh. Without warning in this list the
   // next render would replace an unconfirmed-delivery notice with a generic hint.
   if (!['error', 'success', 'warning'].includes(elements.continuationMessage.dataset.kind)) {

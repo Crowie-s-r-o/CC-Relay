@@ -103,10 +103,8 @@ export function continuationPresentation({
     return {
       state: 'sending',
       label: 'Sending now',
-      buttonLabel: taskRunning ? 'Updating' : 'Starting',
-      hint: taskRunning
-        ? 'Updating the active turn now.'
-        : 'Starting the next turn in this exact session now.',
+      buttonLabel: 'Sending...',
+      hint: 'CC Relay is sending this message now. Editing and repeat send stay disabled until it is confirmed.',
       inputDisabled: true,
       sendDisabled: true,
     };

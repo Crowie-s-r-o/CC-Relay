@@ -200,8 +200,20 @@ test('an idle finished task starts a direct next turn and disables editing only 
     submitting: true,
     prompt: 'Continue here',
   });
-  assert.equal(sending.inputDisabled, true);
-  assert.equal(sending.sendDisabled, true);
+  assert.deepEqual(sending, {
+    state: 'sending',
+    label: 'Sending now',
+    buttonLabel: 'Sending...',
+    hint: 'CC Relay is sending this message now. Editing and repeat send stay disabled until it is confirmed.',
+    inputDisabled: true,
+    sendDisabled: true,
+  });
+  const renderStart = composerApp.indexOf('function renderTaskContinuation');
+  const renderEnd = composerApp.indexOf('\nfunction ', renderStart + 1);
+  const render = composerApp.slice(renderStart, renderEnd);
+  assert.match(render, /continuationForm\.dataset\.submitting = String\(submitting\)/);
+  assert.match(render, /continuationForm\.setAttribute\('aria-busy', String\(submitting\)\)/);
+  assert.match(render, /continuationSend\.title = submitting/);
 });
 
 test('follow-up images are included only when the backend advertises support', () => {

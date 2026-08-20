@@ -129,12 +129,16 @@ const desktopUpdater = createDesktopUpdater({
   releasesUrl: `${DESKTOP_RELEASES_URL}/latest`,
   releaseUrlForVersion: (version) => `${DESKTOP_RELEASES_URL}/tag/v${version}`,
   onStateChange: (state) => publishDesktopUpdateState?.(state),
-  restartAndInstall: async () => {
+  restartAndInstall: async (prepareToInstall) => {
     quitting = true;
     try {
       if (relayShutdown) await relayShutdown();
     } finally {
-      autoUpdater.quitAndInstall(false, true);
+      try {
+        if (typeof prepareToInstall === 'function') await prepareToInstall();
+      } finally {
+        autoUpdater.quitAndInstall(false, true);
+      }
     }
   },
   logger: desktopUpdaterLogger,
@@ -379,6 +383,8 @@ app.on('before-quit', (event) => {
   relayShutdown().then(() => {
     desktopDiagnostic('desktop.shutdown.completed');
   }).catch((error) => {
+    desktopDiagnostic('desktop.shutdown.failed', errorDetails(error));
+  }).then(() => desktopUpdater.prepareToInstall()).catch((error) => {
     desktopDiagnostic('desktop.shutdown.failed', errorDetails(error));
   }).finally(() => app.quit());
 });

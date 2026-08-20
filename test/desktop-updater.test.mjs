@@ -65,7 +65,14 @@ function harness(options = {}) {
     automaticUpdate: options.automaticUpdate ?? true,
     checkLatestRelease: options.checkLatestRelease,
     getMainWindow: () => options.window === undefined ? window : options.window,
-    restartAndInstall: async () => restartCalls.push(true),
+    restartAndInstall: async (prepareToInstall) => {
+      restartCalls.push(true);
+      if (typeof options.restartAndInstall === 'function') {
+        await options.restartAndInstall(prepareToInstall);
+      } else {
+        await prepareToInstall?.();
+      }
+    },
     releasesUrl: 'https://github.com/Crowie-s-r-o/CC-Relay/releases/latest',
     releaseUrlForVersion: (version) => `https://github.com/Crowie-s-r-o/CC-Relay/releases/tag/v${version}`,
     onStateChange: (state) => states.push(state),
@@ -117,7 +124,7 @@ test('derives automatic updates for packaged macOS and NSIS builds only', () => 
   });
   assert.equal(mac.coordinator.start(), true);
   assert.equal(mac.coordinator.status().automaticUpdate, true);
-  assert.equal(mac.updater.autoDownload, true);
+  assert.equal(mac.updater.autoDownload, false);
   assert.equal(mac.updater.autoInstallOnAppQuit, true);
   const installed = harness({ eligible: undefined });
   installed.coordinator = createDesktopUpdater({
@@ -130,7 +137,7 @@ test('derives automatic updates for packaged macOS and NSIS builds only', () => 
   });
   assert.equal(installed.coordinator.start(), true);
   assert.equal(installed.coordinator.status().automaticUpdate, true);
-  assert.equal(installed.updater.autoDownload, true);
+  assert.equal(installed.updater.autoDownload, false);
   assert.equal(installed.updater.autoInstallOnAppQuit, true);
   const portable = harness({ eligible: undefined });
   portable.coordinator = createDesktopUpdater({
@@ -152,7 +159,7 @@ test('start is idempotent, configures automatic updates, and checks every five m
   assert.equal(coordinator.start(), true);
   assert.equal(coordinator.start(), false);
   assert.equal(updater.logger, logger);
-  assert.equal(updater.autoDownload, true);
+  assert.equal(updater.autoDownload, false);
   assert.equal(updater.autoInstallOnAppQuit, true);
   assert.equal(timers.length, 1);
   assert.equal(timers[0].delay, 25);
@@ -274,10 +281,10 @@ test('downloads available updates automatically without interrupting active work
   coordinator.start();
   updater.emit('update-available', { version: '1.2.0' });
   await flush();
-  assert.equal(updater.autoDownload, true);
+  assert.equal(updater.autoDownload, false);
   assert.equal(updater.autoInstallOnAppQuit, true);
   assert.equal(dialogs.length, 0);
-  assert.equal(updater.downloadCalls, 0);
+  assert.equal(updater.downloadCalls, 1);
   assert.equal(states.at(-1).status, 'downloading');
   assert.equal(
     logs.some((entry) => entry.level === 'info' && /automatically/.test(entry.message)),
@@ -292,23 +299,74 @@ test('retries an automatic update after an updater error without manual action',
   updater.emit('error', new Error('download interrupted'));
   assert.equal(states.at(-1).status, 'error');
   assert.equal(states.at(-1).latestVersion, '1.2.0');
+  await flush();
 
   intervals[0].callback();
   await flush();
   assert.equal(updater.checkCalls, 1);
 });
 
-test('pauses recurring checks while an automatic download or installation is pending', async () => {
+test('retries the same release when native staging fails after download', async () => {
+  const { updater, coordinator, intervals, dialogs, states } = harness({ choices: [1] });
+  coordinator.start();
+  updater.emit('update-available', { version: '1.2.0' });
+  await flush();
+  assert.equal(updater.downloadCalls, 1);
+  updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  assert.equal(dialogs.length, 1);
+
+  updater.emit('error', new Error('native staging failed'));
+  assert.equal(states.at(-1).status, 'error');
+  intervals[0].callback();
+  await flush();
+  assert.equal(updater.checkCalls, 1);
+
+  updater.emit('update-available', { version: '1.2.0' });
+  await flush();
+  assert.equal(updater.downloadCalls, 2);
+  assert.equal(states.at(-1).status, 'downloading');
+});
+
+test('pauses recurring checks while downloading or installing immediately', async () => {
   const { updater, coordinator, intervals } = harness({ choices: [1] });
+  let finishDownload;
+  updater.downloadUpdate = () => new Promise((resolve) => {
+    updater.downloadCalls += 1;
+    finishDownload = resolve;
+  });
   coordinator.start();
   updater.emit('update-available', { version: '1.2.0' });
   intervals[0].callback();
   await flush();
   assert.equal(updater.checkCalls, 0);
+  finishDownload();
+  await flush();
+
+  const installing = harness({ choices: [0] });
+  installing.coordinator.start();
+  installing.updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  installing.intervals[0].callback();
+  await flush();
+  assert.equal(installing.updater.checkCalls, 1);
+  assert.equal(installing.coordinator.status().status, 'installing');
+});
+
+test('keeps checking after install on quit while preserving the staged release', async () => {
+  const { updater, coordinator, intervals, states } = harness({ choices: [1] });
+  coordinator.start();
   updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+
   intervals[0].callback();
   await flush();
-  assert.equal(updater.checkCalls, 0);
+  assert.equal(updater.checkCalls, 1);
+  assert.equal(states.at(-1).status, 'downloaded');
+
+  updater.emit('update-not-available');
+  assert.equal(states.at(-1).status, 'downloaded');
+  assert.equal(states.at(-1).latestVersion, '1.2.0');
 });
 
 test('prompts for a downloaded update and restarts only after acceptance', async () => {
@@ -327,24 +385,169 @@ test('prompts for a downloaded update and restarts only after acceptance', async
   assert.equal(deferred.restartCalls.length, 0);
 });
 
-test('does not prompt again after install on quit is selected for the same version', async () => {
-  const deferred = harness({ choices: [1, 0] });
+test('restart intent silently adopts a higher release while shutdown is still running', async () => {
+  let finishShutdown;
+  const restarting = harness({
+    choices: [0],
+    restartAndInstall: async (prepareToInstall) => {
+      await new Promise((resolve) => { finishShutdown = resolve; });
+      await prepareToInstall();
+    },
+  });
+  restarting.coordinator.start();
+  restarting.updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  assert.equal(restarting.dialogs.length, 1);
+  assert.equal(restarting.restartCalls.length, 1);
+
+  restarting.updater.emit('update-available', { version: '1.3.0' });
+  await flush();
+  assert.equal(restarting.updater.downloadCalls, 1);
+  restarting.updater.emit('update-downloaded', { version: '1.3.0' });
+  await flush();
+  assert.equal(restarting.dialogs.length, 1);
+  assert.equal(restarting.coordinator.status().latestVersion, '1.3.0');
+
+  finishShutdown();
+  await flush();
+  assert.equal(restarting.updater.checkCalls, 1);
+  assert.equal(restarting.coordinator.status().status, 'installing');
+  assert.equal(restarting.coordinator.status().latestVersion, '1.3.0');
+});
+
+test('final install preparation waits for a higher release found by its freshness check', async () => {
+  const preparing = harness({ choices: [1] });
+  let finishDownload;
+  preparing.updater.checkForUpdates = async () => {
+    preparing.updater.checkCalls += 1;
+    preparing.updater.emit('update-available', { version: '1.3.0' });
+  };
+  preparing.updater.downloadUpdate = () => new Promise((resolve) => {
+    preparing.updater.downloadCalls += 1;
+    finishDownload = resolve;
+  });
+  preparing.coordinator.start();
+  preparing.updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+
+  let preparationFinished = false;
+  const preparation = preparing.coordinator.prepareToInstall().then(() => {
+    preparationFinished = true;
+  });
+  await flush();
+  assert.equal(preparing.updater.checkCalls, 1);
+  assert.equal(preparing.updater.downloadCalls, 1);
+  assert.equal(preparing.coordinator.status().status, 'downloading');
+  assert.equal(preparationFinished, false);
+
+  preparing.updater.emit('update-downloaded', { version: '1.3.0' });
+  finishDownload();
+  await preparation;
+  assert.equal(preparationFinished, true);
+  assert.equal(preparing.coordinator.status().status, 'installing');
+  assert.equal(preparing.coordinator.status().latestVersion, '1.3.0');
+  assert.equal(preparing.dialogs.length, 1);
+});
+
+test('final install preparation retries one failed superseding download', async () => {
+  const preparing = harness({ choices: [1] });
+  preparing.updater.checkForUpdates = async () => {
+    preparing.updater.checkCalls += 1;
+    preparing.updater.emit('update-available', { version: '1.3.0' });
+  };
+  preparing.updater.downloadUpdate = async () => {
+    preparing.updater.downloadCalls += 1;
+    if (preparing.updater.downloadCalls === 1) throw new Error('temporary download failure');
+    preparing.updater.emit('update-downloaded', { version: '1.3.0' });
+  };
+  preparing.coordinator.start();
+  preparing.updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+
+  await preparing.coordinator.prepareToInstall();
+  assert.equal(preparing.updater.checkCalls, 2);
+  assert.equal(preparing.updater.downloadCalls, 2);
+  assert.equal(preparing.coordinator.status().status, 'installing');
+  assert.equal(preparing.coordinator.status().latestVersion, '1.3.0');
+  assert.equal(preparing.dialogs.length, 1);
+});
+
+test('failed restart handoff preserves the newest superseding release state', async () => {
+  let rejectHandoff;
+  const failing = harness({
+    choices: [0],
+    restartAndInstall: async () => new Promise((resolve, reject) => {
+      rejectHandoff = reject;
+    }),
+  });
+  failing.coordinator.start();
+  failing.updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  failing.updater.emit('update-downloaded', { version: '1.3.0' });
+  await flush();
+  assert.equal(failing.coordinator.status().latestVersion, '1.3.0');
+
+  rejectHandoff(new Error('shutdown failed'));
+  await flush();
+  assert.equal(failing.coordinator.status().status, 'downloaded');
+  assert.equal(failing.coordinator.status().latestVersion, '1.3.0');
+  assert.equal(failing.dialogs.length, 1);
+});
+
+test('silently replaces an install-on-quit release with a higher downloaded version', async () => {
+  const deferred = harness({ choices: [1] });
   deferred.coordinator.start();
 
+  deferred.updater.emit('update-available', { version: '1.2.0' });
+  await flush();
+  assert.equal(deferred.updater.downloadCalls, 1);
   deferred.updater.emit('update-downloaded', { version: '1.2.0' });
   await flush();
   assert.equal(deferred.dialogs.length, 1);
   assert.equal(deferred.restartCalls.length, 0);
+
+  deferred.updater.emit('update-available', { version: '1.2.0' });
+  await flush();
+  assert.equal(deferred.updater.downloadCalls, 1);
 
   deferred.updater.emit('update-downloaded', { version: '1.2.0' });
   await flush();
   assert.equal(deferred.dialogs.length, 1);
   assert.equal(deferred.restartCalls.length, 0);
 
+  deferred.updater.emit('update-available', { version: '1.3.0' });
+  await flush();
+  assert.equal(deferred.updater.downloadCalls, 2);
   deferred.updater.emit('update-downloaded', { version: '1.3.0' });
   await flush();
-  assert.equal(deferred.dialogs.length, 2);
-  assert.equal(deferred.restartCalls.length, 1);
+  assert.equal(deferred.dialogs.length, 1);
+  assert.equal(deferred.restartCalls.length, 0);
+  assert.equal(deferred.coordinator.status().status, 'downloaded');
+  assert.equal(deferred.coordinator.status().latestVersion, '1.3.0');
+  assert.equal(
+    deferred.logs.some((entry) => /superseded 1\.2\.0/.test(entry.message)),
+    true,
+  );
+
+  deferred.updater.emit('update-downloaded', { version: '1.1.0' });
+  await flush();
+  assert.equal(deferred.dialogs.length, 1);
+  assert.equal(deferred.coordinator.status().latestVersion, '1.3.0');
+});
+
+test('a refresh failure does not replace a deferred ready state with an error', async () => {
+  const { updater, coordinator, intervals, states } = harness({ choices: [1] });
+  coordinator.start();
+  updater.emit('update-downloaded', { version: '1.2.0' });
+  await flush();
+  updater.checkForUpdates = async () => {
+    throw new Error('refresh unavailable');
+  };
+
+  intervals[0].callback();
+  await flush();
+  assert.equal(states.at(-1).status, 'downloaded');
+  assert.equal(states.at(-1).latestVersion, '1.2.0');
 });
 
 test('does not prompt when the main window is absent or destroyed', async () => {
@@ -354,7 +557,7 @@ test('does not prompt when the main window is absent or destroyed', async () => 
   await flush();
   assert.equal(absent.dialogs.length, 0);
   assert.equal(absent.coordinator.status().status, 'downloading');
-  assert.equal(absent.updater.downloadCalls, 0);
+  assert.equal(absent.updater.downloadCalls, 1);
 
   const destroyed = harness({ choices: [0] });
   destroyed.coordinator = createDesktopUpdater({

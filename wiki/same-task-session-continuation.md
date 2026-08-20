@@ -46,6 +46,13 @@ The task row keeps its original `prompt` unchanged. Every accepted finished-turn
 
 `submitTaskContinuation()` accepts only `steered` or `followUpStarted`. It has no `continuationQueued` branch and never assigns `state.selectedTaskId` from the response. Its post-write refresh is forced fresh so it cannot join an older in-flight snapshot. Task Activity therefore stays on the source task while its status changes from a historical outcome to running and its new prompt appears immediately.
 
+### Pending submission feedback
+
+A standard follow-up locks before its request begins and stays visibly locked until the exact request settles. `renderTaskContinuation()` sets `data-submitting` and `aria-busy` on the continuation form, disables the textarea, image controls, and submit button, changes the button to **Sending...**, and replaces the normal hint with an explicit confirmation-wait message. The disabled button retains enough contrast to remain readable and carries a progress ring whose rotation is enabled only when reduced motion is not requested. Every settled outcome clears the latch before it is rendered, so the same controls become available again without waiting for the next task refresh.
+
+> [!note]
+> The reliable Claude live-update outbox remains the intentional exception. It captures and clears each update immediately, reports the task-scoped pending count, and keeps the composer available so another ordered update can be written while earlier delivery settles. See [[claude-live-steer-outbox]].
+
 For a running interactive Claude task advertising `claudeSteerOutbox`, submission does not take the global continuation lock. Each update and its attachments are captured immediately, the visible composer is released for the next message, and the active watcher serializes terminal delivery. A definite failure is restored only when doing so cannot overwrite newer task-scoped text. See [[claude-live-steer-outbox]].
 
 For a running Codex task with an active `/goal`, one Relay run can span several automatic app-server turns. Relay keeps the task `running` after an intermediate `turn/completed`, adopts the successor `turn/started`, and keeps the continuation composer in live-update mode. A submission inside the brief turn boundary waits for that successor and calls `turn/steer` with its exact `expectedTurnId`. It never falls through to finished-task resume or the queue. See [[provider-plan-and-goal-visibility]] and [[manual-terminal-session-mode]].
@@ -76,6 +83,7 @@ For a running Codex task with an active `/goal`, one Relay run can span several 
 - Prompt history remains complete after more than 500 console events.
 - Paired steering events produce one prompt-history entry.
 - Active Codex goals remain one running task across automatic turns, accept steering during the handoff, and ignore stale completion from the prior turn.
+- Standard sends expose a native busy state, disable repeat submission, and keep an explicit **Sending...** indicator visible until the request settles.
 - Renderer source contracts forbid `queue.enqueue()`, `continuationQueued`, and task-selection replacement in the continuation path.
 
 See [[task-history]], [[disposable-terminal-pools]], [[retained-terminal-sessions]], [[continuation-input-review]], and [[project-workspaces]].

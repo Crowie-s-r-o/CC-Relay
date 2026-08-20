@@ -8647,6 +8647,42 @@ html[data-theme="dark"] .detail-panel .detail-execution-profile strong {
   opacity: .46;
 }
 
+.task-continuation[data-submitting="true"] .task-continuation-entry textarea:disabled,
+.task-continuation[data-submitting="true"] .task-continuation-attach,
+.task-continuation[data-submitting="true"] .task-continuation-attachments button:disabled {
+  cursor: progress;
+}
+
+.task-continuation[data-submitting="true"] #task-continuation-send:disabled {
+  cursor: progress;
+  filter: none;
+  opacity: .84;
+}
+
+.task-continuation[data-submitting="true"] #task-continuation-send::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+}
+
+.task-continuation[data-submitting="true"] #task-continuation-send kbd {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .task-continuation[data-submitting="true"] #task-continuation-send::before {
+    animation: task-continuation-send-spin .75s linear infinite;
+  }
+}
+
+@keyframes task-continuation-send-spin {
+  to { transform: rotate(360deg); }
+}
+
 .task-continuation-entry kbd {
   min-width: 17px;
   padding: 2px 3px;

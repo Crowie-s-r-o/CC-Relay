@@ -72,6 +72,11 @@ function availableVersion(info) {
   return String(info?.version || info?.releaseName || info?.tag || 'new version');
 }
 
+function isSameDesktopRelease(left, right) {
+  return String(left || '').trim().replace(/^v/i, '')
+    === String(right || '').trim().replace(/^v/i, '');
+}
+
 function eventOn(updater, event, listener) {
   if (typeof updater?.on !== 'function') {
     throw new TypeError('Desktop updater must expose an on(event, listener) method.');
@@ -161,8 +166,12 @@ export function createDesktopUpdater(options = {}) {
   let automaticUpdate = false;
   let checkInFlight = false;
   let downloadInFlight = false;
+  let checkPromise = null;
+  let downloadPromise = null;
   let downloadedPromptInFlight = false;
-  const installOnQuitVersions = new Set();
+  let downloadedVersion = null;
+  let downloadedReleaseInfo = null;
+  let installIntentAcknowledged = false;
   let state = {
     supported: false,
     automaticUpdate: false,
@@ -189,56 +198,139 @@ export function createDesktopUpdater(options = {}) {
   function configureUpdater() {
     if (!updater) return;
     updater.logger = logger;
-    updater.autoDownload = true;
+    // The coordinator downloads automatically after comparing the offered release with the
+    // already staged one. Leaving this to electron-updater would redownload the same ready
+    // release on every supersession check.
+    updater.autoDownload = false;
     updater.autoInstallOnAppQuit = true;
   }
 
-  async function checkForUpdates() {
+  function checkForUpdates({ allowDownloaded = false } = {}) {
     if (
       checkInFlight
       || downloadInFlight
-      || state.status === 'downloaded'
+      || (state.status === 'downloaded' && !installIntentAcknowledged && !allowDownloaded)
       || state.status === 'installing'
-    ) return;
+    ) return checkPromise || downloadPromise;
     checkInFlight = true;
-    if (!state.latestVersion) publish('checking', { downloadPercent: null });
-    safeLogger(logger, 'info', 'Checking for desktop updates.');
-    try {
-      if (automaticUpdate) {
-        await updater.checkForUpdates();
-      } else {
-        const info = await checkLatestRelease();
-        if (isNewerDesktopRelease(availableVersion(info), currentVersion(options))) {
-          publishUpdate('available', info, { downloadPercent: null });
+    const operation = (async () => {
+      if (!state.latestVersion) publish('checking', { downloadPercent: null });
+      safeLogger(logger, 'info', 'Checking for desktop updates.');
+      try {
+        if (automaticUpdate) {
+          await updater.checkForUpdates();
         } else {
-          publish('current', {
-            latestVersion: null,
-            releaseUrl: String(options.releasesUrl || ''),
-            downloadPercent: null,
-          });
+          const info = await checkLatestRelease();
+          if (isNewerDesktopRelease(availableVersion(info), currentVersion(options))) {
+            publishUpdate('available', info, { downloadPercent: null });
+          } else {
+            publish('current', {
+              latestVersion: null,
+              releaseUrl: String(options.releasesUrl || ''),
+              downloadPercent: null,
+            });
+          }
         }
+      } catch (error) {
+        const deferredDownloadIsStillReady = automaticUpdate
+          && installIntentAcknowledged
+          && state.status === 'downloaded';
+        if (!deferredDownloadIsStillReady) {
+          publish(!automaticUpdate && state.latestVersion ? 'available' : 'error');
+        }
+        safeLogger(logger, 'error', 'Desktop update check failed.', error);
+      } finally {
+        checkInFlight = false;
+        if (checkPromise === operation) checkPromise = null;
       }
-    } catch (error) {
-      publish(!automaticUpdate && state.latestVersion ? 'available' : 'error');
-      safeLogger(logger, 'error', 'Desktop update check failed.', error);
-    } finally {
-      checkInFlight = false;
-    }
+    })();
+    checkPromise = operation;
+    return operation;
   }
 
   function handleAvailable(info) {
-    if (state.status === 'downloaded' || state.status === 'installing') return;
+    if (downloadInFlight || state.status === 'installing') return downloadPromise;
+    const version = availableVersion(info);
+    const sameAsDownloaded = downloadedVersion
+      && isSameDesktopRelease(version, downloadedVersion);
+    if (
+      downloadedVersion
+      && (
+        (sameAsDownloaded && state.status !== 'error')
+        || (!sameAsDownloaded && !isNewerDesktopRelease(version, downloadedVersion))
+      )
+    ) {
+      safeLogger(
+        logger,
+        'info',
+        `CC Relay ${downloadedVersion} is already the newest downloaded release.`,
+      );
+      return;
+    }
     downloadInFlight = true;
     publishUpdate('downloading', info, { downloadPercent: null });
-    safeLogger(logger, 'info', `Downloading CC Relay ${availableVersion(info)} automatically.`);
+    safeLogger(logger, 'info', `Downloading CC Relay ${version} automatically.`);
+    const operation = (async () => {
+      try {
+        await updater.downloadUpdate();
+      } catch (error) {
+        if (state.status !== 'error') publishUpdate('error', info);
+        safeLogger(logger, 'error', `Desktop update ${version} download failed.`, error);
+      } finally {
+        downloadInFlight = false;
+        if (downloadPromise === operation) downloadPromise = null;
+      }
+    })();
+    downloadPromise = operation;
+    return operation;
+  }
+
+  async function prepareToInstall() {
+    if (!automaticUpdate || !downloadedVersion) return false;
+    installIntentAcknowledged = true;
+    if (checkPromise) await checkPromise;
+    if (downloadPromise) await downloadPromise;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await checkForUpdates({ allowDownloaded: true });
+      if (downloadPromise) await downloadPromise;
+      if (state.status !== 'error') break;
+      safeLogger(logger, 'info', 'Retrying the final desktop update preparation once.');
+    }
+    publish('installing', { downloadPercent: 100 });
+    return true;
   }
 
   async function handleDownloaded(info) {
     if (downloadedPromptInFlight) return;
-    downloadInFlight = false;
-    publishUpdate('downloaded', info, { downloadPercent: 100 });
+    if (!downloadPromise) downloadInFlight = false;
     const version = availableVersion(info);
-    if (installOnQuitVersions.has(version)) {
+    const previousVersion = downloadedVersion;
+    const supersedesPrevious = previousVersion
+      && isNewerDesktopRelease(version, previousVersion);
+    if (
+      previousVersion
+      && !isSameDesktopRelease(version, previousVersion)
+      && !supersedesPrevious
+    ) {
+      safeLogger(
+        logger,
+        'info',
+        `Ignoring stale downloaded release ${version}; CC Relay ${previousVersion} is already ready.`,
+      );
+      return;
+    }
+    downloadedVersion = version;
+    downloadedReleaseInfo = info;
+    publishUpdate('downloaded', info, { downloadPercent: 100 });
+    if (installIntentAcknowledged) {
+      if (supersedesPrevious) {
+        safeLogger(
+          logger,
+          'info',
+          `CC Relay ${version} superseded ${previousVersion} and will install on quit without another prompt.`,
+        );
+        return;
+      }
       safeLogger(logger, 'info', `CC Relay ${version} is already scheduled to install on quit.`);
       return;
     }
@@ -260,15 +352,16 @@ export function createDesktopUpdater(options = {}) {
       );
       const selectedButton = selectedDialogButton(response);
       if (selectedButton === 1) {
-        installOnQuitVersions.add(version);
+        installIntentAcknowledged = true;
         safeLogger(logger, 'info', `CC Relay ${version} will install on quit.`);
         return;
       }
       if (selectedButton !== 0) return;
-      publishUpdate('installing', info, { downloadPercent: 100 });
-      await restartAndInstall();
+      installIntentAcknowledged = true;
+      downloadedPromptInFlight = false;
+      await restartAndInstall(prepareToInstall);
     } catch (error) {
-      publishUpdate('downloaded', info, { downloadPercent: 100 });
+      publishUpdate('downloaded', downloadedReleaseInfo || info, { downloadPercent: 100 });
       safeLogger(logger, 'error', 'Desktop update installation handoff failed.', error);
     } finally {
       downloadedPromptInFlight = false;
@@ -291,6 +384,7 @@ export function createDesktopUpdater(options = {}) {
       configureUpdater();
       eventOn(updater, 'update-available', handleAvailable);
       eventOn(updater, 'update-not-available', () => {
+        if (state.status === 'downloaded' && downloadedVersion) return;
         publish('current', {
           latestVersion: null,
           releaseUrl: String(options.releasesUrl || ''),
@@ -305,7 +399,21 @@ export function createDesktopUpdater(options = {}) {
       });
       eventOn(updater, 'update-downloaded', handleDownloaded);
       eventOn(updater, 'error', (error) => {
-        downloadInFlight = false;
+        const deferredDownloadIsStillReady = installIntentAcknowledged
+          && downloadedVersion
+          && checkInFlight
+          && !downloadInFlight
+          && state.status === 'downloaded';
+        if (deferredDownloadIsStillReady) {
+          safeLogger(
+            logger,
+            'error',
+            `Desktop update refresh failed; CC Relay ${downloadedVersion} remains ready to install.`,
+            error,
+          );
+          return;
+        }
+        if (!downloadPromise) downloadInFlight = false;
         publish('error');
         safeLogger(logger, 'error', 'Desktop updater reported an error.', error);
       });
@@ -323,6 +431,7 @@ export function createDesktopUpdater(options = {}) {
 
   return {
     start,
+    prepareToInstall,
     status: () => ({ ...state }),
   };
 }

@@ -35,3 +35,22 @@ test('follow-up images remain a subtle action without shrinking the prompt', () 
   assert.ok(textarea >= 0 && textarea < attachment && attachment < send);
   assert.doesNotMatch(markup, /task-continuation-attach[\s\S]{0,300}>Add images</);
 });
+
+test('a follow-up request has an explicit busy state and visible sending indicator', () => {
+  assert.match(
+    markup,
+    /id="task-continuation-form" class="task-continuation" aria-busy="false"/,
+  );
+  assert.match(
+    style,
+    /\.task-continuation\[data-submitting="true"\] #task-continuation-send:disabled \{[^}]*cursor: progress;[^}]*opacity: \.84;/s,
+  );
+  assert.match(
+    style,
+    /\.task-continuation\[data-submitting="true"\] #task-continuation-send::before \{[^}]*border: 2px solid currentColor;[^}]*border-right-color: transparent;/s,
+  );
+  assert.match(
+    style,
+    /@media \(prefers-reduced-motion: no-preference\) \{[^}]*task-continuation-send::before[^}]*animation: task-continuation-send-spin/s,
+  );
+});

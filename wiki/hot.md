@@ -6,6 +6,18 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 20: an accepted desktop update now follows the newest release that becomes ready before
+> exit.** A long-running v0.2.16 process staged v0.2.17, then missed v0.2.18 because both the
+> downloaded state and a pending restart paused every five-minute check. Relay now keeps checking
+> after either installation choice, including while owned terminals delay shutdown, skips the same
+> or an older offer, and silently replaces the staged target when a higher release downloads. One
+> install intent carries forward, so the higher release does not open another native prompt. A
+> final check and download barrier runs immediately before the native handoff, and a failed refresh
+> keeps the prior ready release. Relay owns the automatic `downloadUpdate()` decision while native
+> install-on-quit stays enabled. See [[desktop-updates]] and
+> [[desktop-update-supersession-review]].
+
 > [!note]
 > **August 19: the restored Codex five-hour allowance is visible in the provider runway.** Relay
 > reads the exact 300-minute window from the authenticated general Codex rate-limit bucket and
@@ -105,7 +117,7 @@ type: hot
 > **August 18: macOS update publication now preserves the installed signature lineage.** The live v0.2.13 to v0.2.14 incident proved both **Restart and install** and **Install on quit** reached Squirrel.Mac, but its unsigned public v0.2.14 ZIP made both reopen v0.2.13. Hosted Actions no longer publishes macOS output. `npm run deploy` requires the exact local Apple Development identity, verifies the build app and the app extracted from the updater ZIP, validates the DMG and feed, waits for the Windows workflow, then uploads the signed macOS set plus `mac-release.json`. From v0.2.15 onward, a release without that marker remains pending and recovery rebuilds its tag in an isolated worktree. Updater internals now persist under `desktop.updater.log`, while known interruptions still appear as **Retrying vX.Y.Z**. See [[desktop-updates]] and [[open-source-releases]].
 
 > [!note]
-> **August 17: Install on quit is now a one-time choice for each downloaded version.** The updater coordinator remembers the exact version after that button is selected, so a duplicate `update-downloaded` event keeps the release ready without reopening the native prompt. A genuinely different downloaded version can still ask. The acknowledgement stays process-local because the next normal quit consumes it by installing the update. The 17 coordinator checks and all 1,574 repository tests pass; `release:check` is green for v0.2.14 and `git diff --check` is clean. See [[desktop-updates]].
+> **August 17 historical note, superseded August 20: Install on quit first became a one-time choice for each downloaded version.** The updater coordinator remembered the exact version after that button was selected, so a duplicate `update-downloaded` event kept the release ready without reopening the native prompt. A genuinely different downloaded version could still ask. The August 20 correction above replaces that version-scoped acknowledgement with one deferred-install intent that silently follows a higher release during the same process. See [[desktop-updates]].
 
 > [!important]
 > **August 17: an active Codex goal now stays one running Relay task across automatic turns.** Task 781 proved that app-server completed one turn, then started its goal successor only 67 milliseconds later while the terminal still showed **Pursuing goal**. Relay had treated that provider-turn boundary as the whole run, released its subscription, changed the manual session to `open`, and disabled messages as **Conversation busy**. The app-server runner now loads persisted goal state, keeps the task and subscription live, adopts the exact successor, reconciles missed notifications through explicit thread state, and lets a message submitted during the handoff steer that successor. Ambiguous reads never finish work, stale completions cannot close the new turn, cancellation cannot become success, and final output cannot leak from the prior turn. Task Activity now says **Turn finished**, not **Session finished**. The dedicated app-server suite passes 52 tests and all 1,572 repository tests pass; `release:check` is green for v0.2.13 and `git diff --check` is clean. Rebuild and restart the desktop bundle after active terminal work finishes. See [[provider-plan-and-goal-visibility]], [[manual-terminal-session-mode]], and [[codex-goal-continuation-review]].

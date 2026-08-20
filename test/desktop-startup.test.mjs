@@ -77,6 +77,9 @@ test('Electron exposes GitHub updater state to the loopback UI', () => {
   assert.match(main, /checkLatestRelease: createGitHubReleaseChecker\(\)/);
   assert.match(main, /isAutomaticUpdateEligible: \(\) => app\.isPackaged/);
   assert.match(main, /logger: desktopUpdaterLogger/);
+  assert.match(main, /restartAndInstall: async \(prepareToInstall\)/);
+  assert.match(main, /await prepareToInstall\(\)/);
+  assert.match(main, /desktopUpdater\.prepareToInstall\(\)/);
   assert.match(main, /process\.platform === 'darwin'/);
   assert.match(main, /process\.platform === 'win32'/);
   assert.match(main, /!process\.env\.PORTABLE_EXECUTABLE_FILE/);
