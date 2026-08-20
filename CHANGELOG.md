@@ -2,6 +2,22 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.20] - 2026-08-21
+
+### Added
+
+- Standups now cover two days.
+- Provider usage now shows remaining runway.
+- Task activity filters show live message counts.
+
+### Changed
+
+- Task activity now separates user messages from AI messages.
+
+### Security
+
+- Claude folder trust is now handled safely during startup.
+
 ## [0.2.19] - 2026-08-20
 
 ### Added
