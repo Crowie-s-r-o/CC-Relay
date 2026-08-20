@@ -3,6 +3,7 @@ import {
   entryItem,
   entryLastEvent,
   eventEntryCategory,
+  eventMessageCounts,
   filterEventEntries,
   goalEntryDetails,
   groupEventEntries,
@@ -11,6 +12,7 @@ import {
   isPlanEntry,
   isPlanToolItem,
   isSubAgentEntry,
+  mergePromptMessages,
   planEntryDetails,
   subAgentEntryDetails,
   subAgentEntryState,
@@ -461,6 +463,7 @@ const state = {
   eventFollow: true,
   eventTaskId: null,
   selectedTaskEvents: [],
+  selectedTaskPrompts: [],
   selectedTaskForEvents: null,
   visibleEventEntries: [],
   expandedEventDetails: new Set(),
@@ -2867,18 +2870,18 @@ function eventPresentation(entry, task) {
     };
   }
 
-  if (item?.type === 'agentMessage' || payloadType === 'claude/message') {
+  if (['agentMessage', 'agent_message'].includes(item?.type) || payloadType === 'claude/message' || lastEvent?.kind === 'result') {
     const message = String(item?.text || lastEvent?.payload?.text || lastEvent?.message || '').trim();
     return {
       ...common,
       kind: 'message',
+      messageRole: 'assistant',
       glyph: provider === 'claude' ? '✳' : '>_',
-      title: `${providerLabel(provider)} message`,
+      title: providerLabel(provider),
       status: item?.phase === 'final' || lastEvent?.kind === 'result' || lastEvent?.payload?.liveFinal
         ? 'final'
         : 'update',
       message,
-      headerless: provider === 'codex',
     };
   }
 
@@ -2905,12 +2908,16 @@ function eventPresentation(entry, task) {
       .trim();
     return {
       ...common,
-      kind: 'note',
-      quiet: true,
+      kind: 'message',
+      messageRole: 'user',
       glyph: '↗',
-      title: String(item.clientId || '').startsWith('relay-steer-') ? 'Turn updated' : 'Prompt delivered',
-      status: entry.completedEvent ? 'received' : 'sending',
-      body: message ? eventTextMarkup(message) : '',
+      title: 'You',
+      status: item.promptKind === 'original'
+        ? 'original request'
+        : String(item.clientId || '').startsWith('relay-steer-')
+          ? 'turn update'
+          : entry.completedEvent ? 'sent' : 'sending',
+      message,
     };
   }
 
@@ -3017,11 +3024,11 @@ function renderEventEntry(entry, task, index) {
     `event-entry-${escapeHtml(presentation.state)}`,
     `event-provider-${escapeHtml(providerClass)}`,
     `event-kind-${escapeHtml(presentation.kind)}`,
+    presentation.kind === 'message' ? `event-message-${escapeHtml(presentation.messageRole || 'assistant')}` : '',
     presentation.quiet ? 'event-entry-quiet' : '',
-    presentation.headerless ? 'event-entry-headerless' : '',
   ].filter(Boolean).join(' ');
   return `
-    <article class="${classes}" data-entry-id="${escapeHtml(entry.id)}" data-category="${escapeHtml(eventEntryCategory(entry))}">
+    <article class="${classes}" data-entry-id="${escapeHtml(entry.id)}" data-category="${escapeHtml(eventEntryCategory(entry))}"${presentation.kind === 'message' ? ` data-message-role="${escapeHtml(presentation.messageRole || 'assistant')}"` : ''}>
       <span class="term-ln" aria-hidden="true">${String(index + 1).padStart(2, '0')}</span>
       <div class="term-line">${renderEventEntryInner(presentation, time)}</div>
     </article>
@@ -3063,25 +3070,28 @@ function renderEventEntryInner(p, time) {
   }
 
   if (p.kind === 'message') {
-    // An empty message (e.g. a headerless Codex agentMessage with no text) would
-    // otherwise render a blank numbered line: always keep a compact header line.
-    if (!p.message) {
-      return `
-        <div class="term-signal-row">
-          <span class="term-glyph" aria-hidden="true">${escapeHtml(p.glyph)}</span>
-          <span class="term-signal-title">${escapeHtml(providerLabel(p.provider))} message</span>
-          <span class="term-signal-state">${escapeHtml(p.status)}</span>
-          <time class="term-time">${escapeHtml(time)}</time>
-        </div>`;
-    }
-    const head = p.headerless ? '' : `
-      <div class="term-signal-row term-response-head">
+    const role = p.messageRole === 'user' ? 'user' : 'assistant';
+    const roleLabel = role === 'user' ? 'My message' : 'AI message';
+    const elapsed = p.duration
+      ? `<span class="term-elapsed">${escapeHtml(p.duration)}</span>`
+      : '';
+    const head = `
+      <div class="term-signal-row term-response-head term-message-head">
         <span class="term-glyph" aria-hidden="true">${escapeHtml(p.glyph)}</span>
-        <span class="term-signal-title">${escapeHtml(providerLabel(p.provider))} message</span>
+        <span class="term-signal-title">${escapeHtml(p.title)}</span>
+        <span class="term-message-role">${roleLabel}</span>
         <span class="term-signal-state">${escapeHtml(p.status)}</span>
+        ${elapsed}
         <time class="term-time">${escapeHtml(time)}</time>
       </div>`;
-    return `${head}<div class="term-response ${p.headerless ? 'is-headerless' : ''}"><div class="event-message-body term-response-body markdown-document terminal-markdown">${renderMarkdown(p.message)}</div></div>`;
+    if (!p.message) return head;
+    const body = role === 'user'
+      ? escapeHtml(p.message)
+      : renderMarkdown(p.message);
+    const bodyClasses = role === 'user'
+      ? 'event-message-body term-response-body'
+      : 'event-message-body term-response-body markdown-document terminal-markdown';
+    return `${head}<div class="term-response"><div class="${bodyClasses}">${body}</div></div>`;
   }
 
   if (p.kind === 'agent') {
@@ -3141,12 +3151,14 @@ function renderEventEntryInner(p, time) {
 
   const inline = p.inline ? `<span class="term-signal-inline">${p.inline}</span>` : '';
   const status = p.status ? `<span class="term-signal-state">${escapeHtml(p.status)}</span>` : '';
+  const elapsed = p.duration ? `<span class="term-elapsed">${escapeHtml(p.duration)}</span>` : '';
   const row = `
     <div class="term-signal-row">
       <span class="term-glyph" aria-hidden="true">${escapeHtml(p.glyph)}</span>
       <span class="term-signal-title">${escapeHtml(p.title)}</span>
       ${inline}
       ${status}
+      ${elapsed}
       <time class="term-time">${escapeHtml(time)}</time>
     </div>`;
 
@@ -3167,8 +3179,14 @@ function eventCopyText(entry, task) {
   const presentation = eventPresentation(entry, task);
   const event = entryFirstEvent(entry);
   const item = entryItem(entry);
+  const speaker = presentation.messageRole === 'user'
+    ? 'You'
+    : providerLabel(presentation.provider);
+  const copyTitle = presentation.kind === 'message'
+    ? presentation.messageRole === 'user' ? 'Message sent' : 'AI message'
+    : presentation.title;
   const lines = [
-    `[${formatEventTime(event?.created_at)}] ${providerLabel(presentation.provider)} · ${presentation.title} · ${presentation.status}`,
+    `[${formatEventTime(event?.created_at)}] ${speaker} · ${copyTitle} · ${presentation.status}`,
   ];
   if (isSubAgentEntry(entry)) {
     const details = subAgentEntryDetails(entry);
@@ -3192,7 +3210,7 @@ function eventCopyText(entry, task) {
     if (item.aggregatedOutput) {
       lines.push(item.aggregatedOutput);
     }
-  } else if (item?.type === 'agentMessage') {
+  } else if (['agentMessage', 'agent_message'].includes(item?.type)) {
     lines.push(item.text || entryLastEvent(entry)?.message || '');
   } else if (item?.type === 'reasoning') {
     lines.push((item.summary || []).map((part) => part?.text || part).filter(Boolean).join('\n'));
@@ -3229,9 +3247,15 @@ function eventCopyText(entry, task) {
   return lines.filter(Boolean).join('\n');
 }
 
-function updateEventControls() {
+function updateEventControls(filterCounts = {}) {
   for (const button of elements.eventFilters) {
-    button.setAttribute('aria-pressed', String(button.dataset.eventFilter === state.eventFilter));
+    const filter = button.dataset.eventFilter;
+    const count = Number(filterCounts[filter]) || 0;
+    const label = button.querySelector('.event-filter-label')?.textContent?.trim() || filter;
+    button.setAttribute('aria-pressed', String(filter === state.eventFilter));
+    button.setAttribute('aria-label', `${label}: ${count} signal${count === 1 ? '' : 's'}`);
+    const counter = button.querySelector('[data-event-filter-count]');
+    if (counter) counter.textContent = count.toLocaleString();
   }
   elements.followEventsButton.setAttribute('aria-pressed', String(state.eventFollow));
   elements.followEventsButton.querySelector('span').textContent = state.eventFollow ? 'Following' : 'Follow live';
@@ -3577,7 +3601,11 @@ function restoreEventOutputScroll() {
   }
 }
 
-function renderEventStream(events, task, { forceBottom = false, resetDisclosures = false } = {}) {
+function renderEventStream(events, task, {
+  forceBottom = false,
+  resetDisclosures = false,
+  prompts = state.selectedTaskPrompts,
+} = {}) {
   if (resetDisclosures) {
     state.expandedEventDetails.clear();
     state.eventOutputScroll.clear();
@@ -3592,13 +3620,24 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     : elements.eventOverviewBody.querySelector('.activity-overview-plan > ol');
   const previousPlanScrollTop = previousPlanScroller?.scrollTop || 0;
   const restorePlanFocus = document.activeElement === previousPlanScroller;
-  const grouped = groupEventEntries(events);
+  const displayEvents = mergePromptMessages(events, prompts, { provider: taskProvider(task) });
+  const grouped = groupEventEntries(displayEvents);
   const visible = filterEventEntries(grouped, state.eventFilter);
+  const messageCounts = eventMessageCounts(grouped);
+  const filterCounts = {
+    all: grouped.length,
+    highlights: filterEventEntries(grouped, 'highlights').length,
+    commands: filterEventEntries(grouped, 'commands').length,
+    mine: messageCounts.user,
+    ai: messageCounts.assistant,
+  };
+  const entrySequence = new Map(grouped.map((entry, index) => [entry, index]));
   // A turn that is no longer running owns no live sub-agents, however its last notification
   // landed, so the active count clears with the turn instead of stranding a number.
   const stats = eventStreamStats(grouped, { turnEnded: task.status !== 'running' });
   const overview = taskActivityOverview(grouped, task);
   state.selectedTaskEvents = events;
+  state.selectedTaskPrompts = prompts;
   state.selectedTaskForEvents = task;
   state.visibleEventEntries = visible;
 
@@ -3621,8 +3660,18 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     : task.status;
   elements.eventSessionState.dataset.state = sessionState;
   elements.eventSessionState.querySelector('span').textContent = stateLabels[sessionState] || 'Recorded';
-  elements.eventSummary.textContent = `${visible.length}/${grouped.length} signals`;
-  elements.eventSummary.title = `${visible.length} of ${grouped.length} signals · ${events.length} raw events`;
+  const filterSummaryLabels = {
+    all: 'signals',
+    highlights: 'highlights',
+    commands: 'commands',
+    mine: 'sent',
+    ai: 'AI messages',
+  };
+  const filterSummary = filterSummaryLabels[state.eventFilter] || 'signals';
+  elements.eventSummary.textContent = state.eventFilter === 'all'
+    ? `${grouped.length} signals`
+    : `${visible.length} ${filterSummary} · ${grouped.length} total`;
+  elements.eventSummary.title = `${visible.length} of ${grouped.length} signals · ${displayEvents.length} displayed events · ${events.length} provider events`;
   renderTerminalStatusBar(task);
   elements.eventMetrics.innerHTML = `
     ${overview.runtimeMetric}
@@ -3632,7 +3681,8 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     <span><b>${stats.thinkingTokens.toLocaleString()}</b><small>thinking tokens</small></span>
     <span><b>${stats.commands}</b><small>commands</small></span>
     <span><b>${stats.files}</b><small>file changes</small></span>
-    <span><b>${stats.messages}</b><small>messages</small></span>
+    <span class="has-user-messages"><b>${messageCounts.user}</b><small>sent</small></span>
+    <span class="has-ai-messages"><b>${messageCounts.assistant}</b><small>AI messages</small></span>
     <span class="${stats.errors ? 'has-errors' : ''}"><b>${stats.errors}</b><small>errors</small></span>
   `;
   elements.eventOverviewBody.innerHTML = overview.body;
@@ -3643,9 +3693,17 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
     if (restorePlanFocus) planScroller.focus({ preventScroll: true });
   }
   elements.copyEventsButton.disabled = visible.length === 0;
+  const emptyStates = {
+    mine: ['No messages from you yet', 'Your original request and sent updates appear here.'],
+    ai: ['No AI messages yet', 'The next provider response will appear here.'],
+    commands: ['No commands yet', 'Commands and connected tool calls will appear here.'],
+    highlights: ['No highlights yet', 'Important work and outcomes will appear here.'],
+    all: ['No activity yet', 'New task signals will appear here.'],
+  };
+  const emptyState = emptyStates[state.eventFilter] || emptyStates.all;
   elements.detailEvents.innerHTML = visible.length === 0
-    ? `<div class="events-empty"><span aria-hidden="true">⌁</span><strong>No ${escapeHtml(state.eventFilter)} activity yet</strong><small>New matching signals will appear here.</small></div>`
-    : visible.map((entry, index) => renderEventEntry(entry, task, index)).join('');
+    ? `<div class="events-empty"><span aria-hidden="true">⌁</span><strong>${escapeHtml(emptyState[0])}</strong><small>${escapeHtml(emptyState[1])}</small></div>`
+    : visible.map((entry) => renderEventEntry(entry, task, entrySequence.get(entry))).join('');
   restoreEventDisclosures();
   restoreEventOutputScroll();
 
@@ -3655,7 +3713,7 @@ function renderEventStream(events, task, { forceBottom = false, resetDisclosures
   } else {
     elements.detailEvents.scrollTop = previousScrollTop;
   }
-  updateEventControls();
+  updateEventControls(filterCounts);
 }
 
 function threadProvider(thread) {
@@ -7461,7 +7519,11 @@ async function selectTask(taskId) {
 
   state.eventTaskId = taskId;
   renderTaskContinuation(task, { taskChanged: eventTaskChanged });
-  renderEventStream(events, task, { forceBottom: eventTaskChanged, resetDisclosures: eventTaskChanged });
+  renderEventStream(events, task, {
+    forceBottom: eventTaskChanged,
+    resetDisclosures: eventTaskChanged,
+    prompts: promptHistory,
+  });
 }
 
 async function loadSnapshot() {

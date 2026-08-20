@@ -11,3 +11,12 @@ export function withRelayNonInteractiveInstruction(prompt) {
     ? `${value}\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`
     : RELAY_NON_INTERACTIVE_INSTRUCTION;
 }
+
+export function withoutRelayNonInteractiveInstruction(prompt) {
+  const value = typeof prompt === 'string' ? prompt.trim() : String(prompt ?? '').trim();
+  if (value === RELAY_NON_INTERACTIVE_INSTRUCTION) return '';
+  const suffix = `\n\n${RELAY_NON_INTERACTIVE_INSTRUCTION}`;
+  return value.endsWith(suffix)
+    ? value.slice(0, -suffix.length).trim()
+    : value;
+}

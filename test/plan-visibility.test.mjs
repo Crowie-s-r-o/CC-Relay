@@ -688,14 +688,14 @@ test('eventPresentation resolves plan and goal before every item branch', () => 
 test('the metrics strip shows plan progress only when the task published a plan', () => {
   const metrics = sourceBetween('elements.eventMetrics.innerHTML = `', '`;');
   assert.match(metrics, /\$\{stats\.plan \? `<span class="has-plan"><b>\$\{stats\.plan\.done\}\/\$\{stats\.plan\.total\}<\/b><small>plan steps<\/small><\/span>` : ''\}/);
-  // Every pre-existing tile survives.
-  for (const label of ['thinking tokens', 'commands', 'file changes', 'messages', 'errors', 'sub-agents', 'active']) {
+  // Operational tiles survive, and the former combined message count is now split by role.
+  for (const label of ['thinking tokens', 'commands', 'file changes', 'sent', 'AI messages', 'errors', 'sub-agents', 'active']) {
     assert.ok(metrics.includes(`<small>${label}</small>`), `${label} tile survives`);
   }
 });
 
 test('the event stream still rebuilds its markup instead of trusting a signature', () => {
-  const render = functionBody('function renderEventStream(events, task, {');
+  const render = sourceBetween('function renderEventStream(events, task, {', '\nfunction threadProvider');
   assert.match(render, /elements\.detailEvents\.innerHTML = visible\.length === 0/);
   // A memoized render whose signature misses a step status is the exact bug this repo has
   // shipped twice. There is no signature here, so a plan revision can never go stale.

@@ -42,6 +42,6 @@ Terminal styling is scoped under `.events-section .terminal-markdown` in `public
 - Full suite on August 12, 2026: 1,375 tests passed, and `npm run release:check` passed.
 - Full suite on July 29, 2026: 812 tests passed.
 
-See [[claude-terminal-live-output]], [[claude-terminal-visibility]], [[renderer-performance]], and [[interface-layout]].
+See [[terminal-conversation-filters]], [[claude-terminal-live-output]], [[claude-terminal-visibility]], [[renderer-performance]], and [[interface-layout]].
 
 #relay #terminal #markdown #renderer

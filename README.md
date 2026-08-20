@@ -57,7 +57,7 @@ While work runs:
 
 - **Every project at once.** Several repositories can execute side by side, each with its own queue, limits, and history.
 - **Hear and see the finish.** A sound plays when a task ends, and completed tasks stack up as notifications you can click through and review one by one.
-- **Read the terminal fast.** Live output is colorized, and a filter narrows it to just the agent's own messages when you only want the reasoning and the result.
+- **Read the terminal fast.** Live output is colorized, every view shows its current signal count, and separate **My messages** and **AI messages** filters isolate either side of the conversation.
 - **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low, and you can continue any saved task later exactly where it left off.
 
 | Workflow | Best for |

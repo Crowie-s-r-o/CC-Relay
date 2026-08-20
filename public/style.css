@@ -4151,6 +4151,12 @@ pre {
 .event-metrics .has-plan b,
 .event-metrics .has-plan small { color: var(--term-blue); }
 
+.event-metrics .has-user-messages b,
+.event-metrics .has-user-messages small { color: var(--term-teal); }
+
+.event-metrics .has-ai-messages b,
+.event-metrics .has-ai-messages small { color: var(--term-cyan); }
+
 /* Expanded task manifest -----------------------------------------
    The compact counters remain the summary. Opening the native disclosure adds
    the current plan and worker assignments without moving them out of the
@@ -4464,15 +4470,31 @@ pre {
 .event-filters,
 .event-tools {
   display: flex;
-  flex-wrap: wrap;
   gap: 4px;
   align-items: center;
 }
 
-.event-tools { justify-content: flex-end; }
+.event-filters {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-width: none;
+}
+
+.event-filters::-webkit-scrollbar { display: none; }
+
+.event-tools {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+}
 
 .event-filters button,
 .event-tools button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
   min-height: 24px;
   padding: 3px 8px;
   border: 1px solid transparent;
@@ -4486,6 +4508,18 @@ pre {
   letter-spacing: 0.02em;
 }
 
+.event-filters button b {
+  min-width: 16px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  color: var(--term-muted);
+  background: rgb(123 129 141 / 12%);
+  font-size: 8px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-align: center;
+}
+
 .event-filters button:hover,
 .event-tools button:hover:not(:disabled) {
   color: #dbe4f7;
@@ -4497,6 +4531,11 @@ pre {
   color: #dceaff;
   background: rgb(122 162 247 / 15%);
   box-shadow: inset 0 -2px 0 var(--term-blue);
+}
+
+.event-filters button[aria-pressed="true"] b {
+  color: #dceaff;
+  background: rgb(122 162 247 / 22%);
 }
 
 .event-tools button {
@@ -4648,6 +4687,12 @@ pre {
   font-size: 11px;
   letter-spacing: 0.03em;
   text-transform: uppercase;
+}
+
+.term-elapsed {
+  color: var(--term-meta);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .term-time { margin-left: auto; color: #6b717c; font-family: var(--font-mono); font-size: 11px; }
@@ -4884,9 +4929,50 @@ pre {
   background: rgb(122 162 247 / 6%);
 }
 
-.event-provider-claude .term-response { border-left-color: var(--claude); background: rgb(217 130 69 / 8%); }
-.term-response.is-headerless { margin-top: 2px; }
+.term-message-head {
+  min-height: 18px;
+}
+
+.term-message-role {
+  padding: 1px 5px;
+  border: 1px solid rgb(122 162 247 / 22%);
+  border-radius: 999px;
+  color: var(--term-blue);
+  background: rgb(122 162 247 / 8%);
+  font-size: 8px;
+  font-weight: 750;
+  letter-spacing: .06em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.event-provider-claude.event-message-assistant .term-response {
+  border-left-color: var(--claude);
+  background: rgb(217 130 69 / 8%);
+}
+
+.event-provider-claude.event-message-assistant .term-message-role {
+  border-color: rgb(217 130 69 / 30%);
+  color: #f1ad7c;
+  background: rgb(217 130 69 / 9%);
+}
+
+.event-message-user .term-glyph,
+.event-message-user .term-signal-title { color: var(--term-teal); }
+
+.event-message-user .term-message-role {
+  border-color: rgb(115 218 202 / 28%);
+  color: var(--term-teal);
+  background: rgb(115 218 202 / 8%);
+}
+
+.event-message-user .term-response {
+  border-left-color: rgb(115 218 202 / 58%);
+  background: rgb(115 218 202 / 6%);
+}
+
 .term-response-head .term-signal-title { color: var(--term-fg); }
+.event-message-user .term-response-head .term-signal-title { color: var(--term-teal); }
 
 .event-message-body,
 .term-response-body {
@@ -4896,6 +4982,13 @@ pre {
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.event-message-user .term-response-body {
+  color: #c4dedb;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.55;
 }
 
 /* Provider responses use the shared safe Markdown renderer, restyled for the
@@ -6678,6 +6771,10 @@ select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faf
 .detail-panel .event-list .term-response-body {
   font-size: 12.5px;
   font-weight: 650;
+}
+
+.detail-panel .event-list .event-message-user .term-response-body {
+  font-weight: 500;
 }
 
 .detail-panel .events-section .event-output > pre.event-output-content {

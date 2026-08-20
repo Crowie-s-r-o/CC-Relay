@@ -6,6 +6,16 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 21: Task Activity can now isolate either side of the conversation.** The terminal
+> filter rail shows live counts for All, Highlights, Commands, My messages, and AI messages.
+> The user view includes the canonical original request even when Claude never echoed it, and
+> strips Relay's appended non-interactive notice from display without changing stored events.
+> The AI view accepts only real Codex or Claude response messages, so session heartbeats,
+> input requests, and background notices stay out. Speaker-labelled rows keep original signal
+> numbers, filtered copy uses canonical text, and narrow rails scroll without moving Copy log.
+> See [[terminal-conversation-filters]] and [[terminal-markdown]].
+
 > [!important]
 > **August 20: new Claude workspaces no longer strand queued tasks at the folder trust prompt.**
 > Claude does not register the interactive session while that first-use dialog is open, so task

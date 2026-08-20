@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { RelayDatabase } from '../src/database.mjs';
+import { withRelayNonInteractiveInstruction } from '../src/relay-prompt.mjs';
 
 test('database persists tasks in queue order and records events', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-db-'));
@@ -117,7 +118,10 @@ test('database returns every prompt even when the console event window is full',
       id: 'provider-prompt-2',
       clientId: `relay-steer-${task.id}-1`,
       type: 'userMessage',
-      content: [{ type: 'text', text: 'Second follow-up' }],
+      content: [{
+        type: 'text',
+        text: withRelayNonInteractiveInstruction('Second follow-up'),
+      }],
     };
     database.addEvent(task.id, 'codex', 'Second follow-up started', {
       type: 'item/started',

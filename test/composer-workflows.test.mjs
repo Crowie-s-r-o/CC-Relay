@@ -416,8 +416,11 @@ test('direct effort slider submits its exact mapped value', () => {
 
 test('the right-side terminal shows all activity by default', () => {
   assert.match(composerApp, /eventFilter: 'all'/);
-  assert.match(composer, /data-event-filter="all" aria-pressed="true">All<\/button>/);
-  assert.match(composer, /data-event-filter="highlights" aria-pressed="false">Highlights<\/button>/);
+  assert.match(composer, /data-event-filter="all" aria-pressed="true"><span class="event-filter-label">All<\/span>/);
+  assert.match(composer, /data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights<\/span>/);
+  assert.match(composer, /data-event-filter="mine"[^>]*><span class="event-filter-label">My messages<\/span>/);
+  assert.match(composer, /data-event-filter="ai"[^>]*><span class="event-filter-label">AI messages<\/span>/);
+  assert.equal((composer.match(/data-event-filter-count/g) || []).length, 5);
 });
 
 test('fresh Claude initialization renders as Claude session activity', () => {

@@ -6,6 +6,8 @@ const COMMAND_ITEM_TYPES = new Set([
   'webSearch',
 ]);
 
+const ASSISTANT_MESSAGE_ITEM_TYPES = new Set(['agentMessage', 'agent_message']);
+
 const QUIET_ITEM_TYPES = new Set([
   'contextCompaction',
   'reasoning',
@@ -240,6 +242,129 @@ function liveClaudeMessageId(event) {
   return typeof event.payload.liveMessageId === 'string'
     ? event.payload.liveMessageId.trim()
     : '';
+}
+
+function userMessageText(item) {
+  if (item?.type !== 'userMessage' || !Array.isArray(item.content)) return '';
+  return item.content
+    .filter((part) => part?.type === 'text')
+    .map((part) => String(part.text || ''))
+    .filter(Boolean)
+    .join('\n')
+    .trim();
+}
+
+function userMessageKeys(item) {
+  if (item?.type !== 'userMessage') return [];
+  return [
+    typeof item.clientId === 'string' && item.clientId.trim()
+      ? `client:${item.clientId.trim()}`
+      : '',
+    typeof item.id === 'string' && item.id.trim()
+      ? `item:${item.id.trim()}`
+      : '',
+  ].filter(Boolean);
+}
+
+function promptMatchesDeliveredText(promptText, deliveredText) {
+  const prompt = String(promptText || '').trim();
+  const delivered = String(deliveredText || '').trim();
+  if (!prompt || !delivered) return false;
+  if (prompt === delivered) return true;
+  if (!delivered.startsWith(prompt)) return false;
+  return delivered
+    .slice(prompt.length)
+    .trimStart()
+    .startsWith('CC Relay orchestrator notice:');
+}
+
+function canonicalPromptEvent(event, prompt) {
+  const item = event.payload.item;
+  return {
+    ...event,
+    message: prompt.text,
+    payload: {
+      ...event.payload,
+      item: {
+        ...item,
+        promptKind: prompt.kind || item.promptKind || 'message',
+        content: [
+          { type: 'text', text: prompt.text },
+          ...(item.content || []).filter((part) => part?.type !== 'text'),
+        ],
+      },
+    },
+  };
+}
+
+function syntheticPromptEvent(prompt, index, provider) {
+  const promptId = String(prompt.id || `${prompt.kind || 'message'}-${index + 1}`);
+  return {
+    id: `prompt-display-${promptId}`,
+    kind: provider,
+    message: prompt.text,
+    created_at: prompt.created_at || '',
+    payload: {
+      type: 'item/completed',
+      provider,
+      displayOnly: true,
+      item: {
+        id: `prompt-display-item-${promptId}`,
+        clientId: `relay-prompt-display-${promptId}`,
+        type: 'userMessage',
+        promptKind: prompt.kind || 'message',
+        content: [{ type: 'text', text: prompt.text }],
+      },
+    },
+  };
+}
+
+export function mergePromptMessages(events, prompts, { provider = 'codex' } = {}) {
+  const canonicalPrompts = (Array.isArray(prompts) ? prompts : [])
+    .map((prompt, index) => ({
+      id: prompt?.id || `prompt-${index + 1}`,
+      kind: prompt?.kind || 'message',
+      text: String(prompt?.text || '').trim(),
+      created_at: prompt?.created_at || '',
+      index,
+      matched: false,
+    }))
+    .filter((prompt) => prompt.text);
+  const promptsByItemKey = new Map();
+
+  const merged = (Array.isArray(events) ? events : []).map((event) => {
+    const item = event?.payload?.item;
+    const deliveredText = userMessageText(item);
+    if (!deliveredText) return event;
+    const itemKeys = userMessageKeys(item);
+    const prompt = itemKeys
+      .map((key) => promptsByItemKey.get(key))
+      .find(Boolean)
+      || canonicalPrompts.find((candidate) => (
+        !candidate.matched && promptMatchesDeliveredText(candidate.text, deliveredText)
+      ));
+    if (!prompt) return event;
+    prompt.matched = true;
+    for (const key of itemKeys) promptsByItemKey.set(key, prompt);
+    return canonicalPromptEvent(event, prompt);
+  });
+
+  for (const prompt of canonicalPrompts.filter((candidate) => !candidate.matched)) {
+    const promptTime = Date.parse(prompt.created_at);
+    let insertAt = -1;
+    if (Number.isFinite(promptTime)) {
+      insertAt = merged.findIndex((event) => {
+        const eventTime = Date.parse(event?.created_at);
+        return Number.isFinite(eventTime) && eventTime > promptTime;
+      });
+    }
+    if (insertAt < 0) {
+      insertAt = prompt.kind === 'original' && merged.length > 0 ? 0 : merged.length;
+    }
+    merged.splice(insertAt, 0, syntheticPromptEvent(prompt, prompt.index, provider));
+  }
+
+  return merged;
 }
 
 // Claude board bookkeeping. `src/claude-execution-runner.mjs` marks the `TaskCreate`,
@@ -576,6 +701,27 @@ export function entryFirstEvent(entry) {
   return entry?.startedEvent || entry?.events?.[0] || null;
 }
 
+export function eventEntryMessageRole(entry) {
+  if (isPlanEntry(entry) || isGoalEntry(entry)) return null;
+  const item = entryItem(entry);
+  if (item?.type === 'userMessage') return 'user';
+  if (ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type)) return 'assistant';
+  const lastEvent = entryLastEvent(entry);
+  if (lastEvent?.payload?.type === 'claude/message' || lastEvent?.kind === 'result') {
+    return 'assistant';
+  }
+  return null;
+}
+
+export function eventMessageCounts(entries) {
+  const counts = { user: 0, assistant: 0 };
+  for (const entry of entries || []) {
+    const role = eventEntryMessageRole(entry);
+    if (role) counts[role] += 1;
+  }
+  return counts;
+}
+
 export function eventEntryCategory(entry) {
   // Plan and goal rows are neither commands nor messages. This must stay ahead of the
   // event-kind fallthrough below, which would file a `kind: 'claude'` plan under Messages.
@@ -589,7 +735,7 @@ export function eventEntryCategory(entry) {
   if (COMMAND_ITEM_TYPES.has(item?.type)) {
     return 'commands';
   }
-  if (item?.type === 'agentMessage' || item?.type === 'userMessage') {
+  if (ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type) || item?.type === 'userMessage') {
     return 'messages';
   }
   if (entry.events.some((event) => ['claude', 'plan', 'result'].includes(event.kind))) {
@@ -625,6 +771,12 @@ export function isEventEntryHighlight(entry) {
 export function filterEventEntries(entries, filter) {
   if (filter === 'highlights') {
     return entries.filter(isEventEntryHighlight);
+  }
+  if (filter === 'mine') {
+    return entries.filter((entry) => eventEntryMessageRole(entry) === 'user');
+  }
+  if (filter === 'ai') {
+    return entries.filter((entry) => eventEntryMessageRole(entry) === 'assistant');
   }
   if (filter === 'commands' || filter === 'messages') {
     return entries.filter((entry) => eventEntryCategory(entry) === filter);
@@ -788,7 +940,7 @@ export function eventStreamStats(entries, { turnEnded = false } = {}) {
     const last = entryLastEvent(entry);
     if (item?.type === 'commandExecution') stats.commands += 1;
     if (item?.type === 'fileChange') stats.files += 1;
-    if (['agentMessage', 'userMessage'].includes(item?.type) || ['claude', 'result'].includes(last?.kind)) stats.messages += 1;
+    if (ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type) || item?.type === 'userMessage' || ['claude', 'result'].includes(last?.kind)) stats.messages += 1;
     if (
       last?.kind === 'stderr'
       || last?.payload?.type === 'error'

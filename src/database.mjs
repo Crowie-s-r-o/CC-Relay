@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ProjectConfigStore } from './project-config-store.mjs';
 import { normalizeDiffState } from './task-diff.mjs';
+import { withoutRelayNonInteractiveInstruction } from './relay-prompt.mjs';
 import { titleFromPrompt } from './task-title.mjs';
 import { parseUiPreferences, UI_PREFERENCES_SETTING } from './ui-preferences.mjs';
 
@@ -111,12 +112,12 @@ function relayPromptMarker(item) {
 
 function userMessageText(item) {
   if (item?.type !== 'userMessage' || !Array.isArray(item.content)) return '';
-  return item.content
+  return withoutRelayNonInteractiveInstruction(item.content
     .filter((part) => part?.type === 'text' && typeof part.text === 'string')
     .map((part) => part.text.trim())
     .filter(Boolean)
     .join('\n')
-    .trim();
+    .trim());
 }
 
 function assistantResponseText(payload) {

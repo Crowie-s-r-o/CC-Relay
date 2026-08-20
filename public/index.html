@@ -832,10 +832,11 @@
             </details>
             <div class="event-toolbar">
               <div id="event-filters" class="event-filters" role="group" aria-label="Filter terminal output">
-                <button type="button" data-event-filter="highlights" aria-pressed="false">Highlights</button>
-                <button type="button" data-event-filter="commands" aria-pressed="false">Commands</button>
-                <button type="button" data-event-filter="messages" aria-pressed="false">Messages</button>
-                <button type="button" data-event-filter="all" aria-pressed="true">All</button>
+                <button type="button" data-event-filter="all" aria-pressed="true"><span class="event-filter-label">All</span><b data-event-filter-count aria-hidden="true">0</b></button>
+                <button type="button" data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights</span><b data-event-filter-count aria-hidden="true">0</b></button>
+                <button type="button" data-event-filter="commands" aria-pressed="false"><span class="event-filter-label">Commands</span><b data-event-filter-count aria-hidden="true">0</b></button>
+                <button type="button" data-event-filter="mine" aria-pressed="false"><span class="event-filter-label">My messages</span><b data-event-filter-count aria-hidden="true">0</b></button>
+                <button type="button" data-event-filter="ai" aria-pressed="false"><span class="event-filter-label">AI messages</span><b data-event-filter-count aria-hidden="true">0</b></button>
               </div>
               <div class="event-tools">
                 <button id="copy-events-button" type="button">Copy log</button>

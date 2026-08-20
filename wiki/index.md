@@ -58,6 +58,7 @@ type: index
 - [[non-interactive-relay-prompts]]
 - [[renderer-performance]]
 - [[terminal-markdown]]
+- [[terminal-conversation-filters]]
 - [[continuation-input-review]]
 - [[same-task-session-continuation]]
 - [[claude-live-steering-review]]

@@ -6,6 +6,8 @@ import {
   entryItem,
   entryLastEvent,
   eventEntryCategory,
+  eventEntryMessageRole,
+  eventMessageCounts,
   eventStreamStats,
   filterEventEntries,
   goalEntryDetails,
@@ -15,6 +17,7 @@ import {
   isPlanEntry,
   isPlanToolItem,
   isSubAgentEntry,
+  mergePromptMessages,
   planEntryDetails,
   subAgentEntryDetails,
   subAgentEntryState,
@@ -88,6 +91,111 @@ test('event stream folds live Claude message batches into one updating signal', 
   assert.equal(entries[0].events.at(-1).payload.text, 'Done.');
   assert.equal(entryLastEvent(entries[0]).payload.text, 'Working.\nDone.');
   assert.equal(eventStreamStats(entries).messages, 1);
+});
+
+test('message role filters separate sent prompts from AI responses', () => {
+  const events = [
+    itemEvent('prompt-1', 'started', 'userMessage', {
+      item: {
+        content: [{
+          type: 'text',
+          text: 'Improve the terminal.\n\nCC Relay orchestrator notice: continue autonomously.',
+        }],
+      },
+    }),
+    itemEvent('prompt-1', 'completed', 'userMessage', {
+      eventId: 2,
+      item: {
+        content: [{
+          type: 'text',
+          text: 'Improve the terminal.\n\nCC Relay orchestrator notice: continue autonomously.',
+        }],
+      },
+    }),
+    itemEvent('message-1', 'completed', 'agentMessage', {
+      eventId: 3,
+      item: { text: 'Terminal improved.' },
+    }),
+  ];
+  const displayEvents = mergePromptMessages(events, [{
+    id: 'task-1-original',
+    kind: 'original',
+    text: 'Improve the terminal.',
+    created_at: '2026-07-16T10:00:00.000Z',
+  }]);
+  const entries = groupEventEntries(displayEvents);
+
+  assert.equal(entries.length, 2);
+  assert.match(events[0].payload.item.content[0].text, /CC Relay orchestrator notice:/);
+  assert.match(events[1].payload.item.content[0].text, /CC Relay orchestrator notice:/);
+  assert.equal(displayEvents[0].payload.item.content[0].text, 'Improve the terminal.');
+  assert.equal(displayEvents[1].payload.item.content[0].text, 'Improve the terminal.');
+  assert.equal(displayEvents[1].payload.item.promptKind, 'original');
+  assert.equal(entryItem(entries[0]).content[0].text, 'Improve the terminal.');
+  assert.equal(eventEntryMessageRole(entries[0]), 'user');
+  assert.equal(eventEntryMessageRole(entries[1]), 'assistant');
+  assert.equal(filterEventEntries(entries, 'mine').length, 1);
+  assert.equal(filterEventEntries(entries, 'ai').length, 1);
+  assert.deepEqual(eventMessageCounts(entries), { user: 1, assistant: 1 });
+});
+
+test('the original prompt appears in the terminal when the provider did not echo it', () => {
+  const displayEvents = mergePromptMessages([{
+    id: 2,
+    kind: 'claude',
+    message: 'Done.',
+    created_at: '2026-07-16T10:00:01.000Z',
+    payload: { type: 'claude/message', provider: 'claude', text: 'Done.' },
+  }], [{
+    id: 'task-2-original',
+    kind: 'original',
+    text: 'Inspect the output.',
+    created_at: '2026-07-16T10:00:00.000Z',
+  }], { provider: 'claude' });
+  const entries = groupEventEntries(displayEvents);
+
+  assert.equal(displayEvents[0].payload.displayOnly, true);
+  assert.equal(entryItem(entries[0]).content[0].text, 'Inspect the output.');
+  assert.deepEqual(eventMessageCounts(entries), { user: 1, assistant: 1 });
+});
+
+test('prompt merging tolerates missing and malformed API collections', () => {
+  assert.deepEqual(mergePromptMessages(undefined, undefined), []);
+  assert.deepEqual(mergePromptMessages({}, {}), []);
+});
+
+test('AI messages exclude Claude session notices', () => {
+  const entries = groupEventEntries([{
+    id: 1,
+    kind: 'claude',
+    message: 'Claude needs input.',
+    created_at: '2026-07-16T10:00:00.000Z',
+    payload: { type: 'claude/input-required', provider: 'claude' },
+  }]);
+
+  assert.equal(filterEventEntries(entries, 'messages').length, 1);
+  assert.equal(filterEventEntries(entries, 'ai').length, 0);
+  assert.deepEqual(eventMessageCounts(entries), { user: 0, assistant: 0 });
+});
+
+test('legacy result rows remain AI messages', () => {
+  const entries = groupEventEntries([
+    {
+      id: 1,
+      kind: 'result',
+      message: 'Finished response.',
+      created_at: '2026-07-16T10:00:00.000Z',
+      payload: null,
+    },
+    itemEvent('legacy-message', 'completed', 'agent_message', {
+      eventId: 2,
+      item: { text: 'Older response.' },
+    }),
+  ]);
+
+  assert.equal(eventEntryMessageRole(entries[0]), 'assistant');
+  assert.equal(eventEntryMessageRole(entries[1]), 'assistant');
+  assert.equal(filterEventEntries(entries, 'ai').length, 2);
 });
 
 test('event stream summarizes execution telemetry', () => {

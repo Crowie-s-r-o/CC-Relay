@@ -4,6 +4,7 @@ import {
   RELAY_COMPLETION_DEPTH_INSTRUCTION,
   RELAY_NON_INTERACTIVE_INSTRUCTION,
   withRelayNonInteractiveInstruction,
+  withoutRelayNonInteractiveInstruction,
 } from '../src/relay-prompt.mjs';
 
 test('CC Relay delivery appends the non-interactive instruction without changing the original text', () => {
@@ -24,4 +25,16 @@ test('CC Relay delivery does not duplicate an existing non-interactive instructi
   const delivered = withRelayNonInteractiveInstruction('Implement the requested change.');
 
   assert.equal(withRelayNonInteractiveInstruction(delivered), delivered);
+});
+
+test('CC Relay can recover the user-authored prompt from delivered text', () => {
+  const authored = 'Implement the requested change.';
+  const delivered = withRelayNonInteractiveInstruction(authored);
+
+  assert.equal(withoutRelayNonInteractiveInstruction(delivered), authored);
+  assert.equal(withoutRelayNonInteractiveInstruction(RELAY_NON_INTERACTIVE_INSTRUCTION), '');
+  assert.equal(
+    withoutRelayNonInteractiveInstruction(`Discuss ${RELAY_NON_INTERACTIVE_INSTRUCTION} safely.`),
+    `Discuss ${RELAY_NON_INTERACTIVE_INSTRUCTION} safely.`,
+  );
 });

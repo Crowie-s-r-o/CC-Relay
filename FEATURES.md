@@ -131,7 +131,7 @@ Right-click a task card to attach My messages, AI responses, or Both to the new-
 
 ### Task activity
 
-CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. Filters, follow mode, and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
+CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, My messages, and AI messages. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex or Claude response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Follow mode and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
 
 ### Task changes
 
