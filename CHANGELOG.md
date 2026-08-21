@@ -2,6 +2,13 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.21] - 2026-08-21
+
+### Added
+
+- Release briefs are now shown in the app.
+- Claude panels can now be expanded.
+
 ## [0.2.20] - 2026-08-21
 
 ### Added
