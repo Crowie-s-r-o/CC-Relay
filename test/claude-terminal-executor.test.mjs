@@ -4,8 +4,10 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { ClaudeExecutionRunner, taskPrompt } from '../src/claude-execution-runner.mjs';
 import {
+  CLAUDE_AGENT_PANEL_MEMBER_PATTERN,
   CLAUDE_COMPOSER_ANCHOR_CHARS,
   CLAUDE_COMPOSER_CLEAR_KEYS,
+  CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS,
   CLAUDE_COMPOSER_MAX_CHROME_LINES,
   CLAUDE_COMPOSER_MAX_TAIL_DEPTH,
   CLAUDE_COMPOSER_MIN_STRIPPED_ANCHOR_CHARS,
@@ -877,6 +879,67 @@ const LIVE_COMPOSER_CAPTURE = [
   '  ⏺ main',
   '',
 ].join('\n');
+
+// Read from task 1003's exact live Claude Code 2.1.238 Terminal.app viewport after three follow-up
+// attempts failed at the initial composer gate. Names, paths, and work descriptions are
+// neutralized, but the composer and expanded agent-panel geometry are preserved. The four member
+// rows put eight non-empty chrome lines below the closing rule, beyond the ordinary bound of six.
+const EXPANDED_AGENT_PANEL_RULE = '─'.repeat(88);
+const LIVE_EXPANDED_AGENT_PANEL_CAPTURE = [
+  '⏺ Waiting for background agents to finish.',
+  EXPANDED_AGENT_PANEL_RULE,
+  '❯',
+  EXPANDED_AGENT_PANEL_RULE,
+  '  dev@host:~/workspace  branch  Fable 5  ctx:42%',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+  '  /rc',
+  '  ⏺ main',
+  '  ◯ fullstack-engineer (+1)  Updating the overlay lifecycle  8m 54s · ↓ 347.1k tokens',
+  '  ◯ fullstack-engineer       Restoring the undo path         8m 44s · ↓ 329.3k tokens',
+  '  ◯ fullstack-engineer       Adding the missing test         8m 12s · ↓ 90.0k tokens',
+  '  ◯ general-purpose          Inspecting design files         1m 22s · ↓ 55.9k tokens',
+].join('\n');
+
+test('the composer is recognized above an expanded live agent panel', () => {
+  const tail = claudeScreenTailLines(
+    LIVE_EXPANDED_AGENT_PANEL_CAPTURE,
+    CLAUDE_COMPOSER_TAIL_LINES,
+  );
+  const closing = tail.findLastIndex((line) => CLAUDE_SCREEN_RULE_PATTERN.test(line));
+  assert.ok(closing > 0);
+  assert.ok(
+    tail.length - 1 - closing > CLAUDE_COMPOSER_MAX_CHROME_LINES,
+    'the captured agent panel must exceed the ordinary composer chrome bound',
+  );
+  assert.equal(classifyClaudeScreen(LIVE_EXPANDED_AGENT_PANEL_CAPTURE), 'composer');
+  assert.deepEqual(claudeComposerContent(LIVE_EXPANDED_AGENT_PANEL_CAPTURE), {
+    found: true,
+    text: '',
+  });
+  assert.equal(
+    claudeComposerState(LIVE_EXPANDED_AGENT_PANEL_CAPTURE, 'Send the follow-up.'),
+    'empty',
+  );
+
+  const memberRows = tail.filter((line) => line.startsWith('◯'));
+  assert.equal(memberRows.length, 4);
+  assert.ok(memberRows.every((line) => CLAUDE_AGENT_PANEL_MEMBER_PATTERN.test(line)));
+});
+
+test('expanded composer chrome accepts only a bounded exact agent roster', () => {
+  const unrelatedTail = LIVE_EXPANDED_AGENT_PANEL_CAPTURE.replace(
+    '◯ general-purpose          Inspecting design files         1m 22s · ↓ 55.9k tokens',
+    '⏺ ordinary transcript output below a quoted composer',
+  );
+  assert.equal(claudeComposerContent(unrelatedTail).found, false);
+
+  const extraMember = '  ◯ synthetic-worker  Inspecting a bounded fixture  1s · ↓ 1.0k tokens';
+  const oversized = [
+    ...LIVE_EXPANDED_AGENT_PANEL_CAPTURE.split('\n').slice(0, -4),
+    ...Array.from({ length: CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS + 1 }, () => extraMember),
+  ].join('\n');
+  assert.equal(claudeComposerContent(oversized).found, false);
+});
 
 test('the composer is recognized in a captured live Claude Code 2.1.220 frame', () => {
   assert.equal(classifyClaudeScreen(LIVE_COMPOSER_CAPTURE), 'composer');

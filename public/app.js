@@ -564,6 +564,9 @@ const elements = {
   desktopUpdateProgress: document.querySelector('#desktop-update-progress'),
   desktopUpdateProgressBar: document.querySelector('#desktop-update-progress-bar'),
   desktopUpdateProgressValue: document.querySelector('#desktop-update-progress-value'),
+  desktopUpdateNotesTitle: document.querySelector('#desktop-update-notes-title'),
+  desktopUpdateNotesList: document.querySelector('#desktop-update-notes-list'),
+  desktopUpdateNotesEmpty: document.querySelector('#desktop-update-notes-empty'),
   desktopUpdateRelease: document.querySelector('#desktop-update-release'),
   providerInput: document.querySelector('#provider-id'),
   providerTabsContainer: document.querySelector('#provider-tabs'),
@@ -5577,6 +5580,33 @@ function renderStatus() {
     elements.desktopUpdateProgressBar.removeAttribute('aria-valuenow');
     elements.desktopUpdateProgressBar.style.removeProperty('--desktop-update-progress');
   }
+  elements.desktopUpdateNotesTitle.textContent = update.latestVersion
+    ? `What's new in v${update.latestVersion}`
+    : "What's new";
+  const releaseNotes = Array.isArray(update.releaseNotes) ? update.releaseNotes : [];
+  const releaseNotesSignature = JSON.stringify(releaseNotes.map((note) => [
+    note.section,
+    note.text,
+  ]));
+  if (elements.desktopUpdateNotesList.dataset.signature !== releaseNotesSignature) {
+    const releaseNotesFragment = document.createDocumentFragment();
+    for (const note of releaseNotes) {
+      const item = document.createElement('li');
+      const section = document.createElement('span');
+      section.className = 'desktop-update-note-section';
+      section.dataset.kind = String(note.section || 'Highlights').toLowerCase();
+      section.textContent = note.section || 'Highlights';
+      const copy = document.createElement('span');
+      copy.className = 'desktop-update-note-copy';
+      copy.textContent = note.text;
+      item.append(section, copy);
+      releaseNotesFragment.append(item);
+    }
+    elements.desktopUpdateNotesList.replaceChildren(releaseNotesFragment);
+    elements.desktopUpdateNotesList.dataset.signature = releaseNotesSignature;
+  }
+  elements.desktopUpdateNotesList.hidden = releaseNotes.length === 0;
+  elements.desktopUpdateNotesEmpty.hidden = releaseNotes.length > 0;
   elements.desktopUpdateRelease.href = update.href;
   elements.desktopUpdateRelease.textContent = update.releaseLabel;
   renderDesktopZoomControls();

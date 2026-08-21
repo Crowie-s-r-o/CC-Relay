@@ -66,6 +66,7 @@ type: index
 - [[claude-live-steer-held-paste-recovery]]
 - [[claude-image-composer-rewrite-submit]]
 - [[claude-steer-text-hold-reliability]]
+- [[claude-expanded-agent-panel-composer]]
 - [[disposable-retry-conversation-initialization]]
 - [[claude-fresh-session-review]]
 - [[provider-sub-agent-visibility]]

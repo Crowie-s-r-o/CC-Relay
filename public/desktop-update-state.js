@@ -1,6 +1,9 @@
 export const DESKTOP_RELEASES_URL = 'https://github.com/Crowie-s-r-o/CC-Relay/releases';
 
 const VISIBLE_STATES = new Set(['available', 'downloading', 'downloaded', 'error']);
+const RELEASE_NOTE_SECTIONS = new Set(['Highlights', 'Added', 'Changed', 'Fixed', 'Security']);
+const MAX_RELEASE_NOTES = 20;
+const MAX_RELEASE_NOTE_LENGTH = 240;
 
 function cleanVersion(value) {
   const version = String(value || '').trim().replace(/^v/i, '');
@@ -22,6 +25,30 @@ function releaseUrl(value) {
   }
 }
 
+function cleanReleaseNotes(value) {
+  if (!Array.isArray(value)) return [];
+  const notes = [];
+  const seen = new Set();
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue;
+    const text = String(entry.text || '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/[\u0000-\u001f\u007f]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .slice(0, MAX_RELEASE_NOTE_LENGTH);
+    const key = text.toLocaleLowerCase('en-US');
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    notes.push({
+      section: RELEASE_NOTE_SECTIONS.has(entry.section) ? entry.section : 'Highlights',
+      text,
+    });
+    if (notes.length >= MAX_RELEASE_NOTES) break;
+  }
+  return notes;
+}
+
 export function desktopUpdatePresentation(update) {
   const status = String(update?.status || 'unsupported');
   const currentVersion = cleanVersion(update?.currentVersion);
@@ -38,7 +65,8 @@ export function desktopUpdatePresentation(update) {
       statusLabel: '',
       modalTitle: '',
       modalMessage: '',
-      releaseLabel: "What's new",
+      releaseLabel: 'View releases',
+      releaseNotes: [],
       automaticUpdate: false,
       progress: null,
     };
@@ -59,8 +87,9 @@ export function desktopUpdatePresentation(update) {
     currentVersion,
     latestVersion: version,
     releaseLabel: automaticUpdate
-      ? `What's new in v${version}`
+      ? 'View full release notes'
       : `Download v${version}`,
+    releaseNotes: cleanReleaseNotes(update.releaseNotes),
     automaticUpdate,
     progress: status === 'downloaded' ? 100 : boundedProgress,
   };

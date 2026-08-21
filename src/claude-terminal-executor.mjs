@@ -416,6 +416,15 @@ export const CLAUDE_COMPOSER_MAX_TAIL_DEPTH = 8;
 // and four when Claude adds a warning row. Six leaves margin for one more chrome row without
 // letting a rule buried in the transcript read as a composer edge.
 export const CLAUDE_COMPOSER_MAX_CHROME_LINES = 6;
+// Claude Code 2.1.238 expands its agent switcher below the ordinary composer chrome while
+// background agents are active. Task 1003 exposed four live member rows after `⏺ main`, which
+// pushed a real empty composer eight non-empty lines above the bottom and past the ordinary bound.
+// Keep the general bound unchanged. Only the exact `/rc`, main, and measured member-row sequence
+// receives this separate allowance, and cap it so arbitrary transcript output still fails closed.
+export const CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS = 12;
+export const CLAUDE_AGENT_PANEL_HINT_PATTERN = /^\/rc$/;
+export const CLAUDE_AGENT_PANEL_MAIN_PATTERN = /^⏺\s+main(?:\s|$)/;
+export const CLAUDE_AGENT_PANEL_MEMBER_PATTERN = /^◯\s+\S.*\b\d+(?:h|m|s)(?:\s+\d+(?:h|m|s))*\s+·\s+↓\s+\d+(?:\.\d+)?[kKmM]?\s+tokens?$/;
 // How many trailing non-empty lines the COMPOSER scan considers. Dialog classification keeps the
 // tighter CLAUDE_SCREEN_TAIL_LINES window so quoted option rows deep in a transcript still cannot
 // match; only composer extraction needs to reach past a tall literal paste. Forty covers a
@@ -491,6 +500,30 @@ export function isClaudeResumePickerScreen(lines) {
   return matchesDialog(lines, CLAUDE_RESUME_PICKER_OPTION_PATTERN);
 }
 
+function isBoundedClaudeComposerChrome(chromeLines) {
+  if (chromeLines.length <= CLAUDE_COMPOSER_MAX_CHROME_LINES) return true;
+
+  const hintIndex = chromeLines.findIndex((line) => CLAUDE_AGENT_PANEL_HINT_PATTERN.test(line));
+  const mainIndex = hintIndex + 1;
+  if (
+    hintIndex < 0
+    || !CLAUDE_AGENT_PANEL_MAIN_PATTERN.test(chromeLines[mainIndex] || '')
+    || mainIndex + 1 > CLAUDE_COMPOSER_MAX_CHROME_LINES
+  ) {
+    return false;
+  }
+
+  const statusIndex = chromeLines.findIndex((line) => (
+    CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(line))
+  ));
+  if (statusIndex < 0 || statusIndex >= hintIndex) return false;
+
+  const members = chromeLines.slice(mainIndex + 1);
+  return members.length > 0
+    && members.length <= CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS
+    && members.every((line) => CLAUDE_AGENT_PANEL_MEMBER_PATTERN.test(line));
+}
+
 // The text currently sitting in the composer, or found:false when the composer box is not visible.
 // found:false is never treated as evidence of anything: the caller keeps its pre-change behavior.
 function composerFromLines(lines, { requireOpeningRule }) {
@@ -529,14 +562,14 @@ function composerFromLines(lines, { requireOpeningRule }) {
     // transcript has content, not chrome, under the next rule below it. The scan runs bottom-up,
     // so the lowest qualifying caret, which is the live composer, always wins.
     const boxed = closing > index;
+    const chromeLines = lines.slice((boxed ? closing : index) + 1);
     if (boxed) {
-      if (lines.length - 1 - closing > CLAUDE_COMPOSER_MAX_CHROME_LINES) continue;
+      if (!isBoundedClaudeComposerChrome(chromeLines)) continue;
     } else if (lines.length - index > CLAUDE_COMPOSER_MAX_TAIL_DEPTH) {
       // Unboxed rendering keeps the original conservative depth bound.
       continue;
     }
-    const followedByChrome = lines
-      .slice(index + 1)
+    const followedByChrome = chromeLines
       .some((value) => CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(value)));
     // The composer is a caret line inside its own box, and the box edges alone are NOT proof of it.
     // A scrolled-up transcript can end on exactly the box shape: a rule, a row that starts with a

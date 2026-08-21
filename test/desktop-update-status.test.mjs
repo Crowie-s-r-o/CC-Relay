@@ -13,6 +13,9 @@ test('normalizes trusted desktop update state for the status API', () => {
     currentVersion: 'v1.0.0',
     latestVersion: '1.2.0',
     releaseUrl: `${DESKTOP_RELEASES_URL}/tag/v1.2.0`,
+    releaseNotes: [
+      { section: 'Added', text: 'Release summaries now appear in the app.' },
+    ],
     downloadPercent: 47.25,
   }), {
     supported: true,
@@ -21,6 +24,9 @@ test('normalizes trusted desktop update state for the status API', () => {
     currentVersion: '1.0.0',
     latestVersion: '1.2.0',
     releaseUrl: `${DESKTOP_RELEASES_URL}/tag/v1.2.0`,
+    releaseNotes: [
+      { section: 'Added', text: 'Release summaries now appear in the app.' },
+    ],
     downloadPercent: 47.25,
   });
 });
@@ -32,6 +38,19 @@ test('keeps absent progress null and bounds numeric progress', () => {
   assert.equal(normalizeDesktopUpdateState({ downloadPercent: '108' }).downloadPercent, 100);
 });
 
+test('keeps release notes plain, categorized, and bounded', () => {
+  const state = normalizeDesktopUpdateState({
+    releaseNotes: [
+      { section: 'Security', text: '<strong>Safer</strong> updater handoff.' },
+      { section: 'Unknown', text: 'A general improvement.' },
+    ],
+  });
+  assert.deepEqual(state.releaseNotes, [
+    { section: 'Security', text: 'Safer updater handoff.' },
+    { section: 'Highlights', text: 'A general improvement.' },
+  ]);
+});
+
 test('rejects malformed versions, states, and external release URLs', () => {
   const state = normalizeDesktopUpdateState({
     supported: 'yes',
@@ -39,6 +58,7 @@ test('rejects malformed versions, states, and external release URLs', () => {
     currentVersion: '1.2',
     latestVersion: '01.2.3',
     releaseUrl: 'https://example.com/releases/tag/v9.9.9',
+    releaseNotes: '<script>bad()</script>',
     downloadPercent: 'many',
   });
   assert.deepEqual(state, {
@@ -48,6 +68,7 @@ test('rejects malformed versions, states, and external release URLs', () => {
     currentVersion: null,
     latestVersion: null,
     releaseUrl: `${DESKTOP_RELEASES_URL}/latest`,
+    releaseNotes: [],
     downloadPercent: null,
   });
   assert.deepEqual(normalizeDesktopUpdateState(null), state);

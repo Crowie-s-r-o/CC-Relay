@@ -1,4 +1,5 @@
 import { isNewerDesktopRelease } from './desktop-release-discovery.mjs';
+import { normalizeDesktopReleaseNotes } from './desktop-release-notes.mjs';
 
 const DEFAULT_DELAY = 5_000;
 export const DESKTOP_UPDATE_CHECK_INTERVAL = 5 * 60 * 1_000;
@@ -179,6 +180,7 @@ export function createDesktopUpdater(options = {}) {
     currentVersion: currentVersion(options),
     latestVersion: null,
     releaseUrl: String(options.releasesUrl || ''),
+    releaseNotes: [],
     downloadPercent: null,
   };
 
@@ -188,9 +190,13 @@ export function createDesktopUpdater(options = {}) {
   }
 
   function publishUpdate(status, info, changes = {}) {
+    const version = availableVersion(info);
+    const notes = normalizeDesktopReleaseNotes(info?.releaseNotes, { version });
+    const sameRelease = isSameDesktopRelease(version, state.latestVersion);
     publish(status, {
-      latestVersion: availableVersion(info),
+      latestVersion: version,
       releaseUrl: stateReleaseUrl(options, info),
+      releaseNotes: notes.length || !sameRelease ? notes : state.releaseNotes,
       ...changes,
     });
   }
@@ -227,6 +233,7 @@ export function createDesktopUpdater(options = {}) {
             publish('current', {
               latestVersion: null,
               releaseUrl: String(options.releasesUrl || ''),
+              releaseNotes: [],
               downloadPercent: null,
             });
           }
@@ -388,6 +395,7 @@ export function createDesktopUpdater(options = {}) {
         publish('current', {
           latestVersion: null,
           releaseUrl: String(options.releasesUrl || ''),
+          releaseNotes: [],
           downloadPercent: null,
         });
       });

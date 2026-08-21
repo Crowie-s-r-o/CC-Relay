@@ -1,3 +1,5 @@
+import { normalizeDesktopReleaseNotes } from './desktop-release-notes.mjs';
+
 export const DESKTOP_RELEASES_URL = 'https://github.com/Crowie-s-r-o/CC-Relay/releases';
 
 const DESKTOP_UPDATE_STATUSES = new Set([
@@ -44,6 +46,9 @@ export function normalizeDesktopUpdateState(value = {}) {
     currentVersion: cleanVersion(source.currentVersion),
     latestVersion: cleanVersion(source.latestVersion),
     releaseUrl: trustedReleaseUrl(source.releaseUrl),
+    releaseNotes: normalizeDesktopReleaseNotes(source.releaseNotes, {
+      version: source.latestVersion,
+    }),
     downloadPercent: Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null,
   };
 }

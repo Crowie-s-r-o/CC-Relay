@@ -252,10 +252,16 @@ test('publishes a safe, queryable update lifecycle for the desktop UI', async ()
   assert.equal(states.at(-1).automaticUpdate, true);
   assert.equal(states.at(-1).status, 'checking');
 
-  updater.emit('update-available', { version: '1.2.0' });
+  updater.emit('update-available', {
+    version: '1.2.0',
+    releaseNotes: '<h3>Added</h3><ul><li>Release briefs appear in the app.</li></ul>',
+  });
   await flush();
   assert.equal(states.at(-1).status, 'downloading');
   assert.equal(states.at(-1).latestVersion, '1.2.0');
+  assert.deepEqual(states.at(-1).releaseNotes, [
+    { section: 'Added', text: 'Release briefs appear in the app.' },
+  ]);
   assert.equal(dialogs.length, 0);
   assert.equal(
     states.at(-1).releaseUrl,
@@ -270,6 +276,9 @@ test('publishes a safe, queryable update lifecycle for the desktop UI', async ()
   await flush();
   assert.equal(states.at(-1).status, 'downloaded');
   assert.equal(states.at(-1).downloadPercent, 100);
+  assert.deepEqual(states.at(-1).releaseNotes, [
+    { section: 'Added', text: 'Release briefs appear in the app.' },
+  ]);
 
   updater.emit('error', new Error('network unavailable'));
   assert.equal(states.at(-1).status, 'error');

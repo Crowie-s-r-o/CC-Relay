@@ -23,7 +23,12 @@ test('reads the latest stable release from the fixed GitHub API endpoint', async
         ok: true,
         status: 200,
         async json() {
-          return { tag_name: 'v1.2.3', draft: false, prerelease: false };
+          return {
+            tag_name: 'v1.2.3',
+            draft: false,
+            prerelease: false,
+            body: '### Added\n\n- A clearer update dialog.',
+          };
         },
       };
     },
@@ -31,6 +36,7 @@ test('reads the latest stable release from the fixed GitHub API endpoint', async
   assert.deepEqual(await checker(), {
     version: '1.2.3',
     releaseUrl: 'https://github.com/Crowie-s-r-o/CC-Relay/releases/tag/v1.2.3',
+    releaseNotes: '### Added\n\n- A clearer update dialog.',
   });
   assert.equal(requests.length, 1);
   assert.equal(requests[0].url, DESKTOP_RELEASE_API_URL);

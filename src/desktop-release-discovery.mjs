@@ -57,6 +57,7 @@ export function createGitHubReleaseChecker(options = {}) {
     return {
       version,
       releaseUrl: `${DESKTOP_RELEASES_URL}/tag/v${version}`,
+      releaseNotes: typeof release?.body === 'string' ? release.body : '',
     };
   };
 }

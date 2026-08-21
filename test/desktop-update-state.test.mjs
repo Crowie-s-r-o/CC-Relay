@@ -25,6 +25,10 @@ test('shows an available release with its trusted GitHub URL', () => {
     status: 'available',
     latestVersion: '1.2.0',
     releaseUrl: `${DESKTOP_RELEASES_URL}/tag/v1.2.0`,
+    releaseNotes: [
+      { section: 'Added', text: 'Release summaries now appear in the app.' },
+      { section: 'Fixed', text: 'Duplicate prompts no longer appear.' },
+    ],
   });
   assert.equal(result.hidden, false);
   assert.equal(result.state, 'available');
@@ -32,7 +36,11 @@ test('shows an available release with its trusted GitHub URL', () => {
   assert.equal(result.href, `${DESKTOP_RELEASES_URL}/tag/v1.2.0`);
   assert.equal(result.modalTitle, 'A new Relay is ready');
   assert.equal(result.statusLabel, 'Update available');
-  assert.equal(result.releaseLabel, "What's new in v1.2.0");
+  assert.equal(result.releaseLabel, 'View full release notes');
+  assert.deepEqual(result.releaseNotes, [
+    { section: 'Added', text: 'Release summaries now appear in the app.' },
+    { section: 'Fixed', text: 'Duplicate prompts no longer appear.' },
+  ]);
   assert.equal(result.automaticUpdate, true);
   assert.equal(result.progress, null);
   assert.match(result.modalMessage, /download automatically/i);
@@ -102,7 +110,7 @@ test('presents automatic updater failures as background retries with information
   assert.equal(result.href, `${DESKTOP_RELEASES_URL}/latest`);
   assert.equal(result.statusLabel, 'Automatic retry scheduled');
   assert.equal(result.modalTitle, 'Relay will try again');
-  assert.equal(result.releaseLabel, "What's new in v1.2.0");
+  assert.equal(result.releaseLabel, 'View full release notes');
   assert.match(result.title, /retry in the background/i);
   assert.match(result.modalMessage, /retry automatically in the background/i);
   assert.doesNotMatch(result.modalMessage, /manually|needs a hand/i);

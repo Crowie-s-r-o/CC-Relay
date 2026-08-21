@@ -14898,6 +14898,9 @@ html[data-theme="dark"] .session-complete-button[data-state="blocked"]:disabled 
 }
 
 .desktop-update-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: calc(100vh - 32px);
   color: var(--ink);
 }
 
@@ -14925,7 +14928,9 @@ html[data-theme="dark"] .session-complete-button[data-state="blocked"]:disabled 
 .desktop-update-body {
   display: grid;
   gap: 18px;
+  min-height: 0;
   padding: 0 24px 22px;
+  overflow-y: auto;
 }
 
 .desktop-update-body > p {
@@ -15041,21 +15046,103 @@ html[data-theme="dark"] .session-complete-button[data-state="blocked"]:disabled 
   background: #5365df;
 }
 
-.desktop-update-cadence {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 10px 12px;
-  border-left: 2px solid #95a2ee;
-  color: #697580 !important;
-  background: #f5f6fc;
-  font-size: 10px !important;
+.desktop-update-notes {
+  overflow: hidden;
+  border: 1px solid #dfe3f1;
+  border-radius: 11px;
+  background: #fbfcff;
 }
 
-.desktop-update-cadence span {
-  color: #5365df;
+.desktop-update-notes-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 12px 9px;
+}
+
+.desktop-update-notes-heading > span {
+  color: #7f8996;
   font-family: var(--font-mono);
-  font-weight: 900;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.desktop-update-notes-heading h3 {
+  margin: 0;
+  color: #36414d;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.desktop-update-notes-list {
+  max-height: 184px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-top: 1px solid #eceef4;
+  list-style: none;
+  scrollbar-gutter: stable;
+}
+
+.desktop-update-notes-list[hidden] {
+  display: none;
+}
+
+.desktop-update-notes-list li {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: start;
+  gap: 9px;
+  padding: 9px 12px;
+  color: #53616d;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.desktop-update-notes-list li + li {
+  border-top: 1px solid #f0f1f6;
+}
+
+.desktop-update-note-section {
+  width: fit-content;
+  padding: 3px 5px;
+  border-radius: 5px;
+  color: #5365c9;
+  background: #eef0ff;
+  font-family: var(--font-mono);
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.desktop-update-note-section[data-kind="added"] {
+  color: #177057;
+  background: #eaf8f3;
+}
+
+.desktop-update-note-section[data-kind="fixed"] {
+  color: #83591c;
+  background: #fff5e3;
+}
+
+.desktop-update-note-section[data-kind="security"] {
+  color: #9a4037;
+  background: #fff0ee;
+}
+
+.desktop-update-notes-empty {
+  margin: 0;
+  padding: 11px 12px;
+  border-top: 1px solid #eceef4;
+  color: #697580;
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .desktop-update-actions {
@@ -15114,8 +15201,7 @@ html[data-theme="dark"] .desktop-update-header h2 {
 
 html[data-theme="dark"] .desktop-update-header .eyebrow,
 html[data-theme="dark"] .desktop-update-version[data-kind="latest"] strong,
-html[data-theme="dark"] .desktop-update-progress-copy strong,
-html[data-theme="dark"] .desktop-update-cadence span {
+html[data-theme="dark"] .desktop-update-progress-copy strong {
   color: var(--app-blue);
 }
 
@@ -15158,10 +15244,48 @@ html[data-theme="dark"] .desktop-update-progress-bar i {
   background: var(--app-blue);
 }
 
-html[data-theme="dark"] .desktop-update-cadence {
-  border-left-color: var(--app-blue);
-  color: var(--app-text-muted) !important;
-  background: var(--app-control);
+html[data-theme="dark"] .desktop-update-notes {
+  border-color: var(--app-border);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .desktop-update-notes-heading > span {
+  color: var(--app-text-quiet);
+}
+
+html[data-theme="dark"] .desktop-update-notes-heading h3 {
+  color: var(--app-text);
+}
+
+html[data-theme="dark"] .desktop-update-notes-list,
+html[data-theme="dark"] .desktop-update-notes-list li + li,
+html[data-theme="dark"] .desktop-update-notes-empty {
+  border-color: var(--app-border);
+}
+
+html[data-theme="dark"] .desktop-update-notes-list li,
+html[data-theme="dark"] .desktop-update-notes-empty {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .desktop-update-note-section {
+  color: var(--app-blue);
+  background: color-mix(in srgb, var(--app-blue) 13%, var(--app-control));
+}
+
+html[data-theme="dark"] .desktop-update-note-section[data-kind="added"] {
+  color: var(--app-teal);
+  background: color-mix(in srgb, var(--app-teal) 12%, var(--app-control));
+}
+
+html[data-theme="dark"] .desktop-update-note-section[data-kind="fixed"] {
+  color: var(--app-amber);
+  background: color-mix(in srgb, var(--app-amber) 12%, var(--app-control));
+}
+
+html[data-theme="dark"] .desktop-update-note-section[data-kind="security"] {
+  color: var(--app-red);
+  background: color-mix(in srgb, var(--app-red) 12%, var(--app-control));
 }
 
 html[data-theme="dark"] .desktop-update-actions {

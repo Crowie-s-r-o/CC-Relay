@@ -92,8 +92,13 @@ test('Electron exposes GitHub updater state to the loopback UI', () => {
   assert.match(markup, /id="desktop-update-indicator"/);
   assert.match(markup, /id="desktop-update-modal"/);
   assert.match(markup, /aria-controls="desktop-update-modal"/);
+  assert.match(markup, /id="desktop-update-notes-list"/);
+  assert.doesNotMatch(markup, /checks for a new release every five minutes/i);
   assert.match(app, /elements\.desktopUpdateModal\.showModal\(\)/);
+  assert.match(app, /copy\.textContent = note\.text/);
+  assert.match(app, /desktopUpdateNotesList\.dataset\.signature !== releaseNotesSignature/);
   assert.match(style, /html\[data-theme="dark"\] \.desktop-update-card/);
+  assert.match(style, /html\[data-theme="dark"\] \.desktop-update-notes/);
   assert.match(style, /@media \(max-width: 560px\) \{/);
   assert.match(style, /@media \(prefers-reduced-motion: no-preference\) \{\s*\.desktop-update-progress-bar i \{\s*transition: width 180ms ease;/);
 });

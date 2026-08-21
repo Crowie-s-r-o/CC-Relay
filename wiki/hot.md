@@ -6,6 +6,23 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 21: expanded Claude agent rosters no longer block live follow-ups.** Task 1003's
+> Claude 2.1.238 screen placed four timed worker rows below `/rc` and `main`, pushing the real empty
+> composer beyond Relay's six-line ordinary chrome bound. Relay keeps that safety bound and adds a
+> separate capped allowance only for the exact agent-panel shape. Unrelated or oversized tails
+> still fail closed, all 1,653 tests pass, and the same live viewport now reads as an empty
+> composer. Restart the packaged app after active terminals drain. See
+> [[claude-expanded-agent-panel-composer]].
+
+> [!note]
+> **August 21: desktop update details now include the release brief.** The dialog replaces
+> its five-minute polling disclosure with bounded Added, Changed, Fixed, and Security facts
+> from the official GitHub release. Automatic updater HTML and portable-discovery Markdown
+> are reduced to plain text before crossing the status API, then rendered with text nodes.
+> The full release remains one click away, and the card scrolls safely on compact viewports.
+> See [[desktop-updates]].
+
 > [!note]
 > **August 21: Task Activity can now isolate either side of the conversation.** The terminal
 > filter rail shows live counts for All, Highlights, Commands, My messages, and AI messages.

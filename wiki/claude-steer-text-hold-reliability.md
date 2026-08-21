@@ -248,14 +248,24 @@ review-hardening tests added on 2026-08-07. The floor mutation is the one that m
 1098 tests the floor could be lowered from 24 to 1 with the whole suite still green, which is why it
 now has a test of its own.
 
+## August 21 expanded agent-panel addendum
+
+Task 1003 realized the measured-chrome residual risk below. Claude Code 2.1.238 displayed four
+timed worker rows beneath `/rc` and `⏺ main`, so a real empty composer had eight non-empty rows
+beneath its closing rule and exceeded the ordinary limit of six. The general limit remains six.
+Relay now grants a separate capped extension only to the exact expanded roster shape, and rejects
+one malformed member row or more than twelve members. See
+[[claude-expanded-agent-panel-composer]] for the capture, safety contract, and verification.
+
 ## Residual risk
 
 - **The desktop app must be rebuilt.** None of this reaches the operator until the packaged app is
   rebuilt and relaunched. The installed build additionally lacks the entire August 5 multi-attempt
   recovery, so it will keep failing at 25 seconds after one action until it is replaced.
-- **`CLAUDE_COMPOSER_MAX_CHROME_LINES` is a measured constant.** A future Claude Code that adds
-  several chrome rows below the closing rule would push the composer back out of recognition. The
-  failure is closed: `'unreadable'`, no action, a held message and an uncertain report.
+- **`CLAUDE_COMPOSER_MAX_CHROME_LINES` is a measured constant.** Claude 2.1.238's expanded agent
+  roster exceeded it, and the narrow correction is documented in
+  [[claude-expanded-agent-panel-composer]]. Any other new chrome shape still fails closed as
+  `'unreadable'` with no action until its exact live frame is measured.
 - **A composer taller than 40 rows** fails closed for the same reason. Reachable only from a very
   long single-line message in a tall window.
 - **The status-row corroboration narrows `classifyClaudeScreen` too.** A composer box drawn with no
