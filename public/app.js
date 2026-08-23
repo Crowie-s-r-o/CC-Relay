@@ -776,13 +776,11 @@ const elements = {
   eventOverview: document.querySelector('#event-overview'),
   eventOverviewBody: document.querySelector('#event-overview-body'),
   eventMetrics: document.querySelector('#event-metrics'),
-  termRelay: document.querySelector('#term-relay'),
   termProvider: document.querySelector('#term-provider'),
   termEffort: document.querySelector('#term-effort'),
   termDuration: document.querySelector('#term-duration'),
   eventFilters: [...document.querySelectorAll('[data-event-filter]')],
   copyEventsButton: document.querySelector('#copy-events-button'),
-  followEventsButton: document.querySelector('#follow-events-button'),
   continuationForm: document.querySelector('#task-continuation-form'),
   continuationLabel: document.querySelector('#task-continuation-label'),
   continuationContext: document.querySelector('#task-continuation-context'),
@@ -3260,25 +3258,14 @@ function updateEventControls(filterCounts = {}) {
     const counter = button.querySelector('[data-event-filter-count]');
     if (counter) counter.textContent = count.toLocaleString();
   }
-  elements.followEventsButton.setAttribute('aria-pressed', String(state.eventFollow));
-  elements.followEventsButton.querySelector('span').textContent = state.eventFollow ? 'Following' : 'Follow live';
 }
 
 // Fills the tmux-style terminal status bar from real task state. Every segment is
 // data-driven; unknown segments hide rather than inventing a value.
 function renderTerminalStatusBar(task) {
-  if (!elements.termRelay) {
+  if (!elements.termProvider) {
     return;
   }
-  const relay = taskRelayLabel(task);
-  if (relay && relay !== 'Unassigned CC Relay') {
-    elements.termRelay.hidden = false;
-    elements.termRelay.textContent = relay;
-  } else {
-    elements.termRelay.hidden = true;
-    elements.termRelay.textContent = '';
-  }
-
   const barProvider = task?.mode === 'plan' ? 'council' : taskProvider(task || {});
   elements.termProvider.textContent = `${providerLabel(barProvider).toLowerCase()} · ${task?.model || 'session model'}`;
 
@@ -11412,14 +11399,6 @@ for (const button of elements.contentCopyButtons) {
   });
 }
 
-elements.followEventsButton.addEventListener('click', () => {
-  state.eventFollow = !state.eventFollow;
-  if (state.eventFollow) {
-    elements.detailEvents.scrollTop = elements.detailEvents.scrollHeight;
-  }
-  updateEventControls();
-});
-
 elements.detailEvents.addEventListener('scroll', () => {
   const distanceFromBottom = elements.detailEvents.scrollHeight
     - elements.detailEvents.scrollTop
@@ -11427,7 +11406,6 @@ elements.detailEvents.addEventListener('scroll', () => {
   const following = distanceFromBottom < 36;
   if (state.eventFollow !== following) {
     state.eventFollow = following;
-    updateEventControls();
   }
 });
 

@@ -5195,26 +5195,16 @@ button.term-seg { border: 0; cursor: pointer; font: inherit; letter-spacing: inh
 
 .term-seg[hidden] { display: none; }
 
-/* Identity segments stay visible at the default column width: they shrink and
-   ellipsize instead of wrapping, hiding, or clipping the single-row bar. The
-   relay label can be verbose, so it is capped and shrinks faster than
-   provider-model, which keeps provider readable even when relay is long. */
-.term-seg-relay,
+/* Model and effort are the execution identity. Keep the complete model visible
+   and place it directly beside the complete effort value. */
 .term-seg-provider {
-  display: block;
-  min-width: 2.4em;
-  overflow: hidden;
-  line-height: 26px;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
+  color: var(--term-fg);
+  background: var(--term-panel2);
+  font-weight: 500;
 }
 
-.term-seg-relay { flex: 0 3 auto; max-width: 15ch; color: #071021; background: var(--term-blue); }
-.term-seg-provider { flex: 0 1 auto; max-width: 20ch; color: var(--term-fg); background: var(--term-panel2); font-weight: 500; }
 .term-seg-signals { color: var(--term-muted2); font-weight: 500; }
-.term-seg-follow { color: var(--term-muted2); font-weight: 500; text-transform: lowercase; }
-.term-seg-follow i { width: 7px; height: 7px; border-radius: 50%; background: var(--term-sep); }
-.term-seg-follow[aria-pressed="true"] { color: #dbe6c2; }
-.term-seg-follow[aria-pressed="true"] i { background: var(--term-green); box-shadow: 0 0 6px rgb(158 206 106 / 60%); }
 .term-seg-effort { color: #201603; background: var(--term-amber); text-transform: uppercase; }
 .term-seg-duration { color: #160a25; background: var(--term-caret); }
 
@@ -5247,16 +5237,6 @@ button.term-seg { border: 0; cursor: pointer; font: inherit; letter-spacing: inh
 .events-empty small { display: block; }
 .events-empty strong { margin-top: 6px; color: #c0cada; font-size: 12px; }
 .events-empty small { margin-top: 2px; font-size: 10px; }
-
-/* Keep the single-row tmux bar readable without overflowing the fixed detail
-   column. Gated on container width so it holds at every viewport. LIVE, RELAY,
-   provider-model, signals, following, and duration stay visible at the default
-   width (relay + provider ellipsize as needed). EFFORT drops first because it is
-   the least critical and already shown in the task header; provider drops only
-   when the panel is genuinely narrow. Effort reappears when dragged wide. */
-@container (max-width: 760px) {
-  .term-seg-effort { display: none; }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .term-cursor,

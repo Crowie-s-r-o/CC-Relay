@@ -7,6 +7,15 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 21: the failed Namiru backend AI production activation has a repository-side repair.**
+> The long-lived Deployment retained legacy PM2 `exec` probes while the candidate selected HTTP
+> probes, so Kubernetes rejected the merged object for having two handlers. Namiru's shared
+> renderer now requires exactly one handler and emits explicit deletion markers for inactive
+> union members. The supplied rollout log reports successful coordinated restoration of frontend,
+> backend AI, and backend API. Relay did not run, resume, or inspect production. See
+> [[namiru-backend-ai-probe-handler-transition]].
+
+> [!important]
 > **August 21: expanded Claude agent rosters no longer block live follow-ups.** Task 1003's
 > Claude 2.1.238 screen placed four timed worker rows below `/rc` and `main`, pushing the real empty
 > composer beyond Relay's six-line ordinary chrome bound. Relay keeps that safety bound and adds a

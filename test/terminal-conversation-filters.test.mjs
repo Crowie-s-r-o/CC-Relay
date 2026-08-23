@@ -32,3 +32,21 @@ test('terminal rendering merges canonical prompt history without mutating provid
   assert.match(app, /<small>sent<\/small>/);
   assert.match(app, /<small>AI messages<\/small>/);
 });
+
+test('terminal status bar keeps full model beside effort without relay or follow labels', () => {
+  const statusBar = markup.match(/<div class="term-statusbar"[\s\S]*?<\/div>/)?.[0] || '';
+  const signalsIndex = statusBar.indexOf('id="event-summary"');
+  const modelIndex = statusBar.indexOf('id="term-provider"');
+  const effortIndex = statusBar.indexOf('id="term-effort"');
+  const durationIndex = statusBar.indexOf('id="term-duration"');
+
+  assert.ok(signalsIndex >= 0);
+  assert.ok(signalsIndex < modelIndex);
+  assert.ok(modelIndex < effortIndex);
+  assert.ok(effortIndex < durationIndex);
+  assert.doesNotMatch(statusBar, /term-relay|follow-events-button|Following/);
+  assert.doesNotMatch(app, /termRelay|followEventsButton/);
+  assert.match(style, /\.term-seg-provider \{[\s\S]*?flex: 0 0 auto;[\s\S]*?\}/);
+  assert.doesNotMatch(style, /\.term-seg-provider[^}]*text-overflow/);
+  assert.doesNotMatch(style, /\.term-seg-effort \{ display: none; \}/);
+});
