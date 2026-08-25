@@ -2,6 +2,14 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.24] - 2026-08-25
+
+### Added
+
+- Added OpenCode headless execution support.
+- Added native token-throughput monitoring.
+- Added local push-to-talk dictation with configurable shortcuts.
+
 ## [0.2.23] - 2026-08-25
 
 ### Changed
