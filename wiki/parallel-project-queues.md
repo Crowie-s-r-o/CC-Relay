@@ -163,7 +163,7 @@ one project's Plan council stopped whichever Claude stage was newest. Owners are
 `isSingleSessionTask` is the predicate the scheduler uses for "occupies exactly one session for
 one turn, so one CC Relay task per session id is barrier enough": direct Codex, direct Claude, and
 Planner breakdowns. It replaced `isDirectExecutionTask` at every scheduling and reservation site
-in `runnableTasks()` and `reservedThreadIds()`. Anything else (Plan council, Turbo) is exclusive.
+in `runnableTasks()` and `reservedThreadIds()`. Plan council and legacy persistent Turbo are exclusive.
 
 > [!warning]
 > If you widen that predicate again, `reservedThreadIds()` is the site that must move with it.
@@ -171,12 +171,16 @@ in `runnableTasks()` and `reservedThreadIds()`. Anything else (Plan council, Tur
 > second task start on a session that is already busy. That is exactly what made the breakdown
 > reclassification a five-site change rather than a one-line one.
 
-`planAhead()` consults `reservedThreadIds()` too. Forward planning starts a real turn on the
-planner session, so it needs the same reservation every dispatch honours. It previously avoided
-only Turbo's own worker and planner threads, which was survivable while every non-direct mode
-froze its whole project; once single-session breakdowns began running beside Turbo, a breakdown
-holding a session in another project became invisible to look-ahead and forward planning could
-open a second turn on it.
+Current automatic Turbo is the explicit non-single-session exception. It is capacity
+managed by `isCapacityManagedTurbo()`: each running parent owns one fresh executor session, and
+one queued preparation may own one fresh planner session per project. Several ready parents may
+run up to the configured execution count. Direct work continues to use free provider slots beside
+them. Legacy persistent Turbo remains exclusive and continues to use exact selected-thread
+reservations.
+
+`planAhead()` consults `reservedThreadIds()` for legacy sessions and project pool usage for current
+automatic work. Automatic planning opens a fresh session only when physical Codex capacity is
+free. It does not reuse an active executor or another task's direct session.
 
 ### The one deliberate serialization point
 

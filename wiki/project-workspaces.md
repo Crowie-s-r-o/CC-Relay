@@ -43,6 +43,15 @@ Project cards are status and selection surfaces, not terminal launch surfaces. T
 > [!important]
 > The unpin control owns the final `close` grid area of `.project-chip`. It must be a direct card child after the activity group, never a child of `.project-chip-head`. Nesting it in the name sub-grid places the close button in the middle of the card.
 
+> [!important]
+> Closing a project is a confirmed Launchpad-only action. `.project-unpin` opens
+> `#project-close-modal`, and only its explicit **Close project** button sends the project
+> `DELETE` request. The dialog names the exact folder and path, focuses **Cancel**, supports
+> Escape and backdrop dismissal, and locks every dismissal control while the request is in
+> flight. Closing removes only the pinned project entry; repository files and saved task
+> records remain. The final pinned project stays protected in both the renderer and server.
+> See [[interface-layout]] and [[task-history]].
+
 Each project card includes a compact live state derived from persisted tasks in that exact workspace. Its visible label is **Running**, **Waiting**, **Restart needed**, **Attention**, **Finished**, or **Idle**. Status priority is running, queued, latest failure or interruption, unchecked completion, then idle. A numbered badge remains visible when a completed task has not been opened in Task Activity, including while a higher-priority live state is shown. Task-specific detail, unchecked completion count, and restart guidance remain in the card's accessible label even though they no longer consume visible rail space. Queue and task events already trigger the normal client refresh, so this state requires no separate polling channel. See [[launchpad-completion-notifications]].
 
 The project path is not repeated inside the compact card. The complete path remains in the card title and continues to drive all workspace matching.
@@ -73,7 +82,7 @@ Direct execution capacity is controlled by `max_codex_instances` and `max_claude
 > [!important]
 > Capacity is counted from both active task reservations and exact native launches. A terminal whose cleanup failed remains counted until CC Relay can prove that exact launch is gone. Never release capacity merely because session discovery stopped listing it.
 
-Direct Execute and Planner breakdown need one slot from their selected provider. Plan council needs one Claude and one Codex slot. Turbo needs one Codex planner plus its worker count, and adds one Claude slot when its council runs through a terminal. CC Relay validates an atomic workflow requirement before it starts, so it never launches half a Plan council or a partial Turbo fleet and then waits while holding those terminals.
+Direct Execute and Planner breakdown need one slot from their selected provider. Plan council needs one Claude and one Codex slot. Each automatic Turbo parent uses one Codex slot at a time for planning or execution, while its configured count limits simultaneous executor parents. Submission also requires project capacity for that execution count plus one planning lane. A Turbo council uses one Claude slot only during its Claude stage. CC Relay still validates Plan council atomically, while Turbo launches and cleans each stage just in time.
 
 > [!important]
 > A backend without `capabilities.parallelClaudeExecution` still has the former global Claude lock. When a direct Claude task waits behind a different active Claude session, project activity and queue summary must say **Restart CC Relay for parallel Claude projects** instead of presenting the delay as ordinary FIFO waiting.

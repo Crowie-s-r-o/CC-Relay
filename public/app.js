@@ -1,4 +1,5 @@
 import {
+  assistantMessageStatus,
   entryFirstEvent,
   entryItem,
   entryLastEvent,
@@ -205,12 +206,11 @@ const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
 
 /*
  * A project accepts at most MAX_PROJECT_INSTANCES per provider (validateInstanceLimit in
- * src/server.mjs), and a Turbo task on automatic pools reserves one planner slot plus one
- * slot per worker. Eight workers would therefore need nine Codex slots, which no project
- * can be configured to allow: the composer offered a fleet size that could never be
- * dispatched and then advised raising a maximum past its own ceiling. Automatic pools cap
- * the fleet one below the project ceiling; legacy live-terminal Turbo still allows eight
- * because those workers are terminals the user opened, not pool slots.
+ * src/server.mjs). Automatic Turbo keeps one planning lane plus the configured number of
+ * concurrent execution lanes available. Eight concurrent executions would therefore need
+ * nine Codex slots, which no project can be configured to allow. Automatic pools cap the
+ * pipeline one below the project ceiling. Legacy live-terminal Turbo still allows eight
+ * because its workers are terminals the user opened, not managed slots.
  */
 const MAX_PROJECT_INSTANCES = 8;
 const MAX_TURBO_WORKERS = 8;
@@ -433,6 +433,8 @@ const state = {
   poolLimitSaving: false,
   projectSettingsSaving: false,
   uiPreferencesSaveTimer: null,
+  projectCloseTargetId: null,
+  projectCloseSubmitting: false,
   projectColorTargetId: null,
   projectColorDraft: null,
   projectColorSaving: false,
@@ -875,6 +877,17 @@ const elements = {
   desktopZoomLevel: document.querySelector('#desktop-zoom-level'),
   desktopZoomIn: document.querySelector('#desktop-zoom-in'),
   projectList: document.querySelector('#project-list'),
+  projectCloseModal: document.querySelector('#project-close-modal'),
+  projectCloseCard: document.querySelector('#project-close-card'),
+  projectCloseTitle: document.querySelector('#project-close-title'),
+  projectCloseDismiss: document.querySelector('#project-close-dismiss'),
+  projectCloseTarget: document.querySelector('#project-close-target'),
+  projectCloseInitial: document.querySelector('#project-close-initial'),
+  projectCloseName: document.querySelector('#project-close-name'),
+  projectClosePath: document.querySelector('#project-close-path'),
+  projectCloseMessage: document.querySelector('#project-close-message'),
+  projectCloseCancel: document.querySelector('#project-close-cancel'),
+  projectCloseConfirm: document.querySelector('#project-close-confirm'),
   projectColorModal: document.querySelector('#project-color-modal'),
   projectColorSubtitle: document.querySelector('#project-color-subtitle'),
   projectColorClose: document.querySelector('#project-color-close'),
@@ -1263,6 +1276,26 @@ function usesDisposableTerminalPools() {
   return state.status?.capabilities?.disposableTerminalPools === true;
 }
 
+function usesSingleExecutorTurbo() {
+  return state.status?.capabilities?.turboSingleExecutorPipeline === true;
+}
+
+function taskUsesSingleExecutorTurbo(task) {
+  if (task?.mode !== 'turbo'
+    || task?.terminal_lifecycle !== 'disposable'
+    || !usesSingleExecutorTurbo()) return false;
+  const legacyWorkers = Array.isArray(task.turbo?.workers) ? task.turbo.workers : [];
+  return Boolean(task.turbo?.executionThreadId) || legacyWorkers.length === 0;
+}
+
+function turboPresentationTask(task) {
+  if (task?.mode !== 'turbo') return task;
+  return {
+    ...task,
+    turboSingleExecutor: taskUsesSingleExecutorTurbo(task),
+  };
+}
+
 function taskNamingSupported() {
   return state.status?.capabilities?.queuedTaskNaming === true;
 }
@@ -1457,6 +1490,67 @@ function selectProject(path, { persist = true } = {}) {
   }
 }
 
+function projectCloseTarget() {
+  return state.projects.find((project) => project.id === state.projectCloseTargetId) || null;
+}
+
+function setProjectCloseSubmitting(submitting) {
+  state.projectCloseSubmitting = submitting;
+  elements.projectCloseCard.setAttribute('aria-busy', String(submitting));
+  elements.projectCloseDismiss.disabled = submitting;
+  elements.projectCloseCancel.disabled = submitting;
+  elements.projectCloseConfirm.disabled = submitting;
+  elements.projectCloseConfirm.textContent = submitting ? 'Closing project...' : 'Close project';
+}
+
+function openProjectCloseConfirmation(project) {
+  if (!project || state.projects.length <= 1 || state.projectCloseSubmitting) return;
+  state.projectCloseTargetId = project.id;
+  elements.projectCloseTitle.textContent = `Close ${project.name}?`;
+  elements.projectCloseInitial.textContent = project.name.slice(0, 1).toUpperCase();
+  elements.projectCloseName.textContent = project.name;
+  elements.projectClosePath.textContent = project.path;
+  elements.projectCloseMessage.textContent = '';
+  applyProjectIdentityStyle(elements.projectCloseTarget, project.path);
+  if (!elements.projectCloseModal.open) elements.projectCloseModal.showModal();
+  elements.projectCloseCancel.focus();
+}
+
+function closeProjectCloseConfirmation() {
+  if (state.projectCloseSubmitting) return;
+  state.projectCloseTargetId = null;
+  elements.projectCloseMessage.textContent = '';
+  if (elements.projectCloseModal.open) elements.projectCloseModal.close();
+}
+
+async function confirmProjectClose() {
+  if (state.projectCloseSubmitting) return;
+  const project = projectCloseTarget();
+  if (!project) {
+    closeProjectCloseConfirmation();
+    elements.formMessage.textContent = 'This project is already closed.';
+    return;
+  }
+  setProjectCloseSubmitting(true);
+  elements.projectCloseMessage.textContent = `Closing ${project.name}...`;
+  try {
+    await api(`/api/projects/${project.id}`, { method: 'DELETE' });
+    state.projectComposerStore.delete(project.path);
+    state.projectCloseTargetId = null;
+    elements.projectCloseModal.close();
+    try {
+      await loadProjects();
+      elements.formMessage.textContent = `${project.name} closed.`;
+    } catch (error) {
+      elements.formMessage.textContent = `${project.name} closed, but the Launchpad could not refresh: ${error.message}`;
+    }
+  } catch (error) {
+    elements.projectCloseMessage.textContent = error.message;
+  } finally {
+    setProjectCloseSubmitting(false);
+  }
+}
+
 function projectColorTarget() {
   return state.projects.find((project) => project.id === state.projectColorTargetId) || null;
 }
@@ -1580,7 +1674,7 @@ function renderProjects() {
       <div class="project-chip-foot">
         <span class="project-activity"><i aria-hidden="true"></i><strong>${escapeHtml(activity.status)}</strong></span>
       </div>
-      <button class="project-unpin" type="button" data-project-action="delete" aria-label="Unpin ${escapeHtml(project.name)}" ${state.projects.length === 1 ? 'disabled title="Add another project before unpinning the selected project"' : ''}>×</button>
+      <button class="project-unpin" type="button" data-project-action="delete" aria-label="Close ${escapeHtml(project.name)}" ${state.projects.length === 1 ? 'disabled title="Add another project before closing this project"' : ''}>×</button>
     </article>
   `;
   }).join('');
@@ -1671,8 +1765,14 @@ function relayActivity(thread) {
     .sort((left, right) => left.position - right.position || left.id - right.id)[0];
   if (planningAhead) return { state: 'planning', label: `Planning ahead · Task #${planningAhead.id}` };
   const workerTurbo = state.tasks.find((task) => task.status === 'running' && task.mode === 'turbo'
-    && task.turbo?.workers?.some((worker) => worker.threadId === thread.id));
-  if (workerTurbo) return { state: 'running', label: `Turbo worker · Task #${workerTurbo.id}` };
+    && (
+      task.turbo?.executionThreadId === thread.id
+      || task.turbo?.workers?.some((worker) => worker.threadId === thread.id)
+    ));
+  if (workerTurbo) {
+    const executor = workerTurbo.turbo?.executionThreadId === thread.id;
+    return { state: 'running', label: `Turbo ${executor ? 'executor' : 'worker'} · Task #${workerTurbo.id}` };
+  }
   const plannerTurbo = state.tasks.find((task) => task.status === 'running' && task.mode === 'turbo'
     && task.turbo?.plannerThreadId === thread.id);
   if (plannerTurbo && codexOwnsCouncilStage(plannerTurbo)) {
@@ -1841,12 +1941,16 @@ function renderAttachmentComposer() {
       ? 'Restart CC Relay once to enable image attachments.'
       : isExecuteCouncilEnabled()
         ? 'Sent to Claude and Codex throughout the review loop.'
-        // A Turbo prompt is delivered more than once: the planner turn carries the images,
-        // so does every worker turn, and council adds the second provider's stages.
+        // A Turbo prompt is delivered more than once. The planner and executor both receive
+        // the images, and an optional council adds its second provider stage.
         : state.taskMode === 'turbo'
-          ? state.turboSettings.councilEnabled
-            ? 'Sent to both Plan council planners and to every worker turn.'
-            : 'Sent to the Turbo planner and to every worker turn.'
+          ? usesDisposableTerminalPools() && usesSingleExecutorTurbo()
+            ? state.turboSettings.councilEnabled
+              ? 'Sent to both Plan council stages and to the execution session.'
+              : 'Sent to the Turbo planner and to the execution session.'
+            : state.turboSettings.councilEnabled
+              ? 'Sent to both Plan council planners and to every worker turn.'
+              : 'Sent to the Turbo planner and to every worker turn.'
           : 'Sent to the selected AI with the prompt.';
   const full = state.attachments.length >= MAX_IMAGE_ATTACHMENTS;
   elements.attachmentDropzone.dataset.state = !available ? 'unavailable' : full ? 'full' : 'ready';
@@ -2879,9 +2983,7 @@ function eventPresentation(entry, task) {
       messageRole: 'assistant',
       glyph: provider === 'claude' ? '✳' : '>_',
       title: providerLabel(provider),
-      status: item?.phase === 'final' || lastEvent?.kind === 'result' || lastEvent?.payload?.liveFinal
-        ? 'final'
-        : 'update',
+      status: assistantMessageStatus(entry, task, message),
       message,
     };
   }
@@ -3267,11 +3369,15 @@ function renderTerminalStatusBar(task) {
     return;
   }
   const barProvider = task?.mode === 'plan' ? 'council' : taskProvider(task || {});
-  elements.termProvider.textContent = `${providerLabel(barProvider).toLowerCase()} · ${task?.model || 'session model'}`;
+  const turboExecuting = task?.mode === 'turbo'
+    && ['executing', 'complete'].includes(String(task?.turboPlan?.status || task?.turboPlanSummary?.status || ''));
+  const displayModel = turboExecuting ? task?.turbo?.workerModel : task?.model;
+  const displayEffort = turboExecuting ? task?.turbo?.workerEffort : task?.effort;
+  elements.termProvider.textContent = `${providerLabel(barProvider).toLowerCase()} · ${displayModel || 'session model'}`;
 
-  if (task?.effort) {
+  if (displayEffort) {
     elements.termEffort.hidden = false;
-    elements.termEffort.textContent = `${task.effort} effort`;
+    elements.termEffort.textContent = `${displayEffort} effort`;
   } else {
     elements.termEffort.hidden = true;
     elements.termEffort.textContent = '';
@@ -3306,9 +3412,9 @@ function isManualSessionTask(task) {
 }
 
 /*
- * Plan council and Turbo keep-open tasks hold several terminals and their own staged
- * artifacts, so a single session strip would describe none of them honestly. The session
- * surface is limited to work that owns exactly one provider conversation.
+ * Plan council and Turbo keep-open tasks own staged workflow conversations and artifacts,
+ * so the generic direct-session strip would describe neither workflow honestly. Turbo's
+ * final execution conversation is exposed through the dedicated continuation control.
  */
 function isDirectSessionTask(task) {
   return isSessionTask(task)
@@ -3449,14 +3555,22 @@ function restoreContinuationRetry(taskId) {
 }
 
 function renderTaskContinuation(task, { taskChanged = false } = {}) {
-  const direct = task?.mode === 'execute' && ['codex', 'claude'].includes(task.provider);
+  const turboExecution = task?.mode === 'turbo'
+    && task?.terminal_lifecycle === 'disposable'
+    && task?.provider === 'codex'
+    && Boolean(task?.turbo?.executionThreadId)
+    && task?.thread_id === task?.turbo?.executionThreadId;
+  const direct = (task?.mode === 'execute' && ['codex', 'claude'].includes(task.provider))
+    || turboExecution;
   const manualSession = isManualSessionTask(task);
   const manualSessionComplete = manualSession && task.status === 'complete';
   elements.continuationForm.hidden = !direct || manualSessionComplete;
   if (!direct || manualSessionComplete) return;
   elements.continuationForm.dataset.provider = task.provider;
   elements.continuationForm.dataset.sessionMode = String(manualSession);
-  elements.continuationLabel.textContent = manualSession ? 'Terminal session' : 'Continue session';
+  elements.continuationLabel.textContent = manualSession
+    ? 'Terminal session'
+    : turboExecution ? 'Continue execution session' : 'Continue session';
   elements.continuationInput.placeholder = manualSession
     ? 'Send the next command or request to this terminal...'
     : 'Ask a follow-up in this terminal...';
@@ -3476,7 +3590,7 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
 
   const session = taskContinuationSession(task);
   const supportsDirectFollowUp = state.status?.capabilities?.taskDirectFollowUp === true;
-  const supportsTaskSteering = state.status?.capabilities?.taskSteering === true;
+  const supportsTaskSteering = !turboExecution && state.status?.capabilities?.taskSteering === true;
   const supportsClaudeTaskSteering = state.status?.capabilities?.claudeTaskSteering === true;
   const supportsClaudeSteerOutbox = state.status?.capabilities?.claudeSteerOutbox === true;
   const resumableSession = task.terminal_lifecycle === 'disposable'
@@ -3508,7 +3622,9 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   const relay = taskRelayLabel(task);
   elements.continuationForm.dataset.submitting = String(submitting);
   elements.continuationForm.setAttribute('aria-busy', String(submitting));
-  elements.continuationContext.textContent = `${relay} · ${providerLabel(task.provider)} · ${task.model || 'session model'} · ${task.effort || 'default'} effort`;
+  const continuationModel = turboExecution ? task.turbo.workerModel : task.model;
+  const continuationEffort = turboExecution ? task.turbo.workerEffort : task.effort;
+  elements.continuationContext.textContent = `${relay} · ${providerLabel(task.provider)} · ${continuationModel || 'session model'} · ${continuationEffort || 'default'} effort`;
   elements.continuationState.dataset.state = presentation.state;
   elements.continuationState.textContent = presentation.label;
   elements.continuationInput.disabled = presentation.inputDisabled;
@@ -3618,6 +3734,7 @@ function renderEventStream(events, task, {
     all: grouped.length,
     highlights: filterEventEntries(grouped, 'highlights').length,
     commands: filterEventEntries(grouped, 'commands').length,
+    conversation: messageCounts.user + messageCounts.assistant,
     mine: messageCounts.user,
     ai: messageCounts.assistant,
   };
@@ -3654,6 +3771,7 @@ function renderEventStream(events, task, {
     all: 'signals',
     highlights: 'highlights',
     commands: 'commands',
+    conversation: 'conversation messages',
     mine: 'sent',
     ai: 'AI messages',
   };
@@ -3684,6 +3802,7 @@ function renderEventStream(events, task, {
   }
   elements.copyEventsButton.disabled = visible.length === 0;
   const emptyStates = {
+    conversation: ['No conversation yet', 'Your messages and AI responses will appear here.'],
     mine: ['No messages from you yet', 'Your original request and sent updates appear here.'],
     ai: ['No AI messages yet', 'The next provider response will appear here.'],
     commands: ['No commands yet', 'Commands and connected tool calls will appear here.'],
@@ -3744,7 +3863,10 @@ function threadDisplayName(thread) {
 function executionLabel(task) {
   if (task.mode === 'turbo') {
     const planner = `${task.turbo?.plannerModel || task.model || 'planner'} · ${task.turbo?.plannerEffort || task.effort || 'default'}`;
-    const workers = `${task.turbo?.workerCount || task.turbo?.workers?.length || 0} workers · ${task.turbo?.workerModel || 'worker model'} · ${task.turbo?.workerEffort || 'default'}`;
+    const singleExecutor = taskUsesSingleExecutorTurbo(task);
+    const workers = singleExecutor
+      ? `${task.turbo?.workerCount || 1} concurrent executions · ${task.turbo?.workerModel || 'execution model'} · ${task.turbo?.workerEffort || 'default'}`
+      : `${task.turbo?.workerCount || task.turbo?.workers?.length || 0} workers · ${task.turbo?.workerModel || 'worker model'} · ${task.turbo?.workerEffort || 'default'}`;
     const council = task.turbo?.council?.enabled || task.turbo?.councilEnabled;
     const order = task.turbo?.council?.order || ['codex', 'claude'];
     const route = order.map(providerLabel).join(' → ');
@@ -3775,7 +3897,7 @@ function taskRelayLabel(task) {
   if (task.thread_name) return task.provider === 'codex' ? `CC Relay · ${task.thread_name}` : `Claude · ${task.thread_name}`;
   if (task.terminal_lifecycle === 'disposable') {
     if (task.mode === 'plan') return 'Automatic Claude + Codex';
-    if (task.mode === 'turbo') return 'Automatic Codex fleet';
+    if (task.mode === 'turbo') return taskUsesSingleExecutorTurbo(task) ? 'Automatic Turbo pipeline' : 'Automatic Codex fleet';
     return `Automatic ${providerLabel(task.provider)} instance`;
   }
   return task.mode === 'turbo' ? 'Multiple Relays' : 'Unassigned CC Relay';
@@ -3808,8 +3930,43 @@ function turboPlannerIdentity(task) {
   return turboIdentity(manifest.planner.threadId, manifest.planner.title, 'Planner');
 }
 
+function turboFooterIdentity(task) {
+  if (
+    task?.terminal_lifecycle === 'disposable'
+    && taskUsesSingleExecutorTurbo(task)
+    && task?.turbo?.executionThreadId
+  ) {
+    return {
+      ...turboIdentity(
+        task.turbo.executionThreadId,
+        task.turbo.executionThreadName,
+        'Execution session',
+      ),
+      role: 'Executor',
+    };
+  }
+  return { ...turboPlannerIdentity(task), role: 'Planner' };
+}
+
 function turboFleetMarkup(task) {
   if (task.mode !== 'turbo') return '';
+  if (taskUsesSingleExecutorTurbo(task)) {
+    const concurrency = Number(task.turbo?.workerCount || 1);
+    const planner = `${task.turbo?.plannerModel || task.model || 'planner'} · ${task.turbo?.plannerEffort || task.effort || 'default'}`;
+    const executor = `${task.turbo?.workerModel || 'execution model'} · ${task.turbo?.workerEffort || 'default'}`;
+    return `
+      <div class="turbo-fleet" aria-label="Turbo planning and execution stages">
+        <span class="turbo-fleet-role">Planning</span>
+        <span class="turbo-fleet-chip turbo-fleet-chip-neutral">${escapeHtml(planner)} · fresh session</span>
+        <span class="turbo-fleet-divider" aria-hidden="true">→</span>
+        <span class="turbo-fleet-role">Execution</span>
+        <span class="turbo-fleet-workers">
+          <span class="turbo-fleet-chip turbo-fleet-chip-neutral">${escapeHtml(executor)} · one terminal per Turbo prompt</span>
+          <span class="turbo-fleet-chip turbo-fleet-chip-neutral">${concurrency} concurrent in queue</span>
+        </span>
+      </div>
+    `;
+  }
   const manifest = turboParentManifest(task);
   const planner = turboIdentity(manifest.planner.threadId, manifest.planner.title, 'Planner');
   const workers = manifest.workers.map((worker) => turboIdentity(worker.threadId, worker.title, `Worker ${worker.slot}`));
@@ -4889,7 +5046,7 @@ function turboCouncilIssue() {
   return readiness.ready ? '' : readiness.reason;
 }
 
-/** The most workers a fleet may hold, which the automatic pool ceiling constrains. */
+/** The largest Turbo concurrency setting, constrained by the automatic pool ceiling. */
 function maxTurboWorkers(automatic = usesDisposableTerminalPools()) {
   return automatic ? MAX_POOL_TURBO_WORKERS : MAX_TURBO_WORKERS;
 }
@@ -4934,7 +5091,7 @@ function flushTurboWorkerCount() {
  */
 function turboCapacityAdvice(required) {
   return required > MAX_PROJECT_INSTANCES
-    ? `Use at most ${MAX_POOL_TURBO_WORKERS} worker terminals · a project allows ${MAX_PROJECT_INSTANCES} Codex instances`
+    ? `Use at most ${MAX_POOL_TURBO_WORKERS} concurrent executions · a project allows ${MAX_PROJECT_INSTANCES} Codex instances`
     : `Raise Codex max instances to at least ${required}`;
 }
 
@@ -4973,6 +5130,7 @@ function renderTurboControls({ force = false } = {}) {
   const settings = state.turboSettings;
   const models = state.modelCatalogs.codex;
   const automatic = usesDisposableTerminalPools();
+  const singleExecutor = automatic && usesSingleExecutorTurbo();
   const plannerModel = preferredTurboModel(models, settings.plannerModel, 'sol');
   const workerModel = preferredTurboModel(models, settings.workerModel, 'luna');
   settings.plannerModel = plannerModel?.model || '';
@@ -5046,7 +5204,9 @@ function renderTurboControls({ force = false } = {}) {
   elements.turboReadiness.dataset.state = ready ? 'ready' : 'missing';
   elements.turboReadiness.textContent = ready
     ? automatic
-      ? `Ready · ${requiredCodexInstances} of ${maxCodexInstances} Codex slots`
+      ? singleExecutor
+        ? `Ready · 1 planner + up to ${settings.workerCount} executions`
+        : `Ready · ${requiredCodexInstances} of ${maxCodexInstances} Codex slots`
       : `Ready · ${council.councilEnabled ? council.councilOrder.map(providerLabel).join(' → ') : 'Codex'} + ${settings.workerCount} workers`
     : councilIssue || (automatic
       ? providerIsMissing('codex')
@@ -5063,16 +5223,24 @@ function renderTurboControls({ force = false } = {}) {
     && state.keepTerminalOpen;
   elements.turboNote.textContent = !council.councilEnabled
     ? automatic
-      ? retainsTerminals
-        ? 'CC Relay launches one disposable Codex planner and the requested worker fleet, and leaves every terminal connected when Turbo ends.'
-        : 'CC Relay launches one disposable Codex planner and the requested worker fleet, then closes every terminal when Turbo ends.'
+      ? singleExecutor
+        ? retainsTerminals
+          ? 'Each prompt gets one fresh planning terminal, then one fresh execution terminal for the complete plan. Finished terminals stay connected.'
+          : 'Each prompt gets one fresh planning terminal, then one fresh execution terminal for the complete plan. Each terminal closes after its stage and its session remains resumable.'
+        : retainsTerminals
+          ? 'CC Relay launches one disposable Codex planner and the requested worker fleet, and leaves every terminal connected when Turbo ends.'
+          : 'CC Relay launches one disposable Codex planner and the requested worker fleet, then closes every terminal when Turbo ends.'
       : 'The selected Codex CC Relay plans in read-only mode. CC Relay reads its JSON graph and dispatches ready tasks across the worker fleet.'
     : council.councilFirstProvider === 'claude'
       ? automatic
-        ? 'Claude authors the graph first. A disposable Codex planner reviews it before CC Relay launches the worker turns.'
+        ? singleExecutor
+          ? 'Claude authors the graph first. A fresh Codex planner reviews it, then one fresh execution session owns the complete plan.'
+          : 'Claude authors the graph first. A disposable Codex planner reviews it before CC Relay launches the worker turns.'
         : 'Claude authors the graph first. The selected Codex CC Relay reviews and corrects it before CC Relay dispatches workers.'
       : automatic
-        ? 'A disposable Codex planner authors the graph. Claude reviews it before CC Relay dispatches the worker turns.'
+        ? singleExecutor
+          ? 'A fresh Codex planner authors the graph. Claude reviews it, then one fresh execution session owns the complete plan.'
+          : 'A disposable Codex planner authors the graph. Claude reviews it before CC Relay dispatches the worker turns.'
         : 'The selected Codex CC Relay authors the graph first. Claude reviews and corrects it before CC Relay dispatches workers.';
   /*
    * Recorded after the body, not before it. Model preference, effort fallback, the worker
@@ -5185,7 +5353,9 @@ function renderPromptCopy() {
   elements.prompt.placeholder = isExecuteCouncilEnabled()
     ? 'Describe what should be built, the constraints, and the decisions the reviewed plan must settle.'
     : state.taskMode === 'turbo'
-      ? 'Describe the complete outcome. The planner will produce a JSON dependency graph and CC Relay will dispatch it across worker terminals.'
+      ? usesDisposableTerminalPools() && usesSingleExecutorTurbo()
+        ? 'Describe the complete outcome. A fresh planner will produce the JSON graph, then one fresh execution session will own the complete plan.'
+        : 'Describe the complete outcome. The planner will produce a JSON dependency graph and CC Relay will dispatch it across worker terminals.'
       : 'Describe the outcome, constraints, and how the agent should verify the work.';
 }
 
@@ -5765,8 +5935,8 @@ function renderTasks() {
     const batchable = queued
       && (task.mode || 'execute') === 'execute'
       && task.terminal_lifecycle !== 'disposable';
-    const turboMarker = turboPlanMarker(task);
-    const turboPlanner = task.mode === 'turbo' ? turboPlannerIdentity(task) : null;
+    const turboMarker = turboPlanMarker(turboPresentationTask(task));
+    const turboOwner = task.mode === 'turbo' ? turboFooterIdentity(task) : null;
     const assignable = queued && operationalQueue
       && task.mode === 'execute'
       && task.terminal_lifecycle !== 'disposable'
@@ -5894,7 +6064,7 @@ function renderTasks() {
           </div>
         ` : ''}
         <div class="task-footer">
-          <span class="task-footer-execution"><span class="task-relay-name ${turboPlanner ? turboPlanner.className : relayColorClass(task.thread_id)}">${escapeHtml(turboPlanner ? `Planner ${turboPlanner.label}` : taskRelayLabel(task))}</span><span aria-hidden="true"> · </span>${escapeHtml(taskCardExecutionLabel(task))}</span>
+          <span class="task-footer-execution"><span class="task-relay-name ${turboOwner ? turboOwner.className : relayColorClass(task.thread_id)}">${escapeHtml(turboOwner ? `${turboOwner.role} ${turboOwner.label}` : taskRelayLabel(task))}</span><span aria-hidden="true"> · </span>${escapeHtml(taskCardExecutionLabel(task))}</span>
           <span class="task-footer-timing"><span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</span></span>
           <span class="task-footer-dates">${taskLifecycleDatesMarkup(task)}</span>
         </div>
@@ -6823,7 +6993,7 @@ function renderPlanPreview(plan, task) {
 }
 
 function renderTurboPreview(plan, task) {
-  const displayTask = plan ? { ...task, turboPlan: plan } : task;
+  const displayTask = turboPresentationTask(plan ? { ...task, turboPlan: plan } : task);
   const waitingCopy = turboWaitingCopy(displayTask);
   const packages = Array.isArray(plan?.tasks) ? plan.tasks.map(normalizeTurboPackage) : [];
   const graphPresentation = graphProgressPresentation(plan, task);
@@ -6837,7 +7007,9 @@ function renderTurboPreview(plan, task) {
   elements.turboPreviewStatus.textContent = previewStatus;
   elements.turboPreviewStatus.dataset.state = previewStatus;
   elements.turboPreviewSummary.textContent = graphPresentation.indeterminate && graphPresentation.state === 'planning'
-    ? 'The planner is building the dependency graph. Worker packages will appear here when the graph is ready.'
+    ? taskUsesSingleExecutorTurbo(displayTask)
+      ? 'The planner is building the dependency graph. The complete plan will move to one fresh execution session.'
+      : 'The planner is building the dependency graph. Worker packages will appear here when the graph is ready.'
     : ['planning', 'reviewing', 'ready'].includes(turboPlanMarker(displayTask)?.phase)
     ? waitingCopy
     : plan?.summary || waitingCopy || 'The planner is producing a machine-readable dependency graph.';
@@ -7815,7 +7987,9 @@ function renderAutomaticTerminalPool() {
     ? directSessionMode && manualSessionsSupported
       ? 'Session mode opens a dedicated terminal workspace. Send as many turns as needed, then finish the task manually.'
       : 'CC Relay keeps the workflow terminals open after the automatic task outcome.'
-    : 'CC Relay opens a fresh terminal per task and closes it when the task ends. Continue session relaunches the saved conversation.';
+    : state.taskMode === 'turbo' && usesSingleExecutorTurbo()
+      ? 'Turbo opens a fresh planner, closes it after planning, then opens one fresh executor for the complete plan. The executor conversation remains resumable.'
+      : 'CC Relay opens a fresh terminal per task and closes it when the task ends. Continue session relaunches the saved conversation.';
   setProjectTerminalSettingsDisabled(!project || state.projectSettingsSaving);
   if (providerIsMissing('codex')) elements.maxCodexInstances.disabled = true;
   if (providerIsMissing('claude')) elements.maxClaudeInstances.disabled = true;
@@ -7825,7 +7999,9 @@ function renderAutomaticTerminalPool() {
   if (!project) {
     elements.sessionMessage.textContent = 'Choose a pinned project to configure its automatic terminal instances.';
   } else if (state.taskMode === 'turbo') {
-    elements.sessionMessage.textContent = `Turbo will launch one planner plus ${state.turboSettings.workerCount} disposable Codex workers in ${project.name}.`;
+    elements.sessionMessage.textContent = usesSingleExecutorTurbo()
+      ? `Turbo uses one fresh planner and one fresh executor per prompt in ${project.name}, with up to ${state.turboSettings.workerCount} planned executions running concurrently.`
+      : `Turbo will launch one planner plus ${state.turboSettings.workerCount} disposable Codex workers in ${project.name}.`;
   } else if (isExecuteCouncilEnabled()) {
     elements.sessionMessage.textContent = `Plan council will launch one Claude and one Codex terminal in ${project.name}.`;
   } else {
@@ -10106,7 +10282,7 @@ elements.form.addEventListener('submit', async (event) => {
       if (projectInstanceLimits().codex < required) {
         // Above the project ceiling the fleet is the only adjustable half of the pair.
         setComposerAlert(required > MAX_PROJECT_INSTANCES
-          ? `Turbo needs ${required} Codex instances and a project allows at most ${MAX_PROJECT_INSTANCES}. Reduce the worker terminals to ${MAX_POOL_TURBO_WORKERS} or fewer.`
+          ? `Turbo needs ${required} Codex instances and a project allows at most ${MAX_PROJECT_INSTANCES}. Reduce concurrent executions to ${MAX_POOL_TURBO_WORKERS} or fewer.`
           : `Turbo needs ${required} Codex instances. Raise this project's Codex maximum before adding the task.`);
         return;
       }
@@ -10751,14 +10927,12 @@ elements.projectList.addEventListener('click', async (event) => {
     openProjectColorPicker(project);
     return;
   }
+  if (button.dataset.projectAction === 'delete') {
+    openProjectCloseConfirmation(project);
+    return;
+  }
   button.disabled = true;
   try {
-    if (button.dataset.projectAction === 'delete') {
-      await api(`/api/projects/${id}`, { method: 'DELETE' });
-      state.projectComposerStore.delete(project.path);
-      await loadProjects();
-      return;
-    }
     await launchProject(project, button.dataset.provider);
   } catch (error) {
     elements.formMessage.textContent = error.message;
@@ -10771,6 +10945,16 @@ elements.projectList.addEventListener('keydown', (event) => {
   event.preventDefault();
   const project = state.projects.find((item) => item.id === Number(chip.dataset.projectId));
   if (project) selectProject(project.path);
+});
+elements.projectCloseDismiss.addEventListener('click', closeProjectCloseConfirmation);
+elements.projectCloseCancel.addEventListener('click', closeProjectCloseConfirmation);
+elements.projectCloseConfirm.addEventListener('click', confirmProjectClose);
+elements.projectCloseModal.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  closeProjectCloseConfirmation();
+});
+elements.projectCloseModal.addEventListener('click', (event) => {
+  if (event.target === elements.projectCloseModal) closeProjectCloseConfirmation();
 });
 elements.projectColorPresetList.addEventListener('click', (event) => {
   const preset = event.target.closest('[data-project-color]');

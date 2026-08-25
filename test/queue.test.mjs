@@ -260,6 +260,63 @@ test('a finished-task follow-up starts immediately in the same task row and sess
   }
 });
 
+test('a completed Turbo executor continues as one direct turn in the same task row', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-executor-follow-up-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const received = [];
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: {
+      async run(task) {
+        received.push(task);
+        return { finalResponse: 'Executor follow-up complete', sessionId: task.thread_id, exitCode: 0 };
+      },
+      cancel() { return false; },
+    },
+  });
+  try {
+    const source = database.createTask({
+      title: 'Turbo result',
+      prompt: 'Build it.',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      thread: { id: 'turbo-executor', title: 'Turbo executor', cwd: directory, provider: 'codex' },
+      turbo: {
+        executionThreadId: 'turbo-executor',
+        workerModel: 'luna',
+        workerEffort: 'medium',
+        workerCount: 1,
+      },
+    });
+    artifacts.initializeTask(source);
+    database.updateTask(source.id, { status: 'complete', result: 'Original result' });
+    const runtime = {
+      ...database.getTask(source.id),
+      mode: 'execute',
+      model: 'luna',
+      effort: 'medium',
+      prompt: 'Verify one more edge case.',
+      sessionFollowUp: true,
+    };
+
+    queue.startFollowUp(runtime);
+    await waitFor(() => database.getTask(source.id).status === 'complete');
+    assert.equal(received.length, 1);
+    assert.equal(received[0].mode, 'execute');
+    assert.equal(received[0].thread_id, 'turbo-executor');
+    assert.equal(database.getTask(source.id).mode, 'turbo');
+    assert.equal(database.getTask(source.id).result, 'Executor follow-up complete');
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('a closed disposable conversation resumes in the same task row', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-disposable-follow-up-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
@@ -1877,6 +1934,282 @@ test('a direct task on a newly added CC Relay runs while Turbo workers remain ac
   } finally {
     releaseTurbo();
     await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a disposable Claude task is runnable beside a single-executor Turbo task when Claude has capacity', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-claude-capacity-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Turbo Claude capacity' });
+  const terminalPool = {
+    supportsTurboStages(task) {
+      return task?.terminal_lifecycle === 'disposable' && task?.mode === 'turbo';
+    },
+    canRun() { return true; },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    terminalPool,
+    runner: { run() {}, cancel() { return true; } },
+  });
+  try {
+    const turbo = database.createTask({
+      title: 'Turbo execution',
+      prompt: 'Execute the planned work.',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: {
+        workerCount: 3,
+        plannerModel: 'sol',
+        workerModel: 'luna',
+        workers: [],
+      },
+    });
+    artifacts.initializeTask(turbo);
+    artifacts.writeTurboPlan(turbo.id, {
+      version: 1,
+      status: 'executing',
+      workers: [{ threadId: 'turbo-executor', title: 'Turbo executor' }],
+      tasks: [{ id: 'execution', title: 'Execution', instructions: 'Work', dependsOn: [], status: 'running', workerThreadId: 'turbo-executor' }],
+    });
+    database.updateTask(turbo.id, { status: 'running' });
+    queue.activeTasks.set(turbo.id, database.getTask(turbo.id));
+
+    const claude = database.createTask({
+      title: 'Independent Claude work',
+      prompt: 'Translate the interface.',
+      repoPath: directory,
+      provider: 'claude',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+    });
+    artifacts.initializeTask(claude);
+
+    assert.deepEqual(queue.runnableTasks().map((task) => task.id), [claude.id]);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a single-executor Turbo start event reports execution settings instead of planner settings', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-execution-label-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const terminalPool = {
+    supportsTurboStages(task) {
+      return task?.terminal_lifecycle === 'disposable' && task?.mode === 'turbo';
+    },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    terminalPool,
+    captureDiffBaseline: async () => {},
+    runner: { run() {}, cancel() { return true; } },
+  });
+  try {
+    const task = database.createTask({
+      title: 'Executor settings',
+      prompt: 'Execute the plan.',
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'turbo',
+      model: 'sol',
+      effort: 'max',
+      terminalLifecycle: 'disposable',
+      turbo: {
+        workerCount: 3,
+        plannerModel: 'sol',
+        plannerEffort: 'max',
+        workerModel: 'luna',
+        workerEffort: 'medium',
+      },
+    });
+    artifacts.initializeTask(task);
+
+    queue.beginTask(task);
+    const messages = database.listEvents(task.id).map((event) => event.message);
+    assert.match(messages.at(-1), /luna, medium effort/);
+    assert.doesNotMatch(messages.at(-1), /sol|max effort/);
+  } finally {
+    queue.activeTasks.clear();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('automatic Turbo starts one fresh forward planner before any parent is executing', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-immediate-planning-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Immediate Turbo planning' });
+  let releasePlanner;
+  const calls = [];
+  const terminalPool = {
+    supportsTurboStages(task) {
+      return task?.terminal_lifecycle === 'disposable' && task?.mode === 'turbo';
+    },
+    projectStatus() {
+      return { limits: { codex: 4, claude: 1 }, active: { codex: 0, claude: 0 } };
+    },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    terminalPool,
+    runner: {
+      prepare(task) {
+        calls.push(task.id);
+        return new Promise((resolve) => { releasePlanner = resolve; });
+      },
+      cancel() { return true; },
+    },
+  });
+  const createTurbo = (title) => {
+    const task = database.createTask({
+      title,
+      prompt: title,
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount: 3, workers: [] },
+    });
+    artifacts.initializeTask(task);
+    return task;
+  };
+
+  try {
+    const first = createTurbo('First plan');
+    createTurbo('Second plan');
+    queue.planAhead();
+
+    assert.deepEqual(calls, [first.id]);
+    assert.equal(queue.activePreparations.has(first.id), true);
+    queue.stopping = true;
+    releasePlanner({ status: 'ready' });
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('Turbo worker count limits concurrent planned prompts, not terminals inside one prompt', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-pipeline-cap-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Turbo pipeline cap' });
+  const terminalPool = {
+    supportsTurboStages(task) {
+      return task?.terminal_lifecycle === 'disposable' && task?.mode === 'turbo';
+    },
+    canRun() { return true; },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    terminalPool,
+    runner: { run() {}, cancel() { return true; } },
+  });
+  const createTurbo = (title, status) => {
+    const task = database.createTask({
+      title,
+      prompt: title,
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount: 3, plannerModel: 'sol', workerModel: 'luna', workers: [] },
+    });
+    artifacts.initializeTask(task);
+    artifacts.writeTurboPlan(task.id, {
+      version: 1,
+      status,
+      workers: [{ slot: 1, threadId: status === 'executing' ? `${title}-thread` : null }],
+      tasks: [{ id: 'step', title: 'Step', instructions: 'Do it', dependsOn: [], status: status === 'executing' ? 'running' : 'pending' }],
+    });
+    if (status === 'executing') {
+      database.updateTask(task.id, { status: 'running' });
+      queue.activeTasks.set(task.id, database.getTask(task.id));
+    }
+    return database.getTask(task.id);
+  };
+
+  try {
+    createTurbo('Active', 'executing');
+    const second = createTurbo('Second', 'ready');
+    const third = createTurbo('Third', 'ready');
+    const fourth = createTurbo('Fourth', 'ready');
+
+    assert.deepEqual(queue.runnableTasks().map((task) => task.id), [second.id, third.id]);
+    assert.equal(database.getTask(fourth.id).status, 'queued');
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a lower Turbo concurrency setting begins a later FIFO execution batch', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-turbo-pipeline-batches-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Turbo pipeline batches' });
+  const terminalPool = {
+    supportsTurboStages(task) {
+      return task?.terminal_lifecycle === 'disposable' && task?.mode === 'turbo';
+    },
+    canRun() { return true; },
+  };
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    terminalPool,
+    runner: { run() {}, cancel() { return true; } },
+  });
+  const createReady = (title, workerCount) => {
+    const task = database.createTask({
+      title,
+      prompt: title,
+      repoPath: directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount, workers: [] },
+    });
+    artifacts.initializeTask(task);
+    artifacts.writeTurboPlan(task.id, {
+      version: 1,
+      status: 'ready',
+      workers: [{ slot: 1, threadId: null }],
+      tasks: [{ id: 'step', title: 'Step', instructions: 'Do it', dependsOn: [], status: 'pending' }],
+    });
+    return task;
+  };
+
+  try {
+    const first = createReady('Wide batch', 3);
+    createReady('Narrow batch', 1);
+    createReady('Later wide batch', 3);
+    const claude = database.createTask({
+      title: 'Claude still passes',
+      prompt: 'Translate.',
+      repoPath: directory,
+      provider: 'claude',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+    });
+    artifacts.initializeTask(claude);
+
+    assert.deepEqual(queue.runnableTasks().map((task) => task.id), [first.id, claude.id]);
+  } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
   }

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { now } from './database.mjs';
 import { captureTaskDiffBaseline } from './task-diff.mjs';
 import { taskTitleFromInput } from './task-title.mjs';
+import { isTurboExecutionSession } from './task-continuation.mjs';
 
 const RETRYABLE_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_SOURCE_STATUSES = new Set(['open', 'complete', 'failed', 'cancelled', 'interrupted']);
@@ -63,6 +64,7 @@ export class TaskQueue extends EventEmitter {
     const turbo = task?.turbo || {};
     const plannerThreadId = turbo.plannerThreadId || turbo.planner?.threadId;
     if (plannerThreadId) ids.add(plannerThreadId);
+    if (turbo.executionThreadId) ids.add(turbo.executionThreadId);
     for (const worker of turbo.workers || []) {
       if (worker?.threadId) ids.add(worker.threadId);
     }
@@ -134,8 +136,9 @@ export class TaskQueue extends EventEmitter {
     if (typeof task.prompt !== 'string' || !task.prompt.trim()) {
       throw new Error('Write a follow-up before sending it.');
     }
-    if (sourceTask.mode !== 'execute' || !['codex', 'claude'].includes(sourceTask.provider)) {
-      throw new Error('Only direct Codex or Claude tasks can continue in one terminal session.');
+    const turboExecution = isTurboExecutionSession(sourceTask);
+    if ((sourceTask.mode !== 'execute' || !['codex', 'claude'].includes(sourceTask.provider)) && !turboExecution) {
+      throw new Error('Only direct tasks and completed Turbo execution sessions can continue.');
     }
     if (isManualSessionTask(sourceTask) && sourceTask.status === 'complete') {
       throw new Error('This terminal session task is complete and cannot accept more messages.');
@@ -772,9 +775,9 @@ export class TaskQueue extends EventEmitter {
   // A breakdown is planning work, but mechanically it is ordinary single-session work:
   // RelayRunner sends it to the provider runner by task.provider, like a direct task.
   // Scheduling it as an exclusive head froze its entire project and consumed the shared
-  // exclusive slot that Plan council and Turbo need, for no safety benefit. The exclusive
-  // global barriers remain: Plan council and Turbo are still classified as non-single-session
-  // and still hold `sharedExclusiveAvailable`.
+  // exclusive slot for no safety benefit. Plan council and legacy persistent Turbo retain
+  // their exclusive barriers. Automatic Turbo is non-single-session work with a separate
+  // capacity-managed pipeline in runnableTasks().
   isSingleSessionTask(task) {
     return this.isDirectExecutionTask(task) || task?.mode === 'breakdown';
   }
@@ -785,6 +788,17 @@ export class TaskQueue extends EventEmitter {
 
   isCapacityManagedCouncil(task) {
     return this.isDisposablePoolTask(task) && task?.mode === 'plan';
+  }
+
+  isCapacityManagedTurbo(task) {
+    return this.isDisposablePoolTask(task)
+      && task?.mode === 'turbo'
+      && this.terminalPool?.supportsTurboStages?.(task);
+  }
+
+  turboConcurrency(task) {
+    const configured = Number(task?.turbo?.workerCount || 1);
+    return Number.isInteger(configured) && configured > 0 ? configured : 1;
   }
 
   canShareProjectWithCouncil(tasks) {
@@ -819,6 +833,9 @@ export class TaskQueue extends EventEmitter {
       if (plan?.status === 'executing') {
         for (const worker of plan.workers || task.turbo?.workers || []) {
           if (worker?.threadId) reserved.add(worker.threadId);
+        }
+        for (const item of plan.tasks || []) {
+          if (item?.status === 'running' && item.workerThreadId) reserved.add(item.workerThreadId);
         }
       } else {
         const plannerThreadId = task.turbo?.plannerThreadId || task.thread_id;
@@ -876,7 +893,6 @@ export class TaskQueue extends EventEmitter {
   planAhead() {
     if (this.stopping || this.database.isPaused()) return;
     const activeTurbo = [...this.activeTasks.values()].filter((task) => this.isTurboExecuting(task));
-    if (activeTurbo.length === 0) return;
     const workerThreads = new Set(activeTurbo.flatMap((task) => {
       const plan = this.turboPlan(task);
       return (plan?.workers || task.turbo?.workers || []).map((worker) => worker.threadId);
@@ -884,6 +900,9 @@ export class TaskQueue extends EventEmitter {
     const planningThreads = new Set([...this.activePreparations.values()]
       .filter((entry) => entry.plannerBusy)
       .map((entry) => entry.plannerThreadId));
+    const dynamicPlanningProjects = new Set([...this.activePreparations.values()]
+      .filter((entry) => entry.dynamicTerminals)
+      .map((entry) => entry.repoPath));
     // Forward planning starts a real turn on the planner session, so it has to honour the
     // same reservation every dispatch does. Look-ahead only avoided Turbo's own worker and
     // planner threads before, which was survivable while every other non-direct mode froze
@@ -900,6 +919,20 @@ export class TaskQueue extends EventEmitter {
       if (this.activePreparations.has(task.id)) continue;
       const plan = this.turboPlan(task);
       if (plan?.status === 'ready') continue;
+      const dynamicTerminals = this.isDisposablePoolTask(task)
+        && this.terminalPool?.supportsTurboStages?.(task);
+      if (dynamicTerminals) {
+        if (dynamicPlanningProjects.has(task.repo_path)) continue;
+        const pool = this.terminalPool.projectStatus(
+          task.repo_path,
+          [...this.activeTasks.values()],
+        );
+        if (pool.active.codex >= pool.limits.codex) continue;
+        dynamicPlanningProjects.add(task.repo_path);
+        this.startPreparation(task, null);
+        continue;
+      }
+      if (activeTurbo.length === 0) continue;
       const plannerThreadId = task.turbo?.plannerThreadId || task.thread_id;
       if (!plannerThreadId
         || workerThreads.has(plannerThreadId)
@@ -915,6 +948,9 @@ export class TaskQueue extends EventEmitter {
     const councilOrder = task?.turbo?.council?.order || ['codex', 'claude'];
     const entry = {
       plannerThreadId,
+      repoPath: task.repo_path,
+      dynamicTerminals: this.isDisposablePoolTask(task)
+        && this.terminalPool?.supportsTurboStages?.(task),
       plannerBusy: !councilEnabled || councilOrder[0] === 'codex',
       councilEnabled,
       councilStage: null,
@@ -928,17 +964,34 @@ export class TaskQueue extends EventEmitter {
       preparation = Promise.reject(error);
     }
     entry.promise = preparation;
-    this.database.addEvent(task.id, 'queue', 'Planning ahead while another Turbo task executes.');
+    this.database.addEvent(
+      task.id,
+      'queue',
+      entry.dynamicTerminals
+        ? 'Planning ahead in a fresh terminal; queue position is unchanged.'
+        : 'Planning ahead while another Turbo task executes.',
+    );
     this.changed(task.id);
     preparation.then(() => {
       const current = this.database.getTask(task.id);
       if (current?.status === 'queued') {
-        this.database.addEvent(task.id, 'queue', 'Forward plan ready; waiting for worker execution.');
+        this.database.addEvent(
+          task.id,
+          'queue',
+          entry.dynamicTerminals
+            ? 'Forward plan ready; waiting for an execution lane.'
+            : 'Forward plan ready; waiting for worker execution.',
+        );
         this.changed(task.id);
       }
     }, (error) => {
       const current = this.database.getTask(task.id);
       if (current?.status !== 'queued') return;
+      if (error.capacityWait === true) {
+        this.database.addEvent(task.id, 'queue', error.message);
+        this.changed(task.id);
+        return;
+      }
       this.database.updateTask(task.id, { status: 'failed', finished_at: now(), error: error.message });
       this.artifacts.writeError(task.id, error.message);
       const willRetry = error.retryable !== false && this.canAutomaticallyRetry(task.id);
@@ -981,13 +1034,23 @@ export class TaskQueue extends EventEmitter {
     }
 
     let sharedExclusiveAvailable = !active.some((task) => !this.isSingleSessionTask(task));
+    let blockingWorkflowActive = active.some((task) => (
+      !this.isSingleSessionTask(task) && !this.isCapacityManagedTurbo(task)
+    ));
     for (const [repoPath, projectQueued] of queuedByProject) {
       const projectActive = activeByProject.get(repoPath) || [];
-      const executingTurbo = projectActive.some((task) => this.isTurboExecuting(task));
+      const legacyExecutingTurbo = projectActive.some((task) => (
+        this.isTurboExecuting(task) && !this.isCapacityManagedTurbo(task)
+      ));
 
-      if (executingTurbo) {
+      if (legacyExecutingTurbo) {
         for (const task of projectQueued) {
-          if (!this.isConcurrentCodexTask(task)) continue;
+          // Turbo's workflow parent remains exclusive, but a direct disposable turn needs
+          // only its own provider slot. Claude used to be skipped here unconditionally, so a
+          // project could show 0 / 2 Claude instances active while its first Claude task waited
+          // behind unrelated Codex workers. Capacity and exact conversation ownership are the
+          // complete safety gates for both direct providers.
+          if (!this.isDirectExecutionTask(task)) continue;
           if (task.terminal_lifecycle === 'disposable') {
             if (task.thread_id && reservedThreads.has(task.thread_id)) continue;
             if (!this.terminalPool?.canRun(task, [...active, ...runnable])) continue;
@@ -1001,7 +1064,9 @@ export class TaskQueue extends EventEmitter {
         continue;
       }
 
-      const activeExclusive = projectActive.filter((task) => !this.isSingleSessionTask(task));
+      const activeExclusive = projectActive.filter((task) => (
+        !this.isSingleSessionTask(task) && !this.isCapacityManagedTurbo(task)
+      ));
       const activeCapacityManagedCouncil = activeExclusive.length === 1
         && this.isCapacityManagedCouncil(activeExclusive[0])
         && this.canShareProjectWithCouncil(projectActive);
@@ -1013,6 +1078,16 @@ export class TaskQueue extends EventEmitter {
       // Legacy councils and Turbo retain the project-draining exclusive barrier.
       let projectHasCapacityManagedCouncil = activeCapacityManagedCouncil;
       const projectRunnable = [];
+      let runningTurboExecutions = projectActive.filter((task) => (
+        this.isCapacityManagedTurbo(task) && this.isTurboExecuting(task)
+      )).length;
+      const activeTurboLimits = projectActive
+        .filter((task) => this.isCapacityManagedTurbo(task))
+        .map((task) => this.turboConcurrency(task));
+      let turboExecutionLimit = activeTurboLimits.length > 0
+        ? Math.min(...activeTurboLimits)
+        : Number.POSITIVE_INFINITY;
+      let turboQueueSaturated = false;
       for (const task of projectQueued) {
         if (this.isSingleSessionTask(task)) {
           if (projectHasCapacityManagedCouncil && !this.isDisposablePoolTask(task)) break;
@@ -1027,6 +1102,32 @@ export class TaskQueue extends EventEmitter {
           }
           runnable.push(task);
           projectRunnable.push(task);
+          continue;
+        }
+
+        if (this.isCapacityManagedTurbo(task)) {
+          const plan = this.turboPlan(task);
+          if (plan?.status !== 'ready') continue;
+          if (blockingWorkflowActive) continue;
+          if (turboQueueSaturated) continue;
+          const taskLimit = this.turboConcurrency(task);
+          const effectiveLimit = Math.min(turboExecutionLimit, taskLimit);
+          if (runningTurboExecutions >= effectiveLimit) {
+            // Preserve Turbo FIFO without blocking later direct Claude or Codex work. A lower
+            // concurrency setting starts a new execution batch after the current batch drains.
+            turboQueueSaturated = true;
+            continue;
+          }
+          if (this.dispatchGuards.has(task.id)) continue;
+          if (!this.terminalPool.canRun(task, [...active, ...runnable])) {
+            turboQueueSaturated = true;
+            continue;
+          }
+          runnable.push(task);
+          projectRunnable.push(task);
+          runningTurboExecutions += 1;
+          turboExecutionLimit = effectiveLimit;
+          sharedExclusiveAvailable = false;
           continue;
         }
 
@@ -1045,6 +1146,7 @@ export class TaskQueue extends EventEmitter {
           projectRunnable.push(task);
           projectHasCapacityManagedCouncil = true;
           sharedExclusiveAvailable = false;
+          blockingWorkflowActive = true;
           continue;
         }
 
@@ -1069,6 +1171,7 @@ export class TaskQueue extends EventEmitter {
         runnable.push(task);
         projectRunnable.push(task);
         sharedExclusiveAvailable = false;
+        blockingWorkflowActive = true;
         break;
       }
     }
@@ -1093,7 +1196,13 @@ export class TaskQueue extends EventEmitter {
       finished_at: null,
       error: null,
     });
-    const execution = [task.model, task.effort ? `${task.effort} effort` : null].filter(Boolean);
+    const executionModel = this.isCapacityManagedTurbo(task)
+      ? task.turbo?.workerModel
+      : task.model;
+    const executionEffort = this.isCapacityManagedTurbo(task)
+      ? task.turbo?.workerEffort
+      : task.effort;
+    const execution = [executionModel, executionEffort ? `${executionEffort} effort` : null].filter(Boolean);
     this.database.addEvent(
       task.id,
       'queue',

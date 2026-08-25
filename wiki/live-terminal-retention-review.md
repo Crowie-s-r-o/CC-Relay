@@ -15,7 +15,7 @@ tags:
 
 **Ticket confidence: High**
 
-A running disposable task can now stop automatic terminal closure from Task Activity. The action is a one-way latch for the current run, persists before reporting success, and affects direct Execute, Plan council, and Turbo terminal fleets without changing the project default or another task. Completion, failure, and shutdown read the latest persisted row, so they cannot miss a latch by relying on the task snapshot captured at dispatch.
+A running disposable task can now stop automatic terminal closure from Task Activity. The action is a one-way latch for the current run, persists before reporting success, and affects direct Execute, Plan council, and the current Turbo executor without changing the project default or another task. Completion, failure, and shutdown read the latest persisted row, so they cannot miss a latch by relying on the task snapshot captured at dispatch.
 
 The adversarial pass found and fixed one concurrency defect before completion. The first renderer draft used one global pending flag and one global feedback value. With several concurrent tasks, an in-flight request for one task could silently suppress the action for another or display feedback under the wrong task. Pending and feedback state are now keyed by task ID, and every write finishes with a serialized fresh snapshot.
 
@@ -58,7 +58,7 @@ No schema migration, environment variable, remote permission, authentication cha
 ### Suspected Issues & Edge Cases
 
 - If event insertion fails after the task flag is persisted, the fresh snapshot still shows the authoritative protected state, but the local error text may also report the event failure. This requires a database write failure between two synchronous SQLite operations and does not reverse the safety latch.
-- Plan council and Turbo use plural copy because one task can own a fleet. Their retention relies on the existing task-ID terminal-pool grouping.
+- Plan council can own both prepared provider terminals. Current Turbo owns one active stage allocation at a time, and a live latch during execution protects only its executor because the planner stage already settled.
 - Repeated activation requests are idempotent and create only one queue event.
 
 ### Regression Risks

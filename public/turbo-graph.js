@@ -169,8 +169,8 @@ export function turboParentManifest(task) {
   const planner = manifestDescriptor(
     'planner',
     0,
-    turbo.plannerThreadId || task?.thread_id,
-    turbo.plannerTitle || turbo.plannerThreadTitle || task?.thread_name,
+    turbo.plannerThreadId || (turbo.executionThreadId ? null : task?.thread_id),
+    turbo.plannerTitle || turbo.plannerThreadTitle || turbo.plannerThreadName || task?.thread_name,
   );
   const workers = (Array.isArray(turbo.workers) ? turbo.workers : []).map((worker, index) => manifestDescriptor(
     'worker',

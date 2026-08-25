@@ -34,7 +34,7 @@ CC Relay shutdown also re-reads the persisted row and promotes a prepared latche
 
 `POST /api/tasks/:id/keep-terminal-open` delegates to the queue latch and returns the updated task. `/api/status` advertises `capabilities.liveTerminalRetention`.
 
-The renderer shows the control for every running disposable workflow, including direct Execute, Plan council, and Turbo. Plan council and Turbo retain their complete terminal fleets. A refreshed renderer against an older backend shows **Restart to stop auto-close** disabled instead of calling an unsupported route.
+The renderer shows the control for every running disposable workflow, including direct Execute, Plan council, and Turbo. Plan council retains its prepared provider terminals. A running Turbo task has already closed its planning stage by default, so the latch protects the current executor terminal only. A project-level retention snapshot can retain both sequential Turbo stages. A refreshed renderer against an older backend shows **Restart to stop auto-close** disabled instead of calling an unsupported route.
 
 The control uses explicit text and `aria-pressed`, not color alone:
 

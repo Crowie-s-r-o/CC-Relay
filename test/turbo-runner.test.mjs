@@ -76,6 +76,116 @@ test('turbo plan parser requires the configured package count', () => {
   assert.throws(() => parseTurboPlan(planText, 3), /at least 3/);
 });
 
+test('disposable Turbo closes one planner before opening one executor for the complete plan', async () => {
+  const timeline = [];
+  let sequence = 0;
+  const terminalPool = {
+    supportsTurboStages(task) {
+      return task.terminal_lifecycle === 'disposable' && task.mode === 'turbo';
+    },
+    async launchTurboStage(task, options) {
+      sequence += 1;
+      timeline.push(`launch:${options.role}:${options.model}:${options.effort}`);
+      return {
+        launchId: `launch-${sequence}`,
+        threadId: `${options.role}-thread-${sequence}`,
+        thread: {
+          id: `${options.role}-thread-${sequence}`,
+          title: `${options.role} terminal ${sequence}`,
+          source: 'test terminal',
+        },
+      };
+    },
+    async finishTurboStage(taskId, allocation) {
+      timeline.push(`close:${allocation.threadId}`);
+    },
+  };
+  const calls = [];
+  const codex = {
+    async run(task) {
+      calls.push(task);
+      timeline.push(`run:${String(task.id).endsWith(':planner') ? 'planner' : 'execution'}`);
+      if (String(task.id).endsWith(':planner')) return { finalResponse: planText };
+      assert.match(task.prompt, /sole execution coordinator/);
+      assert.match(task.prompt, /internal sub-agents/);
+      assert.doesNotMatch(task.prompt, /"status": "running"/);
+      return { finalResponse: 'Integrated the complete plan.', sessionId: task.thread_id, exitCode: 0 };
+    },
+    cancel() { return true; },
+  };
+  const artifacts = memoryArtifacts();
+  const task = {
+    ...turboTask(70),
+    mode: 'turbo',
+    terminal_lifecycle: 'disposable',
+    thread_id: null,
+    turbo: {
+      ...turboTask(70).turbo,
+      plannerThreadId: null,
+      plannerEffort: 'max',
+      workerEffort: 'medium',
+      workerCount: 3,
+      workers: [],
+    },
+  };
+  const runner = new TurboRunner({ codex, artifacts, terminalPool });
+
+  const result = await runner.run(task, { onEvent() {}, onStderr() {} });
+  assert.equal(calls.length, 2, 'one planner turn and one execution turn');
+  assert.deepEqual(timeline, [
+    'launch:planner:sol:max',
+    'run:planner',
+    'close:planner-thread-1',
+    'launch:worker:luna:medium',
+    'run:execution',
+    'close:worker-thread-2',
+  ]);
+  assert.equal(calls[1].thread_id, 'worker-thread-2');
+  assert.equal(calls[1].model, 'luna');
+  assert.equal(calls[1].effort, 'medium');
+  assert.match(result.finalResponse, /Integrated the complete plan/);
+  const plan = artifacts.readTurboPlan(task.id);
+  assert.equal(plan.status, 'complete');
+  assert.equal(plan.execution.threadId, 'worker-thread-2');
+  assert.equal(new Set(plan.tasks.map((item) => item.workerThreadId)).size, 1);
+});
+
+test('disposable Turbo never opens an executor after planner cleanup fails', async () => {
+  const launchedRoles = [];
+  const terminalPool = {
+    supportsTurboStages() { return true; },
+    async launchTurboStage(task, options) {
+      launchedRoles.push(options.role);
+      return {
+        threadId: `${options.role}-thread`,
+        thread: { id: `${options.role}-thread`, title: options.role },
+      };
+    },
+    async finishTurboStage(taskId, allocation, options) {
+      assert.equal(options.failOnError, true);
+      throw Object.assign(new Error('planner cleanup failed'), { retryable: false });
+    },
+  };
+  const task = {
+    ...turboTask(71),
+    terminal_lifecycle: 'disposable',
+    turbo: { ...turboTask(71).turbo, workerCount: 1, workers: [] },
+  };
+  const artifacts = memoryArtifacts();
+  const runner = new TurboRunner({
+    artifacts,
+    terminalPool,
+    codex: {
+      async run() { return { finalResponse: planText }; },
+      cancel() { return true; },
+    },
+  });
+
+  await assert.rejects(() => runner.run(task), /planner cleanup failed/);
+  assert.deepEqual(launchedRoles, ['planner']);
+  assert.equal(artifacts.readTurboPlan(task.id).status, 'failed');
+});
+
 test('turbo runner plans once then starts workers concurrently', async () => {
   const calls = [];
   let activeWorkers = 0;
@@ -211,6 +321,16 @@ test('turbo cancellation is scoped to one parent task', async () => {
   calls.length = 0;
   runner.cancel();
   assert.deepEqual(calls.sort(), ['1:planner', '1:worker:1:a', '2:planner']);
+});
+
+test('Turbo accepts cancellation while a fresh terminal is still launching', () => {
+  const runner = new TurboRunner({
+    codex: { cancel() { return false; } },
+  });
+  runner.trackChild(9, '9:execution');
+
+  assert.equal(runner.cancel(9), true);
+  assert.equal(runner.isCancelled(9), true);
 });
 
 test('turbo graph packages retain exact CC Relay attribution while workers run and finish', async () => {

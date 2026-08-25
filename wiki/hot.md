@@ -6,6 +6,14 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 25: Task Activity can show the complete conversation without operational noise.**
+> The new **Conversation** filter keeps My messages and AI messages together in their original
+> signal order, with a live combined count, filtered copy output, and a dedicated empty state.
+> It uses the same strict role boundary as the individual views, so commands, provider lifecycle
+> notices, input requests, and plan records remain excluded. See
+> [[terminal-conversation-filters]] and [[interface-layout]].
+
 > [!important]
 > **August 21: the failed Namiru backend AI production activation has a repository-side repair.**
 > The long-lived Deployment retained legacy PM2 `exec` probes while the candidate selected HTTP
@@ -353,7 +361,7 @@ type: hot
 > **August 12: the Claude session-end wedge is fixed in source; rebuild and restart to activate it.** Tasks whose Claude turn crossed background sub-agent boundaries (team sessions with standby agents) stayed Running forever and failed with "N background tasks had not finished when the terminal closed" when their terminal closed: the prompt-id guard dropped every later Stop hook, freezing the `hookBackgroundTasks` snapshot, and a stale `pendingBackgroundAgentCount` could strand finality even after the arrays cleared. Tonight's victims were tasks 218, 222, and 223 (task 129 was the first diagnosed case); single-boundary tasks like 221 were never affected. The fix (boundary-adopting Stop guard with acceptedTurnEnded latch and pending fence, countCleared re-arm of the held final, message dedupe) lives in `src/claude-terminal-executor.mjs` with 8 regression tests, adversarially reviewed twice with runtime probes; focused suite 196/196, full suite 1232/1232. The change is working-tree only and must be committed before any release tag. The running packaged app still holds the wedged code. See [[claude-stale-background-stop-hook]] and [[claude-background-sub-agent-completion]].
 
 > [!important]
-> **August 12: the public README now leads with Relay's seven core benefits and keeps end-user setup separate from development.** The order is provider-specific concurrency, disposable minimized terminals with same-conversation resume, multi-project Launchpad operation, queue-ahead prompts, challenged two-provider Plan council, stronger-planner plus lower-cost-worker Turbo, and visible provider subscription runway. **Get started** now tells users to download and run the packaged macOS or Windows release, while source checkout, Node.js, localhost, and Electron commands live only under **Development**. The terminal promise was checked against the implementation: new projects default to minimized launch and no retention, macOS miniaturizes the exact owned window, terminal outcomes release exact owned launches, and **Continue session** resumes the saved provider conversation. See [[core-product-story]], [[open-source-releases]], [[disposable-terminal-pools]], [[provider-usage-monitor]], and [[project-terminal-settings]].
+> **August 12: the public README now leads with Relay's seven core benefits and keeps end-user setup separate from development.** The order is provider-specific concurrency, disposable minimized terminals with same-conversation resume, multi-project Launchpad operation, queue-ahead prompts, challenged two-provider Plan council, fresh-planner plus single-executor Turbo, and visible provider subscription runway. **Get started** tells users to download and run the packaged macOS or Windows release, while source checkout, Node.js, localhost, and Electron commands live only under **Development**. The terminal promise was checked against the implementation: new projects default to minimized launch and no retention, macOS miniaturizes the exact owned window, terminal outcomes release exact owned launches, and **Continue session** resumes the saved provider conversation. See [[core-product-story]], [[open-source-releases]], [[disposable-terminal-pools]], [[provider-usage-monitor]], and [[project-terminal-settings]].
 
 > [!important]
 > **August 12: Windows support is code-complete and gated on a real-machine smoke run.** Before this pass the Windows build could not work at all: every static asset 404ed (backslash-blind containment guards), every direct provider spawn failed (npm `.cmd` shims plus a resolver probe that rejected them), kills orphaned providers holding port 4769, the grid-placement PowerShell never compiled, and manually closed terminals leaked pool slots forever. All fixed across 14 src files with win32-simulated tests; macOS behavior is byte-identical per adversarial review. Full suite 1194/1194, `release:check` green. Plan council terminal execution, live steering, and runtime terminal recovery stay macOS-only by design and are advertised through `capabilities`. The 15-item Windows smoke checklist (items 1-5 are the release gate) and the unproven-on-macOS register live in [[windows-compatibility]].
@@ -858,13 +866,13 @@ type: hot
 > **Run in parallel** is a legacy persistent-task action that bundles selected waiting tasks into one numbered Codex command sent to the selected Codex terminal. Disposable work uses project limits or Turbo instead. See [[task-history]].
 
 > [!note]
-> Forward-planning Turbo uses a read-only Codex planner and a dependency-aware CC Relay scheduler across a disposable Codex fleet. The project maximum must fit one planner plus the configured worker count before the workflow starts. See [[turbo-execution]] and [[disposable-terminal-pools]].
+> Forward-planning Turbo now uses one fresh read-only planner followed by one different fresh executor for each prompt. The complete graph goes to that single executor, which may use internal sub-agents. The numeric setting controls concurrent planned prompts across the queue, and the project maximum must fit that many execution lanes plus one planning lane. See [[turbo-execution]] and [[disposable-terminal-pools]].
 
 > [!note]
-> Turbo queue cards now show **Forward plan**, **Planning ahead**, **Plan ready**, or **Workers running** alongside the canonical queue status. A free planner can prepare the next queued Turbo parent while another parent executes; planning does not change queue position or start the parent early. See [[turbo-execution]].
+> Turbo queue cards show **Forward plan**, **Planning ahead**, **Plan ready**, or **Executor running** alongside the canonical queue status. A fresh planner can prepare queued Turbo work whenever project Codex capacity is free, even before another Turbo parent runs. Planning does not change queue position or start execution early. See [[turbo-execution]].
 
 > [!note]
-> Turbo cards now include a compact planner and execution-CC Relay fleet manifest, while the detail graph uses checked, loading, blocked, and failed dispatch tickets. See [[turbo-execution]] and [[interface-layout]].
+> Current automatic Turbo cards show two explicit stages, Planning and Execution, with their model, effort, fresh-session contract, and queue concurrency. The detail graph keeps checked, loading, blocked, and failed tickets, all attributed to the one executor conversation. See [[turbo-execution]] and [[interface-layout]].
 
 > [!note]
 > Turbo dispatch tickets use uniform outlines without colored left borders. The running spinner keeps a continuous phase across live graph rerenders so polling cannot make it appear frozen. See [[interface-layout]].
@@ -873,10 +881,10 @@ type: hot
 > Turbo dispatch tickets use the final `.turbo-graph-*` layout exclusively. Broad legacy article and direct-child span selectors break the compact state, copy, and CC Relay ownership grid and must not be restored. See [[interface-layout]].
 
 > [!note]
-> An active Turbo graph with no packages now displays **Planning dependency graph** with an indeterminate accessible animation and skeleton tickets instead of `0 / 0 complete`. The task marker remains **Planning graph** until worker execution actually begins. See [[turbo-execution]] and [[interface-layout]].
+> An active Turbo graph with no packages displays **Planning dependency graph** with an indeterminate accessible animation and skeleton tickets instead of `0 / 0 complete`. The task marker remains **Planning graph** until execution actually begins. See [[turbo-execution]] and [[interface-layout]].
 
 > [!note]
-> Turbo Plan council now matches the standalone council card design and lets the user choose **Codex first** or **Claude first**. The first provider authors the graph and the second validates it before workers start. See [[turbo-plan-council]], [[turbo-execution]], and [[interface-layout]].
+> Turbo Plan council matches the standalone council card design and lets the user choose **Codex first** or **Claude first**. The first provider authors the graph and the second validates it before the single executor starts. See [[turbo-plan-council]], [[turbo-execution]], and [[interface-layout]].
 
 > [!important]
 > Council capability does not imply Claude authentication. CC Relay distinguishes an installed but signed-out Claude CLI from an old backend, preserves `loggedIn: false` JSON even when `claude auth status --json` exits with code 1, and rechecks authentication while running. Use `claude auth login`; Council enables automatically after sign-in without another restart. See [[diagnostics]].
@@ -927,10 +935,10 @@ type: hot
 > CC Relay numbers and names are persisted per Codex thread and remain unchanged when terminals reconnect, disconnect, or are reordered. See [[task-history]].
 
 > [!note]
-> While a Turbo parent executes, queued direct Codex work can use unreserved Relays across queued exclusive entries. Turbo workers, busy planners, and active direct terminals remain reserved; no second exclusive task starts, and FIFO barriers return when Turbo ends. See [[turbo-execution]] and [[task-history]].
+> While automatic Turbo executes, queued direct Codex and Claude work can use free provider slots. Claude no longer waits behind Codex Turbo when its own project limit has capacity. Several ready Turbo parents may each run one executor up to the configured queue concurrency, while Plan council and legacy exclusive workflows retain their barriers. See [[turbo-execution]] and [[task-history]].
 
 > [!note]
-> Direct Codex tasks run concurrently across distinct CC Relay terminals while remaining sequential per terminal. Current disposable Plan councils share unused provider capacity even inside their own project, while provider-wide council and Turbo workflows remain globally serialized. Legacy persistent barriers stay project-scoped. See [[project-workspaces]], [[task-history]], and [[plan-council-capacity-scheduling-review]].
+> Direct Codex tasks run concurrently across distinct CC Relay terminals while remaining sequential per terminal. Current disposable Plan councils share unused provider capacity even inside their own project. Automatic Turbo is queue-concurrent and owns one executor terminal per parent; legacy persistent workflow barriers remain. See [[project-workspaces]], [[task-history]], and [[plan-council-capacity-scheduling-review]].
 
 > [!note]
 > Direct Claude tasks now execute concurrently on distinct Claude session IDs and remain sequential within each session. The idle CC Relay preference routes Claude submissions to an unassigned idle Claude session in the same workspace when the backend advertises `parallelClaudeExecution`. Direct Codex and Claude work can run beside a disposable Plan council only while the combined provider limits fit. Restart CC Relay to load scheduler changes. See [[task-history]], [[project-workspaces]], and [[parallel-claude-review]].

@@ -6,10 +6,13 @@ const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const markup = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 
-test('terminal controls expose separate user and AI message filters with live counts', () => {
+test('terminal controls expose combined and role-specific message filters with live counts', () => {
+  assert.match(markup, /data-event-filter="conversation"[^>]*>[\s\S]*?Conversation[\s\S]*?data-event-filter-count/);
   assert.match(markup, /data-event-filter="mine"[^>]*>[\s\S]*?My messages[\s\S]*?data-event-filter-count/);
   assert.match(markup, /data-event-filter="ai"[^>]*>[\s\S]*?AI messages[\s\S]*?data-event-filter-count/);
-  assert.match(app, /mine: messageCounts\.user,[\s\S]*?ai: messageCounts\.assistant/);
+  assert.match(app, /conversation: messageCounts\.user \+ messageCounts\.assistant,[\s\S]*?mine: messageCounts\.user,[\s\S]*?ai: messageCounts\.assistant/);
+  assert.match(app, /conversation: 'conversation messages'/);
+  assert.match(app, /conversation: \['No conversation yet', 'Your messages and AI responses will appear here\.'\]/);
   assert.match(app, /button\.setAttribute\('aria-label', `\$\{label\}: \$\{count\} signal/);
   assert.match(style, /\.event-filters \{[^}]*overflow-x: auto;[^}]*scrollbar-width: none;/s);
 });
@@ -18,6 +21,8 @@ test('terminal message rows identify the speaker and preserve original signal nu
   assert.match(app, /messageRole: 'assistant'/);
   assert.match(app, /messageRole: 'user'/);
   assert.match(app, /payloadType === 'claude\/message' \|\| lastEvent\?\.kind === 'result'/);
+  assert.match(app, /status: assistantMessageStatus\(entry, task, message\)/);
+  assert.doesNotMatch(app, /status: item\?\.phase === 'final'[\s\S]*?liveFinal/);
   assert.match(app, /const roleLabel = role === 'user' \? 'My message' : 'AI message'/);
   assert.match(app, /const entrySequence = new Map\(grouped\.map/);
   assert.match(app, /renderEventEntry\(entry, task, entrySequence\.get\(entry\)\)/);

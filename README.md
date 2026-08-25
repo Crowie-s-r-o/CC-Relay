@@ -20,7 +20,7 @@
 3. **Run many projects from one Launchpad.** Repositories, queues, limits, history, and task state in one place.
 4. **Queue the next prompts now.** Add, reorder, or edit queued work while tasks run; Relay dispatches on capacity.
 5. **Make important plans survive a challenge.** Plan council has one provider author a plan and the other review it critically.
-6. **Plan smart, execute economically.** Turbo builds a dependency graph with a stronger model, then fans work out to faster Codex workers.
+6. **Plan smart, execute economically.** Turbo gives every prompt a fresh high-effort planning session, then hands the complete graph to one fresh execution session that may coordinate internal sub-agents.
 7. **Keep provider runway visible.** The compact status bar shows Claude's five-hour and weekly usage, Fable weekly usage, and Codex five-hour and weekly usage, including the percentage used and time left until each window resets.
 
 ## Highlights
@@ -57,14 +57,14 @@ While work runs:
 
 - **Every project at once.** Several repositories can execute side by side, each with its own queue, limits, and history.
 - **Hear and see the finish.** A sound plays when a task ends, and completed tasks stack up as notifications you can click through and review one by one.
-- **Read the terminal fast.** Live output is colorized, every view shows its current signal count, and separate **My messages** and **AI messages** filters isolate either side of the conversation.
+- **Read the terminal fast.** Live output is colorized, every view shows its current signal count, **Conversation** shows your messages and AI responses together, and separate role filters can isolate either side.
 - **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low, and you can continue any saved task later exactly where it left off.
 
 | Workflow | Best for |
 | --- | --- |
 | Execute | One focused Codex or Claude task |
 | Plan council | One provider writes the plan, the other tears it apart, the author revises |
-| Forward-planning Turbo | A stronger model builds the dependency graph, fast Codex workers execute it |
+| Forward-planning Turbo | A fresh planner builds the graph, then one fresh executor owns the complete implementation |
 | Planner | Reusable project plans released through the normal queue |
 
 ## Safety

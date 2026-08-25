@@ -28,7 +28,7 @@ Every Codex turn must carry an explicit policy at both protocol boundaries:
 
 | CC Relay stage | `thread/resume.sandbox` | `turn/start.sandboxPolicy` |
 | --- | --- | --- |
-| Normal Execute, follow-up, or Turbo worker | `danger-full-access` | `{ type: "dangerFullAccess" }` |
+| Normal Execute, follow-up, or Turbo executor | `danger-full-access` | `{ type: "dangerFullAccess" }` |
 | Plan council review or Turbo planning | `read-only` | `{ type: "readOnly", networkAccess: false }` |
 
 > [!important]

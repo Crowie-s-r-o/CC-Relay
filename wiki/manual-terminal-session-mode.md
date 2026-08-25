@@ -17,7 +17,7 @@ tags:
 > [!important]
 > Task completion and native terminal closure are separate operations. **Complete session** changes the task to `complete` but never closes a retained terminal. **Close terminal** keeps its existing exact-ownership guard and never completes the task.
 
-Plan council and Forward-planning Turbo do not become manual sessions. When the same project choice is enabled for those workflows, their tasks still complete automatically and only their terminal fleets remain connected. The composer labels that case **Keep workflow terminals open** so the two contracts are not confused.
+Plan council and Forward-planning Turbo do not become manual sessions. When the same project choice is enabled for those workflows, their tasks still complete automatically. Plan council retains its prepared terminals, while Turbo can retain its sequential planning and execution terminals. The composer labels that case **Keep workflow terminals open** so the two contracts are not confused.
 
 ## Submission boundary
 

@@ -6,6 +6,8 @@ function turbo(status, planStatus) {
   return {
     mode: 'turbo',
     status,
+    terminal_lifecycle: 'disposable',
+    turboSingleExecutor: true,
     turboPlanSummary: planStatus ? { status: planStatus, summary: 'Graph', taskCount: 3 } : null,
   };
 }
@@ -24,13 +26,31 @@ test('queued Turbo tasks distinguish awaiting, planning, ready, and terminal pla
   assert.deepEqual(turboPlanMarker(turbo('queued', 'failed')), { phase: 'failed', label: 'Plan failed' });
 });
 
-test('running Turbo tasks show workers running after a prepared graph', () => {
+test('running Turbo tasks show the single executor after a prepared graph', () => {
   assert.deepEqual(turboPlanMarker(turbo('running')), { phase: 'planning', label: 'Planning graph' });
   assert.deepEqual(turboPlanMarker(turbo('running', 'planning')), { phase: 'planning', label: 'Planning graph' });
   assert.deepEqual(turboPlanMarker(turbo('running', 'reviewing')), { phase: 'reviewing', label: 'Council review' });
-  assert.deepEqual(turboPlanMarker(turbo('running', 'executing')), { phase: 'executing', label: 'Workers running' });
-  assert.deepEqual(turboPlanMarker(turbo('running', 'ready')), { phase: 'executing', label: 'Workers running' });
+  assert.deepEqual(turboPlanMarker(turbo('running', 'executing')), { phase: 'executing', label: 'Executor running' });
+  assert.deepEqual(turboPlanMarker(turbo('running', 'ready')), { phase: 'executing', label: 'Executor running' });
   assert.deepEqual(turboPlanMarker(turbo('running', 'failed')), { phase: 'failed', label: 'Plan failed' });
+});
+
+test('legacy Turbo history keeps multi-worker execution copy', () => {
+  const task = {
+    ...turbo('running', 'executing'),
+    terminal_lifecycle: 'persistent',
+    turboSingleExecutor: false,
+  };
+  assert.deepEqual(turboPlanMarker(task), { phase: 'executing', label: 'Workers running' });
+  assert.match(turboWaitingCopy(task), /Workers are executing/);
+});
+
+test('an older disposable backend keeps multi-worker presentation without the capability marker', () => {
+  const task = {
+    ...turbo('running', 'executing'),
+    turboSingleExecutor: false,
+  };
+  assert.deepEqual(turboPlanMarker(task), { phase: 'executing', label: 'Workers running' });
 });
 
 test('terminal task outcomes map to complete or failed marker variants', () => {
@@ -41,11 +61,11 @@ test('terminal task outcomes map to complete or failed marker variants', () => {
 });
 
 test('ready plans explain that execution will skip planning', () => {
-  assert.match(turboWaitingCopy(turbo('queued', 'ready')), /skip planning/);
+  assert.match(turboWaitingCopy(turbo('queued', 'ready')), /one fresh execution session/);
   assert.match(turboWaitingCopy(turbo('queued', 'planning')), /planning this task ahead/);
   assert.match(turboWaitingCopy(turbo('queued', 'reviewing')), /reviewing the Codex graph/);
   assert.match(turboWaitingCopy(turbo('queued')), /dependency graph/);
-  assert.match(turboWaitingCopy(turbo('running', 'planning')), /before workers start/);
+  assert.match(turboWaitingCopy(turbo('running', 'planning')), /before the executor starts/);
 });
 
 test('reviewing copy follows the selected provider order', () => {

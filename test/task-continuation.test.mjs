@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildSessionFollowUp } from '../src/task-continuation.mjs';
+import { buildSessionFollowUp, isTurboExecutionSession } from '../src/task-continuation.mjs';
 
 const sourceTask = {
   id: 42,
@@ -55,7 +55,7 @@ test('continuation rejects multi-provider tasks and mismatched sessions', () => 
     prompt: 'Continue',
     thread,
     execution: {},
-  }), /Only direct Codex or Claude tasks/);
+  }), /Only direct tasks and completed Turbo execution sessions/);
   assert.throws(() => buildSessionFollowUp({
     sourceTask,
     prompt: 'Continue',
@@ -74,6 +74,34 @@ test('continuation rejects multi-provider tasks and mismatched sessions', () => 
     thread: { ...thread, cwd: undefined },
     execution: {},
   }), /different workspace/i);
+});
+
+test('completed Turbo work resumes its single execution session as a direct turn', () => {
+  const turboTask = {
+    ...sourceTask,
+    mode: 'turbo',
+    terminal_lifecycle: 'disposable',
+    turbo: {
+      executionThreadId: 'relay-one',
+      workerModel: 'luna',
+      workerEffort: 'medium',
+    },
+  };
+  const continuation = buildSessionFollowUp({
+    sourceTask: turboTask,
+    prompt: 'Recheck the integration.',
+    thread,
+    execution: { model: 'luna', effort: 'medium' },
+  });
+
+  assert.equal(isTurboExecutionSession(turboTask), true);
+  assert.equal(continuation.id, turboTask.id);
+  assert.equal(continuation.mode, 'execute');
+  assert.equal(continuation.provider, 'codex');
+  assert.equal(continuation.thread_id, 'relay-one');
+  assert.equal(continuation.model, 'luna');
+  assert.equal(continuation.effort, 'medium');
+  assert.equal(continuation.sessionFollowUp, true);
 });
 
 test('continuation accepts a Windows case-variant workspace and still rejects a different one', () => {

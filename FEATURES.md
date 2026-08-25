@@ -67,21 +67,23 @@ This workflow combines two provider perspectives before implementation begins. I
 
 ### Forward-planning Turbo
 
-Forward-planning Turbo turns a large objective into a dependency-aware execution graph and runs that graph across a temporary Codex fleet.
+Forward-planning Turbo turns a large objective into a dependency-aware execution graph, then gives that complete graph to one fresh Codex execution session.
 
-CC Relay launches one read-only Codex planner and the requested number of workers. The planner studies the workspace once and returns a structured plan containing execution packages and their dependencies. CC Relay validates the plan, assigns ready packages to workers, runs independent packages concurrently, and unlocks dependent packages as their prerequisites finish.
+For each queued Turbo prompt, CC Relay opens a fresh read-only planner using the selected planner model and effort. The planner studies the workspace and returns a structured graph. As soon as the graph is valid, the planning terminal closes. When an execution lane is available, CC Relay opens a different fresh terminal using the selected execution model and effort and sends it the original objective plus the entire plan.
 
-Workers share the same project workspace. The planner is expected to separate file ownership where possible and encode required ordering explicitly. CC Relay reuses workers until the graph finishes, then closes the complete fleet by default. **Keep workflow terminals open** retains that fleet when hands-on follow-up is useful.
+The executor owns integration and final verification. It may use Codex internal sub-agents for independent parts of the graph, but CC Relay does not split one prompt across native terminal windows. The configured concurrency controls how many planned Turbo prompts may be executing at the same time. This creates a pipeline with one planning lane and up to the selected number of execution lanes.
+
+Both stage terminals close automatically by default, and each bound conversation remains resumable. **Keep workflow terminals open** retains a stage terminal after it finishes when hands-on inspection is useful. A completed Turbo task exposes continuation for its final execution conversation.
 
 You can choose:
 
 - The planner model and reasoning effort
-- The worker model and reasoning effort
-- The number of worker terminals
+- The execution model and reasoning effort
+- The number of concurrent Turbo executions
 
 **Best for:** large features, coordinated refactors, broad repository changes, and objectives that contain several independent or partially dependent workstreams.
 
-**Output:** a validated execution graph, live package status, worker assignments, dependency progress, and one completed parent task.
+**Output:** a validated execution graph, visible planning and execution stages, one resumable executor conversation, dependency progress, and one completed parent task.
 
 ## Workflow comparison
 
@@ -89,7 +91,7 @@ You can choose:
 | --- | --- | --- | --- | --- |
 | Execute | Complete a clear task | One disposable Codex or Claude instance | Allowed | Up to the project provider limit |
 | Execute with Plan council | Produce a reviewed plan | Selectable Claude/Codex author, opposite-provider reviewer, original-provider reviser | No, read-only | Staged review loop |
-| Forward-planning Turbo | Plan and execute a large objective | One disposable Codex planner and multiple disposable workers | Planner is read-only, workers can edit | Dependency-aware worker execution |
+| Forward-planning Turbo | Plan and execute a large objective | One fresh planner, then one fresh executor per prompt | Planner is read-only, executor can edit | Several planned prompts can execute concurrently |
 
 ## Supporting features
 
@@ -113,7 +115,7 @@ search, and the active-task monitor. Starring is display organization only. It d
 queued task's execution position, FIFO barriers, provider capacity, or scheduler priority. Queue
 reordering remains available inside the starred and unstarred groups.
 
-Task Activity includes a compact continuation dock for direct tasks. A follow-up always reuses the selected task row and saved conversation. While a direct task is running, Codex and interactive Claude accept exact active-turn updates without creating queue work. Running Claude keeps the dock editable while earlier updates are being delivered, captures every send in order, and sends a stable native Claude draft before the next Relay update instead of blocking the operator. Attachment-bearing updates remain recognizable after Claude converts their path lines into cumulative image chips and shortens the collapsed paste, so the guarded submit schedule does not leave them waiting for manual Enter. After a task finishes, CC Relay uses a live retained session immediately, or reserves a free provider slot, relaunches the saved conversation, and sends the next turn without creating a task. If no slot is free, submission stays on the finished task and asks the user to try again. The Prompts disclosure above the event rail lists the original request and every accepted follow-up.
+Task Activity includes a compact continuation dock for direct tasks and for a completed Turbo task's final execution session. A follow-up always reuses the selected task row and saved conversation. While a direct task is running, Codex and interactive Claude accept exact active-turn updates without creating queue work. Running Claude keeps the dock editable while earlier updates are being delivered, captures every send in order, and sends a stable native Claude draft before the next Relay update instead of blocking the operator. Attachment-bearing updates remain recognizable after Claude converts their path lines into cumulative image chips and shortens the collapsed paste, so the guarded submit schedule does not leave them waiting for manual Enter. After a supported task finishes, CC Relay uses a live retained session immediately, or reserves a free provider slot, relaunches the saved conversation, and sends the next turn without creating a task. If no slot is free, submission stays on the finished task and asks the user to try again. The Prompts disclosure above the event rail lists the original request and every accepted follow-up.
 
 Retrying a failed, cancelled, or interrupted automatic Execute task opens its execution settings first. The executor, model, and effort can change before the task returns to the queue. Keeping the same executor preserves the saved conversation when available. Switching between Codex and Claude starts a fresh provider conversation while preserving the task ID, request, images, and queue history.
 
@@ -131,7 +133,7 @@ Right-click a task card to attach My messages, AI responses, or Both to the new-
 
 ### Task activity
 
-CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, My messages, and AI messages. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex or Claude response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Follow mode and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
+CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, Conversation, My messages, and AI messages. Conversation keeps both speakers together in chronological order. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex or Claude response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Follow mode and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
 
 ### Task changes
 
@@ -161,4 +163,4 @@ Packaged macOS and Windows builds check the public `Crowie-s-r-o/CC-Relay` lates
 
 - Choose **Execute** when you know what should be done.
 - Enable **Plan council** in Execute when you first need a carefully reviewed implementation plan.
-- Choose **Forward-planning Turbo** when the objective is large enough to benefit from automatic decomposition and multiple coordinated workers.
+- Choose **Forward-planning Turbo** when the objective benefits from a dedicated planning pass before a clean execution session takes ownership.

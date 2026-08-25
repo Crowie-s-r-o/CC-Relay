@@ -212,19 +212,23 @@ test('automatic pools cap the fleet one below the project instance ceiling', () 
   // Legacy live-terminal Turbo keeps eight workers, on the server and in the markup default.
   assert.match(server, /workerCount < 1 \|\| workerCount > 8/);
   assert.match(markup, /id="turbo-worker-count"[^>]*max="8"/);
+  assert.match(markup, />Planning and execution</);
+  assert.match(markup, />Execution model</);
+  assert.match(markup, />Execution effort</);
+  assert.match(markup, />Concurrent executions</);
 });
 
 test('capacity advice never asks for a maximum the settings UI cannot reach', () => {
   const advice = app.slice(app.indexOf('function turboCapacityAdvice('), app.indexOf('function turboControlsSignatureInputs'));
 
   assert.match(advice, /required > MAX_PROJECT_INSTANCES/);
-  assert.match(advice, /Use at most \$\{MAX_POOL_TURBO_WORKERS\} worker terminals/);
+  assert.match(advice, /Use at most \$\{MAX_POOL_TURBO_WORKERS\} concurrent executions/);
   assert.match(advice, /Raise Codex max instances to at least \$\{required\}/);
   assert.match(app, /: turboCapacityAdvice\(requiredCodexInstances\)/);
   // The submit-time alert is the other user-facing copy and follows the same boundary.
   assert.match(
     app,
-    /Turbo needs \$\{required\} Codex instances and a project allows at most \$\{MAX_PROJECT_INSTANCES\}\. Reduce the worker terminals to \$\{MAX_POOL_TURBO_WORKERS\} or fewer\./,
+    /Turbo needs \$\{required\} Codex instances and a project allows at most \$\{MAX_PROJECT_INSTANCES\}\. Reduce concurrent executions to \$\{MAX_POOL_TURBO_WORKERS\} or fewer\./,
   );
   assert.match(app, /Turbo needs \$\{required\} Codex instances\. Raise this project's Codex maximum before adding the task\./);
 });
@@ -236,6 +240,8 @@ test('the fleet sentence follows the keep workflow terminals open toggle', () =>
   );
   assert.match(app, /and leaves every terminal connected when Turbo ends\./);
   assert.match(app, /then closes every terminal when Turbo ends\./);
+  assert.match(app, /Each prompt gets one fresh planning terminal, then one fresh execution terminal for the complete plan\./);
+  assert.match(app, /Each terminal closes after its stage and its session remains resumable\./);
   // The toggle repaints the sentence without waiting for the settings request to settle.
   const keepOpen = app.slice(app.indexOf("elements.keepTerminalOpen.addEventListener('change'"));
   assert.ok(keepOpen.indexOf('renderTurboControls();') < keepOpen.indexOf('void saveProjectTerminalSettings();'));
@@ -246,6 +252,8 @@ test('the composer states where a Turbo prompt sends its images', () => {
 
   assert.match(route, /Sent to the Turbo planner and to every worker turn\./);
   assert.match(route, /Sent to both Plan council planners and to every worker turn\./);
+  assert.match(route, /Sent to the Turbo planner and to the execution session\./);
+  assert.match(route, /Sent to both Plan council stages and to the execution session\./);
   // Execute keeps its own two sentences.
   assert.match(route, /Sent to Claude and Codex throughout the review loop\./);
   assert.match(route, /Sent to the selected AI with the prompt\./);

@@ -418,9 +418,10 @@ test('the right-side terminal shows all activity by default', () => {
   assert.match(composerApp, /eventFilter: 'all'/);
   assert.match(composer, /data-event-filter="all" aria-pressed="true"><span class="event-filter-label">All<\/span>/);
   assert.match(composer, /data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights<\/span>/);
+  assert.match(composer, /data-event-filter="conversation"[^>]*><span class="event-filter-label">Conversation<\/span>/);
   assert.match(composer, /data-event-filter="mine"[^>]*><span class="event-filter-label">My messages<\/span>/);
   assert.match(composer, /data-event-filter="ai"[^>]*><span class="event-filter-label">AI messages<\/span>/);
-  assert.equal((composer.match(/data-event-filter-count/g) || []).length, 5);
+  assert.equal((composer.match(/data-event-filter-count/g) || []).length, 6);
 });
 
 test('fresh Claude initialization renders as Claude session activity', () => {
@@ -797,6 +798,7 @@ test('Task Activity keeps every continuation in the selected task and conversati
   assert.match(server, /Unconfirmed live-update reference images/);
   assert.match(server, /type: 'claude\/steer-uncertain'/);
   assert.match(server, /resumableDisposableSessions: true/);
+  assert.match(server, /turboSingleExecutorPipeline: true/);
   assert.match(continuationSource, /taskFollowUpAttachments === true/);
   assert.match(continuationSource, /mimeType: attachment\.mimeType/);
   assert.match(composerApp, /continuationForm\.addEventListener\('paste'/);

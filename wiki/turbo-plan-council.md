@@ -10,9 +10,9 @@ The optional Forward-planning council is a selectable two-step route. It support
 
 The Forward-planning **Planning route** does not disappear when this council is off. Its collapsed state is the ordinary one-model Codex planner, including selectable model and effort controls. The council checkbox expands that same route with Claude and the review order rather than enabling planning itself. This keeps council optional in both the request contract and the visible control hierarchy.
 
-`TurboPlanCouncilReviewer` accepts both Claude draft and Claude review requests through one explicit FIFO queue. Claude stages are globally serialized. Codex stages use the selected planner CC Relay and are tracked independently, so the CC Relay is reserved only while Codex owns the active author or reviewer stage.
+`TurboPlanCouncilReviewer` accepts both Claude draft and Claude review requests through one explicit FIFO queue. Claude stages are globally serialized. In current automatic Turbo, a Codex stage opens one fresh planning terminal and closes it as soon as that stage settles. Legacy persistent tasks retain selected planner-session behavior.
 
-Both prompts require JSON only and repeat the graph schema, worker count, original objective, repository context, and attachment paths. Reviewer prompts also include the exact first-provider graph. Every result is parsed before the stage resolves, preserving `text` and `finalResponse` compatibility while exposing the parsed `plan`.
+Both prompts require JSON only and repeat the graph schema, execution contract, original objective, repository context, and attachment paths. Current automatic Turbo asks for at least one complete graph step for its single executor. Legacy persistent Turbo still carries its required worker count. Reviewer prompts also include the exact first-provider graph. Every result is parsed before the stage resolves, preserving `text` and `finalResponse` compatibility while exposing the parsed `plan`.
 
 Cancellation is parent scoped. Queued requests reject with `cancelled: true`; active cancellation delegates to ClaudeRunner and queue progression waits for its settled promise. Synchronous runner errors are handled like asynchronous failures so the next queued review always gets a chance to start.
 

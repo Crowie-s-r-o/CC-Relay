@@ -713,6 +713,42 @@ export function eventEntryMessageRole(entry) {
   return null;
 }
 
+function normalizedAssistantMessageText(value) {
+  return String(value ?? '').replace(/\r\n?/g, '\n').trim();
+}
+
+// Provider transport completion is not answer finality. Claude's `liveFinal` closes one
+// MessageDisplay batch, and Codex stores every completed agentMessage under the historical
+// `result` event kind, including commentary. Prefer the explicit Codex phase, retain the
+// unstructured legacy result contract, and use the settled task result to identify Claude's
+// concluding response after the turn has actually completed.
+export function assistantMessageStatus(entry, task, message = '') {
+  if (eventEntryMessageRole(entry) !== 'assistant') return '';
+  const item = entryItem(entry);
+  const lastEvent = entryLastEvent(entry);
+  const phase = String(item?.phase || '').trim().toLowerCase();
+  if (['final', 'final_answer'].includes(phase)) return 'final';
+  if (phase) return 'update';
+
+  const structuredMessage = ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type)
+    || lastEvent?.payload?.type === 'claude/message';
+  if (lastEvent?.kind === 'result' && !structuredMessage) return 'final';
+  // Older Codex records predate message phases and emitted only the final response as a
+  // structured result. Preserve that history without letting current commentary inherit it.
+  if (
+    lastEvent?.kind === 'result'
+    && ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type)
+    && !Object.prototype.hasOwnProperty.call(item, 'phase')
+  ) return 'final';
+
+  const taskSettled = ['complete', 'open'].includes(String(task?.status || '').toLowerCase());
+  const taskResult = normalizedAssistantMessageText(task?.result);
+  const entryText = normalizedAssistantMessageText(
+    message || item?.text || lastEvent?.payload?.text || lastEvent?.message,
+  );
+  return taskSettled && taskResult && entryText === taskResult ? 'final' : 'update';
+}
+
 export function eventMessageCounts(entries) {
   const counts = { user: 0, assistant: 0 };
   for (const entry of entries || []) {
@@ -771,6 +807,9 @@ export function isEventEntryHighlight(entry) {
 export function filterEventEntries(entries, filter) {
   if (filter === 'highlights') {
     return entries.filter(isEventEntryHighlight);
+  }
+  if (filter === 'conversation') {
+    return entries.filter((entry) => Boolean(eventEntryMessageRole(entry)));
   }
   if (filter === 'mine') {
     return entries.filter((entry) => eventEntryMessageRole(entry) === 'user');

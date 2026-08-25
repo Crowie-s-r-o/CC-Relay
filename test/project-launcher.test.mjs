@@ -106,6 +106,12 @@ test('project launcher validates folders and builds fixed provider commands', ()
       terminalCommand(project.path, 'codex'),
       `cd ${shellQuote(project.path)} && ${codexRelayCommand(project.path)}`,
     );
+    const configuredCodex = terminalCommand(project.path, 'codex', {
+      codexLaunchSettings: { model: 'gpt-planner', effort: 'medium' },
+    });
+    assert.match(configuredCodex, /--model 'gpt-planner'/);
+    assert.match(configuredCodex, /model_reasoning_effort="medium"/);
+    assert.match(configuredCodex, /-c check_for_update_on_startup=false$/);
     assert.equal(terminalCommand(project.path, 'claude'), `cd ${shellQuote(project.path)} && ${CLAUDE_RELAY_COMMAND}`);
     assert.equal(
       terminalCommand(project.path, 'claude', { resumeThreadId: 'claude-conversation' }),

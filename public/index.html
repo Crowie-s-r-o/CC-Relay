@@ -337,7 +337,7 @@
             -->
             <section class="council-config turbo-council-config" aria-labelledby="turbo-council-title">
               <div class="council-heading turbo-heading">
-                <h3 id="turbo-council-title">Planner and workers</h3>
+                <h3 id="turbo-council-title">Planning and execution</h3>
                 <span id="turbo-planning-count" class="council-minimum">1 planner</span>
                 <span id="turbo-readiness" class="turbo-readiness" aria-live="polite">Checking terminals</span>
               </div>
@@ -348,7 +348,7 @@
               </label>
               <button id="turbo-council-help-button" class="turbo-council-help-button" type="button" aria-expanded="false" aria-controls="turbo-council-help" aria-describedby="turbo-council-help" aria-label="Explain Turbo Plan council">?</button>
               <div id="turbo-council-help" class="turbo-council-help" role="tooltip" hidden>
-                Adds a second-provider review before workers begin. Choose which AI builds the JSON graph first. The second AI independently checks and corrects it before workers start. This adds time and requires a signed-in Claude CLI.
+                Adds a second-provider review before execution begins. Choose which AI builds the JSON graph first. The second AI independently checks and corrects it before execution starts. This adds time and requires a signed-in Claude CLI.
               </div>
             </div>
             <div id="turbo-council-order" class="turbo-council-order" role="group" aria-label="Choose which provider plans first" hidden>
@@ -382,9 +382,9 @@
             </div>
             </section>
             <div class="turbo-settings">
-              <label><span>Worker model</span><select id="turbo-worker-model"></select></label>
-              <label><span>Worker effort</span><select id="turbo-worker-effort"></select></label>
-              <label><span>Worker terminals</span><input id="turbo-worker-count" type="number" min="1" max="8" step="1" value="3"></label>
+              <label><span>Execution model</span><select id="turbo-worker-model"></select></label>
+              <label><span>Execution effort</span><select id="turbo-worker-effort"></select></label>
+              <label><span>Concurrent executions</span><input id="turbo-worker-count" type="number" min="1" max="8" step="1" value="3"></label>
             </div>
             <p id="turbo-note" class="turbo-note">The selected Codex terminal plans in read-only mode. CC Relay reads its JSON dependency graph and dispatches ready tasks across the other terminals in this workspace.</p>
           </section>
@@ -835,6 +835,7 @@
                 <button type="button" data-event-filter="all" aria-pressed="true"><span class="event-filter-label">All</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="commands" aria-pressed="false"><span class="event-filter-label">Commands</span><b data-event-filter-count aria-hidden="true">0</b></button>
+                <button type="button" data-event-filter="conversation" aria-pressed="false"><span class="event-filter-label">Conversation</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="mine" aria-pressed="false"><span class="event-filter-label">My messages</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="ai" aria-pressed="false"><span class="event-filter-label">AI messages</span><b data-event-filter-count aria-hidden="true">0</b></button>
               </div>
@@ -952,6 +953,33 @@
           <button id="standup-cancel" class="button compact" type="button">Close</button>
           <button id="standup-generate" class="button compact" type="button">Generate changelog</button>
           <button id="standup-copy" class="button primary compact" type="button" disabled>Copy changelog</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="project-close-modal" class="terminal-settings-modal project-close-modal" aria-labelledby="project-close-title" aria-describedby="project-close-description">
+      <div id="project-close-card" class="terminal-settings-card project-close-card" aria-busy="false">
+        <div class="terminal-settings-header">
+          <div>
+            <span class="eyebrow">Launchpad</span>
+            <h2 id="project-close-title">Close project?</h2>
+          </div>
+          <button id="project-close-dismiss" class="terminal-settings-close" type="button" aria-label="Cancel closing project">×</button>
+        </div>
+        <div class="project-close-body">
+          <div id="project-close-target" class="project-close-target">
+            <span id="project-close-initial" class="project-close-initial" aria-hidden="true">R</span>
+            <span class="project-close-identity">
+              <strong id="project-close-name">Relay</strong>
+              <small id="project-close-path">/projects/relay</small>
+            </span>
+          </div>
+          <p id="project-close-description" class="project-close-description">This removes the project from Launchpad. Project files and saved tasks are not deleted, and you can add it again later.</p>
+          <p id="project-close-message" class="project-close-message" role="status" aria-live="polite"></p>
+        </div>
+        <div class="project-close-actions">
+          <button id="project-close-cancel" class="button compact" type="button" autofocus>Cancel</button>
+          <button id="project-close-confirm" class="button danger compact" type="button">Close project</button>
         </div>
       </div>
     </dialog>

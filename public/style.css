@@ -17120,3 +17120,113 @@ html[data-theme="dark"] .queue-starred-heading {
 html[data-theme="dark"] .queue-starred-heading i {
   background: linear-gradient(90deg, #c9983f, var(--app-border));
 }
+
+/* Project close confirmation. */
+.project-close-modal {
+  width: min(460px, calc(100vw - 32px));
+}
+
+.project-close-body {
+  display: grid;
+  gap: 13px;
+  padding: 18px 20px 8px;
+}
+
+.project-close-target {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--project-accent) 32%, var(--line));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--project-accent) 7%, #fff);
+}
+
+.project-close-initial {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  color: #fff;
+  background: var(--project-accent);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.project-close-identity {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.project-close-identity strong {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-close-identity small {
+  overflow-wrap: anywhere;
+  color: var(--slate);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.project-close-description {
+  margin: 0;
+  color: var(--slate);
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.project-close-message {
+  min-height: 16px;
+  margin: 0;
+  color: var(--danger);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.project-close-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 20px 18px;
+}
+
+html[data-theme="dark"] .project-close-target {
+  border-color: color-mix(in srgb, var(--project-accent) 38%, var(--app-border));
+  background: color-mix(in srgb, var(--project-accent) 10%, var(--app-panel));
+}
+
+html[data-theme="dark"] .project-close-initial {
+  color: #071021;
+}
+
+html[data-theme="dark"] .project-close-identity strong {
+  color: var(--app-text);
+}
+
+html[data-theme="dark"] .project-close-identity small,
+html[data-theme="dark"] .project-close-description {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .project-close-actions .button.danger {
+  border-color: color-mix(in srgb, var(--app-red) 48%, var(--app-border));
+  color: var(--app-red);
+  background: color-mix(in srgb, var(--app-red) 9%, var(--app-control));
+}
+
+html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--app-red) 68%, var(--app-border));
+  color: #ff9aad;
+  background: color-mix(in srgb, var(--app-red) 15%, var(--app-control));
+}

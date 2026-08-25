@@ -105,4 +105,15 @@ test('returns planner and ordered worker descriptors without live CC Relay styli
     planner: { role: 'planner', slot: 0, threadId: null, title: null },
     workers: [],
   });
+  assert.deepEqual(turboParentManifest({
+    thread_id: 'executor-thread',
+    thread_name: 'Executor history',
+    turbo: {
+      plannerThreadId: 'planner-thread',
+      plannerThreadName: 'Planner history',
+      executionThreadId: 'executor-thread',
+    },
+  }).planner, {
+    role: 'planner', slot: 0, threadId: 'planner-thread', title: 'Planner history',
+  });
 });

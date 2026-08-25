@@ -2,7 +2,7 @@ const GRAPH_SCHEMA = `
 {
   "version": 1,
   "summary": "short coordination summary",
-  "sharedContext": "contracts and constraints every worker needs",
+  "sharedContext": "contracts and constraints the executor needs",
   "tasks": [
     {
       "id": "stable-kebab-id",
@@ -30,14 +30,33 @@ function draftJson(draftPlan) {
   }
 }
 
+function executionContract(workerCount) {
+  if (!Number.isInteger(workerCount) || workerCount <= 1) {
+    return {
+      description: 'One fresh execution terminal will own the complete graph and may delegate internally to sub-agents.',
+      count: 'Required execution sessions:\n1',
+      taskRule: '- Include at least one complete executable task.',
+    };
+  }
+  return {
+    description: `The graph will run across ${workerCount} worker terminals. Keep work independently actionable and safe for concurrent execution.`,
+    count: `Required worker count:\n${workerCount}`,
+    taskRule: `- Include at least ${workerCount} complete executable tasks.`,
+  };
+}
+
+function executionStart(workerCount) {
+  return Number.isInteger(workerCount) && workerCount > 1 ? 'workers start' : 'the executor starts';
+}
+
 export function buildTurboPlanCouncilDraftPrompt({ task = {}, workerCount, attachmentPaths } = {}) {
   const paths = attachmentPathsFor(task, attachmentPaths);
   const repository = task.repo_path || task.cwd || '(repository path not provided)';
   const objective = task.prompt || task.objective || '(original objective not provided)';
-  const count = Number.isInteger(workerCount) && workerCount > 0 ? workerCount : 'the configured';
+  const contract = executionContract(workerCount);
   return `You are the Claude author stage in a two-step Forward-planning Turbo council. You run first and must inspect the repository, then produce the initial execution graph for Codex to review. Do not edit files, run implementation commands, or delegate work. Work in read-only plan mode.
 
-Return only the complete JSON object. Do not return commentary, Markdown, or a fenced code block. The graph must be safe for ${count} concurrent worker terminals sharing one working tree.
+Return only the complete JSON object. Do not return commentary, Markdown, or a fenced code block. ${contract.description}
 
 Original objective:
 ${objective}
@@ -48,18 +67,17 @@ ${repository}
 Reference attachment paths:
 ${paths.length ? paths.map((path) => `- ${path}`).join('\n') : '- None'}
 
-Required worker count:
-${count}
+${contract.count}
 
 Required version-1 graph schema:
 ${GRAPH_SCHEMA}
 
 Schema and safety requirements:
 - Keep version exactly 1 and return summary, sharedContext, and tasks.
-- Include at least ${count} executable tasks when the configured worker count is numeric.
+${contract.taskRule}
 - Every task needs a unique non-empty id, title, instructions, ownedPaths, and verification array.
 - Every dependency must name an existing task, never itself, and the graph must be acyclic.
-- Make dependencies explicit whenever workers share files or one task relies on another's output.
+- Make dependencies explicit whenever steps share files or one task relies on another's output.
 - Keep owned paths as disjoint as possible and include practical verification for every package.`;
 }
 
@@ -79,10 +97,10 @@ export function buildTurboPlanCouncilPrompt({
   const paths = attachmentPathsFor(task, attachmentPaths);
   const repository = task.repo_path || task.cwd || '(repository path not provided)';
   const objective = task.prompt || task.objective || '(original objective not provided)';
-  const count = Number.isInteger(workerCount) && workerCount > 0 ? workerCount : 'the configured';
-  return `You are the Claude review stage in the selected Codex-first Forward-planning Turbo council route. Codex has already produced the draft graph in step 01; you are step 02 and must independently inspect the repository before workers start. Do not edit files, run implementation commands, or delegate work. Work in read-only plan mode.
+  const contract = executionContract(workerCount);
+  return `You are the Claude review stage in the selected Codex-first Forward-planning Turbo council route. Codex has already produced the draft graph in step 01; you are step 02 and must independently inspect the repository before ${executionStart(workerCount)}. Do not edit files, run implementation commands, or delegate work. Work in read-only plan mode.
 
-For this task, Codex authors and Claude reviews. Preserve useful work from the draft, but correct missing dependencies, unsafe or overlapping ownership, incomplete verification, and coordination gaps. The final graph must be complete, internally consistent, and safe for ${count} concurrent worker terminals sharing one working tree. Do not return commentary, Markdown, or a fenced code block. Return only the complete corrected JSON object.
+For this task, Codex authors and Claude reviews. Preserve useful work from the draft, but correct missing dependencies, unsafe or overlapping ownership, incomplete verification, and coordination gaps. ${contract.description} Do not return commentary, Markdown, or a fenced code block. Return only the complete corrected JSON object.
 
 Original objective:
 ${objective}
@@ -93,21 +111,20 @@ ${repository}
 Reference attachment paths:
 ${paths.length ? paths.map((path) => `- ${path}`).join('\n') : '- None'}
 
-Required worker count:
-${count}
-
 Exact Codex draft JSON:
 ${draftJson(draft)}
+
+${contract.count}
 
 Required version-1 graph schema:
 ${GRAPH_SCHEMA}
 
 Schema and safety requirements:
 - Keep version exactly 1 and return summary, sharedContext, and tasks.
-- Include at least ${count} executable tasks when the configured worker count is numeric.
+${contract.taskRule}
 - Every task needs a unique non-empty id, title, instructions, ownedPaths, and verification array.
 - Every dependency must name an existing task, never itself, and the graph must be acyclic.
-- Make dependencies explicit whenever workers share files or one task relies on another's output.
+- Make dependencies explicit whenever steps share files or one task relies on another's output.
 - Keep owned paths as disjoint as possible and do not assign unsafe overlapping write ownership.
 - Preserve the user's objective and include practical verification for every package.
 - Return the full graph, even when the Codex draft already looks correct.`;

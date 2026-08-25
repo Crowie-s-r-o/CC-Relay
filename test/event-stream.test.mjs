@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   activeSubAgentCount,
+  assistantMessageStatus,
   entryFirstEvent,
   entryItem,
   entryLastEvent,
@@ -93,6 +94,76 @@ test('event stream folds live Claude message batches into one updating signal', 
   assert.equal(eventStreamStats(entries).messages, 1);
 });
 
+test('assistant message status distinguishes transport completion from final answers', () => {
+  const [claudeUpdate] = groupEventEntries([{
+    id: 1,
+    kind: 'claude',
+    message: 'The implementation agent is running.',
+    created_at: '2026-07-16T10:00:00.000Z',
+    payload: {
+      type: 'claude/message',
+      liveMessageId: 'message-progress',
+      liveIndex: 0,
+      liveFinal: true,
+      liveDelta: 'The implementation agent is running.',
+      text: 'The implementation agent is running.',
+    },
+  }]);
+  assert.equal(
+    assistantMessageStatus(claudeUpdate, { status: 'running', result: '' }),
+    'update',
+  );
+
+  const [codexCommentary] = groupEventEntries([
+    itemEvent('message-commentary', 'completed', 'agentMessage', {
+      kind: 'result',
+      item: { phase: 'commentary', text: 'I am running the final checks.' },
+    }),
+  ]);
+  assert.equal(assistantMessageStatus(codexCommentary, { status: 'running' }), 'update');
+
+  const [codexFinal] = groupEventEntries([
+    itemEvent('message-final', 'completed', 'agentMessage', {
+      kind: 'result',
+      item: { phase: 'final_answer', text: 'Implemented and verified.' },
+    }),
+  ]);
+  assert.equal(assistantMessageStatus(codexFinal, { status: 'running' }), 'final');
+});
+
+test('assistant message status recognizes settled Claude and legacy final responses', () => {
+  const [claudeFinal] = groupEventEntries([{
+    id: 1,
+    kind: 'claude',
+    message: 'Implemented and verified.',
+    created_at: '2026-07-16T10:00:00.000Z',
+    payload: {
+      type: 'claude/message',
+      liveMessageId: 'message-final',
+      liveIndex: 0,
+      liveFinal: true,
+      liveDelta: 'Implemented and verified.',
+      text: 'Implemented and verified.',
+    },
+  }]);
+  assert.equal(
+    assistantMessageStatus(
+      claudeFinal,
+      { status: 'complete', result: 'Implemented and verified.' },
+    ),
+    'final',
+  );
+
+  const [legacyFinal] = groupEventEntries([{
+    id: 2,
+    kind: 'result',
+    message: 'Historical final response.',
+    created_at: '2026-07-16T10:00:01.000Z',
+    payload: null,
+  }]);
+  assert.equal(assistantMessageStatus(legacyFinal, { status: 'complete' }), 'final');
+});
+
 test('message role filters separate sent prompts from AI responses', () => {
   const events = [
     itemEvent('prompt-1', 'started', 'userMessage', {
@@ -134,6 +205,7 @@ test('message role filters separate sent prompts from AI responses', () => {
   assert.equal(entryItem(entries[0]).content[0].text, 'Improve the terminal.');
   assert.equal(eventEntryMessageRole(entries[0]), 'user');
   assert.equal(eventEntryMessageRole(entries[1]), 'assistant');
+  assert.deepEqual(filterEventEntries(entries, 'conversation'), entries);
   assert.equal(filterEventEntries(entries, 'mine').length, 1);
   assert.equal(filterEventEntries(entries, 'ai').length, 1);
   assert.deepEqual(eventMessageCounts(entries), { user: 1, assistant: 1 });
@@ -174,8 +246,35 @@ test('AI messages exclude Claude session notices', () => {
   }]);
 
   assert.equal(filterEventEntries(entries, 'messages').length, 1);
+  assert.equal(filterEventEntries(entries, 'conversation').length, 0);
   assert.equal(filterEventEntries(entries, 'ai').length, 0);
   assert.deepEqual(eventMessageCounts(entries), { user: 0, assistant: 0 });
+});
+
+test('Conversation keeps both speakers in signal order and excludes other activity', () => {
+  const entries = groupEventEntries([
+    itemEvent('prompt-1', 'completed', 'userMessage', {
+      eventId: 1,
+      item: { content: [{ type: 'text', text: 'Please check this.' }] },
+    }),
+    itemEvent('command-1', 'completed', 'commandExecution', { eventId: 2 }),
+    itemEvent('message-1', 'completed', 'agentMessage', {
+      eventId: 3,
+      item: { text: 'Checked.' },
+    }),
+    {
+      id: 4,
+      kind: 'claude',
+      message: 'Claude needs input.',
+      created_at: '2026-07-16T10:00:03.000Z',
+      payload: { type: 'claude/input-required', provider: 'claude' },
+    },
+  ]);
+
+  assert.deepEqual(
+    filterEventEntries(entries, 'conversation').map(eventEntryMessageRole),
+    ['user', 'assistant'],
+  );
 });
 
 test('legacy result rows remain AI messages', () => {

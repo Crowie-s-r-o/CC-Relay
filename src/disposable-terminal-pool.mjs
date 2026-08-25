@@ -81,11 +81,9 @@ export function disposableTerminalRequirements(task) {
   if (!isDisposableTerminalTask(task)) return { codex: 0, claude: 0 };
   if (task.mode === 'plan') return { codex: 1, claude: 1 };
   if (task.mode === 'turbo') {
-    const workerCount = Number(task.turbo?.workerCount || task.turbo?.workers?.length || 0);
-    const councilEnabled = task.turbo?.council?.enabled === true
-      || task.turbo?.councilEnabled === true;
-    const councilTerminal = councilEnabled && task.turbo?.councilTerminalExecution !== false;
-    return { codex: Math.max(1, workerCount + 1), claude: councilTerminal ? 1 : 0 };
+    // One Turbo parent owns one native terminal at a time. A queued planner can overlap with
+    // several already-planned parents, but each parent execution is one fresh Codex session.
+    return { codex: 1, claude: 0 };
   }
   if (['execute', 'breakdown'].includes(task.mode) && PROVIDERS.includes(task.provider)) {
     return {
@@ -94,6 +92,21 @@ export function disposableTerminalRequirements(task) {
     };
   }
   return { codex: 0, claude: 0 };
+}
+
+export function disposableTerminalConfigurationRequirements(task) {
+  if (!isDisposableTerminalTask(task) || task.mode !== 'turbo') {
+    return disposableTerminalRequirements(task);
+  }
+  const configured = Number(task.turbo?.workerCount || 1);
+  const executionCount = Number.isInteger(configured) && configured > 0 ? configured : 1;
+  const councilEnabled = task.turbo?.council?.enabled === true
+    || task.turbo?.councilEnabled === true;
+  return {
+    codex: executionCount + 1,
+    claude: councilEnabled
+      && task.turbo?.councilTerminalExecution !== false ? 1 : 0,
+  };
 }
 
 function cancelledError() {
@@ -121,6 +134,7 @@ export class DisposableTerminalPool {
     this.claudeConversationState = claudeConversationState;
     this.codexConversationState = codexConversationState;
     this.allocations = new Map();
+    this.pendingTurboLaunches = new Set();
   }
 
   limits(repoPath) {
@@ -132,7 +146,7 @@ export class DisposableTerminalPool {
   }
 
   capacityIssue(task) {
-    const required = disposableTerminalRequirements(task);
+    const required = disposableTerminalConfigurationRequirements(task);
     const limits = this.limits(task.repo_path);
     for (const provider of PROVIDERS) {
       if (required[provider] > limits[provider]) {
@@ -163,6 +177,18 @@ export class DisposableTerminalPool {
     const usage = { codex: 0, claude: 0 };
     const allocatedByTask = new Map();
 
+    // A native window can take several seconds to bind its conversation identity. Count that
+    // interval immediately so direct queue work cannot claim the same provider slot while a
+    // just-in-time Turbo stage is still opening.
+    for (const pending of this.pendingTurboLaunches) {
+      if (pending.repoPath === repoPath && PROVIDERS.includes(pending.provider)) {
+        usage[pending.provider] += 1;
+        const allocated = allocatedByTask.get(pending.taskId) || { codex: 0, claude: 0 };
+        allocated[pending.provider] += 1;
+        allocatedByTask.set(pending.taskId, allocated);
+      }
+    }
+
     for (const [taskId, launches] of this.allocations) {
       const allocationTask = this.database.getTask(taskId);
       const allocationPath = allocationTask?.repo_path
@@ -170,7 +196,7 @@ export class DisposableTerminalPool {
         || launches.find((launch) => launch.thread?.cwd)?.thread.cwd
         || null;
       if (allocationPath !== repoPath) continue;
-      const allocated = { codex: 0, claude: 0 };
+      const allocated = allocatedByTask.get(taskId) || { codex: 0, claude: 0 };
       for (const launch of launches) {
         if (!PROVIDERS.includes(launch.provider)) continue;
         usage[launch.provider] += 1;
@@ -203,6 +229,7 @@ export class DisposableTerminalPool {
     const turbo = task?.turbo || {};
     if (turbo.plannerThreadId) ids.add(turbo.plannerThreadId);
     if (turbo.councilThreadId) ids.add(turbo.councilThreadId);
+    if (turbo.executionThreadId) ids.add(turbo.executionThreadId);
     for (const worker of turbo.workers || []) {
       if (worker?.threadId) ids.add(worker.threadId);
     }
@@ -239,7 +266,11 @@ export class DisposableTerminalPool {
     return allocation;
   }
 
-  async launch(task, provider, resumeThreadId, isCancelled, { claudeLaunchSettings = null } = {}) {
+  async launch(task, provider, resumeThreadId, isCancelled, {
+    claudeLaunchSettings = null,
+    codexLaunchSettings = null,
+    allocationMetadata = null,
+  } = {}) {
     if (isCancelled()) throw cancelledError();
     let launchOptions = { resumeThreadId: resumeThreadId || null };
     if (provider === 'claude' && resumeThreadId && task.sessionFollowUp !== true) {
@@ -300,7 +331,11 @@ export class DisposableTerminalPool {
       task.terminal_layout,
       // Spread last so the fresh-versus-resume decision above stays authoritative while the
       // task's model and effort ride along on whichever session argument it chose.
-      { ...launchOptions, ...(claudeLaunchSettings ? { claudeLaunchSettings } : {}) },
+      {
+        ...launchOptions,
+        ...(claudeLaunchSettings ? { claudeLaunchSettings } : {}),
+        ...(codexLaunchSettings ? { codexLaunchSettings } : {}),
+      },
     );
     if (!launched.threadId) {
       this.rememberAllocation(task.id, {
@@ -309,6 +344,7 @@ export class DisposableTerminalPool {
         launchId: launched.launchId || null,
         threadId: null,
         thread: null,
+        ...(allocationMetadata || {}),
       });
       this.diagnostic('terminal.pool.binding_failed', {
         taskId: task.id,
@@ -338,10 +374,229 @@ export class DisposableTerminalPool {
         title: `${provider === 'codex' ? 'Codex' : 'Claude'} task terminal`,
         source: 'CC Relay managed terminal',
       },
+      ...(allocationMetadata || {}),
     };
     this.rememberAllocation(task.id, allocation);
     if (isCancelled()) throw cancelledError();
     return allocation;
+  }
+
+  supportsTurboStages(task) {
+    return isDisposableTerminalTask(task) && task?.mode === 'turbo';
+  }
+
+  async launchTurboStage(task, {
+    provider = 'codex',
+    role,
+    packageId = null,
+    slot = null,
+    model = null,
+    effort = null,
+    resumeThreadId = null,
+    isCancelled = () => false,
+  } = {}) {
+    if (!this.supportsTurboStages(task)) {
+      throw new Error('Just-in-time Turbo terminals require a disposable Turbo task.');
+    }
+    if (!['planner', 'council', 'worker'].includes(role)) {
+      throw new Error('A Turbo terminal stage needs a planner, council, or worker role.');
+    }
+    if (!PROVIDERS.includes(provider)) {
+      throw new Error(`Unsupported Turbo terminal provider: ${provider}`);
+    }
+    const allocations = this.allocations.get(task.id) || [];
+    const stageMatches = (allocation) => (
+      allocation.turboRole === role
+      && allocation.turboPackageId === packageId
+      && allocation.turboSlot === slot
+    );
+    if (allocations.some(stageMatches)
+      || [...this.pendingTurboLaunches].some((pending) => pending.taskId === task.id && stageMatches(pending))) {
+      throw new Error(`Turbo ${role} terminal is already launching or running.`);
+    }
+    const usage = this.usage(task.repo_path);
+    const limits = this.limits(task.repo_path);
+    if (usage[provider] >= limits[provider]) {
+      throw Object.assign(
+        new Error(`Turbo is waiting for a free ${provider === 'codex' ? 'Codex' : 'Claude'} terminal slot.`),
+        { retryable: true, capacityWait: true },
+      );
+    }
+    const pendingLaunch = {
+      taskId: task.id,
+      provider,
+      repoPath: task.repo_path,
+      turboRole: role,
+      turboPackageId: packageId,
+      turboSlot: slot,
+    };
+    this.pendingTurboLaunches.add(pendingLaunch);
+    let allocation;
+    try {
+      allocation = await this.launch(task, provider, resumeThreadId, isCancelled, {
+        ...(provider === 'codex' ? { codexLaunchSettings: { model, effort } } : {}),
+        allocationMetadata: {
+          turboRole: role,
+          turboPackageId: packageId,
+          turboSlot: slot,
+        },
+      });
+    } catch (error) {
+      const partial = (this.allocations.get(task.id) || []).filter((candidate) => (
+        candidate.turboRole === role
+        && candidate.turboPackageId === packageId
+        && candidate.turboSlot === slot
+      ));
+      for (const candidate of partial) {
+        // A stage whose native launch cannot be closed must not enter the automatic retry loop.
+        // Keep the ambiguous launch counted and surface a non-retryable cleanup failure instead.
+        await this.finishTurboStage(task.id, candidate, { retain: false, failOnError: true });
+      }
+      throw error;
+    } finally {
+      this.pendingTurboLaunches.delete(pendingLaunch);
+    }
+    try {
+      if (role === 'planner' || role === 'council' || (role === 'worker' && packageId === 'execution')) {
+        const storedTask = this.database.getTask(task.id);
+        const turbo = storedTask?.turbo || task.turbo || {};
+        const updatedTurbo = role === 'planner'
+          ? {
+              ...turbo,
+              plannerThreadId: allocation.threadId,
+              plannerThreadName: allocation.thread.title || 'Turbo planner',
+            }
+          : role === 'council'
+            ? {
+                ...turbo,
+                councilThreadId: allocation.threadId,
+                councilThreadName: allocation.thread.title || 'Turbo Claude council',
+                councilThreadSource: allocation.thread.source,
+              }
+            : {
+                ...turbo,
+                executionThreadId: allocation.threadId,
+                executionThreadName: allocation.thread.title || 'Turbo execution session',
+                executionThreadSource: allocation.thread.source,
+              };
+        const updated = this.database.updateTask(task.id, {
+          ...(role !== 'council' ? {
+            thread_id: allocation.threadId,
+            thread_name: allocation.thread.title,
+            thread_source: allocation.thread.source,
+          } : {}),
+          turbo_json: JSON.stringify(updatedTurbo),
+        });
+        if (role !== 'council') this.artifacts.updateTaskAssignment(updated);
+      }
+      this.database.addEvent(
+        task.id,
+        'queue',
+        role === 'worker'
+          ? packageId === 'execution'
+            ? 'Fresh execution terminal opened for the complete plan.'
+            : `Fresh execution terminal opened for ${packageId || `slot ${slot}`}.`
+          : `Fresh ${provider === 'claude' ? 'Claude ' : ''}${role} terminal opened.`,
+      );
+      return allocation;
+    } catch (error) {
+      await this.finishTurboStage(task.id, allocation, { retain: false, failOnError: true });
+      throw error;
+    }
+  }
+
+  sameAllocation(left, right) {
+    if (!left || !right) return false;
+    if (left.launchId && right.launchId) return left.launchId === right.launchId;
+    return left === right;
+  }
+
+  removeAllocation(taskId, target) {
+    const allocations = this.allocations.get(taskId) || [];
+    const retained = allocations.filter((allocation) => !this.sameAllocation(allocation, target));
+    if (retained.length > 0) this.allocations.set(taskId, retained);
+    else this.allocations.delete(taskId);
+  }
+
+  async finishTurboStage(taskId, allocation, { retain = null, failOnError = false } = {}) {
+    const allocations = this.allocations.get(taskId) || [];
+    const owned = allocations.find((candidate) => this.sameAllocation(candidate, allocation));
+    if (!owned) return { closed: 0, retained: 0, failed: 0 };
+    if (!owned.launchId && !owned.threadId) {
+      this.removeAllocation(taskId, owned);
+      this.diagnostic('terminal.pool.cleanup_skipped', {
+        taskId,
+        provider: owned.provider,
+        turboRole: owned.turboRole,
+        reason: 'no-exact-native-target',
+      });
+      return { closed: 0, retained: 0, failed: 0 };
+    }
+    const keepOpen = retain == null
+      ? this.database.getTask(taskId)?.keep_terminal_open === true
+      : retain === true;
+    try {
+      if (keepOpen) {
+        if (!owned.launchId || typeof this.launcher.retainOwnedLaunch !== 'function') {
+          throw new Error('CC Relay cannot promote this Turbo terminal to a retained session.');
+        }
+        await this.launcher.retainOwnedLaunch(owned.launchId);
+      } else if (owned.launchId && typeof this.launcher.closeOwnedLaunch === 'function') {
+        await this.launcher.closeOwnedLaunch(owned.launchId);
+      } else {
+        await this.launcher.closeOwnedTerminal(owned.threadId);
+      }
+    } catch (error) {
+      this.diagnostic(keepOpen ? 'terminal.pool.retain_failed' : 'terminal.pool.cleanup_failed', {
+        taskId,
+        provider: owned.provider,
+        launchId: owned.launchId,
+        threadId: owned.threadId,
+        turboRole: owned.turboRole,
+        turboPackageId: owned.turboPackageId,
+        error: error.message,
+      });
+      try {
+        this.database.addEvent(
+          taskId,
+          'system',
+          `CC Relay could not ${keepOpen ? 'keep open' : 'close'} one Turbo ${owned.turboRole || 'stage'} terminal: ${error.message}`,
+        );
+      } catch (eventError) {
+        this.diagnostic('terminal.pool.event_failed', {
+          taskId,
+          turboRole: owned.turboRole,
+          error: eventError.message,
+        });
+      }
+      if (failOnError) {
+        throw Object.assign(
+          new Error(`Turbo ${owned.turboRole || 'planning'} terminal cleanup failed: ${error.message}`),
+          { retryable: false, terminalCleanupFailed: true },
+        );
+      }
+      return { closed: 0, retained: 0, failed: 1 };
+    }
+    this.removeAllocation(taskId, owned);
+    const role = owned.turboRole === 'worker'
+      ? owned.turboPackageId === 'execution'
+        ? 'execution session'
+        : `worker session for ${owned.turboPackageId || `slot ${owned.turboSlot}`}`
+      : `${owned.turboRole || 'Turbo'} session`;
+    try {
+      this.database.addEvent(
+        taskId,
+        'queue',
+        keepOpen ? `${role} kept open for more work.` : `${role} closed; its conversation can be resumed later.`,
+      );
+    } catch (error) {
+      this.diagnostic('terminal.pool.event_failed', {
+        taskId,
+        turboRole: owned.turboRole,
+        error: error.message,
+      });
+    }
+    return { closed: keepOpen ? 0 : 1, retained: keepOpen ? 1 : 0, failed: 0 };
   }
 
   async prepare(task, { isCancelled = () => false } = {}) {
@@ -352,7 +607,13 @@ export class DisposableTerminalPool {
     const issue = this.capacityIssue(task);
     if (issue) throw Object.assign(new Error(issue), { retryable: false });
 
-    this.database.addEvent(task.id, 'queue', 'Launching disposable terminal instances for this task.');
+    this.database.addEvent(
+      task.id,
+      'queue',
+      task.mode === 'turbo'
+        ? 'Turbo will launch one planner terminal and one execution terminal only when each stage starts.'
+        : 'Launching disposable terminal instances for this task.',
+    );
     try {
       if (task.mode === 'plan') {
         // These legacy columns now identify provider terminals, not fixed roles:
@@ -374,50 +635,10 @@ export class DisposableTerminalPool {
       }
 
       if (task.mode === 'turbo') {
-        const turbo = task.turbo || {};
-        const workerCount = Number(turbo.workerCount || turbo.workers?.length || 0);
-        const planner = await this.launch(
-          task,
-          'codex',
-          turbo.plannerThreadId || task.thread_id,
-          isCancelled,
-        );
-        const workers = [];
-        for (let index = 0; index < workerCount; index += 1) {
-          const previous = turbo.workers?.[index];
-          const worker = await this.launch(task, 'codex', previous?.threadId, isCancelled);
-          workers.push({
-            threadId: worker.threadId,
-            title: worker.thread.title || `Codex worker ${index + 1}`,
-          });
-        }
-        const councilEnabled = turbo.council?.enabled === true || turbo.councilEnabled === true;
-        const council = councilEnabled && turbo.councilTerminalExecution !== false
-          ? await this.launch(task, 'claude', turbo.councilThreadId, isCancelled)
-          : null;
-        const updatedTurbo = {
-          ...turbo,
-          plannerThreadId: planner.threadId,
-          workers,
-          ...(council ? {
-            councilThreadId: council.threadId,
-            councilThreadName: council.thread.title,
-            councilThreadSource: council.thread.source,
-          } : {}),
-        };
-        const updated = this.database.updateTask(task.id, {
-          thread_id: planner.threadId,
-          thread_name: planner.thread.title,
-          thread_source: planner.thread.source,
-          turbo_json: JSON.stringify(updatedTurbo),
-        });
-        this.artifacts.updateTaskAssignment(updated);
-        this.database.addEvent(
-          task.id,
-          'queue',
-          `Codex planner, ${workers.length} disposable worker terminal${workers.length === 1 ? '' : 's'}${council ? ', and one Claude council terminal' : ''} are ready.`,
-        );
-        return updated;
+        // Turbo owns a planner stage and one complete-plan execution stage. The configured count
+        // limits concurrent parent executions in the queue. Returning without a launch here
+        // prevents idle pre-warmed windows; the runner opens and closes each stage just in time.
+        return task;
       }
 
       const provider = task.provider;
@@ -428,8 +649,12 @@ export class DisposableTerminalPool {
       const claudeLaunchSettings = provider === 'claude'
         ? claudeFirstLaunchSettings(task)
         : null;
+      const codexLaunchSettings = provider === 'codex' && (task.model || task.effort)
+        ? { model: task.model || null, effort: task.effort || null }
+        : null;
       const terminal = await this.launch(task, provider, task.thread_id, isCancelled, {
         claudeLaunchSettings,
+        codexLaunchSettings,
       });
       const updated = this.database.updateTask(task.id, {
         thread_id: terminal.threadId,

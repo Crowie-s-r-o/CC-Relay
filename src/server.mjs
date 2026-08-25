@@ -24,7 +24,7 @@ import { normalizeDesktopUpdateState } from './desktop-update-status.mjs';
 import { desktopZoomStatus } from './desktop-zoom.mjs';
 import {
   DisposableTerminalPool,
-  disposableTerminalRequirements,
+  disposableTerminalConfigurationRequirements,
   inspectCodexConversation,
 } from './disposable-terminal-pool.mjs';
 import { LaunchOwnershipRegistry } from './launch-ownership-registry.mjs';
@@ -66,7 +66,7 @@ import {
   SESSION_NEVER_SEEN,
   submissionSessionProvider,
 } from './session-resolution.mjs';
-import { buildSessionFollowUp } from './task-continuation.mjs';
+import { buildSessionFollowUp, isTurboExecutionSession } from './task-continuation.mjs';
 import {
   buildTaskDiffFile,
   buildTaskDiffSummary,
@@ -292,6 +292,7 @@ const disposableTerminalPool = new DisposableTerminalPool({
     codexHome: codexAppServer.status().codexHome || undefined,
   }),
 });
+turboRunner.setTerminalPool(disposableTerminalPool);
 const queue = new TaskQueue({
   database,
   artifacts,
@@ -1036,6 +1037,7 @@ export const server = createServer(async (request, response) => {
           claudeTaskSteering: CLAUDE_TASK_STEERING,
           claudeSteerOutbox: CLAUDE_TASK_STEERING,
           turboExecution: true,
+          turboSingleExecutorPipeline: true,
           planner: true,
           plannerV2: true,
           dispatchIdleRouting: true,
@@ -1462,11 +1464,11 @@ export const server = createServer(async (request, response) => {
           || task.terminal_lifecycle !== 'disposable'
           || resolve(task.repo_path) !== resolve(existingProject.path)
         ) return false;
-        const required = disposableTerminalRequirements(task);
+        const required = disposableTerminalConfigurationRequirements(task);
         return required.codex > codex || required.claude > claude;
       });
       if (blockedTask) {
-        const required = disposableTerminalRequirements(blockedTask);
+        const required = disposableTerminalConfigurationRequirements(blockedTask);
         throw new Error(
           `Task ${blockedTask.id} is already queued and needs ${required.codex} Codex and ${required.claude} Claude instances. Finish or cancel it before lowering these limits.`,
         );
@@ -2019,7 +2021,7 @@ export const server = createServer(async (request, response) => {
       if (mode === 'turbo') {
         const workerCount = Number(body.workerCount);
         if (!Number.isInteger(workerCount) || workerCount < 1 || workerCount > 8) {
-          throw new Error('Turbo worker count must be between 1 and 8.');
+          throw new Error('Turbo concurrent execution count must be between 1 and 8.');
         }
         const models = await codexAppServer.listModels();
         const planner = validateExecutionSettings({ model: body.plannerModel, effort: body.plannerEffort, models });
@@ -2328,13 +2330,17 @@ export const server = createServer(async (request, response) => {
       const prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
       if (!prompt) throw new Error('Write a follow-up before sending it.');
       const attachments = decodeImageAttachments(body.attachments);
-      if (sourceTask.mode !== 'execute' || !['codex', 'claude'].includes(sourceTask.provider)) {
-        throw new Error('Only direct Codex or Claude tasks can continue in one terminal session.');
+      const turboExecution = isTurboExecutionSession(sourceTask);
+      if ((sourceTask.mode !== 'execute' || !['codex', 'claude'].includes(sourceTask.provider)) && !turboExecution) {
+        throw new Error('Only direct tasks and completed Turbo execution sessions can continue.');
       }
       if (isManualSessionTask(sourceTask) && sourceTask.status === 'complete') {
         throw new Error('This terminal session task is complete and cannot accept more messages.');
       }
       if (sourceTask.status === 'running') {
+        if (turboExecution) {
+          throw new Error('The Turbo executor is still running. Continue its session after the complete plan finishes.');
+        }
         const steered = await steerRunningTask(sourceTask, prompt, attachments, {
           flushComposer: body.flushComposer === true,
         });
@@ -2385,8 +2391,8 @@ export const server = createServer(async (request, response) => {
         throw new Error('That terminal is currently busy. Finish its active work, then send again. Your follow-up was not queued.');
       }
       const execution = validateExecutionSettings({
-        model: sourceTask.model,
-        effort: sourceTask.effort,
+        model: turboExecution ? sourceTask.turbo.workerModel : sourceTask.model,
+        effort: turboExecution ? sourceTask.turbo.workerEffort : sourceTask.effort,
         models: sourceTask.provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
       });
       const task = queue.startFollowUp(buildSessionFollowUp({

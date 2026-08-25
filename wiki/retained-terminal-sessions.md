@@ -21,13 +21,15 @@ The project row stores the preference as `projects.keep_terminal_open`. It is ne
 
 ## Final-outcome lifecycle
 
-After a successfully prepared automatic task reaches its final outcome:
+After a successfully prepared ordinary automatic task reaches its final outcome:
 
 1. `TaskQueue` chooses retention only when `keep_terminal_open` is true and no automatic retry is pending.
 2. `DisposableTerminalPool.retain()` promotes every exact launch through `ProjectLauncher.retainOwnedLaunch()`.
 3. The launcher clears `closeOnShutdown` and removes the native window or process from bulk shutdown cleanup.
 4. The pool drops the task allocation without closing the terminal, so an idle retained window does not consume an active task slot.
 5. Exact ownership stays in `ProjectLauncher`, allowing safe explicit close while the current CC Relay process remains alive.
+
+Turbo applies the same choice at each stage boundary through `finishTurboStage()`. With retention disabled, the fresh planner closes before the fresh executor opens. With retention enabled, the completed planner can stay connected while the later executor receives a different conversation. The executor is retained separately at its own outcome.
 
 CC Relay shutdown promotes prepared retained tasks before it asks their active turns to cancel. This closes the three-second shutdown timeout race where bulk terminal cleanup could otherwise kill a retained task before its executor settled. A terminal still preparing is not promoted because its native binding may be incomplete; normal preparation cancellation closes it instead.
 
@@ -48,13 +50,13 @@ For a finished direct task:
 - If the user already closed the window, CC Relay relaunches the saved conversation under the same task ID and the new launch inherits `keep_terminal_open`.
 - **Retry** also reuses a live idle retained direct terminal. It bypasses pool preparation so CC Relay never tries to open the same saved conversation twice.
 
-Plan council and Turbo may retain several windows because their provider requirements are atomic fleets. Their direct terminal conversations stay visible in those native windows, while their workflow-level retry rules remain unchanged.
+Plan council may retain both provider windows from its atomic preparation. Turbo may retain its sequential planner and executor windows, but it never opens several native executors for one prompt. Only the final Turbo execution conversation is exposed for continuation; the read-only planner remains historical context.
 
 ## Failure safety
 
 Retention promotion is fail-closed. If CC Relay cannot prove and promote an exact launch, that allocation remains in the pool and continues consuming capacity. The task event stream records the failure. CC Relay never drops ownership, broadens the native target, or labels capacity free after an ambiguous promotion.
 
-Partial launch or binding failure never retains a window. `DisposableTerminalPool.prepare()` first performs its existing exact cleanup, and the queue retains only when preparation completed successfully.
+Partial launch or binding failure never retains a window. `DisposableTerminalPool.prepare()` performs exact cleanup for ordinary workflows. A Turbo stage performs the same cleanup through `finishTurboStage()` before the stage failure releases capacity.
 
 ## Persistence and compatibility
 

@@ -7,6 +7,7 @@ import { ArtifactStore } from '../src/artifacts.mjs';
 import { RelayDatabase } from '../src/database.mjs';
 import {
   DisposableTerminalPool,
+  disposableTerminalConfigurationRequirements,
   disposableTerminalRequirements,
   inspectClaudeConversation,
   inspectCodexConversation,
@@ -254,7 +255,7 @@ test('a direct Claude task puts its model and effort on the first launch command
   }
 });
 
-test('a Codex task and a Plan council keep launching without Claude launch settings', async () => {
+test('a Codex task launches with its visible model and effort while Plan council keeps staged settings', async () => {
   const context = setup();
   try {
     const codexTask = context.database.createTask({
@@ -268,7 +269,10 @@ test('a Codex task and a Plan council keep launching without Claude launch setti
     });
     context.artifacts.initializeTask(codexTask);
     await context.pool.prepare(codexTask);
-    assert.deepEqual(context.launches[0].options, { resumeThreadId: null });
+    assert.deepEqual(context.launches[0].options, {
+      resumeThreadId: null,
+      codexLaunchSettings: { model: 'gpt-5.1-codex-max', effort: 'high' },
+    });
     await context.pool.release(codexTask.id);
 
     // The council's Claude stage synthesizes plan mode and a tool allowlist at run time, so the
@@ -517,7 +521,244 @@ test('a rejected resumed binding is closed once and never marked for automatic r
   }
 });
 
-test('Plan council and Turbo declare their complete provider slot requirements', () => {
+test('Turbo opens and closes its planner before creating one fresh execution session', async () => {
+  const context = setup();
+  try {
+    context.database.updateProjectInstanceLimits(context.project.id, { codex: 4, claude: 1 });
+    const task = context.database.createTask({
+      title: 'Single executor Turbo',
+      prompt: 'Plan and execute.',
+      repoPath: context.directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: {
+        plannerModel: 'sol',
+        plannerEffort: 'max',
+        workerModel: 'luna',
+        workerEffort: 'medium',
+        workerCount: 3,
+        workers: [],
+      },
+    });
+    context.artifacts.initializeTask(task);
+
+    await context.pool.prepare(task);
+    assert.equal(context.launches.length, 0, 'queue preparation must not pre-warm terminals');
+    const planner = await context.pool.launchTurboStage(task, {
+      role: 'planner',
+      model: 'sol',
+      effort: 'max',
+    });
+    assert.deepEqual(context.launches[0].options.codexLaunchSettings, { model: 'sol', effort: 'max' });
+    await context.pool.finishTurboStage(task.id, planner, { retain: false });
+
+    const executor = await context.pool.launchTurboStage(task, {
+      role: 'worker',
+      packageId: 'execution',
+      slot: 1,
+      model: 'luna',
+      effort: 'medium',
+    });
+    assert.deepEqual(context.launches[1].options.codexLaunchSettings, { model: 'luna', effort: 'medium' });
+    assert.notEqual(executor.threadId, planner.threadId);
+    const stored = context.database.getTask(task.id);
+    assert.equal(stored.thread_id, executor.threadId);
+    assert.equal(stored.turbo.executionThreadId, executor.threadId);
+    await context.pool.finishTurboStage(task.id, executor, { retain: false });
+
+    assert.deepEqual(context.closes, ['codex-launch-1', 'codex-launch-2']);
+    assert.equal(context.pool.allocations.has(task.id), false);
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Turbo planning stage fails loudly when its exact terminal cannot be released', async () => {
+  const context = setup();
+  try {
+    context.database.updateProjectInstanceLimits(context.project.id, { codex: 2, claude: 1 });
+    const task = context.database.createTask({
+      title: 'Planner cleanup failure',
+      prompt: 'Plan this.',
+      repoPath: context.directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount: 1 },
+    });
+    context.artifacts.initializeTask(task);
+    const planner = await context.pool.launchTurboStage(task, { role: 'planner' });
+    context.pool.launcher.closeOwnedLaunch = async () => {
+      throw new Error('window stayed open');
+    };
+
+    await assert.rejects(
+      context.pool.finishTurboStage(task.id, planner, { retain: false, failOnError: true }),
+      (error) => error.retryable === false && error.terminalCleanupFailed === true,
+    );
+    assert.equal(context.pool.allocations.has(task.id), true, 'ambiguous cleanup must remain counted');
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Turbo stage closes an exact native launch that never binds a conversation', async () => {
+  const context = setup();
+  try {
+    context.database.updateProjectInstanceLimits(context.project.id, { codex: 2, claude: 1 });
+    const task = context.database.createTask({
+      title: 'Unbound planner',
+      prompt: 'Plan this.',
+      repoPath: context.directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount: 1 },
+    });
+    context.artifacts.initializeTask(task);
+    context.pool.coordinator.launch = async () => ({
+      launchId: 'unbound-planner-launch',
+      threadId: null,
+      bindingError: 'planner never connected',
+    });
+
+    await assert.rejects(
+      context.pool.launchTurboStage(task, { role: 'planner' }),
+      /planner never connected/,
+    );
+    assert.deepEqual(context.closes, ['unbound-planner-launch']);
+    assert.equal(context.pool.allocations.has(task.id), false);
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Turbo binding failure becomes non-retryable when its native window cannot close', async () => {
+  const context = setup();
+  try {
+    context.database.updateProjectInstanceLimits(context.project.id, { codex: 2, claude: 1 });
+    const task = context.database.createTask({
+      title: 'Unclosable planner',
+      prompt: 'Plan this.',
+      repoPath: context.directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount: 1 },
+    });
+    context.artifacts.initializeTask(task);
+    context.pool.coordinator.launch = async () => ({
+      launchId: 'unclosable-planner-launch',
+      threadId: null,
+      bindingError: 'planner never connected',
+    });
+    context.pool.launcher.closeOwnedLaunch = async () => {
+      throw new Error('native window stayed open');
+    };
+
+    await assert.rejects(
+      context.pool.launchTurboStage(task, { role: 'planner' }),
+      (error) => error.retryable === false && error.terminalCleanupFailed === true,
+    );
+    assert.equal(context.pool.allocations.has(task.id), true);
+    assert.equal(context.pool.pendingTurboLaunches.size, 0);
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Turbo stage closes its bound launch when assignment persistence fails', async () => {
+  const context = setup();
+  try {
+    context.database.updateProjectInstanceLimits(context.project.id, { codex: 2, claude: 1 });
+    const task = context.database.createTask({
+      title: 'Planner persistence failure',
+      prompt: 'Plan this.',
+      repoPath: context.directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount: 1 },
+    });
+    context.artifacts.initializeTask(task);
+    const updateTask = context.database.updateTask.bind(context.database);
+    context.database.updateTask = () => {
+      throw new Error('database write failed');
+    };
+
+    await assert.rejects(
+      context.pool.launchTurboStage(task, { role: 'planner' }),
+      /database write failed/,
+    );
+    context.database.updateTask = updateTask;
+    assert.deepEqual(context.closes, ['codex-launch-1']);
+    assert.equal(context.pool.allocations.has(task.id), false);
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Turbo terminal slot is reserved while its native window is still binding', async () => {
+  const context = setup();
+  let finishLaunch;
+  try {
+    context.database.updateProjectInstanceLimits(context.project.id, { codex: 2, claude: 1 });
+    const task = context.database.createTask({
+      title: 'Binding planner',
+      prompt: 'Plan this.',
+      repoPath: context.directory,
+      provider: 'codex',
+      mode: 'turbo',
+      terminalLifecycle: 'disposable',
+      turbo: { workerCount: 1 },
+    });
+    const direct = context.database.createTask({
+      title: 'Direct work',
+      prompt: 'Work directly.',
+      repoPath: context.directory,
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+    });
+    context.artifacts.initializeTask(task);
+    context.artifacts.initializeTask(direct);
+    context.pool.coordinator.launch = () => new Promise((resolve) => {
+      finishLaunch = resolve;
+    });
+
+    const opening = context.pool.launchTurboStage(task, { role: 'planner' });
+    assert.deepEqual(context.pool.projectStatus(context.directory).active, { codex: 1, claude: 0 });
+    assert.deepEqual(context.pool.projectStatus(context.directory, [task]).active, { codex: 1, claude: 0 });
+    assert.equal(context.pool.canRun(direct), true);
+    assert.equal(context.pool.canRun(direct, [direct]), false);
+
+    finishLaunch({
+      launchId: 'binding-planner-launch',
+      threadId: 'binding-planner-thread',
+      thread: {
+        id: 'binding-planner-thread',
+        provider: 'codex',
+        cwd: context.directory,
+        title: 'Binding planner terminal',
+        source: 'test',
+      },
+    });
+    const planner = await opening;
+    assert.equal(context.pool.pendingTurboLaunches.size, 0);
+    await context.pool.finishTurboStage(task.id, planner, { retain: false });
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('Plan council reserves both providers while each Turbo execution reserves one Codex slot', () => {
   assert.deepEqual(disposableTerminalRequirements({
     terminal_lifecycle: 'disposable',
     mode: 'plan',
@@ -526,7 +767,17 @@ test('Plan council and Turbo declare their complete provider slot requirements',
     terminal_lifecycle: 'disposable',
     mode: 'turbo',
     turbo: { workerCount: 3, council: { enabled: true } },
+  }), { codex: 1, claude: 0 });
+  assert.deepEqual(disposableTerminalConfigurationRequirements({
+    terminal_lifecycle: 'disposable',
+    mode: 'turbo',
+    turbo: { workerCount: 3, council: { enabled: true } },
   }), { codex: 4, claude: 1 });
+  assert.deepEqual(disposableTerminalConfigurationRequirements({
+    terminal_lifecycle: 'disposable',
+    mode: 'turbo',
+    turbo: { workerCount: 2, councilEnabled: true },
+  }), { codex: 3, claude: 1 });
 });
 
 test('project limits gate automatic tasks without counting another project', () => {

@@ -195,9 +195,16 @@ export function codexRelayCommand(
   quote = shellQuote,
   endpoint = SHARED_CODEX_ENDPOINT,
   resumeThreadId = null,
+  launchSettings = null,
 ) {
   const command = resumeThreadId ? `codex resume ${quote(resumeThreadId)}` : 'codex';
-  return `${command} --dangerously-bypass-approvals-and-sandbox --cd ${quote(path)} --remote ${endpoint} ${CODEX_UPDATE_PROMPT_OVERRIDE}`;
+  const launchArguments = [
+    ...(launchSettings?.model ? [' --model ', quote(launchSettings.model)] : []),
+    ...(launchSettings?.effort
+      ? [' -c ', quote(`model_reasoning_effort=${JSON.stringify(launchSettings.effort)}`)]
+      : []),
+  ].join('');
+  return `${command} --dangerously-bypass-approvals-and-sandbox --cd ${quote(path)} --remote ${endpoint}${launchArguments} ${CODEX_UPDATE_PROMPT_OVERRIDE}`;
 }
 
 export function claudeRelayCommand(
@@ -362,6 +369,7 @@ export function validateProjectPath(path) {
 export function terminalCommand(path, provider, {
   claudeSessionId = null,
   codexEndpoint = SHARED_CODEX_ENDPOINT,
+  codexLaunchSettings = null,
   claudeBinary = 'claude',
   claudeSettings = null,
   claudeLaunchSettings = null,
@@ -371,7 +379,7 @@ export function terminalCommand(path, provider, {
     throw new Error(`Unsupported AI provider: ${provider}`);
   }
   const command = provider === 'codex'
-    ? codexRelayCommand(path, shellQuote, codexEndpoint, resumeThreadId)
+    ? codexRelayCommand(path, shellQuote, codexEndpoint, resumeThreadId, codexLaunchSettings)
     : claudeRelayCommand(
       claudeSessionId,
       shellQuote,
@@ -1191,6 +1199,9 @@ JSON.stringify(screens.map((screen, index) => {
   async launchNow(path, provider, requestedLayout = null, {
     resumeThreadId = null,
     initializeThreadId = null,
+    // Codex receives model and effort on its first TUI command so a newly opened planner or
+    // worker window identifies the settings that its app-server turn will use.
+    codexLaunchSettings = null,
     // A task-owned Claude launch passes the queued turn's { model, effort } here so the first
     // command is already configured. Interactive Launchpad launches never set it, which is what
     // keeps the user-facing "Launch Claude in project" command exactly as documented.
@@ -1203,6 +1214,9 @@ JSON.stringify(screens.map((screen, index) => {
     }
     if (claudeLaunchSettings && provider !== 'claude') {
       throw new Error('Only a Claude terminal launch can carry model and effort settings.');
+    }
+    if (codexLaunchSettings && provider !== 'codex') {
+      throw new Error('Only a Codex terminal launch can carry model and effort settings.');
     }
     if (initializeThreadId && provider !== 'claude') {
       throw new Error('Only Claude can initialize a saved session UUID.');
@@ -1249,7 +1263,7 @@ JSON.stringify(screens.map((screen, index) => {
       : null;
     const command = this.platform === 'win32'
       ? provider === 'codex'
-        ? codexRelayCommand(project.path, cmdQuote, codexEndpoint, resumeThreadId)
+        ? codexRelayCommand(project.path, cmdQuote, codexEndpoint, resumeThreadId, codexLaunchSettings)
         : claudeRelayCommand(
           initializeThreadId || (resumeThreadId ? null : expectedLaunchId),
           cmdQuote,
@@ -1261,6 +1275,7 @@ JSON.stringify(screens.map((screen, index) => {
       : terminalCommand(project.path, provider, {
         claudeSessionId: initializeThreadId || (resumeThreadId ? null : expectedLaunchId),
         codexEndpoint,
+        codexLaunchSettings,
         claudeBinary: this.claudeBinary,
         claudeSettings,
         claudeLaunchSettings,
@@ -1284,8 +1299,8 @@ JSON.stringify(screens.map((screen, index) => {
       endpoint: provider === 'codex' ? codexEndpoint : undefined,
       resumeThreadId: resumeThreadId || undefined,
       initializeThreadId: initializeThreadId || undefined,
-      launchModel: launchSettingsRecord?.model || undefined,
-      launchEffort: launchSettingsRecord?.effort || undefined,
+      launchModel: launchSettingsRecord?.model || codexLaunchSettings?.model || undefined,
+      launchEffort: launchSettingsRecord?.effort || codexLaunchSettings?.effort || undefined,
     });
     if (this.platform === 'win32') {
       // cmd.exe /K strips the first character and the last quote of its command line whenever

@@ -1,5 +1,13 @@
 import { sameWorkspacePath } from './claude-execution-runner.mjs';
 
+export function isTurboExecutionSession(task) {
+  return task?.mode === 'turbo'
+    && task.terminal_lifecycle === 'disposable'
+    && task.provider === 'codex'
+    && Boolean(task.turbo?.executionThreadId)
+    && task.thread_id === task.turbo.executionThreadId;
+}
+
 export function buildSessionFollowUp({
   sourceTask,
   prompt,
@@ -9,8 +17,11 @@ export function buildSessionFollowUp({
   platform = process.platform,
 }) {
   if (!sourceTask) throw new Error('Task not found.');
-  if (sourceTask.mode !== 'execute' || !['codex', 'claude'].includes(sourceTask.provider)) {
-    throw new Error('Only direct Codex or Claude tasks can continue in one terminal session.');
+  const turboExecution = isTurboExecutionSession(sourceTask);
+  const directExecution = sourceTask.mode === 'execute'
+    && ['codex', 'claude'].includes(sourceTask.provider);
+  if (!directExecution && !turboExecution) {
+    throw new Error('Only direct tasks and completed Turbo execution sessions can continue.');
   }
   const normalizedPrompt = typeof prompt === 'string' ? prompt.trim() : '';
   if (!normalizedPrompt) throw new Error('Write a follow-up before sending it.');
@@ -30,9 +41,14 @@ export function buildSessionFollowUp({
   }
   return {
     ...sourceTask,
+    ...(turboExecution ? {
+      mode: 'execute',
+      provider: 'codex',
+      model: execution.model || sourceTask.turbo.workerModel,
+      effort: execution.effort || sourceTask.turbo.workerEffort,
+    } : {}),
     prompt: normalizedPrompt,
-    model: execution.model,
-    effort: execution.effort,
+    ...(!turboExecution ? { model: execution.model, effort: execution.effort } : {}),
     attachments,
     sessionFollowUp: true,
   };

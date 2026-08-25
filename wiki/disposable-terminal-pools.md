@@ -33,7 +33,7 @@ The renderer keeps the former live-terminal picker and launch controls only as c
 
 Automatic tasks persist `terminal_lifecycle = 'disposable'` and their requested launch layout in `terminal_layout_json`. A fresh task starts with no `thread_id`. This is intentional and distinguishes a new conversation from a continuation.
 
-The lifecycle is:
+The ordinary single-session lifecycle is:
 
 1. The queue checks the complete provider requirement against the selected project's limits and currently reserved work.
 2. `DisposableTerminalPool.prepare()` launches each required provider through `TerminalLaunchCoordinator`.
@@ -42,6 +42,15 @@ The lifecycle is:
 5. The ordinary runner executes the task and persists its result, error, session ID, events, and artifacts.
 6. By default, `DisposableTerminalPool.release()` closes every exact CC Relay-owned native launch in reverse order, whether the task completed, failed, was cancelled, or CC Relay interrupted it.
 7. When the task snapshots `keep_terminal_open = true`, the final prepared launch is promoted through `DisposableTerminalPool.retain()` instead. It leaves pool capacity and bulk shutdown cleanup without losing exact ownership. See [[retained-terminal-sessions]].
+
+Automatic Turbo uses just-in-time stage launches instead of `prepare()` opening a fleet. Its lifecycle is:
+
+1. The queued parent opens one fresh Codex planner with the selected planner model and effort.
+2. The planner returns a valid graph, then `finishTurboStage()` closes or retains that exact planning launch.
+3. The parent remains queued in `ready` state until an execution lane is free.
+4. The running parent opens one different fresh Codex execution terminal with the selected execution model and effort.
+5. The complete graph is sent once to that executor. It may use internal sub-agents, but no additional native worker terminal is created for the prompt.
+6. The executor launch closes or is retained at its outcome. Its conversation ID is persisted as `turbo.executionThreadId` and can be resumed from Task Activity.
 
 > [!important]
 > On macOS, opening a Terminal.app window and sending its provider command are separate steps.
@@ -61,29 +70,29 @@ Retention promotion follows the same fail-closed rule. If an exact launch cannot
 
 ## Provider requirements
 
-`disposableTerminalRequirements()` computes the atomic capacity needed before a task may start:
+`disposableTerminalRequirements()` computes the reservation needed by a runnable task:
 
 - Direct Execute and Planner breakdown: one instance of the chosen provider.
 - Execute Plan council: one Claude author instance and one Codex reviewer instance.
-- Turbo without council: one Codex planner plus the configured Codex worker count.
-- Turbo with terminal-driven council: the Turbo Codex fleet plus one Claude instance.
+- Automatic Turbo planning or execution parent: one Codex slot at a time.
+- A Turbo council stage: one additional Claude slot only while Claude owns the active author or review stage.
 
-A task whose requirement is larger than the project's configured maximum is rejected when it is submitted. Lowering limits is also refused when it would strand a disposable task that is already queued.
+A task whose requirement is larger than the project's configured maximum is rejected when it is submitted. Turbo applies an additional pipeline configuration check: the Codex maximum must fit one planning lane plus the selected number of concurrent execution lanes. Lowering limits is also refused when it would strand a disposable task that is already queued.
 
-Plan council and Turbo allocate their complete fleet before execution begins. Partial launch failure closes every launch that was already created for that task.
+Plan council still allocates both provider terminals before its execution begins. Turbo opens only the stage that is about to run. A partial stage launch failure closes that exact launch before capacity is reported free.
 
 > [!important]
 > A disposable Plan council is globally serialized against another Plan council or Turbo parent because `PlanCouncilRunner` still owns one council at a time. It is not a same-project drain barrier for disposable single-session work. A council may start beside running Execute or Planner breakdown tasks, and those tasks may start beside the council, when the combined atomic requirements fit the project's separate Codex and Claude limits. Legacy persistent councils keep the former project-draining barrier.
 
 ## Conversation resume
 
-When a fresh task binds successfully, its persisted `thread_id` becomes the durable conversation ID. After the terminal closes, **Continue session** remains available for finished direct Claude and Codex tasks.
+When a fresh task binds successfully, its persisted `thread_id` becomes the durable conversation ID. After the terminal closes, **Continue session** remains available for finished direct Claude and Codex tasks. A completed automatic Turbo task uses the same mechanism for its final execution conversation, never for its read-only planner conversation.
 
 A continuation keeps the source task ID and first checks that the project has a free instance of the required provider. When capacity is available, CC Relay marks that same task running, opens a new native terminal, and runs:
 
 ```text
 claude --dangerously-skip-permissions --resume <conversation-id> --model <model> --effort <effort> --settings <hooks>
-codex resume <conversation-id> --dangerously-bypass-approvals-and-sandbox --cd <project> --remote ws://127.0.0.1:4769 -c check_for_update_on_startup=false
+codex resume <conversation-id> --dangerously-bypass-approvals-and-sandbox --cd <project> --remote ws://127.0.0.1:4769 --model <model> -c model_reasoning_effort="<effort>" -c check_for_update_on_startup=false
 ```
 
 Every interactive Codex launch, fresh or resumed, ends with `-c check_for_update_on_startup=false`
@@ -96,6 +105,8 @@ stops and relaunches the process the user just watched open. The skip requires a
 pid-bound record of what CC Relay itself launched; Plan council, Turbo, adopted terminals, and
 interactive Launchpad launches keep the existing relaunch. See [[claude-launch-settings]].
 
+A task-owned Codex launch also carries its selected model and reasoning effort on the first native command. Turbo uses this to make the planning terminal visibly match the planner settings and the later execution terminal visibly match the execution settings. The app-server turn still receives the same validated pair, so the terminal and task activity cannot disagree.
+
 The new terminal receives its own native launch ID while the provider conversation keeps its original ID. CC Relay binds and later closes the new launch independently. The follow-up prompt is runtime input only: the task's canonical `prompt` remains the original request, while the accepted follow-up is stored in that task's prompt history and event rail.
 
 When the source task retained its terminal and that conversation is still connected and idle, **Continue session** reuses the exact live terminal instead of opening a resume launch. A manual retry does the same. Closing the retained terminal restores the ordinary resume behavior, and the replacement launch inherits the retention preference. See [[retained-terminal-sessions]].
@@ -104,7 +115,7 @@ Manual retry distinguishes a bound provider ID from a durable conversation. If a
 
 Continuation submission is immediate and never waits in the queue. `TaskQueue.startFollowUp()` revalidates the source task, active task ownership, saved conversation reservations, and provider capacity synchronously before it changes the task. A busy conversation or full provider pool rejects with nothing launched and no new task. This prevents two terminals from resuming and mutating the same conversation concurrently when a project's maximum is greater than 1.
 
-Running Codex retains live `turn/steer` behavior. Running Claude still waits for the current turn to finish before it can continue. Finished legacy persistent tasks retain the immediate same-terminal follow-up path.
+Running direct Codex retains live `turn/steer` behavior. A Turbo executor must finish its complete graph before continuation becomes available. Running Claude still waits for the current turn to finish before it can continue. Finished legacy persistent tasks retain the immediate same-terminal follow-up path.
 
 `GET /api/tasks/:id` returns `prompts` separately from the bounded event window. The list starts with the canonical original request and adds CC Relay-marked finished-turn follow-ups and active-turn steering messages in order. This keeps every task prompt visible even after the terminal console exceeds its 500-event display window. See [[same-task-session-continuation]].
 

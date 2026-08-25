@@ -80,7 +80,7 @@ The compact rule set collapses the layout grid to two columns, moves the monitor
 
 ## Task snapshot boundary
 
-Each submitted task still snapshots `keep_terminal_open`. New direct Execute tasks also snapshot `manual_completion` when the backend supports [[manual-terminal-session-mode]]. Changing the project setting later cannot rewrite queued, running, open, or historical task intent. Breakdown, plan execution, Plan council, Turbo, Retry, and Continue session continue to carry the existing task-level retention contract from [[retained-terminal-sessions]].
+Each submitted task still snapshots `keep_terminal_open`. New direct Execute tasks also snapshot `manual_completion` when the backend supports [[manual-terminal-session-mode]]. Changing the project setting later cannot rewrite queued, running, open, or historical task intent. Breakdown, plan execution, Plan council, Turbo, Retry, and Continue session continue to carry the existing task-level retention contract from [[retained-terminal-sessions]]. Turbo applies the snapshot independently when its fresh planning stage and later fresh execution stage finish.
 
 ## Validation
 
