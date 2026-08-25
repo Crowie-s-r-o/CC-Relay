@@ -15,6 +15,13 @@ tags:
 
 **Recommendation: ship. Confidence: high.**
 
+> [!warning]
+> **August 25 correction:** the original throughput conclusion was falsified by live Codex tasks.
+> `thread/tokenUsage/updated.last` is one upstream response, not a cumulative task total, and total
+> input plus output is not an output-generation speed numerator. Relay now derives current-attempt
+> usage from the thread-wide total minus a fixed pre-attempt baseline, and divides cumulative output
+> only by task elapsed time. See [[token-throughput-correction]].
+
 The review traced provider selection, validation, scheduling, process ownership, native session
 persistence, token accounting, retry isolation, event rendering, and cleanup. No blocking finding
 remains. OpenCode is limited to automatic direct Execute work, while Plan council, Turbo, Planner,
@@ -53,7 +60,7 @@ native provider usage
   -> normalized provider/token-usage event
   -> task event database and artifact log
   -> latest current-attempt cumulative event
-  -> total tokens / elapsed task seconds
+  -> output tokens / elapsed task seconds
   -> Task Activity and global running-task monitor
 ```
 
@@ -94,7 +101,7 @@ normalizes to 159 used tokens. A second step reporting 40, 10, 2, 8, and 1 norma
 220 cumulative tokens. Repeating a step with the same native identifier replaces its map entry rather
 than adding it again.
 
-For a running task with 600 cumulative native tokens:
+For a running task with 600 cumulative native output tokens:
 
 ```text
 after 10 seconds: 600 / 10 = 60 tokens/s
@@ -102,9 +109,10 @@ after 20 seconds: 600 / 20 = 30 tokens/s
 ```
 
 The one-second UI tick recalculates the denominator between provider steps. A completed task with 800
-tokens and an eight-second lifecycle freezes at 100 tokens/s. A retry accepts only usage events whose
-provider matches the task and whose timestamp is at or after the current `started_at`, so an earlier
-attempt cannot contaminate the displayed rate.
+output tokens and an eight-second lifecycle freezes at 100 tokens/s. Input, cached input, and
+cache-write counts remain visible usage totals but do not enter this rate. A retry accepts only usage
+events whose provider matches the task and whose timestamp is at or after the current `started_at`,
+so an earlier attempt cannot contaminate the displayed rate.
 
 `opencode stats` was inspected but is not used for this calculation. Its native options aggregate by
 days, models, and project rather than identifying one current Relay attempt. Live `step_finish` data
@@ -116,7 +124,7 @@ is therefore the precise source, with `opencode export` as the final reconciliat
   and bounded export reconciliation.
 - Added an independent per-project OpenCode concurrency limit and virtual pool accounting.
 - Added normalized native token events for OpenCode, Codex, and Claude.
-- Added live tokens-per-second rendering in Task Activity and the global running-task monitor.
+- Added live average output-token rendering in Task Activity and the global running-task monitor.
 - Added OpenCode response rendering, search and reference history, retry and queued-provider switching,
   installation states, documentation, and regression coverage.
 - Added lifecycle defenses for provider switching, virtual allocation retention, stream bounds, and
@@ -138,11 +146,10 @@ is therefore the precise source, with `opencode export` as the final reconciliat
 - The global monitor keeps the newest 500 events per incremental cache read. This is sufficient for
   current live polling, but an extreme event burst can omit older display-only context. Task Activity
   still reads the durable task event history.
-- Token speed intentionally measures all provider-reported used tokens over task wall time. It is not
-  output-only model generation speed and should not be compared with vendor benchmarks that use a
-  different numerator or generation-only interval.
+- Token speed measures provider-reported output tokens over task wall time. It includes tool and idle
+  intervals, so it is an average task rate rather than an instantaneous generation benchmark.
 
 See [[opencode-provider-and-token-throughput]], [[provider-installation-detection]],
-[[disposable-terminal-pools]], and [[task-activity-overview]].
+[[disposable-terminal-pools]], [[task-activity-overview]], and [[token-throughput-correction]].
 
 #relay #opencode #review #telemetry

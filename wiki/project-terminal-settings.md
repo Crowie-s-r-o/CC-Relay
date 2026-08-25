@@ -68,9 +68,10 @@ The window-layout booleans use the shared `.terminal-settings-switch` pill. **Ar
 The completion section uses aligned full-width sound and voice rows. **Voice announcement** retains the shared switch, then nests its content checkboxes, 1 through 12 task-name word limit, and exact spoken preview in `.completion-speech-options`. The fieldset stays visible but disabled while voice is off. See [[task-completion-alerts]].
 
 The app-wide **Voice input** section follows completion alerts. It contains the push-to-talk switch,
-shortcut capture, and explicit local engine setup or repair action. This section is intentionally
-not project-scoped even though it shares the terminal settings dialog. The composer rail and
-settings both render from the durable global `voiceInput` preference and backend engine status.
+separate primary and alternate shortcut capture buttons, and explicit local engine setup or repair
+action. Each chord renders as individual keycaps. This section is intentionally not project-scoped
+even though it shares the terminal settings dialog. The composer rail and settings both render from
+the durable global `voiceInput` preference and backend engine status.
 See [[push-to-talk-voice-input]] and [[durable-ui-layout-preferences]].
 
 > [!important]

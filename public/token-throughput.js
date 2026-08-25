@@ -25,9 +25,38 @@ export function tokenThroughput(events, task, now = Date.now()) {
       || payload.cumulative !== true
       || eventAt < startedAt
     ) continue;
-    const totalTokens = Number(payload.usage?.totalTokens);
-    if (!Number.isFinite(totalTokens) || totalTokens < 0) continue;
-    if (!latest || eventAt >= latest.eventAt) latest = { eventAt, totalTokens };
+    const usage = payload.usage || {};
+    const totalTokens = Number(usage.totalTokens);
+    const inputTokens = Number(usage.inputTokens);
+    const outputTokens = Number(usage.outputTokens);
+    const reasoningTokens = Number(usage.reasoningTokens);
+    const cacheReadTokens = Number(usage.cacheReadTokens);
+    const cacheWriteTokens = Number(usage.cacheWriteTokens);
+    if (
+      !Number.isFinite(totalTokens)
+      || totalTokens < 0
+      || !Number.isFinite(inputTokens)
+      || inputTokens < 0
+      || !Number.isFinite(outputTokens)
+      || outputTokens < 0
+    ) continue;
+    if (!latest || eventAt >= latest.eventAt) {
+      latest = {
+        eventAt,
+        totalTokens,
+        inputTokens,
+        outputTokens,
+        reasoningTokens: Number.isFinite(reasoningTokens) && reasoningTokens >= 0
+          ? reasoningTokens
+          : 0,
+        cacheReadTokens: Number.isFinite(cacheReadTokens) && cacheReadTokens >= 0
+          ? cacheReadTokens
+          : 0,
+        cacheWriteTokens: Number.isFinite(cacheWriteTokens) && cacheWriteTokens >= 0
+          ? cacheWriteTokens
+          : 0,
+      };
+    }
   }
   if (!latest) return null;
 
@@ -36,9 +65,9 @@ export function tokenThroughput(events, task, now = Date.now()) {
     ? Number(now)
     : finishedAt || latest.eventAt;
   const elapsedSeconds = Math.max(0.001, (endAt - startedAt) / 1000);
-  const tokensPerSecond = latest.totalTokens / elapsedSeconds;
+  const tokensPerSecond = latest.outputTokens / elapsedSeconds;
   return {
-    totalTokens: latest.totalTokens,
+    ...latest,
     elapsedSeconds,
     tokensPerSecond,
     rateLabel: compactRate(tokensPerSecond),

@@ -1,0 +1,91 @@
+---
+name: Token Throughput Correction
+description: Why Relay's first tokens-per-second metric was inflated and how current-attempt input, output, and rate accounting now work.
+type: incident
+tags:
+  - relay
+  - telemetry
+  - codex
+  - task-activity
+  - correction
+---
+
+# Token Throughput Correction
+
+## Outcome
+
+Relay now reports cumulative native input and output totals for the current task attempt. Its visible
+rate is cumulative output tokens divided by elapsed task seconds. Input tokens, cached context,
+reasoning detail, and the provider total remain usage evidence, but they are not generation speed.
+
+## What went wrong
+
+The original implementation divided `usage.totalTokens` by task wall time. That total includes input
+processing, and long agentic runs repeatedly send a large context window. Real tasks therefore showed
+rates above 200 and 400 tokens/s even though their latest responses contained only hundreds of output
+tokens.
+
+Codex exposed a second accounting error. Its `thread/tokenUsage/updated` payload has:
+
+```text
+total = thread-wide cumulative usage
+last  = exact usage for the latest upstream response
+```
+
+Relay selected `last` and marked the resulting event `cumulative: true`. Live evidence falsified that
+assumption: input followed the latest context size, output moved backward between events, and the
+supposed cumulative record for task 1107 reached 203,566 input tokens with only 108 output tokens.
+The displayed number was therefore neither task consumption nor output speed.
+
+## Correct accounting
+
+For the first Codex usage update in an attempt:
+
+```text
+pre-attempt baseline = thread total - latest response
+attempt usage        = thread total - pre-attempt baseline
+```
+
+The baseline stays fixed for the rest of that provider turn. A goal successor first adds the completed
+turn's attempt usage, then derives a new turn baseline. A resumed conversation derives its baseline
+from the first new response, so historical conversation usage cannot leak into the current Relay
+attempt.
+
+Claude still folds exact assistant usage by message ID. OpenCode still folds exact `step_finish`
+usage by step ID. Both already produced monotonic current-attempt totals.
+
+The UI calculation is:
+
+```text
+average output tokens/s = cumulative output tokens / elapsed task seconds
+```
+
+Task Activity shows exact input and output counts beside that rate. Hover detail also names reasoning,
+cache-read, cache-write, and provider-total values. The compact global task monitor keeps only the rate
+to preserve its card density.
+
+> [!note]
+> This is average task throughput, not instantaneous decoder speed. Tool execution and idle intervals
+> remain in the denominator.
+
+> [!warning]
+> Persisted Codex token events from before this correction claimed cumulative semantics while carrying
+> latest-response data. Relay does not rewrite them because a continued thread does not retain enough
+> pre-attempt baseline evidence for a safe migration.
+
+## Implementation
+
+- `src/token-usage.mjs` derives and subtracts the Codex pre-attempt baseline.
+- `src/codex-app-server.mjs` retains that baseline across one turn and resets it at a goal successor.
+- `public/token-throughput.js` uses cumulative output as the rate numerator.
+- `public/app.js` shows input, output, and the average output rate with full native detail on hover.
+- Focused provider, feed, throughput, and UI coverage passes 127 tests.
+- The completed extra verification aligned the thinking-token card with the same cumulative native
+  snapshot and covered baseline reset across a Codex goal successor.
+- The complete repository suite passes 1,727 tests. `npm run release:check` confirms v0.2.24 metadata,
+  and `git diff --check` is clean.
+
+See [[opencode-provider-and-token-throughput]], [[opencode-token-throughput-review]],
+[[task-activity-overview]], and [[interface-layout]].
+
+#relay #telemetry #codex #task-activity #correction

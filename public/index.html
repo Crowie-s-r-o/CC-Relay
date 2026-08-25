@@ -554,8 +554,17 @@
                   </div>
                   <div id="voice-input-controls" class="voice-input-controls">
                     <div class="voice-input-control-row">
-                      <span><strong>Activation keys</strong><small>Works while the CC Relay window is active. Release any activation key to stop.</small></span>
-                      <button id="voice-input-shortcut" class="voice-input-shortcut" type="button" aria-describedby="voice-input-status"><kbd id="voice-input-shortcut-label">Ctrl+Shift+Space</kbd><span>Change</span></button>
+                      <span><strong>Activation shortcuts</strong><small>Choose up to two. They work while the CC Relay window is active. Release any activation key to stop.</small></span>
+                      <div class="voice-input-shortcuts" role="group" aria-label="Activation shortcuts">
+                        <button id="voice-input-shortcut" class="voice-input-shortcut" type="button" aria-describedby="voice-input-status">
+                          <span class="voice-input-shortcut-head"><small>Primary</small><b data-voice-shortcut-action>Change</b></span>
+                          <span id="voice-input-shortcut-label" class="voice-input-shortcut-keycaps"><kbd>Ctrl</kbd><i aria-hidden="true">+</i><kbd>Shift</kbd><i aria-hidden="true">+</i><kbd>Space</kbd></span>
+                        </button>
+                        <button id="voice-input-alternate-shortcut" class="voice-input-shortcut" type="button" aria-describedby="voice-input-status">
+                          <span class="voice-input-shortcut-head"><small>Alternate</small><b data-voice-shortcut-action>Add</b></span>
+                          <span id="voice-input-alternate-shortcut-label" class="voice-input-shortcut-keycaps"><span class="voice-input-shortcut-empty">Not set</span></span>
+                        </button>
+                      </div>
                     </div>
                     <div class="voice-input-control-row voice-input-engine-row">
                       <span><strong>Local speech engine</strong><small>The multilingual faster-whisper base model uses CPU-only 8-bit inference. Audio stays on this computer.</small></span>
@@ -891,6 +900,9 @@
                 <button type="button" data-event-filter="ai" aria-pressed="false"><span class="event-filter-label">AI messages</span><b data-event-filter-count aria-hidden="true">0</b></button>
               </div>
               <div class="event-tools">
+                <button id="thinking-visibility-button" class="thinking-visibility-button" type="button" aria-controls="detail-events" aria-pressed="true" aria-label="Hide thinking summaries" title="Hide model-provided thinking summaries">
+                  <span>Thinking</span><i aria-hidden="true"></i>
+                </button>
                 <button id="copy-events-button" type="button">Copy log</button>
               </div>
             </div>

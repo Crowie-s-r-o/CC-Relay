@@ -18,6 +18,7 @@ import {
   normalizeVoiceInputPreferences,
   preferredVoiceMimeType,
   voiceShortcutFromKeyboardEvent,
+  voiceShortcutKeyLabels,
   voiceShortcutLabel,
   voiceShortcutMatches,
   voiceShortcutReleased,
@@ -66,6 +67,16 @@ test('voice shortcuts are configurable, exact, and stop on any required key rele
   assert.deepEqual(normalizeVoiceInputPreferences({ enabled: true, shortcut: captured }), {
     enabled: true,
     shortcut: captured,
+    alternateShortcut: null,
+  });
+  assert.deepEqual(normalizeVoiceInputPreferences({
+    enabled: true,
+    shortcut: captured,
+    alternateShortcut: 'F5',
+  }), {
+    enabled: true,
+    shortcut: captured,
+    alternateShortcut: 'F5',
   });
   assert.equal(voiceShortcutMatches(keyEvent('KeyV', {
     ctrlKey: true,
@@ -81,6 +92,7 @@ test('voice shortcuts are configurable, exact, and stop on any required key rele
   assert.equal(voiceShortcutReleased(keyEvent('AltLeft', { type: 'keyup' }), captured), false);
   assert.equal(voiceShortcutLabel('Control+Shift+Space', 'MacIntel'), '⌃⇧Space');
   assert.equal(voiceShortcutLabel('Control+Shift+Space', 'Win32'), 'Ctrl+Shift+Space');
+  assert.deepEqual(voiceShortcutKeyLabels('Control+Shift+Space', 'Win32'), ['Ctrl', 'Shift', 'Space']);
 });
 
 class FakeMediaRecorder extends EventTarget {
@@ -289,6 +301,7 @@ test('voice service installs its isolated runtime, reuses one worker, and remove
         text: 'Dictated task prompt.',
         language: 'en',
         duration: 1.25,
+        vadFallback: true,
       })}\n`));
     });
     workers.push(worker);
@@ -300,6 +313,7 @@ test('voice service installs its isolated runtime, reuses one worker, and remove
     runProcess,
     spawnProcess,
   });
+  let refreshedService = null;
   try {
     assert.equal(service.status().state, 'setup-required');
     const status = await service.setup();
@@ -314,13 +328,29 @@ test('voice service installs its isolated runtime, reuses one worker, and remove
       text: 'Dictated task prompt.',
       language: 'en',
       duration: 1.25,
+      vadFallback: true,
     });
     assert.equal(existsSync(recordedPath), false);
     assert.deepEqual(readdirSync(join(directory, 'voice-input', 'recordings')), []);
     assert.equal(workers.length, 1);
     await service.shutdown();
     assert.equal(workers[0].killed, true);
+
+    const installedHelperPath = join(directory, 'voice-input', 'faster-whisper-worker.py');
+    writeFileSync(installedHelperPath, 'stale helper');
+    refreshedService = new VoiceInputService({
+      dataRoot: directory,
+      platform: 'linux',
+      runProcess,
+      spawnProcess,
+    });
+    assert.equal((await refreshedService.prewarm()).state, 'ready');
+    assert.equal(readFileSync(installedHelperPath, 'utf8'), helper);
+    assert.equal(workers.length, 2);
+    await refreshedService.shutdown();
+    assert.equal(workers[1].killed, true);
   } finally {
+    await refreshedService?.shutdown();
     await service.shutdown();
     rmSync(directory, { recursive: true, force: true });
   }
@@ -388,12 +418,13 @@ test('voice service rejects malformed or mismatched worker readiness without lea
 test('voice input UI, API, CPU worker, and packaged microphone disclosure stay connected', () => {
   assert.match(html, /id="voice-input-enabled"[^>]*role="switch"/);
   assert.match(html, /id="voice-input-shortcut"[\s\S]*?id="voice-input-shortcut-label"/);
+  assert.match(html, /id="voice-input-alternate-shortcut"[\s\S]*?id="voice-input-alternate-shortcut-label"/);
   assert.match(html, /id="voice-input-hold"[\s\S]*?Hold Ctrl\+Shift\+Space to talk/);
   assert.match(html, /Release any activation key to stop/);
   assert.match(style, /\.voice-input-composer\[data-state="listening"\]/);
   assert.match(style, /html\[data-theme="dark"\] \.voice-input-composer/);
-  assert.match(app, /voiceShortcutMatches\(event, state\.voiceInputPreferences\.shortcut\)/);
-  assert.match(app, /voiceShortcutReleased\(event, state\.voiceInputPreferences\.shortcut\)/);
+  assert.match(app, /\.find\(\(shortcut\) => shortcut && voiceShortcutMatches\(event, shortcut\)\)/);
+  assert.match(app, /voiceShortcutReleased\(event, activeShortcut\)/);
   assert.match(app, /api\('\/api\/voice-input\/transcribe'/);
   assert.match(app, /elements\.prompt\.setRangeText\(replacement, start, end, 'end'\)/);
   assert.match(server, /pushToTalkVoiceInput: true/);
@@ -402,7 +433,9 @@ test('voice input UI, API, CPU worker, and packaged microphone disclosure stay c
   assert.match(server, /await voiceInput\.shutdown\(\)/);
   assert.match(helper, /device="cpu"/);
   assert.match(helper, /compute_type="int8"/);
-  assert.match(helper, /vad_filter=True/);
+  assert.match(helper, /decode\(model, audio_path, True\)/);
+  assert.match(helper, /decode\(model, audio_path, False\)/);
+  assert.match(helper, /"vadFallback": vad_fallback/);
   assert.match(electron, /configureDesktopPermissions\(mainWindow\.webContents\.session, rendererUrl\)/);
   assert.match(builder, /NSMicrophoneUsageDescription:/);
 });

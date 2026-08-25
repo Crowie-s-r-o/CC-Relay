@@ -15,21 +15,36 @@ def normalized_text(segments):
     return re.sub(r"\s+", " ", text).strip()
 
 
+def decode(model, audio_path, use_vad):
+    options = {
+        "beam_size": 1,
+        "condition_on_previous_text": False,
+        "vad_filter": use_vad,
+        "word_timestamps": False,
+    }
+    if use_vad:
+        options["vad_parameters"] = {"min_silence_duration_ms": 250}
+    segments, info = model.transcribe(
+        audio_path,
+        **options,
+    )
+    return normalized_text(segments), info
+
+
 def transcribe(model, audio_path):
     if not isinstance(audio_path, str) or not os.path.isfile(audio_path):
         raise ValueError("The recorded audio file is unavailable.")
-    segments, info = model.transcribe(
-        audio_path,
-        beam_size=1,
-        condition_on_previous_text=False,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 250},
-        word_timestamps=False,
-    )
+    text, info = decode(model, audio_path, True)
+    vad_fallback = not text
+    if vad_fallback:
+        # Push-to-talk already bounds the clip. A second decode without Silero VAD recovers
+        # quiet speech that the conservative speech gate can otherwise remove completely.
+        text, info = decode(model, audio_path, False)
     return {
-        "text": normalized_text(segments),
+        "text": text,
         "language": getattr(info, "language", None),
         "duration": getattr(info, "duration", None),
+        "vadFallback": vad_fallback,
     }
 
 

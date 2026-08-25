@@ -7,12 +7,31 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 25: inflated token speed now uses current-attempt output accounting.** Real Codex tasks
+> proved that `thread/tokenUsage/updated.last` is one response, not a cumulative task total, and
+> that input plus output over wall time is not generation speed. Relay now subtracts a fixed
+> pre-attempt baseline from the thread total, displays exact input and output counts in Task
+> Activity, and calculates the compact rate from cumulative output tokens only. See
+> [[token-throughput-correction]] and [[opencode-provider-and-token-throughput]].
+
+> [!note]
+> **August 25: Task Activity can now show or hide thinking summaries independently.** The compact
+> **Thinking** switch starts on, removes only provider-exposed reasoning summary rows when off,
+> and keeps All counts, visible-versus-total status, empty state, and Copy log aligned with the
+> rendered signals. The choice follows task selections during the renderer session and resets to
+> visible on a fresh load. Private hidden chain-of-thought remains unavailable. See
+> [[interface-layout]].
+
+> [!important]
 > **August 25: the task composer now supports local CPU push-to-talk dictation.** Enable voice
 > input in Terminal settings, perform the explicit faster-whisper setup, then hold the configurable
 > activation keys and release any one of them to stop recording. Relay inserts the multilingual
 > base-model transcript at the current prompt selection, deletes the transient clip, and retains
-> only the app-wide enabled state and shortcut. The default is `Ctrl+Shift+Space`, and shortcuts
-> work while the Relay window is active. See [[push-to-talk-voice-input]] and
+> only app-wide preferences. Quiet clips rejected by VAD now receive one recovery decode, and a
+> refreshed app updates the external worker helper without reinstalling its runtime. The settings
+> expose primary and alternate shortcut buttons with individual keycaps. The primary default is
+> `Ctrl+Shift+Space`, and both shortcuts work while the Relay window is active. See
+> [[push-to-talk-voice-input]] and
 > [[durable-ui-layout-preferences]].
 
 > [!important]

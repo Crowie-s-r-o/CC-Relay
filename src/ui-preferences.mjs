@@ -25,25 +25,32 @@ function completionSpeechWordLimit(value) {
   );
 }
 
-export function normalizeVoiceInputShortcut(value) {
+function canonicalVoiceInputShortcut(value) {
   const parts = typeof value === 'string' ? value.split('+') : [];
   const code = parts.at(-1);
-  if (!VOICE_SHORTCUT_CODE.test(code || '')) return DEFAULT_VOICE_INPUT_SHORTCUT;
+  if (!VOICE_SHORTCUT_CODE.test(code || '')) return null;
   const requestedModifiers = new Set(parts.slice(0, -1));
   if (
     requestedModifiers.size !== parts.length - 1
     || [...requestedModifiers].some((part) => !VOICE_SHORTCUT_MODIFIERS.includes(part))
-  ) return DEFAULT_VOICE_INPUT_SHORTCUT;
+  ) return null;
   return [
     ...VOICE_SHORTCUT_MODIFIERS.filter((modifier) => requestedModifiers.has(modifier)),
     code,
   ].join('+');
 }
 
+export function normalizeVoiceInputShortcut(value) {
+  return canonicalVoiceInputShortcut(value) || DEFAULT_VOICE_INPUT_SHORTCUT;
+}
+
 export function normalizeVoiceInputPreferences(value) {
+  const shortcut = normalizeVoiceInputShortcut(value?.shortcut);
+  const alternateShortcut = canonicalVoiceInputShortcut(value?.alternateShortcut);
   return {
     enabled: value?.enabled === true,
-    shortcut: normalizeVoiceInputShortcut(value?.shortcut),
+    shortcut,
+    alternateShortcut: alternateShortcut === shortcut ? null : alternateShortcut,
   };
 }
 

@@ -2465,7 +2465,7 @@ summary:focus-visible,
 
 .voice-input-control-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(140px, 180px);
+  grid-template-columns: minmax(0, 1fr) minmax(230px, 300px);
   gap: 16px;
   align-items: center;
   padding: 10px;
@@ -2495,31 +2495,79 @@ summary:focus-visible,
   line-height: 1.45;
 }
 
-.voice-input-shortcut {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 9px;
+.voice-input-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
   min-width: 0;
-  min-height: 34px;
-  padding: 5px 8px;
+}
+
+.voice-input-shortcut {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  min-height: 52px;
+  padding: 6px 7px;
   border: 1px solid var(--line);
   border-radius: 8px;
   color: var(--slate);
+  text-align: left;
   background: #fff;
   cursor: pointer;
 }
 
-.voice-input-shortcut kbd {
+.voice-input-shortcut-head,
+.voice-input-shortcut-keycaps {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.voice-input-shortcut-head {
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.voice-input-shortcut-head small {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.voice-input-shortcut-head b {
+  color: var(--blue);
+  font-size: 8px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.voice-input-shortcut-keycaps {
+  gap: 3px;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.voice-input-shortcut > span {
-  color: var(--blue);
+.voice-input-shortcut-keycaps kbd {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.voice-input-shortcut-keycaps i {
+  color: var(--muted);
+  font-size: 8px;
+  font-style: normal;
+}
+
+.voice-input-shortcut-empty {
+  overflow: hidden;
+  color: var(--muted);
   font-size: 9px;
-  font-weight: 750;
+  font-weight: 650;
+  text-overflow: ellipsis;
 }
 
 .voice-input-shortcut[data-capturing="true"] {
@@ -4378,6 +4426,12 @@ pre {
 .event-metrics .has-token-speed b,
 .event-metrics .has-token-speed small { color: var(--term-green); }
 
+.event-metrics .has-token-input b,
+.event-metrics .has-token-input small { color: var(--term-blue); }
+
+.event-metrics .has-token-output b,
+.event-metrics .has-token-output small { color: var(--term-cyan); }
+
 .event-metrics .has-user-messages b,
 .event-metrics .has-user-messages small { color: var(--term-teal); }
 
@@ -4768,6 +4822,47 @@ pre {
 .event-tools button {
   border-color: rgb(122 162 247 / 22%);
   background: rgb(18 22 42 / 55%);
+}
+
+.event-tools .thinking-visibility-button {
+  border-color: rgb(187 154 247 / 28%);
+}
+
+.thinking-visibility-button i {
+  position: relative;
+  display: inline-block;
+  width: 20px;
+  height: 11px;
+  border: 1px solid var(--term-muted);
+  border-radius: 999px;
+  background: rgb(123 129 141 / 14%);
+}
+
+.thinking-visibility-button i::after {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--term-muted2);
+  content: "";
+}
+
+.thinking-visibility-button[aria-pressed="true"] {
+  border-color: rgb(187 154 247 / 48%);
+  color: #eadfff;
+  background: rgb(187 154 247 / 12%);
+}
+
+.thinking-visibility-button[aria-pressed="true"] i {
+  border-color: rgb(187 154 247 / 68%);
+  background: rgb(187 154 247 / 18%);
+}
+
+.thinking-visibility-button[aria-pressed="true"] i::after {
+  left: 11px;
+  background: var(--term-caret);
 }
 
 .event-tools button:disabled { cursor: not-allowed; opacity: 0.45; }
@@ -14317,6 +14412,16 @@ html[data-theme="dark"] .voice-input-composer {
 html[data-theme="dark"] .voice-input-control-row strong,
 html[data-theme="dark"] .voice-input-hold {
   color: var(--app-text-body);
+}
+
+html[data-theme="dark"] .voice-input-shortcut-head small,
+html[data-theme="dark"] .voice-input-shortcut-keycaps i,
+html[data-theme="dark"] .voice-input-shortcut-empty {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .voice-input-shortcut-head b {
+  color: var(--app-blue);
 }
 
 html[data-theme="dark"] .voice-input-glyph {

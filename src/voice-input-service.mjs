@@ -356,6 +356,13 @@ export class VoiceInputService {
     if (this.shuttingDown) {
       return Promise.reject(voiceInputError('CC Relay is shutting down.', 409));
     }
+    try {
+      // The helper lives outside the packaged ASAR. Refresh it before every new worker so an app
+      // update can improve decoding without reinstalling the pinned Python runtime or model.
+      this._writeHelper();
+    } catch (error) {
+      return Promise.reject(error);
+    }
     mkdirSync(this.modelRoot, { recursive: true });
     let child;
     try {
@@ -464,6 +471,7 @@ export class VoiceInputService {
         duration: typeof message.duration === 'number' && Number.isFinite(message.duration)
           ? message.duration
           : null,
+        vadFallback: message.vadFallback === true,
       });
       return;
     }
@@ -546,6 +554,7 @@ export class VoiceInputService {
         characters: result.text.length,
         language: result.language,
         duration: result.duration,
+        vadFallback: result.vadFallback,
       });
       return result;
     } catch (error) {

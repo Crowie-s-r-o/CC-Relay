@@ -284,6 +284,63 @@ function completeTurn(client, turnId) {
   });
 }
 
+test('Codex token telemetry subtracts prior thread history and remains cumulative in the task', () => {
+  const { client, events } = planTurnClient(209);
+  const usage = (total, last) => ({
+    threadId: THREAD_ID,
+    turnId: ACTIVE_TURN_ID,
+    tokenUsage: { total, last, modelContextWindow: 200_000 },
+  });
+
+  try {
+    client.handleNotification('thread/tokenUsage/updated', usage(
+      {
+        totalTokens: 10_000,
+        inputTokens: 9_000,
+        cachedInputTokens: 7_000,
+        cacheWriteInputTokens: 0,
+        outputTokens: 1_000,
+        reasoningOutputTokens: 600,
+      },
+      {
+        totalTokens: 500,
+        inputTokens: 400,
+        cachedInputTokens: 300,
+        cacheWriteInputTokens: 0,
+        outputTokens: 100,
+        reasoningOutputTokens: 50,
+      },
+    ));
+    client.handleNotification('thread/tokenUsage/updated', usage(
+      {
+        totalTokens: 12_000,
+        inputTokens: 10_600,
+        cachedInputTokens: 8_200,
+        cacheWriteInputTokens: 0,
+        outputTokens: 1_400,
+        reasoningOutputTokens: 800,
+      },
+      {
+        totalTokens: 2_000,
+        inputTokens: 1_600,
+        cachedInputTokens: 1_200,
+        cacheWriteInputTokens: 0,
+        outputTokens: 400,
+        reasoningOutputTokens: 200,
+      },
+    ));
+
+    const snapshots = events.map(({ event }) => event.usage);
+    assert.deepEqual(snapshots.map(({ totalTokens }) => totalTokens), [500, 2_500]);
+    assert.deepEqual(snapshots.map(({ inputTokens }) => inputTokens), [400, 2_000]);
+    assert.deepEqual(snapshots.map(({ outputTokens }) => outputTokens), [100, 500]);
+    assert.deepEqual(snapshots.map(({ reasoningTokens }) => reasoningTokens), [50, 250]);
+  } finally {
+    client.activeTurns.clear();
+    client.close();
+  }
+});
+
 const LIVE_GOAL = {
   objective: 'Summarize the repository README',
   status: 'active',
@@ -582,6 +639,9 @@ test('an active Codex goal keeps one Relay run live and steerable across automat
     rejectCompletion = reject;
   });
   const active = activeTurnFixture({ taskId: 229, turnId: ACTIVE_TURN_ID, events });
+  active.completedTokenUsage = {};
+  active.turnTokenBaseline = { totalTokens: 9_500, inputTokens: 9_000, outputTokens: 500 };
+  active.turnTokenUsage = { totalTokens: 500, inputTokens: 400, outputTokens: 100 };
   active.resolve = resolveCompletion;
   active.reject = rejectCompletion;
   client.activeTurns.set(THREAD_ID, active);
@@ -621,6 +681,8 @@ test('an active Codex goal keeps one Relay run live and steerable across automat
     const steered = await steering;
     assert.equal(steered.turnId, SECOND_ACTIVE_TURN_ID);
     assert.equal(requests.at(-1).params.expectedTurnId, SECOND_ACTIVE_TURN_ID);
+    assert.equal(active.turnTokenBaseline, null);
+    assert.equal(active.completedTokenUsage.outputTokens, 100);
 
     // A late poll or duplicate completion from the prior turn cannot close its successor.
     completeTurn(client, ACTIVE_TURN_ID);

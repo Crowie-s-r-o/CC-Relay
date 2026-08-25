@@ -38,7 +38,7 @@ The current plan uses the same latest-event ordering as the compact plan metric.
 
 ## Lifecycle rules
 
-Runtime, live worker durations, and running token speed update on the existing one-second duration tick. Frozen outcomes keep the timestamp of their recorded completion. Token speed divides the latest current-attempt native cumulative total by task elapsed seconds and is unavailable until a valid native usage event exists. See [[opencode-provider-and-token-throughput]].
+Runtime, live worker durations, and running output-token speed update on the existing one-second duration tick. Frozen outcomes keep the timestamp of their recorded completion. Token speed divides the latest current-attempt native cumulative output count by task elapsed seconds and is unavailable until a valid native usage event exists. The manifest also shows exact native input and output counts, while hover detail retains reasoning, cache-read, cache-write, and provider-total fields. See [[opencode-provider-and-token-throughput]] and [[token-throughput-correction]].
 
 > [!important]
 > A task that is no longer running may not leave a plan step or worker looking live. An `inProgress` step becomes **Unfinished**, and a worker whose final provider state is still running or backgrounded becomes **Unfinished** with its duration frozen at the task end. This mirrors [[provider-plan-and-goal-visibility]] and [[provider-sub-agent-visibility]].

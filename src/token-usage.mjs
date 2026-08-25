@@ -38,6 +38,8 @@ export function normalizeTokenUsage(value) {
   const cacheWriteTokens = firstNumber(source, [
     'cacheWriteTokens',
     'cache_write_tokens',
+    'cacheWriteInputTokens',
+    'cache_write_input_tokens',
     'cacheCreationInputTokens',
     'cache_creation_input_tokens',
     'cache_write',
@@ -73,6 +75,19 @@ export function addTokenUsage(left, right) {
   };
 }
 
+export function subtractTokenUsage(value, baseline) {
+  const current = normalizeTokenUsage(value);
+  const first = normalizeTokenUsage(baseline);
+  return {
+    inputTokens: Math.max(0, current.inputTokens - first.inputTokens),
+    outputTokens: Math.max(0, current.outputTokens - first.outputTokens),
+    reasoningTokens: Math.max(0, current.reasoningTokens - first.reasoningTokens),
+    cacheReadTokens: Math.max(0, current.cacheReadTokens - first.cacheReadTokens),
+    cacheWriteTokens: Math.max(0, current.cacheWriteTokens - first.cacheWriteTokens),
+    totalTokens: Math.max(0, current.totalTokens - first.totalTokens),
+  };
+}
+
 export function providerTokenUsageEvent(provider, usage, {
   source = 'native',
   cumulative = true,
@@ -86,9 +101,17 @@ export function providerTokenUsageEvent(provider, usage, {
   };
 }
 
-export function codexTurnTokenUsage(tokenUsage) {
+export function codexTurnTokenUsage(tokenUsage, baseline = null) {
   const source = tokenUsage && typeof tokenUsage === 'object' ? tokenUsage : {};
-  return normalizeTokenUsage(source.last || source.total || source);
+  const total = normalizeTokenUsage(source.total || source);
+  const last = normalizeTokenUsage(source.last || source.total || source);
+  const resolvedBaseline = baseline
+    ? normalizeTokenUsage(baseline)
+    : subtractTokenUsage(total, last);
+  return {
+    baseline: resolvedBaseline,
+    usage: subtractTokenUsage(total, resolvedBaseline),
+  };
 }
 
 export function tokenUsageMessage(provider, usage) {

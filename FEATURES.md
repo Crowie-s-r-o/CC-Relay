@@ -21,7 +21,7 @@ CC Relay is designed to make AI development work easier to control:
 - Retry a failed direct task with a newly selected Codex, Claude, or OpenCode executor, model, and effort.
 - Attach screenshots and other reference images to tasks.
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
-- See cumulative native token use and tokens per second during supported provider runs.
+- See cumulative native input and output use plus average output tokens per task second during supported provider runs.
 - Monitor Claude session, Claude weekly, Fable weekly, Codex five-hour, and Codex weekly subscription usage in the global header.
 - Persist prompts, events, results, plans, errors, and attachments locally.
 - Generate a date-selected daily changelog from saved prompts and AI responses.
@@ -128,9 +128,9 @@ Run now places an urgent task ahead of other waiting tasks. It does not interrup
 
 The task composer supports optional local dictation. Enable it in **Terminal settings**, set up the local engine once, then hold the configured activation keys while the CC Relay window is active. Releasing the main key or any required modifier immediately stops the microphone, runs faster-whisper on the CPU, and inserts the transcript at the current prompt selection. The on-screen microphone control follows the same hold and release behavior.
 
-The default shortcut is `Ctrl+Shift+Space`. Shortcut capture accepts exact combinations of Control, Alt, Shift, or Meta plus a supported letter, digit, function, punctuation, space, Caps Lock, or numpad key. The choice is an app-wide durable preference.
+The default primary shortcut is `Ctrl+Shift+Space`, and an optional alternate shortcut can trigger the same recording. Each shortcut button accepts an exact combination of Control, Alt, Shift, or Meta plus a supported letter, digit, function, punctuation, space, Caps Lock, or numpad key. Both choices are app-wide durable preferences.
 
-Setup requires Python 3.9 or newer and an internet connection. Relay creates an isolated runtime in its application data, pins faster-whisper 1.2.1, downloads the multilingual base model, and loads it with CPU `int8` inference. Recorded clips are bounded, processed one at a time, and deleted after each transcription. Relay releases microphone tracks even when the activation keys are released before the operating-system permission prompt finishes.
+Setup requires Python 3.9 or newer and an internet connection. Relay creates an isolated runtime in its application data, pins faster-whisper 1.2.1, downloads the multilingual base model, and loads it with CPU `int8` inference. A clip rejected completely by the normal speech gate receives one recovery decode without that gate, which preserves quiet speech while true silence remains empty. Recorded clips are bounded, processed one at a time, and deleted after each transcription. Relay releases microphone tracks even when the activation keys are released before the operating-system permission prompt finishes.
 
 ### Reference images
 
@@ -142,21 +142,23 @@ Right-click a task card to attach My messages, AI responses, or Both to the new-
 
 ### Task activity
 
-CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, Conversation, My messages, and AI messages. Conversation keeps both speakers together in chronological order. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex, Claude, or OpenCode response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Follow mode and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
+CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, Conversation, My messages, and AI messages. A separate **Thinking** switch starts on and can hide provider-exposed reasoning summaries without changing the selected view. Conversation keeps both speakers together in chronological order. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex, Claude, or OpenCode response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Signal counts, the status bar, and Copy log all follow the same visible set. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
 
-### OpenCode execution and live token speed
+### OpenCode execution and native token accounting
 
 OpenCode is a third direct Execute provider beside Codex and Claude. Relay discovers the installed CLI and its configured model catalog, then starts `opencode run --format json` as a headless child process in the selected project. OpenCode does not open or retain a Terminal.app window. Its project limit still participates in the same queue capacity and cleanup rules.
 
-Relay reads native OpenCode `step_finish` token statistics as the run progresses. It emits one cumulative usage record after each reported step and reconciles an incomplete final stream from the saved native session export when needed. Codex and Claude native usage events use the same normalized record. The visible speed is:
+Relay reads native OpenCode `step_finish` token statistics as the run progresses. It emits one cumulative usage record after each reported step and reconciles an incomplete final stream from the saved native session export when needed. Codex and Claude native usage events use the same normalized record. Task Activity shows the current attempt's exact native input and output totals. The visible speed is:
 
 ```text
-native cumulative token total / elapsed task seconds
+native cumulative output tokens / elapsed task seconds
 ```
 
-The native total is used when the CLI supplies one. Otherwise Relay sums input, output, reasoning, cache-read, and cache-write tokens. Running speeds refresh once per second. A finished task freezes the denominator at its finish time, while a manually open terminal session without a finish time freezes at its latest native usage event. Estimated or stale events from an earlier retry attempt are excluded.
+The rate is an average across the task lifecycle, not an instantaneous model sampling rate. Input and cached context are excluded from its numerator because large context windows describe prompt processing, not generated output. Running speeds refresh once per second. A finished task freezes the denominator at its finish time, while a manually open terminal session without a finish time freezes at its latest native usage event. Estimated or stale events from an earlier retry attempt are excluded.
 
-The current value appears in Task Activity and in the global running-task monitor. OpenCode aggregate `stats` output is not used for task speed because it spans broader CLI history rather than the current Relay attempt. See [OpenCode provider and token throughput](wiki/opencode-provider-and-token-throughput.md).
+Codex reports a thread-wide `total` and the most recent upstream response as `last`. Relay infers the pre-attempt baseline as `total - last` on the first update, then subtracts that fixed baseline from later totals. This keeps continued conversations isolated and prevents a single growing context window from being mislabeled as cumulative task usage.
+
+The average output rate appears in Task Activity and in the global running-task monitor. Exact input and output counts appear in the Task Activity execution summary, with cache and reasoning detail in their hover text. OpenCode aggregate `stats` output is not used for task speed because it spans broader CLI history rather than the current Relay attempt. See [OpenCode provider and token throughput](wiki/opencode-provider-and-token-throughput.md).
 
 ### Task changes
 

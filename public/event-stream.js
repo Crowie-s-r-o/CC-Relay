@@ -833,23 +833,26 @@ export function isEventEntryHighlight(entry) {
   return true;
 }
 
-export function filterEventEntries(entries, filter) {
+export function isReasoningEntry(entry) {
+  return entryItem(entry)?.type === 'reasoning';
+}
+
+export function filterEventEntries(entries, filter, { showThinking = true } = {}) {
+  let visible;
   if (filter === 'highlights') {
-    return entries.filter(isEventEntryHighlight);
+    visible = entries.filter(isEventEntryHighlight);
+  } else if (filter === 'conversation') {
+    visible = entries.filter((entry) => Boolean(eventEntryMessageRole(entry)));
+  } else if (filter === 'mine') {
+    visible = entries.filter((entry) => eventEntryMessageRole(entry) === 'user');
+  } else if (filter === 'ai') {
+    visible = entries.filter((entry) => eventEntryMessageRole(entry) === 'assistant');
+  } else if (filter === 'commands' || filter === 'messages') {
+    visible = entries.filter((entry) => eventEntryCategory(entry) === filter);
+  } else {
+    visible = [...entries];
   }
-  if (filter === 'conversation') {
-    return entries.filter((entry) => Boolean(eventEntryMessageRole(entry)));
-  }
-  if (filter === 'mine') {
-    return entries.filter((entry) => eventEntryMessageRole(entry) === 'user');
-  }
-  if (filter === 'ai') {
-    return entries.filter((entry) => eventEntryMessageRole(entry) === 'assistant');
-  }
-  if (filter === 'commands' || filter === 'messages') {
-    return entries.filter((entry) => eventEntryCategory(entry) === filter);
-  }
-  return [...entries];
+  return showThinking ? visible : visible.filter((entry) => !isReasoningEntry(entry));
 }
 
 // True for a sub-agent launch signal and for a standalone finish notification that has no

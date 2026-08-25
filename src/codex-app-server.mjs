@@ -727,7 +727,12 @@ export class CodexAppServer extends EventEmitter {
     }
     if (method === 'thread/tokenUsage/updated') {
       active.tokenUsage = params.tokenUsage || null;
-      active.turnTokenUsage = codexTurnTokenUsage(active.tokenUsage);
+      // `total` spans the native thread while `last` is one upstream response. The first
+      // response identifies the usage that predates this Relay attempt, and that baseline
+      // remains fixed so every emitted event is genuinely cumulative for this attempt.
+      const snapshot = codexTurnTokenUsage(active.tokenUsage, active.turnTokenBaseline);
+      active.turnTokenBaseline = snapshot.baseline;
+      active.turnTokenUsage = snapshot.usage;
       const cumulative = addTokenUsage(active.completedTokenUsage, active.turnTokenUsage);
       const event = providerTokenUsageEvent('codex', cumulative);
       active.onEvent({ event, message: tokenUsageMessage('codex', event.usage) });
@@ -939,6 +944,7 @@ export class CodexAppServer extends EventEmitter {
     active.finalResponse = '';
     active.reasoningSummaries = new Map();
     active.completedTokenUsage = addTokenUsage(active.completedTokenUsage, active.turnTokenUsage);
+    active.turnTokenBaseline = null;
     active.turnTokenUsage = normalizeTokenUsage({});
     active.tokenUsage = null;
     active.earlyCompletion = null;
@@ -1375,6 +1381,7 @@ export class CodexAppServer extends EventEmitter {
         cancelRequested: false,
         subscribed: false,
         completedTokenUsage: normalizeTokenUsage({}),
+        turnTokenBaseline: null,
         turnTokenUsage: normalizeTokenUsage({}),
         onEvent,
         onStderr,

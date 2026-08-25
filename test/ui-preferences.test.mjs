@@ -36,7 +36,11 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
       speak: true,
       speech: { project: false, task: true, status: true, taskWords: 4 },
     },
-    voiceInput: { enabled: false, shortcut: 'Control+Shift+Space' },
+    voiceInput: {
+      enabled: false,
+      shortcut: 'Control+Shift+Space',
+      alternateShortcut: null,
+    },
   });
   assert.equal(normalizeUiPreferences({ panelWidths: { composer: 399, queue: 500 } }), null);
   assert.deepEqual(normalizeUiPreferences({
@@ -51,7 +55,11 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   })?.runningTaskLayout, { rows: 1, width: 286 });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
-  })?.voiceInput, { enabled: false, shortcut: 'Control+Shift+Space' });
+  })?.voiceInput, {
+    enabled: false,
+    shortcut: 'Control+Shift+Space',
+    alternateShortcut: null,
+  });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
     runningTaskLayout: { rows: 8, width: 999 },
@@ -79,7 +87,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   assert.equal(parseUiPreferences('{broken'), null);
 });
 
-test('voice input preferences keep a canonical configurable shortcut', () => {
+test('voice input preferences keep two distinct canonical configurable shortcuts', () => {
   assert.equal(normalizeVoiceInputShortcut('Meta+Shift+KeyV'), 'Shift+Meta+KeyV');
   assert.equal(normalizeVoiceInputShortcut('Alt+F8'), 'Alt+F8');
   assert.equal(normalizeVoiceInputShortcut('Backquote'), 'Backquote');
@@ -88,10 +96,20 @@ test('voice input preferences keep a canonical configurable shortcut', () => {
   assert.deepEqual(normalizeVoiceInputPreferences({
     enabled: true,
     shortcut: 'Meta+Shift+KeyV',
+    alternateShortcut: 'Control+F5',
   }), {
     enabled: true,
     shortcut: 'Shift+Meta+KeyV',
+    alternateShortcut: 'Control+F5',
   });
+  assert.equal(normalizeVoiceInputPreferences({
+    shortcut: 'F5',
+    alternateShortcut: 'F5',
+  }).alternateShortcut, null);
+  assert.equal(normalizeVoiceInputPreferences({
+    shortcut: 'F5',
+    alternateShortcut: 'Enter',
+  }).alternateShortcut, null);
 });
 
 test('UI preferences persist in durable shared configuration', () => {
@@ -108,7 +126,11 @@ test('UI preferences persist in durable shared configuration', () => {
       speak: false,
       speech: { project: true, task: true, status: false, taskWords: 6 },
     },
-    voiceInput: { enabled: true, shortcut: 'Alt+F8' },
+    voiceInput: {
+      enabled: true,
+      shortcut: 'Alt+F8',
+      alternateShortcut: 'Meta+KeyV',
+    },
   });
   let database = new RelayDatabase(databasePath, { projectConfigPath: configPath });
   try {

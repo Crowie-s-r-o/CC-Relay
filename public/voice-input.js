@@ -31,24 +31,31 @@ function shortcutParts(value) {
   };
 }
 
-export function normalizeVoiceInputShortcut(value) {
+function canonicalVoiceInputShortcut(value) {
   const { modifiers, code } = shortcutParts(value);
-  if (!SHORTCUT_CODE.test(code)) return DEFAULT_VOICE_INPUT_SHORTCUT;
+  if (!SHORTCUT_CODE.test(code)) return null;
   const requested = new Set(modifiers);
   if (
     requested.size !== modifiers.length
     || [...requested].some((modifier) => !SHORTCUT_MODIFIERS.includes(modifier))
-  ) return DEFAULT_VOICE_INPUT_SHORTCUT;
+  ) return null;
   return [
     ...SHORTCUT_MODIFIERS.filter((modifier) => requested.has(modifier)),
     code,
   ].join('+');
 }
 
+export function normalizeVoiceInputShortcut(value) {
+  return canonicalVoiceInputShortcut(value) || DEFAULT_VOICE_INPUT_SHORTCUT;
+}
+
 export function normalizeVoiceInputPreferences(value) {
+  const shortcut = normalizeVoiceInputShortcut(value?.shortcut);
+  const alternateShortcut = canonicalVoiceInputShortcut(value?.alternateShortcut);
   return {
     enabled: value?.enabled === true,
-    shortcut: normalizeVoiceInputShortcut(value?.shortcut),
+    shortcut,
+    alternateShortcut: alternateShortcut === shortcut ? null : alternateShortcut,
   };
 }
 
@@ -93,7 +100,7 @@ export function voiceShortcutReleased(event, shortcut) {
   return event?.code === code || Boolean(releasedModifier && modifiers.includes(releasedModifier));
 }
 
-export function voiceShortcutLabel(shortcut, platform = '') {
+export function voiceShortcutKeyLabels(shortcut, platform = '') {
   const { modifiers, code } = shortcutParts(normalizeVoiceInputShortcut(shortcut));
   const mac = platform === 'MacIntel' || platform === 'MacARM' || platform === 'macOS';
   const labels = modifiers.map((modifier) => ({
@@ -104,7 +111,13 @@ export function voiceShortcutLabel(shortcut, platform = '') {
   })[modifier]);
   const codeLabel = CODE_LABELS[code]
     || code.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad(?=\d)/, 'Numpad ');
-  return mac ? `${labels.join('')}${codeLabel}` : [...labels, codeLabel].join('+');
+  return [...labels, codeLabel];
+}
+
+export function voiceShortcutLabel(shortcut, platform = '') {
+  const labels = voiceShortcutKeyLabels(shortcut, platform);
+  const mac = platform === 'MacIntel' || platform === 'MacARM' || platform === 'macOS';
+  return labels.join(mac ? '' : '+');
 }
 
 export function preferredVoiceMimeType(MediaRecorderClass = globalThis.MediaRecorder) {

@@ -12,6 +12,7 @@ import {
   isGoalEntry,
   isPlanEntry,
   isPlanToolItem,
+  isReasoningEntry,
   isSubAgentEntry,
   mergePromptMessages,
   planEntryDetails,
@@ -43,6 +44,7 @@ import {
   normalizeVoiceInputPreferences,
   PushToTalkRecorder,
   voiceShortcutFromKeyboardEvent,
+  voiceShortcutKeyLabels,
   voiceShortcutLabel,
   voiceShortcutMatches,
   voiceShortcutReleased,
@@ -361,6 +363,7 @@ function cachedVoiceInputPreferences() {
   return normalizeVoiceInputPreferences({
     enabled: localStorage.getItem('relay.voiceInputEnabled') === 'true',
     shortcut: localStorage.getItem('relay.voiceInputShortcut'),
+    alternateShortcut: localStorage.getItem('relay.voiceInputAlternateShortcut'),
   });
 }
 
@@ -447,7 +450,8 @@ const state = {
   voiceInputActivity: 'idle',
   voiceInputMessage: '',
   voiceInputSetupPending: false,
-  voiceShortcutCapturing: false,
+  voiceShortcutCaptureTarget: null,
+  activeVoiceShortcut: null,
   runningTaskLayout: cachedRunningTaskLayout(),
   reorderPending: false,
   loadPromise: null,
@@ -487,6 +491,7 @@ const state = {
   taskReferenceMenuTaskId: null,
   taskReferenceLoadSequences: new Map(),
   eventFilter: 'all',
+  showThinking: true,
   eventFollow: true,
   eventTaskId: null,
   selectedTaskEvents: [],
@@ -704,6 +709,8 @@ const elements = {
   voiceInputControls: document.querySelector('#voice-input-controls'),
   voiceInputShortcut: document.querySelector('#voice-input-shortcut'),
   voiceInputShortcutLabel: document.querySelector('#voice-input-shortcut-label'),
+  voiceInputAlternateShortcut: document.querySelector('#voice-input-alternate-shortcut'),
+  voiceInputAlternateShortcutLabel: document.querySelector('#voice-input-alternate-shortcut-label'),
   voiceInputSetup: document.querySelector('#voice-input-setup'),
   voiceInputStatus: document.querySelector('#voice-input-status'),
   providerUsage: document.querySelector('#provider-usage'),
@@ -818,6 +825,7 @@ const elements = {
   termEffort: document.querySelector('#term-effort'),
   termDuration: document.querySelector('#term-duration'),
   eventFilters: [...document.querySelectorAll('[data-event-filter]')],
+  thinkingVisibilityButton: document.querySelector('#thinking-visibility-button'),
   copyEventsButton: document.querySelector('#copy-events-button'),
   continuationForm: document.querySelector('#task-continuation-form'),
   continuationLabel: document.querySelector('#task-continuation-label'),
@@ -1204,6 +1212,11 @@ function cacheUiPreferences(preferences = uiPreferencesPayload()) {
   const voiceInput = normalizeVoiceInputPreferences(preferences.voiceInput);
   localStorage.setItem('relay.voiceInputEnabled', String(voiceInput.enabled));
   localStorage.setItem('relay.voiceInputShortcut', voiceInput.shortcut);
+  if (voiceInput.alternateShortcut) {
+    localStorage.setItem('relay.voiceInputAlternateShortcut', voiceInput.alternateShortcut);
+  } else {
+    localStorage.removeItem('relay.voiceInputAlternateShortcut');
+  }
 }
 
 function completionAlertExampleTask() {
@@ -1243,7 +1256,10 @@ function voiceInputSupported() {
 function setVoiceInputPreferences(value, { persist = true } = {}) {
   const previousEnabled = state.voiceInputPreferences.enabled;
   state.voiceInputPreferences = normalizeVoiceInputPreferences(value);
-  if (previousEnabled && !state.voiceInputPreferences.enabled) voiceRecorder?.cancel();
+  if (previousEnabled && !state.voiceInputPreferences.enabled) {
+    state.activeVoiceShortcut = null;
+    voiceRecorder?.cancel();
+  }
   renderVoiceInput();
   if (persist) queueUiPreferencesSave();
 }
@@ -1276,10 +1292,38 @@ function voiceEngineReady() {
     && !['checking', 'installing', 'setup-required'].includes(state.voiceInputEngine.state);
 }
 
+function renderVoiceShortcutKeycaps(container, shortcut, placeholder) {
+  container.replaceChildren();
+  if (!shortcut) {
+    const empty = document.createElement('span');
+    empty.className = 'voice-input-shortcut-empty';
+    empty.textContent = placeholder;
+    container.append(empty);
+    return;
+  }
+  voiceShortcutKeyLabels(shortcut, navigator.platform).forEach((label, index) => {
+    if (index > 0) {
+      const separator = document.createElement('i');
+      separator.textContent = '+';
+      separator.setAttribute('aria-hidden', 'true');
+      container.append(separator);
+    }
+    const key = document.createElement('kbd');
+    key.textContent = label;
+    container.append(key);
+  });
+}
+
 function renderVoiceInput() {
   const supported = voiceInputSupported();
-  const { enabled, shortcut } = state.voiceInputPreferences;
+  const { enabled, shortcut, alternateShortcut } = state.voiceInputPreferences;
   const shortcutLabel = voiceShortcutLabel(shortcut, navigator.platform);
+  const alternateShortcutLabel = alternateShortcut
+    ? voiceShortcutLabel(alternateShortcut, navigator.platform)
+    : '';
+  const activationLabel = alternateShortcutLabel
+    ? `${shortcutLabel} or ${alternateShortcutLabel}`
+    : shortcutLabel;
   const engineReady = voiceEngineReady();
   const engineHealthy = state.voiceInputEngine.installed === true
     && state.voiceInputEngine.state === 'ready';
@@ -1290,14 +1334,41 @@ function renderVoiceInput() {
   elements.voiceInputEnabled.checked = enabled;
   elements.voiceInputEnabled.disabled = !supported || installing;
   elements.voiceInputControls.dataset.enabled = String(enabled);
-  elements.voiceInputShortcut.disabled = !supported || !enabled || installing;
-  elements.voiceInputShortcut.dataset.capturing = String(state.voiceShortcutCapturing);
-  elements.voiceInputShortcutLabel.textContent = state.voiceShortcutCapturing
-    ? 'Press shortcut'
-    : shortcutLabel;
-  elements.voiceInputShortcut.querySelector(':scope > span').textContent = state.voiceShortcutCapturing
+  for (const button of [elements.voiceInputShortcut, elements.voiceInputAlternateShortcut]) {
+    button.disabled = !supported || !enabled || installing;
+  }
+  const capturingPrimary = state.voiceShortcutCaptureTarget === 'primary';
+  const capturingAlternate = state.voiceShortcutCaptureTarget === 'alternate';
+  elements.voiceInputShortcut.dataset.capturing = String(capturingPrimary);
+  elements.voiceInputAlternateShortcut.dataset.capturing = String(capturingAlternate);
+  renderVoiceShortcutKeycaps(
+    elements.voiceInputShortcutLabel,
+    capturingPrimary ? null : shortcut,
+    'Press keys',
+  );
+  renderVoiceShortcutKeycaps(
+    elements.voiceInputAlternateShortcutLabel,
+    capturingAlternate ? null : alternateShortcut,
+    capturingAlternate ? 'Press keys' : 'Not set',
+  );
+  elements.voiceInputShortcut.querySelector('[data-voice-shortcut-action]').textContent = capturingPrimary
     ? 'Esc cancels'
     : 'Change';
+  elements.voiceInputAlternateShortcut.querySelector('[data-voice-shortcut-action]').textContent = capturingAlternate
+    ? 'Delete clears'
+    : alternateShortcut ? 'Change' : 'Add';
+  elements.voiceInputShortcut.setAttribute(
+    'aria-label',
+    capturingPrimary ? 'Press the primary activation shortcut' : `Change primary shortcut, currently ${shortcutLabel}`,
+  );
+  elements.voiceInputAlternateShortcut.setAttribute(
+    'aria-label',
+    capturingAlternate
+      ? 'Press the alternate activation shortcut, or Delete to clear it'
+      : alternateShortcutLabel
+        ? `Change alternate shortcut, currently ${alternateShortcutLabel}`
+        : 'Add an alternate activation shortcut',
+  );
   elements.voiceInputSetup.disabled = !supported || installing || engineHealthy;
   elements.voiceInputSetup.textContent = installing
     ? 'Setting up...'
@@ -1310,7 +1381,7 @@ function renderVoiceInput() {
   elements.voiceInputStatus.dataset.state = state.voiceInputEngine.state || 'checking';
 
   const activity = state.voiceInputActivity;
-  let holdLabel = `Hold ${shortcutLabel} to talk`;
+  let holdLabel = `Hold ${activationLabel} to talk`;
   let status = state.voiceInputMessage || 'Release to transcribe locally.';
   if (!enabled) {
     holdLabel = 'Turn on voice input';
@@ -3628,7 +3699,15 @@ function eventCopyText(entry, task) {
   return lines.filter(Boolean).join('\n');
 }
 
-function updateEventControls(filterCounts = {}) {
+function updateThinkingVisibilityControl(reasoningCount = 0) {
+  const action = state.showThinking ? 'Hide' : 'Show';
+  const summaryLabel = `${reasoningCount.toLocaleString()} thinking ${reasoningCount === 1 ? 'summary' : 'summaries'}`;
+  elements.thinkingVisibilityButton.setAttribute('aria-pressed', String(state.showThinking));
+  elements.thinkingVisibilityButton.setAttribute('aria-label', `${action} thinking summaries`);
+  elements.thinkingVisibilityButton.title = `${action} model-provided thinking summaries. ${summaryLabel}.`;
+}
+
+function updateEventControls(filterCounts = {}, reasoningCount = 0) {
   for (const button of elements.eventFilters) {
     const filter = button.dataset.eventFilter;
     const count = Number(filterCounts[filter]) || 0;
@@ -3638,6 +3717,7 @@ function updateEventControls(filterCounts = {}) {
     const counter = button.querySelector('[data-event-filter-count]');
     if (counter) counter.textContent = count.toLocaleString();
   }
+  updateThinkingVisibilityControl(reasoningCount);
 }
 
 // Fills the tmux-style terminal status bar from real task state. Every segment is
@@ -3985,6 +4065,21 @@ function restoreEventOutputScroll() {
   }
 }
 
+function nativeTokenUsageTitle(usage) {
+  return [
+    `${Math.round(usage.inputTokens).toLocaleString()} input`,
+    `${Math.round(usage.outputTokens).toLocaleString()} output`,
+    `${Math.round(usage.reasoningTokens).toLocaleString()} reasoning`,
+    `${Math.round(usage.cacheReadTokens).toLocaleString()} cache read`,
+    `${Math.round(usage.cacheWriteTokens).toLocaleString()} cache write`,
+    `${Math.round(usage.totalTokens).toLocaleString()} provider total`,
+  ].join(' · ');
+}
+
+function tokenSpeedTitle(throughput) {
+  return `Average output rate: ${Math.round(throughput.outputTokens).toLocaleString()} output tokens / ${throughput.elapsedSeconds.toFixed(1)} task seconds. ${nativeTokenUsageTitle(throughput)}`;
+}
+
 function renderEventStream(events, task, {
   forceBottom = false,
   resetDisclosures = false,
@@ -4006,12 +4101,14 @@ function renderEventStream(events, task, {
   const restorePlanFocus = document.activeElement === previousPlanScroller;
   const displayEvents = mergePromptMessages(events, prompts, { provider: taskProvider(task) });
   const grouped = groupEventEntries(displayEvents);
-  const visible = filterEventEntries(grouped, state.eventFilter);
+  const filterOptions = { showThinking: state.showThinking };
+  const visible = filterEventEntries(grouped, state.eventFilter, filterOptions);
+  const reasoningCount = grouped.filter(isReasoningEntry).length;
   const messageCounts = eventMessageCounts(grouped);
   const filterCounts = {
-    all: grouped.length,
-    highlights: filterEventEntries(grouped, 'highlights').length,
-    commands: filterEventEntries(grouped, 'commands').length,
+    all: filterEventEntries(grouped, 'all', filterOptions).length,
+    highlights: filterEventEntries(grouped, 'highlights', filterOptions).length,
+    commands: filterEventEntries(grouped, 'commands', filterOptions).length,
     conversation: messageCounts.user + messageCounts.assistant,
     mine: messageCounts.user,
     ai: messageCounts.assistant,
@@ -4021,6 +4118,7 @@ function renderEventStream(events, task, {
   // landed, so the active count clears with the turn instead of stranding a number.
   const stats = eventStreamStats(grouped, { turnEnded: task.status !== 'running' });
   const throughput = tokenThroughput(events, task);
+  const thinkingTokens = throughput?.reasoningTokens ?? stats.thinkingTokens;
   const overview = taskActivityOverview(grouped, task);
   state.selectedTaskEvents = events;
   state.selectedTaskPrompts = prompts;
@@ -4055,7 +4153,8 @@ function renderEventStream(events, task, {
     ai: 'AI messages',
   };
   const filterSummary = filterSummaryLabels[state.eventFilter] || 'signals';
-  elements.eventSummary.textContent = state.eventFilter === 'all'
+  const thinkingIsHidingSignals = !state.showThinking && reasoningCount > 0;
+  elements.eventSummary.textContent = state.eventFilter === 'all' && !thinkingIsHidingSignals
     ? `${grouped.length} signals`
     : `${visible.length} ${filterSummary} · ${grouped.length} total`;
   elements.eventSummary.title = `${visible.length} of ${grouped.length} signals · ${displayEvents.length} displayed events · ${events.length} provider events`;
@@ -4065,8 +4164,12 @@ function renderEventStream(events, task, {
     ${stats.plan ? `<span class="has-plan"><b>${stats.plan.done}/${stats.plan.total}</b><small>plan steps</small></span>` : ''}
     ${stats.agents ? `<span class="has-agents"><b>${stats.agents}</b><small>sub-agents</small></span>` : ''}
     ${stats.running ? `<span class="is-running"><b>${stats.running}</b><small>active</small></span>` : ''}
-    ${throughput ? `<span class="has-token-speed" data-task-token-speed title="${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds"><b>${throughput.rateLabel}</b><small>tokens/s</small></span>` : ''}
-    <span><b>${stats.thinkingTokens.toLocaleString()}</b><small>thinking tokens</small></span>
+    ${throughput ? `
+      <span class="has-token-speed" data-task-token-speed title="${tokenSpeedTitle(throughput)}"><b>${throughput.rateLabel}</b><small>output tokens/s</small></span>
+      <span class="has-token-input" title="${nativeTokenUsageTitle(throughput)}"><b>${Math.round(throughput.inputTokens).toLocaleString()}</b><small>input tokens</small></span>
+      <span class="has-token-output" title="${nativeTokenUsageTitle(throughput)}"><b>${Math.round(throughput.outputTokens).toLocaleString()}</b><small>output tokens</small></span>
+    ` : ''}
+    <span><b>${thinkingTokens.toLocaleString()}</b><small>thinking tokens</small></span>
     <span><b>${stats.commands}</b><small>commands</small></span>
     <span><b>${stats.files}</b><small>file changes</small></span>
     <span class="has-user-messages"><b>${messageCounts.user}</b><small>sent</small></span>
@@ -4089,7 +4192,12 @@ function renderEventStream(events, task, {
     highlights: ['No highlights yet', 'Important work and outcomes will appear here.'],
     all: ['No activity yet', 'New task signals will appear here.'],
   };
-  const emptyState = emptyStates[state.eventFilter] || emptyStates.all;
+  const emptyState = state.eventFilter === 'all'
+    && !state.showThinking
+    && reasoningCount > 0
+    && visible.length === 0
+    ? ['Thinking is hidden', 'Turn on Thinking to see provider summaries.']
+    : emptyStates[state.eventFilter] || emptyStates.all;
   elements.detailEvents.innerHTML = visible.length === 0
     ? `<div class="events-empty"><span aria-hidden="true">⌁</span><strong>${escapeHtml(emptyState[0])}</strong><small>${escapeHtml(emptyState[1])}</small></div>`
     : visible.map((entry) => renderEventEntry(entry, task, entrySequence.get(entry))).join('');
@@ -4102,7 +4210,7 @@ function renderEventStream(events, task, {
   } else {
     elements.detailEvents.scrollTop = previousScrollTop;
   }
-  updateEventControls(filterCounts);
+  updateEventControls(filterCounts, reasoningCount);
 }
 
 function threadProvider(thread) {
@@ -5868,6 +5976,8 @@ function renderHeaderRunningTasks() {
       task.prompt,
       task.latestAgentUpdate?.provider,
       task.latestTokenUsage?.usage?.totalTokens,
+      task.latestTokenUsage?.usage?.inputTokens,
+      task.latestTokenUsage?.usage?.outputTokens,
       task.latestTokenUsage?.provider,
       task.status,
       task.manual_completion,
@@ -5893,7 +6003,7 @@ function renderHeaderRunningTasks() {
     const monitor = taskMonitorPresentation(task);
     const response = taskMonitorResponse(task, monitor);
     const throughput = tokenThroughputFromSnapshot(task.latestTokenUsage, task);
-    const speedLabel = throughput ? `${throughput.rateLabel} tokens/s` : '';
+    const speedLabel = throughput ? `${throughput.rateLabel} average output tokens/s` : '';
     const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}${task.starred ? ', starred' : ''}, ${project}, ${relay}${speedLabel ? `, ${speedLabel}` : ''}`;
     return `
       <button
@@ -5911,7 +6021,7 @@ function renderHeaderRunningTasks() {
           <b>#${String(task.id).padStart(3, '0')}</b>
           ${monitor.terminalSession ? `<span class="header-running-state" data-state="${escapeHtml(monitor.state)}">${escapeHtml(monitor.label)}</span>` : ''}
           <span class="header-running-loc" title="${escapeHtml(task.repo_path)}"><span class="header-running-project">${escapeHtml(project)}</span> · ${escapeHtml(relay)}</span>
-          ${throughput ? `<span class="header-running-token-speed" data-header-token-speed="${task.id}" title="${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds">${throughput.rateLabel} tokens/s</span>` : ''}
+          ${throughput ? `<span class="header-running-token-speed" data-header-token-speed="${task.id}" title="${tokenSpeedTitle(throughput)}">${throughput.rateLabel} tokens/s</span>` : ''}
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
         <strong class="header-running-prompt" title="${escapeHtml(taskDisplayName(task))}">${escapeHtml(compactText(taskDisplayName(task), 96))}</strong>
@@ -6754,7 +6864,7 @@ function refreshTaskDurations() {
     const throughput = task && tokenThroughputFromSnapshot(task.latestTokenUsage, task);
     if (!throughput) continue;
     element.textContent = `${throughput.rateLabel} tokens/s`;
-    element.title = `${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds`;
+    element.title = tokenSpeedTitle(throughput);
   }
   const selected = state.selectedTaskForEvents;
   if (selected && elements.termDuration) {
@@ -6764,7 +6874,7 @@ function refreshTaskDurations() {
     const throughput = speedElement && tokenThroughput(state.selectedTaskEvents, fresh);
     if (throughput) {
       speedElement.querySelector('b').textContent = throughput.rateLabel;
-      speedElement.title = `${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds`;
+      speedElement.title = tokenSpeedTitle(throughput);
     }
     refreshActivityOverviewDurations(elements.eventOverview);
   }
@@ -11644,7 +11754,7 @@ elements.terminalSettingsModal.addEventListener('click', (event) => {
   if (event.target === elements.terminalSettingsModal) elements.terminalSettingsModal.close();
 });
 elements.terminalSettingsModal.addEventListener('close', () => {
-  state.voiceShortcutCapturing = false;
+  state.voiceShortcutCaptureTarget = null;
   renderVoiceInput();
 });
 elements.voiceInputEnabled.addEventListener('change', () => {
@@ -11653,11 +11763,16 @@ elements.voiceInputEnabled.addEventListener('change', () => {
     enabled: elements.voiceInputEnabled.checked,
   });
 });
-elements.voiceInputShortcut.addEventListener('click', () => {
-  if (elements.voiceInputShortcut.disabled) return;
-  state.voiceShortcutCapturing = true;
-  renderVoiceInput();
-});
+for (const [button, target] of [
+  [elements.voiceInputShortcut, 'primary'],
+  [elements.voiceInputAlternateShortcut, 'alternate'],
+]) {
+  button.addEventListener('click', () => {
+    if (button.disabled) return;
+    state.voiceShortcutCaptureTarget = target;
+    renderVoiceInput();
+  });
+}
 elements.voiceInputSetup.addEventListener('click', () => {
   void setupVoiceInput();
 });
@@ -11725,37 +11840,59 @@ voiceRecorder = new PushToTalkRecorder({
     void transcribeVoiceAudio(audio);
   },
   onError: (error) => {
+    state.activeVoiceShortcut = null;
     setVoiceInputActivity('error', voiceMicrophoneError(error));
   },
 });
 
 document.addEventListener('keydown', (event) => {
-  if (state.voiceShortcutCapturing) {
+  if (state.voiceShortcutCaptureTarget) {
     event.preventDefault();
     event.stopImmediatePropagation();
     if (event.key === 'Escape') {
-      state.voiceShortcutCapturing = false;
+      state.voiceShortcutCaptureTarget = null;
       renderVoiceInput();
+      return;
+    }
+    if (
+      state.voiceShortcutCaptureTarget === 'alternate'
+      && ['Backspace', 'Delete'].includes(event.key)
+    ) {
+      state.voiceShortcutCaptureTarget = null;
+      setVoiceInputPreferences({
+        ...state.voiceInputPreferences,
+        alternateShortcut: null,
+      });
       return;
     }
     const shortcut = voiceShortcutFromKeyboardEvent(event);
     if (!shortcut) return;
-    state.voiceShortcutCapturing = false;
-    setVoiceInputPreferences({ ...state.voiceInputPreferences, shortcut });
+    const target = state.voiceShortcutCaptureTarget;
+    state.voiceShortcutCaptureTarget = null;
+    setVoiceInputPreferences({
+      ...state.voiceInputPreferences,
+      ...(target === 'alternate' ? { alternateShortcut: shortcut } : { shortcut }),
+    });
     return;
   }
-  if (
-    !voiceInputSupported()
-    || document.querySelector('dialog[open]')
-    || !voiceShortcutMatches(event, state.voiceInputPreferences.shortcut)
-  ) return;
+  if (!voiceInputSupported() || document.querySelector('dialog[open]')) return;
+  const matchedShortcut = [
+    state.voiceInputPreferences.shortcut,
+    state.voiceInputPreferences.alternateShortcut,
+  ].find((shortcut) => shortcut && voiceShortcutMatches(event, shortcut));
+  if (!matchedShortcut) return;
   event.preventDefault();
   event.stopImmediatePropagation();
-  if (!event.repeat) startVoiceInput();
+  if (!event.repeat && !state.activeVoiceShortcut) {
+    state.activeVoiceShortcut = matchedShortcut;
+    startVoiceInput();
+  }
 }, true);
 
 document.addEventListener('keyup', (event) => {
-  if (!voiceShortcutReleased(event, state.voiceInputPreferences.shortcut)) return;
+  const activeShortcut = state.activeVoiceShortcut;
+  if (!activeShortcut || !voiceShortcutReleased(event, activeShortcut)) return;
+  state.activeVoiceShortcut = null;
   if (!voiceRecorder?.held && state.voiceInputActivity !== 'listening') return;
   event.preventDefault();
   event.stopImmediatePropagation();
@@ -11786,9 +11923,15 @@ elements.voiceInputHold.addEventListener('keyup', (event) => {
   event.preventDefault();
   voiceRecorder?.release();
 });
-window.addEventListener('blur', () => voiceRecorder?.release());
+window.addEventListener('blur', () => {
+  state.activeVoiceShortcut = null;
+  voiceRecorder?.release();
+});
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') voiceRecorder?.release();
+  if (document.visibilityState !== 'visible') {
+    state.activeVoiceShortcut = null;
+    voiceRecorder?.release();
+  }
 });
 elements.taskEditClose.addEventListener('click', closeTaskEditor);
 elements.taskEditCancel.addEventListener('click', closeTaskEditor);
@@ -11983,6 +12126,15 @@ for (const button of elements.eventFilters) {
     renderEventStream(state.selectedTaskEvents, state.selectedTaskForEvents);
   });
 }
+
+elements.thinkingVisibilityButton.addEventListener('click', () => {
+  state.showThinking = !state.showThinking;
+  if (state.selectedTaskForEvents) {
+    renderEventStream(state.selectedTaskEvents, state.selectedTaskForEvents);
+  } else {
+    updateThinkingVisibilityControl();
+  }
+});
 
 elements.continuationForm.addEventListener('submit', submitTaskContinuation);
 elements.continuationAttachmentInput.addEventListener('change', async () => {

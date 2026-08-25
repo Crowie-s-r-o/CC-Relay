@@ -35,11 +35,12 @@ Task alert settings use the same durability path because desktop ports also chan
 launches. The renderer waits for this record before its first task snapshot, so a saved **Silent**
 choice cannot lose a startup race to the default chime. See [[task-completion-alerts]].
 
-Push-to-talk uses the same app-wide record. Its `voiceInput` member contains only `enabled` and a
-canonical `shortcut`; the default is `Control+Shift+Space`. Backend and renderer normalizers use
-the same modifier ordering and supported physical key codes, while local storage provides only the
-fast origin-local cache. Engine binaries, model files, microphone permissions, and recordings are
-not preferences. See [[push-to-talk-voice-input]].
+Push-to-talk uses the same app-wide record. Its `voiceInput` member contains `enabled`, a canonical
+primary `shortcut`, and a nullable canonical `alternateShortcut`; the primary default is
+`Control+Shift+Space`. Backend and renderer normalizers use the same modifier ordering, supported
+physical key codes, and duplicate removal, while local storage provides only the fast origin-local
+cache. Engine binaries, model files, microphone permissions, and recordings are not preferences.
+See [[push-to-talk-voice-input]].
 
 Files:
 

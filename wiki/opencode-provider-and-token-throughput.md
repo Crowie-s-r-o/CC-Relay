@@ -74,7 +74,7 @@ into the current attempt. The export is a fallback, not the live statistics sour
 
 ## Native token usage contract
 
-Codex, Claude, and OpenCode normalize direct provider telemetry into one cumulative event:
+Codex, Claude, and OpenCode normalize direct provider telemetry into one current-attempt cumulative event:
 
 ```json
 {
@@ -94,25 +94,33 @@ Codex, Claude, and OpenCode normalize direct provider telemetry into one cumulat
 ```
 
 OpenCode emits a new cumulative event for each native `step_finish`. Step IDs are folded before the
-total is recomputed, so a repeated stream record cannot count the same step twice. Codex uses
-`thread/tokenUsage/updated`. Claude folds native assistant message usage by message ID, which also
-prevents repeated stream records from increasing the total.
+total is recomputed, so a repeated stream record cannot count the same step twice. Claude folds
+native assistant message usage by message ID, which also prevents repeated stream records from
+increasing the total.
+
+Codex `thread/tokenUsage/updated` contains a thread-wide `total` plus `last`, the exact most recent
+upstream response. On the first update of an attempt, Relay infers the historical baseline as
+`total - last`. Every later task snapshot is `total - baseline`. A goal successor adds the completed
+turn's attempt usage, clears only the turn baseline, and repeats the same calculation. This isolates
+continued conversations without treating the latest call's context window as cumulative usage.
 
 Relay trusts a provider's explicit total when present. If the provider omits it, Relay sums input,
-output, reasoning, cache-read, and cache-write tokens. This deliberately represents all native tokens
-reported as used, not output generation alone.
+output, reasoning, cache-read, and cache-write tokens. The complete normalized record represents all
+native tokens reported as used. Rate calculation deliberately selects only its output component.
 
 ## Speed calculation
 
 The visible rate is calculated as:
 
 ```text
-tokens per second = latest cumulative native total / elapsed task seconds
+output tokens per second = latest cumulative native output / elapsed task seconds
 ```
 
-For example, 600 cumulative tokens after 10 seconds displays 60 tokens/s. If no new token event
-arrives by 20 seconds, the running display becomes 30 tokens/s. The denominator updates once per
-second while the task runs, so OpenCode speed remains live between native step boundaries.
+For example, 600 cumulative output tokens after 10 seconds displays 60 tokens/s even if the provider
+also processed 200,000 input tokens. If no new token event arrives by 20 seconds, the running display
+becomes 30 tokens/s. The denominator updates once per second while the task runs, so OpenCode speed
+remains live between native step boundaries. It is an average across the task lifecycle, including
+tool time, rather than an instantaneous model sampling rate.
 
 Completed tasks use `finished_at` as the fixed endpoint. A manually open Codex or Claude session
 without `finished_at` uses its latest native token event, preventing an idle saved session from
@@ -128,8 +136,16 @@ Only events that satisfy all of these conditions can drive the metric:
 
 This excludes estimates, another provider's telemetry, and usage retained from an earlier retry.
 The newest valid cumulative event appears as **tokens/s** in both Task Activity and the global
-running-task monitor. Native usage rows are folded as telemetry rather than counted as conversation,
-command, or file signals.
+running-task monitor. Task Activity labels the metric as **output tokens/s** and also shows exact
+**input tokens** and **output tokens** totals. Hover detail includes reasoning, cache-read,
+cache-write, and provider-total values. Native usage rows are folded as telemetry rather than counted
+as conversation, command, or file signals.
+
+> [!warning]
+> Codex events recorded before the August 25 correction used `last` while claiming to be cumulative.
+> Historical rows are not rewritten because continued threads do not retain enough baseline evidence
+> for a safe migration. New attempts use the corrected baseline contract. See
+> [[token-throughput-correction]].
 
 `opencode stats` is intentionally not used for a single task's speed. It represents broader OpenCode
 history, while the JSON step records and bounded session export identify the current Relay attempt.
@@ -152,6 +168,6 @@ history, while the JSON step records and bounded session export identify the cur
 - `test/token-throughput-ui.test.mjs`
 
 See [[provider-installation-detection]], [[disposable-terminal-pools]], [[task-activity-overview]],
-[[interface-layout]], and [[opencode-token-throughput-review]].
+[[interface-layout]], [[opencode-token-throughput-review]], and [[token-throughput-correction]].
 
 #relay #opencode #providers #telemetry #task-activity

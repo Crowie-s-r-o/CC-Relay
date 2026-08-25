@@ -841,6 +841,24 @@ test('event stream folds streamed reasoning summaries into one All entry', () =>
   assert.equal(filterEventEntries(entries, 'all').length, 1);
 });
 
+test('thinking summaries are visible by default and can be removed from any event view', () => {
+  const entries = groupEventEntries([
+    itemEvent('reasoning-visibility', 'completed', 'reasoning', {
+      eventId: 1,
+      item: { summary: [{ text: 'Checking the requested behavior.' }] },
+    }),
+    itemEvent('command-visibility', 'completed', 'commandExecution', { eventId: 2 }),
+  ]);
+
+  assert.equal(filterEventEntries(entries, 'all').length, 2);
+  assert.deepEqual(
+    filterEventEntries(entries, 'all', { showThinking: false })
+      .map((entry) => entryItem(entry)?.type),
+    ['commandExecution'],
+  );
+  assert.equal(filterEventEntries(entries, 'highlights', { showThinking: false }).length, 1);
+});
+
 /* Plan checklist and Codex goal ----------------------------------------------
    Plan events carry no `payload.item.id`, so without a dedicated fold every
    revision would land in the generic `event-<id>` branch and the scrollback

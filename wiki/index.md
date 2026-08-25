@@ -30,6 +30,7 @@ type: index
 - [[provider-installation-detection]]
 - [[opencode-provider-and-token-throughput]]
 - [[opencode-token-throughput-review]]
+- [[token-throughput-correction]]
 - [[provider-usage-monitor]]
 - [[provider-usage-fable-correction-review]]
 - [[queued-provider-switching]]
