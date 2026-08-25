@@ -1,12 +1,13 @@
 ---
 name: Configurable Task Retry
-description: Manual direct-task retry can select Codex or Claude, model, and effort without replacing the task.
+description: Manual direct-task retry can select Codex, Claude, or OpenCode, model, and effort without replacing the task.
 type: decision
 tags:
   - relay
   - retry
   - codex
   - claude
+  - opencode
   - task-activity
 ---
 
@@ -19,7 +20,7 @@ Failed, cancelled, and interrupted automatic Execute tasks expose execution sett
 
 ## Conversation boundary
 
-Keeping the same provider preserves `thread_id` so the retry resumes the saved conversation when it exists. A model or effort change applies to the resumed turn. Switching between Codex and Claude clears `thread_id`, `thread_name`, `thread_source`, `session_id`, and `continued_from_task_id`, then launches a fresh conversation for the selected provider.
+Keeping the same provider preserves `thread_id` so the retry resumes the saved conversation when it exists. A model or effort change applies to the resumed turn. Switching among Codex, Claude, and OpenCode clears `thread_id`, `thread_name`, `thread_source`, `session_id`, and `continued_from_task_id`, then launches a fresh conversation for the selected provider.
 
 The task ID, title, prompt, reference images, project, queue history, and terminal layout stay unchanged. The canonical `task.md` artifact is rewritten with the selected provider, model, and effort before the task is scheduled.
 
@@ -37,4 +38,4 @@ Focused database, queue, copy, composer, and API-contract tests pass. The comple
 
 See [[task-history]], [[queued-provider-switching]], [[disposable-retry-conversation-initialization]], [[automatic-retry-safety]], and [[interface-layout]].
 
-#relay #retry #task-activity #codex #claude
+#relay #retry #task-activity #codex #claude #opencode

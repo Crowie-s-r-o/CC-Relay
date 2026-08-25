@@ -51,6 +51,7 @@ function projectRows(database) {
       last_launched_at,
       max_codex_instances,
       max_claude_instances,
+      max_opencode_instances,
       keep_terminal_open,
       prefer_idle_terminal,
       color,
@@ -94,6 +95,7 @@ export class ProjectConfigStore {
         last_launched_at TEXT,
         max_codex_instances INTEGER NOT NULL DEFAULT 1,
         max_claude_instances INTEGER NOT NULL DEFAULT 1,
+        max_opencode_instances INTEGER NOT NULL DEFAULT 1,
         keep_terminal_open INTEGER NOT NULL DEFAULT 0,
         prefer_idle_terminal INTEGER NOT NULL DEFAULT 0,
         color TEXT,
@@ -101,6 +103,7 @@ export class ProjectConfigStore {
         terminal_layout_json TEXT
       );
     `);
+    ensureProjectColumn(this.database, 'max_opencode_instances', 'INTEGER NOT NULL DEFAULT 1');
     ensureProjectColumn(this.database, 'keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
     ensureProjectColumn(this.database, 'prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
     ensureProjectColumn(this.database, 'color', 'TEXT');
@@ -111,6 +114,7 @@ export class ProjectConfigStore {
       ? legacyDatabase
       : null;
     if (this.legacyDatabase) {
+      ensureProjectColumn(this.legacyDatabase, 'max_opencode_instances', 'INTEGER NOT NULL DEFAULT 1');
       ensureProjectColumn(this.legacyDatabase, 'keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
       ensureProjectColumn(this.legacyDatabase, 'prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
       ensureProjectColumn(this.legacyDatabase, 'color', 'TEXT');
@@ -151,12 +155,13 @@ export class ProjectConfigStore {
             last_launched_at,
             max_codex_instances,
             max_claude_instances,
+            max_opencode_instances,
             keep_terminal_open,
             prefer_idle_terminal,
             color,
             standup_custom_prompt,
             terminal_layout_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const project of legacyProjects) {
           if (existingByPath.get(project.path)) continue;
@@ -168,6 +173,7 @@ export class ProjectConfigStore {
             project.last_launched_at || null,
             project.max_codex_instances || 1,
             project.max_claude_instances || 1,
+            project.max_opencode_instances || 1,
             project.keep_terminal_open ? 1 : 0,
             project.prefer_idle_terminal ? 1 : 0,
             project.color || null,
@@ -216,12 +222,13 @@ export class ProjectConfigStore {
             last_launched_at,
             max_codex_instances,
             max_claude_instances,
+            max_opencode_instances,
             keep_terminal_open,
             prefer_idle_terminal,
             color,
             standup_custom_prompt,
             terminal_layout_json
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const project of projects) {
           insert.run(
@@ -233,6 +240,7 @@ export class ProjectConfigStore {
             project.last_launched_at,
             project.max_codex_instances,
             project.max_claude_instances,
+            project.max_opencode_instances,
             project.keep_terminal_open ? 1 : 0,
             project.prefer_idle_terminal ? 1 : 0,
             project.color || null,
@@ -345,14 +353,15 @@ export class ProjectConfigStore {
     return project;
   }
 
-  updateProjectInstanceLimits(id, { codex, claude }) {
+  updateProjectInstanceLimits(id, { codex, claude, opencode }) {
     const project = this.getProject(id);
     if (!project) throw new Error('Pinned project not found.');
+    const openCodeLimit = opencode ?? project.max_opencode_instances ?? 1;
     this.database.prepare(`
       UPDATE projects
-      SET max_codex_instances = ?, max_claude_instances = ?
+      SET max_codex_instances = ?, max_claude_instances = ?, max_opencode_instances = ?
       WHERE id = ?
-    `).run(codex, claude, id);
+    `).run(codex, claude, openCodeLimit, id);
     const updated = this.getProject(id);
     this.syncLegacyMirror();
     return updated;

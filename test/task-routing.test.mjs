@@ -40,8 +40,18 @@ test('visible Codex provider selection is authoritative', () => {
   const tabs = [
     providerTab('codex', { selected: true }),
     providerTab('claude'),
+    providerTab('opencode'),
   ];
   assert.equal(selectedExecutionProvider(tabs), 'codex');
+});
+
+test('visible OpenCode provider selection is authoritative', () => {
+  const tabs = [
+    providerTab('codex'),
+    providerTab('claude'),
+    providerTab('opencode', { selected: true }),
+  ];
+  assert.equal(selectedExecutionProvider(tabs), 'opencode');
 });
 
 test('only Execute tasks count as direct terminal activity', () => {

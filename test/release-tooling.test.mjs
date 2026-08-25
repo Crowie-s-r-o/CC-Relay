@@ -184,7 +184,7 @@ test('the public README leads with platform truth, download, and the six core be
   const image = readme.indexOf('docs/assets/cc-relay-overview.png');
   const benefits = [
     'Control provider concurrency.',
-    'Use disposable terminals by default.',
+    'Use disposable execution by default.',
     'Run many projects from one Launchpad.',
     'Queue the next prompts now.',
     'Make important plans survive a challenge.',
@@ -195,7 +195,8 @@ test('the public README leads with platform truth, download, and the six core be
   assert.ok(download < image && image < benefits[0]);
   assert.ok(benefits.every((index) => index >= 0));
   assert.deepEqual(benefits, [...benefits].sort((left, right) => left - right));
-  assert.match(readme, /launches minimized by default and closes automatically/);
+  assert.match(readme, /Codex and Claude receive owned terminals that launch minimized and close automatically/);
+  assert.match(readme, /OpenCode runs as a bounded headless process/);
   assert.match(readme, /Copies previously received under MIT keep those MIT rights/);
 
   const getStarted = readme.match(/## Get started\n([\s\S]*?)\n## /)?.[1] || '';

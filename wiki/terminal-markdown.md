@@ -1,6 +1,6 @@
 ---
 name: Terminal Markdown
-description: Safe Markdown rendering for Codex and Claude response messages in Task Activity.
+description: Safe Markdown rendering for Codex, Claude, and OpenCode response messages in Task Activity.
 type: implementation
 tags:
   - relay
@@ -16,7 +16,7 @@ tags:
 
 ## Renderer contract
 
-`public/app.js` sends both Codex `agentMessage` items and streamed Claude `claude/message` events through `renderMarkdown()` from `public/markdown.js`. Grouped Claude deltas use the combined message text, so an updating response and its final state share the same rendering path.
+`public/app.js` sends Codex `agentMessage` items, streamed Claude `claude/message` events, and OpenCode `opencode/message` records through `renderMarkdown()` from `public/markdown.js`. Grouped provider deltas use the combined message text, so an updating response and its final state share the same rendering path.
 
 The renderer escapes model output before adding supported markup. Raw HTML cannot create elements or scripts. The supported document structure includes headings, unordered and ordered lists, paragraphs, blockquotes, inline code, bold text, fenced code blocks, and pipe tables with optional column alignment.
 

@@ -22,11 +22,12 @@ function deps({ live = null, known = null, previous = null, throws = null } = {}
   };
 }
 
-// Plan council and Turbo always drive a Codex terminal, so only direct Claude execute work
-// resolves against the Claude registry.
+// Plan council and Turbo always drive a Codex terminal. Direct OpenCode work uses its
+// own headless provider identity and never reaches terminal-session resolution.
 test('session provider follows the workflow, not just the provider field', () => {
   assert.equal(submissionSessionProvider('execute', 'claude'), 'claude');
   assert.equal(submissionSessionProvider('execute', 'codex'), 'codex');
+  assert.equal(submissionSessionProvider('execute', 'opencode'), 'opencode');
   assert.equal(submissionSessionProvider('plan', 'council'), 'codex');
   assert.equal(submissionSessionProvider('turbo', 'codex'), 'codex');
   assert.equal(submissionSessionProvider('plan', 'claude'), 'codex');
@@ -98,6 +99,7 @@ test('a session CC Relay has never seen anywhere is rejected', async () => {
   assert.equal(resolved.source, 'unknown');
   assert.match(SESSION_NEVER_SEEN.claude, /never seen that Claude Code session/);
   assert.match(SESSION_NEVER_SEEN.codex, /never seen that terminal/);
+  assert.match(SESSION_NEVER_SEEN.opencode, /automatic headless execution/);
 });
 
 test('a live hit never consults the fallbacks', async () => {

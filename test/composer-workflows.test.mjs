@@ -120,8 +120,10 @@ test('provider choice is explicit and the left panel configures automatic instan
   assert.match(composer, /id="launch-claude-button"[^>]*>Launch Claude<\/button>/);
   assert.doesNotMatch(composer, /id="launch-terminal-button"/);
   assert.match(composer, /id="provider-tabs" class="agent-tabs"/);
+  assert.match(composer, /id="provider-opencode"[\s\S]{0,500}<strong>OpenCode<\/strong>/);
   assert.match(composer, /id="max-codex-instances"[^>]*min="1" max="8"/);
   assert.match(composer, /id="max-claude-instances"[^>]*min="1" max="8"/);
+  assert.match(composer, /id="max-opencode-instances"[^>]*min="1" max="8"/);
   assert.match(composerApp, /disposableTerminalPools === true/);
   assert.match(composerApp, /async function saveProjectInstanceLimits/);
   assert.match(composerApp, /terminalLifecycle: 'disposable'/);
@@ -129,6 +131,11 @@ test('provider choice is explicit and the left panel configures automatic instan
   assert.match(composerApp, /tab\.disabled = missing/);
   assert.match(composerApp, /availableProviderSelection\(state\.status, state\.selectedProvider\)/);
   assert.match(composerApp, /'Not installed'/);
+  assert.match(composerApp, /loadModels\('opencode'\)/);
+  assert.match(composerApp, /statusBody\.opencode\.checkedAt !== previousOpenCodeCheck[\s\S]{0,80}loadModels\('opencode'\)/);
+  assert.match(composerApp, /elements\.maxOpenCodeInstances,[\s\S]{0,180}input\.addEventListener\('keydown'/);
+  assert.match(composerApp, /else if \(headlessOpenCode\) \{[\s\S]{0,180}New OpenCode tasks run as headless native sessions/);
+  assert.match(composerApp, /dataset\.active = String\(!headlessOpenCode && state\.keepTerminalOpen\)/);
 
   const applySelectionStart = composerApp.indexOf('function applyThreadSelection(');
   const selectProviderStart = composerApp.indexOf('function selectProvider(', applySelectionStart);
@@ -613,7 +620,7 @@ test('dispatch reroute is read from the task record, not from client discovery',
   // The server can move a task to another free CC Relay after it was enqueued, so every
   // destination-dependent surface must derive from the task, not from pre-POST routing.
   assert.match(composerApp, /function taskRelayLabel\(task\) \{\s+const thread = state\.threads\.find\(\(item\) => item\.id === task\.thread_id\)/);
-  assert.match(composerApp, /if \(task\.thread_name\) return task\.provider === 'codex'/);
+  assert.match(composerApp, /if \(task\.thread_name\) \{\s+return task\.provider === 'codex'/);
   assert.match(composerApp, /hydrateThreadExecutionSettings\(state, state\.tasks\)/);
 });
 

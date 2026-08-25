@@ -91,6 +91,12 @@ test('a project without a saved session receives an independent blank composer',
   assert.deepEqual(second.taskReferences, []);
   assert.equal(second.selectedTaskId, null);
   assert.equal(second.selectedProvider, 'codex');
+  assert.deepEqual(second.executionSettings.opencode, {
+    model: 'default',
+    effort: '',
+    source: 'default',
+    taskId: null,
+  });
   assert.equal(second.taskMode, 'execute');
   assert.deepEqual(second.planSettings.councilOrder, ['claude', 'codex']);
   assert.equal(second.planSettings.claudeModel, 'fable');
@@ -138,15 +144,18 @@ test('Plan council and Turbo only accept Codex Relays in their terminal picker',
   const session = freshProjectComposerState();
   assert.equal(providerEligibleForComposer(session, 'codex'), true);
   assert.equal(providerEligibleForComposer(session, 'claude'), true);
+  assert.equal(providerEligibleForComposer(session, 'opencode'), true);
 
   session.planSettings.enabled = true;
   assert.equal(providerEligibleForComposer(session, 'codex'), true);
   assert.equal(providerEligibleForComposer(session, 'claude'), false);
+  assert.equal(providerEligibleForComposer(session, 'opencode'), false);
 
   session.planSettings.enabled = false;
   session.taskMode = 'turbo';
   assert.equal(providerEligibleForComposer(session, 'codex'), true);
   assert.equal(providerEligibleForComposer(session, 'claude'), false);
+  assert.equal(providerEligibleForComposer(session, 'opencode'), false);
 });
 
 test('each CC Relay terminal retains its own provider model and effort', () => {

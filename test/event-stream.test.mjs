@@ -94,6 +94,59 @@ test('event stream folds live Claude message batches into one updating signal', 
   assert.equal(eventStreamStats(entries).messages, 1);
 });
 
+test('OpenCode responses are assistant messages and token telemetry folds by provider', () => {
+  const entries = groupEventEntries([
+    {
+      id: 1,
+      kind: 'opencode',
+      message: 'Implemented it.',
+      created_at: '2026-08-25T10:00:01.000Z',
+      payload: { type: 'opencode/message', provider: 'opencode', text: 'Implemented it.' },
+    },
+    {
+      id: 2,
+      kind: 'opencode',
+      message: 'OpenCode session is active.',
+      created_at: '2026-08-25T10:00:01.500Z',
+      payload: { type: 'opencode/session', provider: 'opencode', sessionId: 'session-1' },
+    },
+    {
+      id: 3,
+      kind: 'opencode',
+      message: 'OpenCode used 100 tokens so far.',
+      created_at: '2026-08-25T10:00:02.000Z',
+      payload: {
+        type: 'provider/token-usage',
+        provider: 'opencode',
+        source: 'native',
+        cumulative: true,
+        usage: { totalTokens: 100 },
+      },
+    },
+    {
+      id: 4,
+      kind: 'opencode',
+      message: 'OpenCode used 200 tokens so far.',
+      created_at: '2026-08-25T10:00:03.000Z',
+      payload: {
+        type: 'provider/token-usage',
+        provider: 'opencode',
+        source: 'native',
+        cumulative: true,
+        usage: { totalTokens: 200 },
+      },
+    },
+  ]);
+
+  assert.equal(entries.length, 3);
+  assert.equal(eventEntryMessageRole(entries[0]), 'assistant');
+  assert.equal(eventEntryCategory(entries[0]), 'messages');
+  assert.equal(eventEntryCategory(entries[1]), 'system');
+  assert.equal(entries[2].events.length, 2);
+  assert.equal(entryLastEvent(entries[2]).payload.usage.totalTokens, 200);
+  assert.equal(eventStreamStats(entries).messages, 1);
+});
+
 test('assistant message status distinguishes transport completion from final answers', () => {
   const [claudeUpdate] = groupEventEntries([{
     id: 1,

@@ -93,6 +93,10 @@ test('database search documents include every Relay command and assistant respon
       type: 'claude/message',
       text: 'Claude response with delta',
     });
+    database.addEvent(task.id, 'opencode', 'Third answer', {
+      type: 'opencode/message',
+      text: 'OpenCode response with zeta',
+    });
     database.updateTask(task.id, { status: 'complete', result: 'Final response with epsilon' });
     database.createTask({
       title: 'Another project',
@@ -109,9 +113,11 @@ test('database search documents include every Relay command and assistant respon
     assert.deepEqual(documents[0].responses, [
       'Codex response with gamma',
       'Claude response with delta',
+      'OpenCode response with zeta',
       'Final response with epsilon',
     ]);
     assert.equal(searchTaskDocuments(documents, 'delta').results[0].match.label, 'Response 2');
+    assert.equal(searchTaskDocuments(documents, 'zeta').results[0].match.label, 'Response 3');
     assert.equal(searchTaskDocuments(documents, 'secret').total, 0);
   } finally {
     database.close();

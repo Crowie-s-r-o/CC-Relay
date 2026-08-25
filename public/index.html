@@ -250,6 +250,30 @@
                   <small id="claude-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
                 </div>
               </div>
+              <div class="agent-tab-shell" data-provider="opencode">
+                <button
+                  id="provider-opencode"
+                  class="agent-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected="false"
+                  aria-controls="terminal-panel"
+                  tabindex="-1"
+                  data-provider="opencode"
+                >
+                  <span class="agent-icon agent-icon-opencode" aria-hidden="true">OC</span>
+                  <span class="agent-tab-copy">
+                    <strong>OpenCode</strong>
+                    <small id="provider-opencode-count">Checking</small>
+                  </span>
+                  <span class="agent-availability" aria-hidden="true"></span>
+                </button>
+                <div class="agent-tab-pool">
+                  <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
+                  <input id="max-opencode-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum OpenCode instances">
+                  <small id="opencode-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                </div>
+              </div>
             </div>
 
             <section id="plan-config" class="council-config execute-council-config" aria-labelledby="council-config-title">

@@ -20,7 +20,7 @@ test('terminal controls expose combined and role-specific message filters with l
 test('terminal message rows identify the speaker and preserve original signal numbers', () => {
   assert.match(app, /messageRole: 'assistant'/);
   assert.match(app, /messageRole: 'user'/);
-  assert.match(app, /payloadType === 'claude\/message' \|\| lastEvent\?\.kind === 'result'/);
+  assert.match(app, /\['claude\/message', 'opencode\/message'\]\.includes\(payloadType\)\s+\|\| lastEvent\?\.kind === 'result'/);
   assert.match(app, /status: assistantMessageStatus\(entry, task, message\)/);
   assert.doesNotMatch(app, /status: item\?\.phase === 'final'[\s\S]*?liveFinal/);
   assert.match(app, /const roleLabel = role === 'user' \? 'My message' : 'AI message'/);

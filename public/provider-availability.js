@@ -1,4 +1,4 @@
-const PROVIDERS = ['codex', 'claude'];
+const PROVIDERS = ['codex', 'claude', 'opencode'];
 
 export function providerInstallationState(status, provider) {
   const runtime = status?.[provider];

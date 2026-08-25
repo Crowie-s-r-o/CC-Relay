@@ -2,12 +2,15 @@
 // its Codex terminal in thread_id for both selectable orders; the legacy authorThreadId field
 // keeps its Claude terminal. The persisted role fields decide which provider authors.
 export function submissionSessionProvider(mode, provider) {
-  return mode === 'plan' || mode === 'turbo' || provider === 'codex' ? 'codex' : 'claude';
+  if (mode === 'plan' || mode === 'turbo') return 'codex';
+  if (provider === 'opencode') return 'opencode';
+  return provider === 'claude' ? 'claude' : 'codex';
 }
 
 export const SESSION_NEVER_SEEN = {
   claude: 'CC Relay has never seen that Claude Code session. Refresh the session list.',
   codex: 'CC Relay has never seen that terminal on its shared Codex server. Refresh the session list.',
+  opencode: 'OpenCode tasks use automatic headless execution and do not connect to a terminal session.',
 };
 
 // Task add must never wait on a cold provider probe and must never fail because discovery

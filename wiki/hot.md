@@ -6,6 +6,15 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 25: OpenCode is now a third direct Execute provider with live token speed.**
+> The automatic composer places OpenCode beside Codex and Claude, discovers its configured model
+> catalog, gives it an independent project capacity, and runs it headlessly with a durable native
+> session for retry. Task Activity and the running-task monitor calculate native cumulative tokens
+> per elapsed second throughout supported provider runs. OpenCode reads direct step statistics and
+> uses a bounded native session export only when its final JSON stream is incomplete. See
+> [[opencode-provider-and-token-throughput]] and [[opencode-token-throughput-review]].
+
 > [!note]
 > **August 25: Task Activity can show the complete conversation without operational noise.**
 > The new **Conversation** filter keeps My messages and AI messages together in their original

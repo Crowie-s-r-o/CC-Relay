@@ -18,12 +18,12 @@ Task Activity exposes six counted views: **All**, **Highlights**, **Commands**, 
 
 - **Conversation** is the chronological union of My messages and AI messages. It excludes commands, provider lifecycle notices, input requests, plans, and other broad message-category events.
 - **My messages** contains `userMessage` items and the canonical prompt records returned by `listTaskPrompts()`.
-- **AI messages** contains Codex `agentMessage`, older `agent_message` records, Claude `claude/message`, and compatible legacy `result` entries.
-- Claude progress, session state, input requests, plan rows, and background completion notices are not AI messages even though older event grouping may place some of them in the internal broad `messages` category.
+- **AI messages** contains Codex `agentMessage`, older `agent_message` records, Claude `claude/message`, OpenCode `opencode/message`, and compatible legacy `result` entries.
+- Provider progress, session state, input requests, plan rows, native token telemetry, and background completion notices are not AI messages even though older event grouping may place some of them in the internal broad `messages` category.
 - Every filter button shows its current grouped-signal count. The compact status segment names the active view and its total.
 
 > [!important]
-> Do not classify every event whose kind is `claude` as an AI message. That kind also carries terminal lifecycle and operator-attention records. `eventEntryMessageRole()` is the strict role boundary.
+> Do not classify every provider event as an AI message. Provider kinds also carry terminal lifecycle, token telemetry, and operator-attention records. `eventEntryMessageRole()` is the strict role boundary.
 
 ## Canonical prompt display
 
@@ -37,7 +37,7 @@ The original event array and database rows are never rewritten. Matching prompt 
 ## Visual and interaction contract
 
 - Every message row has a speaker, role chip, status, timestamp, and elapsed time when available.
-- User messages use the terminal teal channel and monospace body text. AI messages retain the Codex or Claude provider accent and Markdown rendering.
+- User messages use the terminal teal channel and monospace body text. AI messages retain the Codex, Claude, or OpenCode provider accent and Markdown rendering.
 - User text remains escaped plain text. AI Markdown keeps the safe shared renderer from [[terminal-markdown]].
 - Filtering preserves each entry's original signal number instead of renumbering the result set.
 - Conversation reports the sum of the two strict role counts and copies only those visible message rows.

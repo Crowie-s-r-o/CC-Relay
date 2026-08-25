@@ -169,6 +169,75 @@ test('direct disposable tasks launch fresh, close, and later resume the saved co
   }
 });
 
+test('OpenCode uses a headless pool slot without launching a terminal', async () => {
+  const context = setup();
+  try {
+    const task = context.database.createTask({
+      title: 'Headless OpenCode task',
+      prompt: 'Work',
+      repoPath: context.directory,
+      provider: 'opencode',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
+    });
+    context.artifacts.initializeTask(task);
+
+    const prepared = await context.pool.prepare(task);
+    assert.equal(prepared.keep_terminal_open, false);
+    assert.equal(prepared.manual_completion, false);
+    assert.equal(prepared.thread_name, 'OpenCode headless session');
+    assert.equal(prepared.thread_source, 'CC Relay managed headless runner');
+    assert.deepEqual(context.launches, []);
+    assert.deepEqual(context.pool.usage(context.directory), {
+      codex: 0,
+      claude: 0,
+      opencode: 1,
+    });
+    assert.equal(context.pool.canRun({ ...task, id: task.id + 1 }), false);
+    assert.deepEqual(await context.pool.release(task.id), { closed: 0, failed: 0 });
+    assert.deepEqual(context.pool.usage(context.directory), {
+      codex: 0,
+      claude: 0,
+      opencode: 0,
+    });
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('retaining an OpenCode allocation defensively releases its headless pool slot', async () => {
+  const context = setup();
+  try {
+    const task = context.database.createTask({
+      title: 'Headless OpenCode retention guard',
+      prompt: 'Work',
+      repoPath: context.directory,
+      provider: 'opencode',
+      terminalLifecycle: 'disposable',
+    });
+    context.artifacts.initializeTask(task);
+
+    await context.pool.prepare(task);
+    assert.deepEqual(context.pool.usage(context.directory), {
+      codex: 0,
+      claude: 0,
+      opencode: 1,
+    });
+    assert.deepEqual(await context.pool.retain(task.id), { retained: 0, failed: 0 });
+    assert.deepEqual(context.pool.usage(context.directory), {
+      codex: 0,
+      claude: 0,
+      opencode: 0,
+    });
+    assert.deepEqual(context.retentions, []);
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
 test('a direct Claude retry initializes its saved UUID when the first attempt created no transcript', async () => {
   const context = setup({ claudeConversationState: () => 'missing' });
   try {
@@ -733,8 +802,8 @@ test('a Turbo terminal slot is reserved while its native window is still binding
     });
 
     const opening = context.pool.launchTurboStage(task, { role: 'planner' });
-    assert.deepEqual(context.pool.projectStatus(context.directory).active, { codex: 1, claude: 0 });
-    assert.deepEqual(context.pool.projectStatus(context.directory, [task]).active, { codex: 1, claude: 0 });
+    assert.deepEqual(context.pool.projectStatus(context.directory).active, { codex: 1, claude: 0, opencode: 0 });
+    assert.deepEqual(context.pool.projectStatus(context.directory, [task]).active, { codex: 1, claude: 0, opencode: 0 });
     assert.equal(context.pool.canRun(direct), true);
     assert.equal(context.pool.canRun(direct, [direct]), false);
 
@@ -762,22 +831,22 @@ test('Plan council reserves both providers while each Turbo execution reserves o
   assert.deepEqual(disposableTerminalRequirements({
     terminal_lifecycle: 'disposable',
     mode: 'plan',
-  }), { codex: 1, claude: 1 });
+  }), { codex: 1, claude: 1, opencode: 0 });
   assert.deepEqual(disposableTerminalRequirements({
     terminal_lifecycle: 'disposable',
     mode: 'turbo',
     turbo: { workerCount: 3, council: { enabled: true } },
-  }), { codex: 1, claude: 0 });
+  }), { codex: 1, claude: 0, opencode: 0 });
   assert.deepEqual(disposableTerminalConfigurationRequirements({
     terminal_lifecycle: 'disposable',
     mode: 'turbo',
     turbo: { workerCount: 3, council: { enabled: true } },
-  }), { codex: 4, claude: 1 });
+  }), { codex: 4, claude: 1, opencode: 0 });
   assert.deepEqual(disposableTerminalConfigurationRequirements({
     terminal_lifecycle: 'disposable',
     mode: 'turbo',
     turbo: { workerCount: 2, councilEnabled: true },
-  }), { codex: 3, claude: 1 });
+  }), { codex: 3, claude: 1, opencode: 0 });
 });
 
 test('project limits gate automatic tasks without counting another project', () => {
@@ -845,6 +914,7 @@ test('partial fleet launch keeps the complete workflow requirement reserved', ()
     assert.deepEqual(context.pool.projectStatus(context.directory, [council]).active, {
       codex: 1,
       claude: 1,
+      opencode: 0,
     });
     assert.equal(context.pool.canRun(directCodex, [council]), false);
   } finally {
@@ -1010,9 +1080,9 @@ test('a macOS terminal closed outside CC Relay decrements the Claude pool usage'
     artifacts.initializeTask(task);
 
     await pool.prepare(task);
-    assert.deepEqual(pool.usage(directory), { codex: 0, claude: 1 });
+    assert.deepEqual(pool.usage(directory), { codex: 0, claude: 1, opencode: 0 });
     assert.deepEqual(await pool.release(task.id), { closed: 1, failed: 0 });
-    assert.deepEqual(pool.usage(directory), { codex: 0, claude: 0 });
+    assert.deepEqual(pool.usage(directory), { codex: 0, claude: 0, opencode: 0 });
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
@@ -1072,9 +1142,9 @@ test('a Windows terminal closed outside CC Relay releases its project pool slot'
     context.artifacts.initializeTask(task);
 
     await context.pool.prepare(task);
-    assert.deepEqual(context.pool.usage(context.directory), { codex: 1, claude: 0 });
+    assert.deepEqual(context.pool.usage(context.directory), { codex: 1, claude: 0, opencode: 0 });
     assert.deepEqual(await context.pool.release(task.id), { closed: 1, failed: 0 });
-    assert.deepEqual(context.pool.usage(context.directory), { codex: 0, claude: 0 });
+    assert.deepEqual(context.pool.usage(context.directory), { codex: 0, claude: 0, opencode: 0 });
   } finally {
     rmSync(context.directory, { recursive: true, force: true });
   }
@@ -1100,7 +1170,7 @@ test('a Windows terminal CC Relay could not terminate keeps its project pool slo
 
     await context.pool.prepare(task);
     assert.deepEqual(await context.pool.release(task.id), { closed: 0, failed: 1 });
-    assert.deepEqual(context.pool.usage(context.directory), { codex: 1, claude: 0 });
+    assert.deepEqual(context.pool.usage(context.directory), { codex: 1, claude: 0, opencode: 0 });
   } finally {
     rmSync(context.directory, { recursive: true, force: true });
   }

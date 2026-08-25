@@ -7,6 +7,12 @@ import { ClaudeTerminalExecutor } from './claude-terminal-executor.mjs';
 import { injectionPromptIssue } from './claude-transcript-tail.mjs';
 import { normalizeClaudeModel } from './model-catalog.mjs';
 import { withRelayNonInteractiveInstruction } from './relay-prompt.mjs';
+import {
+  addTokenUsage,
+  normalizeTokenUsage,
+  providerTokenUsageEvent,
+  tokenUsageMessage,
+} from './token-usage.mjs';
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -990,6 +996,18 @@ export function consumeClaudeStreamMessage(message, context) {
     }
   }
   if (message.type === 'assistant') {
+    const usage = message.message?.usage;
+    if (usage && typeof usage === 'object') {
+      if (!(context.tokenUsageByMessage instanceof Map)) context.tokenUsageByMessage = new Map();
+      const key = String(message.message?.id || message.uuid || `record-${context.tokenUsageByMessage.size}`);
+      context.tokenUsageByMessage.set(key, normalizeTokenUsage(usage));
+      let cumulative = normalizeTokenUsage({});
+      for (const recordUsage of context.tokenUsageByMessage.values()) {
+        cumulative = addTokenUsage(cumulative, recordUsage);
+      }
+      const event = providerTokenUsageEvent('claude', cumulative);
+      emitted.push({ event, message: tokenUsageMessage('claude', event.usage) });
+    }
     for (const block of message.message?.content || []) {
       if (block.type === 'tool_use' && block.id) {
         const item = toolItem(block, context.cwd);

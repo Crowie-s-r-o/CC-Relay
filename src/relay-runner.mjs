@@ -1,7 +1,8 @@
 export class RelayRunner {
-  constructor({ codex, claude, planCouncil, turbo }) {
+  constructor({ codex, claude, opencode, planCouncil, turbo }) {
     this.codex = codex;
     this.claude = claude;
+    this.opencode = opencode;
     this.planCouncil = planCouncil;
     this.turbo = turbo;
     this.activeRunners = new Map();
@@ -15,6 +16,8 @@ export class RelayRunner {
       ? this.planCouncil
       : task.provider === 'claude'
         ? this.claude
+        : task.provider === 'opencode'
+          ? this.opencode
         : this.codex;
     this.activeRunners.set(task.id, runner);
     try {

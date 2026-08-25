@@ -179,6 +179,10 @@ test('database returns recorded assistant responses with the latest result as a 
       type: 'claude/message',
       text: 'Second response',
     });
+    database.addEvent(task.id, 'opencode', 'Third response', {
+      type: 'opencode/message',
+      text: 'Third response',
+    });
     database.updateTask(task.id, {
       status: 'complete',
       result: 'Latest result without a matching event',
@@ -190,6 +194,7 @@ test('database returns recorded assistant responses with the latest result as a 
       [
         'First response',
         'Second response',
+        'Third response',
         'Latest result without a matching event',
       ],
     );
@@ -608,6 +613,7 @@ test('database persists, deduplicates, launches, and removes pinned projects', (
     assert.equal(duplicate.id, first.id);
     assert.equal(first.max_codex_instances, 1);
     assert.equal(first.max_claude_instances, 1);
+    assert.equal(first.max_opencode_instances, 1);
     assert.equal(first.keep_terminal_open, false);
     assert.equal(first.prefer_idle_terminal, false);
     assert.equal(first.terminal_layout, null);
@@ -621,9 +627,14 @@ test('database persists, deduplicates, launches, and removes pinned projects', (
     );
     assert.equal(prompted.standup_custom_prompt, 'Focus on customer-visible changes.');
     assert.equal(database.getProject(second.id).standup_custom_prompt, '');
-    const resized = database.updateProjectInstanceLimits(first.id, { codex: 4, claude: 2 });
+    const resized = database.updateProjectInstanceLimits(first.id, {
+      codex: 4,
+      claude: 2,
+      opencode: 3,
+    });
     assert.equal(resized.max_codex_instances, 4);
     assert.equal(resized.max_claude_instances, 2);
+    assert.equal(resized.max_opencode_instances, 3);
     const configured = database.updateProjectTerminalSettings(first.id, {
       keepTerminalOpen: false,
       preferIdleTerminal: true,

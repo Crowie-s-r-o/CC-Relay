@@ -52,7 +52,7 @@ test('table-like text without a delimiter row remains plain Markdown', () => {
 });
 
 test('Task Activity applies Markdown to final and live provider responses only', () => {
-  assert.match(app, /\['agentMessage', 'agent_message'\]\.includes\(item\?\.type\) \|\| payloadType === 'claude\/message'/);
+  assert.match(app, /\['agentMessage', 'agent_message'\]\.includes\(item\?\.type\)[\s\S]{0,80}\['claude\/message', 'opencode\/message'\]\.includes\(payloadType\)/);
   assert.match(app, /const body = role === 'user'[\s\S]*?\? escapeHtml\(p\.message\)[\s\S]*?: renderMarkdown\(p\.message\)/);
   assert.match(app, /'event-message-body term-response-body markdown-document terminal-markdown'/);
   assert.match(app, /<pre class="event-output-content">\$\{escapeHtml\(visibleText\)\}<\/pre>/);

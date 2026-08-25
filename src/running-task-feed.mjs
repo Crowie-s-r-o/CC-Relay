@@ -1,6 +1,7 @@
 function normalizedProvider(event) {
   const provider = event?.payload?.provider || event?.kind;
   if (provider === 'claude') return 'claude';
+  if (provider === 'opencode') return 'opencode';
   if (provider === 'plan' || provider === 'council') return 'council';
   return 'codex';
 }
@@ -12,13 +13,36 @@ export function latestAgentUpdate(events) {
     const item = payload.item;
     const isAgentMessage = item?.type === 'agentMessage';
     const isClaudeMessage = payload.type === 'claude/message';
+    const isOpenCodeMessage = payload.type === 'opencode/message';
     const isClaudeInputState = ['claude/input-required', 'claude/input-resumed'].includes(payload.type);
-    if (!isAgentMessage && !isClaudeMessage && !isClaudeInputState) continue;
+    if (!isAgentMessage && !isClaudeMessage && !isOpenCodeMessage && !isClaudeInputState) continue;
     const text = String(isAgentMessage ? item.text : payload.text || event.message || '').trim();
     if (!text) continue;
     return {
       text,
       provider: normalizedProvider(event),
+      createdAt: event.created_at || null,
+    };
+  }
+  return null;
+}
+
+export function latestTokenUsage(events) {
+  for (let index = (events || []).length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    const payload = event?.payload || {};
+    const totalTokens = Number(payload.usage?.totalTokens);
+    if (
+      payload.type !== 'provider/token-usage'
+      || payload.source !== 'native'
+      || payload.cumulative !== true
+      || !Number.isFinite(totalTokens)
+      || totalTokens < 0
+    ) continue;
+    return {
+      provider: normalizedProvider(event),
+      usage: payload.usage,
+      source: payload.source || 'native',
       createdAt: event.created_at || null,
     };
   }
@@ -38,10 +62,14 @@ export function taskBelongsInMonitor(task) {
 export function runningTaskFeed(tasks, eventsForTask) {
   return (tasks || [])
     .filter(taskBelongsInMonitor)
-    .map((task) => ({
-      ...task,
-      latestAgentUpdate: latestAgentUpdate(eventsForTask(task.id)),
-    }));
+    .map((task) => {
+      const events = eventsForTask(task.id);
+      return {
+        ...task,
+        latestAgentUpdate: latestAgentUpdate(events),
+        latestTokenUsage: latestTokenUsage(events),
+      };
+    });
 }
 
 // GET /api/status is polled every two seconds and used to rebuild this feed by re-reading and
@@ -62,13 +90,15 @@ export class AgentUpdateCache {
   update(taskId) {
     const latestId = this.latestEventId(taskId);
     const entry = this.entries.get(taskId);
-    if (entry && entry.eventId === latestId) return entry.update;
+    if (entry && entry.eventId === latestId) return entry;
 
     const events = this.listEventsSince(taskId, entry ? entry.eventId : 0, this.limit);
     // No newer agent message means the previously reported one is still the latest.
     const next = latestAgentUpdate(events) || entry?.update || null;
-    this.entries.set(taskId, { eventId: latestId, update: next });
-    return next;
+    const usage = latestTokenUsage(events) || entry?.usage || null;
+    const updated = { eventId: latestId, update: next, usage };
+    this.entries.set(taskId, updated);
+    return updated;
   }
 
   // Keeps the cache bounded to whatever is actually visible in the task monitor.
@@ -82,6 +112,13 @@ export class AgentUpdateCache {
   feed(tasks) {
     const monitored = (tasks || []).filter(taskBelongsInMonitor);
     this.prune(monitored.map((task) => task.id));
-    return monitored.map((task) => ({ ...task, latestAgentUpdate: this.update(task.id) }));
+    return monitored.map((task) => {
+      const entry = this.update(task.id);
+      return {
+        ...task,
+        latestAgentUpdate: entry.update,
+        latestTokenUsage: entry.usage,
+      };
+    });
   }
 }

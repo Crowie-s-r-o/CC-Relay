@@ -89,6 +89,36 @@ test('Claude API error response detection is anchored to the effective final res
   assert.equal(claudeApiErrorResponse(null), null);
 });
 
+test('Claude assistant usage emits cumulative native token telemetry', () => {
+  const context = turnContext();
+  const record = (id, usage) => consumeClaudeStreamMessage({
+    type: 'assistant',
+    message: { id, usage, content: [] },
+  }, context)[0].event;
+
+  const first = record('message-one', {
+    input_tokens: 100,
+    output_tokens: 20,
+    cache_read_input_tokens: 30,
+  });
+  const repeated = record('message-one', {
+    input_tokens: 100,
+    output_tokens: 20,
+    cache_read_input_tokens: 30,
+  });
+  const second = record('message-two', {
+    input_tokens: 40,
+    output_tokens: 10,
+    cache_creation_input_tokens: 5,
+  });
+
+  assert.equal(first.type, 'provider/token-usage');
+  assert.equal(first.source, 'native');
+  assert.equal(first.usage.totalTokens, 150);
+  assert.equal(repeated.usage.totalTokens, 150);
+  assert.equal(second.usage.totalTokens, 205);
+});
+
 test('Claude sub-agent launches carry agent metadata on the mcpToolCall envelope', () => {
   const context = turnContext();
   const [started] = consumeClaudeStreamMessage(AGENT_LAUNCH, context);

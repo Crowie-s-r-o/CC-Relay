@@ -38,6 +38,8 @@
   --danger-soft: #f7e2de;
   --claude: #bd5d3a;
   --claude-soft: #f5e1d9;
+  --opencode: #1683a3;
+  --opencode-soft: #e5f6fa;
   --font-display: "Avenir Next", "Segoe UI", sans-serif;
   --font-body: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
@@ -934,6 +936,12 @@ summary:focus-visible,
   box-shadow: inset 0 -3px 0 var(--claude);
 }
 
+.agent-tab.selected[data-provider="opencode"] {
+  border-color: var(--opencode);
+  background: var(--opencode-soft);
+  box-shadow: inset 0 -3px 0 var(--opencode);
+}
+
 .agent-tab:focus-visible {
   outline: 3px solid #6daff4;
   outline-offset: 2px;
@@ -959,6 +967,13 @@ summary:focus-visible,
   border: 1px solid #d49a84;
   color: var(--claude);
   font-size: 17px;
+}
+
+.agent-icon-opencode {
+  border: 1px solid color-mix(in srgb, var(--opencode) 55%, #fff);
+  color: var(--opencode);
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 
 .agent-tab-copy {
@@ -999,6 +1014,11 @@ summary:focus-visible,
 .agent-tab[data-provider="claude"][data-state="live"] .agent-availability {
   background: var(--claude);
   box-shadow: 0 0 0 3px rgb(189 93 58 / 12%);
+}
+
+.agent-tab[data-provider="opencode"][data-state="live"] .agent-availability {
+  background: var(--opencode);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--opencode) 12%, transparent);
 }
 
 .agent-tab[data-state="unavailable"] .agent-availability {
@@ -1042,6 +1062,11 @@ summary:focus-visible,
 .execution-controls[data-provider="claude"] .execution-control-index {
   border-color: #ddb09f;
   color: var(--claude);
+}
+
+.execution-controls[data-provider="opencode"] .execution-control-index {
+  border-color: color-mix(in srgb, var(--opencode) 45%, #fff);
+  color: var(--opencode);
 }
 
 .execution-control-copy {
@@ -4151,6 +4176,9 @@ pre {
 .event-metrics .has-plan b,
 .event-metrics .has-plan small { color: var(--term-blue); }
 
+.event-metrics .has-token-speed b,
+.event-metrics .has-token-speed small { color: var(--term-green); }
+
 .event-metrics .has-user-messages b,
 .event-metrics .has-user-messages small { color: var(--term-teal); }
 
@@ -4700,6 +4728,8 @@ pre {
 /* Provider accents on glyph + reasoning label (color is never the only cue). */
 .event-provider-claude .term-glyph,
 .event-provider-claude .term-reason-label { color: var(--claude); }
+.event-provider-opencode .term-glyph,
+.event-provider-opencode .term-reason-label { color: var(--term-cyan); }
 .event-provider-plan .term-glyph { color: var(--term-magenta); }
 .event-provider-relay .term-glyph { color: var(--term-muted); }
 
@@ -4955,6 +4985,17 @@ pre {
   border-color: rgb(217 130 69 / 30%);
   color: #f1ad7c;
   background: rgb(217 130 69 / 9%);
+}
+
+.event-provider-opencode.event-message-assistant .term-response {
+  border-left-color: var(--term-cyan);
+  background: rgb(125 207 255 / 7%);
+}
+
+.event-provider-opencode.event-message-assistant .term-message-role {
+  border-color: rgb(125 207 255 / 28%);
+  color: var(--term-cyan);
+  background: rgb(125 207 255 / 8%);
 }
 
 .event-message-user .term-glyph,
@@ -5623,6 +5664,8 @@ button.term-seg { border: 0; cursor: pointer; font: inherit; letter-spacing: inh
   --danger-soft: #fff0f3;
   --claude: #c94f2c;
   --claude-soft: #fff0e9;
+  --opencode: #1683a3;
+  --opencode-soft: #e5f6fa;
   --font-display: "Source Serif 4", Iowan Old Style, "Palatino Linotype", Georgia, serif;
   --font-body: "Instrument Sans", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
@@ -5748,6 +5791,7 @@ body[data-resizing-panels="true"] {
 .mode-tab small { font-size: 7px; }
 .agent-icon-codex { color: #7ce8ba; background: #111a2d; }
 .agent-icon-claude { color: var(--claude); background: var(--claude-soft); }
+.agent-icon-opencode { color: var(--opencode); background: var(--opencode-soft); }
 .execution-controls { gap: 6px; margin-top: 5px; }
 .execution-control { border-color: var(--line); border-radius: 9px; background: #f8faff; }
 select, textarea { border-color: #dbe3ef; border-radius: 9px; background: #f8faff; }
@@ -9326,6 +9370,16 @@ html[data-running-task-width="360"] {
   font-weight: 800;
 }
 
+.header-running-token-speed {
+  flex: 0 0 auto;
+  padding: 1px 3px;
+  border-radius: 4px;
+  color: #19715d;
+  background: #e8f7f1;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .header-running-meta time {
   flex: 0 0 auto;
   margin-left: auto;
@@ -9364,6 +9418,10 @@ html[data-running-task-width="360"] {
 
 .header-running-response[data-provider="claude"] b {
   color: var(--claude);
+}
+
+.header-running-response[data-provider="opencode"] b {
+  color: var(--opencode);
 }
 
 .header-running-response[data-provider="council"] b {
@@ -10441,7 +10499,7 @@ html[data-running-task-width="360"] {
  * patching the two earlier `.agent-tab` layers.
  */
 .agent-tabs {
-  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
   gap: 6px;
 }
 
@@ -10469,11 +10527,22 @@ html[data-running-task-width="360"] {
   background: var(--claude-soft);
 }
 
+.agent-tab-shell:has(.agent-tab.selected[data-provider="opencode"]) {
+  border-color: var(--opencode);
+  background: var(--opencode-soft);
+}
+
 /* The shell paints the card, so the tab button itself carries no frame. */
 .agent-tab,
 .agent-tab:hover,
 .agent-tab.selected[data-provider="codex"],
 .agent-tab.selected[data-provider="claude"] {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.agent-tab.selected[data-provider="opencode"] {
   border: 0;
   background: transparent;
   box-shadow: none;
@@ -10509,6 +10578,10 @@ html[data-running-task-width="360"] {
   color: var(--claude);
 }
 
+.agent-tab.selected[data-provider="opencode"] .agent-tab-copy strong {
+  color: var(--opencode);
+}
+
 .agent-tab-pool {
   display: grid;
   align-content: center;
@@ -10524,6 +10597,10 @@ html[data-running-task-width="360"] {
 
 .agent-tab-shell:has(.agent-tab.selected[data-provider="claude"]) .agent-tab-pool {
   border-left-color: #e8cdb2;
+}
+
+.agent-tab-shell:has(.agent-tab.selected[data-provider="opencode"]) .agent-tab-pool {
+  border-left-color: color-mix(in srgb, var(--opencode) 28%, var(--line));
 }
 
 .agent-tab-pool-label {
@@ -11694,6 +11771,8 @@ html[data-theme="dark"] {
   --danger-soft: #3a1d2a;
   --claude: #ff9e64;
   --claude-soft: #3a281d;
+  --opencode: #7dcfff;
+  --opencode-soft: #17323d;
   --app-well: #0d0e11;
   --app-panel: #131418;
   --app-control: #1b1d22;
@@ -12531,6 +12610,11 @@ html[data-theme="dark"] .agent-tab-shell:has(.agent-tab.selected[data-provider="
   background: color-mix(in srgb, var(--app-orange) 12%, var(--app-panel));
 }
 
+html[data-theme="dark"] .agent-tab-shell:has(.agent-tab.selected[data-provider="opencode"]) {
+  border-color: var(--app-cyan);
+  background: color-mix(in srgb, var(--app-cyan) 11%, var(--app-panel));
+}
+
 html[data-theme="dark"] .agent-tab-shell:has(.agent-tab:disabled),
 html[data-theme="dark"] .agent-tab-shell:has(.agent-tab:disabled):hover {
   border-color: var(--app-border);
@@ -12540,6 +12624,7 @@ html[data-theme="dark"] .agent-tab-shell:has(.agent-tab:disabled):hover {
 html[data-theme="dark"] .agent-tab-pool,
 html[data-theme="dark"] .agent-tab-shell:has(.agent-tab.selected[data-provider="codex"]) .agent-tab-pool,
 html[data-theme="dark"] .agent-tab-shell:has(.agent-tab.selected[data-provider="claude"]) .agent-tab-pool,
+html[data-theme="dark"] .agent-tab-shell:has(.agent-tab.selected[data-provider="opencode"]) .agent-tab-pool,
 html[data-theme="dark"] .agent-tab-shell:has(.agent-tab:disabled) .agent-tab-pool {
   border-left-color: var(--app-border);
 }
@@ -12547,6 +12632,11 @@ html[data-theme="dark"] .agent-tab-shell:has(.agent-tab:disabled) .agent-tab-poo
 html[data-theme="dark"] .agent-icon-claude {
   color: var(--app-orange);
   background: color-mix(in srgb, var(--app-orange) 12%, var(--app-well));
+}
+
+html[data-theme="dark"] .agent-icon-opencode {
+  color: var(--app-cyan);
+  background: color-mix(in srgb, var(--app-cyan) 11%, var(--app-well));
 }
 
 html[data-theme="dark"] .connection-pill {
@@ -12782,6 +12872,11 @@ html[data-theme="dark"] .header-running-meta time {
 html[data-theme="dark"] .header-running-meta > b {
   color: var(--project-accent, var(--app-violet));
   background: color-mix(in srgb, var(--project-accent, var(--app-violet)) 12%, var(--app-panel));
+}
+
+html[data-theme="dark"] .header-running-token-speed {
+  color: var(--app-green);
+  background: color-mix(in srgb, var(--app-green) 11%, var(--app-panel));
 }
 
 html[data-theme="dark"] .header-running-prompt {
@@ -13307,6 +13402,10 @@ html[data-theme="dark"] .execution-control-index {
 
 html[data-theme="dark"] .execution-controls[data-provider="claude"] .execution-control-index {
   color: var(--app-orange);
+}
+
+html[data-theme="dark"] .execution-controls[data-provider="opencode"] .execution-control-index {
+  color: var(--app-cyan);
 }
 
 html[data-theme="dark"] .project-unpin:hover:not(:disabled),

@@ -33,7 +33,7 @@ test('retry API validates provider settings and passes them through one guarded 
   assert.match(server, /retryTaskExecutionSettings: true/);
   assert.match(route, /const body = await readJson\(request\)/);
   assert.match(route, /task\.mode !== 'execute' \|\| task\.terminal_lifecycle !== 'disposable'/);
-  assert.match(route, /Choose Codex or Claude as the retry executor/);
+  assert.match(route, /Choose Codex, Claude, or OpenCode as the retry executor/);
   assert.match(route, /validateExecutionSettings\(/);
   assert.match(route, /queue\.retry\(taskId, \{ reuseRetainedTerminal, execution: retryExecution \}\)/);
 });

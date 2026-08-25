@@ -7,6 +7,7 @@ const COMMAND_ITEM_TYPES = new Set([
 ]);
 
 const ASSISTANT_MESSAGE_ITEM_TYPES = new Set(['agentMessage', 'agent_message']);
+const PROVIDER_MESSAGE_TYPES = new Set(['claude/message', 'opencode/message']);
 
 const QUIET_ITEM_TYPES = new Set([
   'contextCompaction',
@@ -442,6 +443,7 @@ export function groupEventEntries(events) {
   const entriesByCodexAgentId = new Map();
   const entriesByPlanKey = new Map();
   const entriesByGoalThreadId = new Map();
+  const entriesByTokenProvider = new Map();
   const codexAgentIdsByItemId = new Map();
   // A backgrounded sub-agent's task notification can be written to the transcript before the
   // launch record it belongs to, so the fold targets are collected before grouping starts.
@@ -536,8 +538,32 @@ export function groupEventEntries(events) {
     return entry;
   };
 
+  const entryForTokenProvider = (provider) => {
+    let entry = entriesByTokenProvider.get(provider);
+    if (!entry) {
+      entry = {
+        id: `token-usage-${provider}`,
+        events: [],
+        startedEvent: null,
+        updatedEvent: null,
+        completedEvent: null,
+        agentFinishedEvent: null,
+      };
+      entriesByTokenProvider.set(provider, entry);
+      entries.push(entry);
+    }
+    return entry;
+  };
+
   for (const event of list) {
     const item = event?.payload?.item;
+
+    if (event?.payload?.type === 'provider/token-usage') {
+      const entry = entryForTokenProvider(event.payload.provider || event.kind || 'provider');
+      entry.events.push(event);
+      entry.updatedEvent = event;
+      continue;
+    }
 
     const planKey = planFoldKey(event);
     if (planKey) {
@@ -707,7 +733,7 @@ export function eventEntryMessageRole(entry) {
   if (item?.type === 'userMessage') return 'user';
   if (ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type)) return 'assistant';
   const lastEvent = entryLastEvent(entry);
-  if (lastEvent?.payload?.type === 'claude/message' || lastEvent?.kind === 'result') {
+  if (PROVIDER_MESSAGE_TYPES.has(lastEvent?.payload?.type) || lastEvent?.kind === 'result') {
     return 'assistant';
   }
   return null;
@@ -731,7 +757,7 @@ export function assistantMessageStatus(entry, task, message = '') {
   if (phase) return 'update';
 
   const structuredMessage = ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type)
-    || lastEvent?.payload?.type === 'claude/message';
+    || PROVIDER_MESSAGE_TYPES.has(lastEvent?.payload?.type);
   if (lastEvent?.kind === 'result' && !structuredMessage) return 'final';
   // Older Codex records predate message phases and emitted only the final response as a
   // structured result. Preserve that history without letting current commentary inherit it.
@@ -772,6 +798,9 @@ export function eventEntryCategory(entry) {
     return 'commands';
   }
   if (ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type) || item?.type === 'userMessage') {
+    return 'messages';
+  }
+  if (PROVIDER_MESSAGE_TYPES.has(entryLastEvent(entry)?.payload?.type)) {
     return 'messages';
   }
   if (entry.events.some((event) => ['claude', 'plan', 'result'].includes(event.kind))) {
@@ -977,9 +1006,15 @@ export function eventStreamStats(entries, { turnEnded = false } = {}) {
     }
     const item = entryItem(entry);
     const last = entryLastEvent(entry);
+    if (last?.payload?.type === 'provider/token-usage') continue;
     if (item?.type === 'commandExecution') stats.commands += 1;
     if (item?.type === 'fileChange') stats.files += 1;
-    if (ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type) || item?.type === 'userMessage' || ['claude', 'result'].includes(last?.kind)) stats.messages += 1;
+    if (
+      ASSISTANT_MESSAGE_ITEM_TYPES.has(item?.type)
+      || item?.type === 'userMessage'
+      || PROVIDER_MESSAGE_TYPES.has(last?.payload?.type)
+      || ['claude', 'result'].includes(last?.kind)
+    ) stats.messages += 1;
     if (
       last?.kind === 'stderr'
       || last?.payload?.type === 'error'

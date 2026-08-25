@@ -128,7 +128,10 @@ function assistantResponseText(payload) {
   ) {
     return payload.item.text.trim();
   }
-  if (payload?.type === 'claude/message' && typeof payload.text === 'string') {
+  if (
+    ['claude/message', 'opencode/message'].includes(payload?.type)
+    && typeof payload.text === 'string'
+  ) {
     return payload.text.trim();
   }
   return '';
@@ -250,6 +253,7 @@ export class RelayDatabase {
         last_launched_at TEXT,
         max_codex_instances INTEGER NOT NULL DEFAULT 1,
         max_claude_instances INTEGER NOT NULL DEFAULT 1,
+        max_opencode_instances INTEGER NOT NULL DEFAULT 1,
         keep_terminal_open INTEGER NOT NULL DEFAULT 0,
         prefer_idle_terminal INTEGER NOT NULL DEFAULT 0,
         color TEXT,
@@ -379,6 +383,7 @@ export class RelayDatabase {
     this.ensureColumn('import_task_id', 'INTEGER');
     this.ensureTableColumn('projects', 'max_codex_instances', 'INTEGER NOT NULL DEFAULT 1');
     this.ensureTableColumn('projects', 'max_claude_instances', 'INTEGER NOT NULL DEFAULT 1');
+    this.ensureTableColumn('projects', 'max_opencode_instances', 'INTEGER NOT NULL DEFAULT 1');
     this.ensureTableColumn('projects', 'keep_terminal_open', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureTableColumn('projects', 'prefer_idle_terminal', 'INTEGER NOT NULL DEFAULT 0');
     this.ensureTableColumn('projects', 'color', 'TEXT');
@@ -539,7 +544,11 @@ export class RelayDatabase {
       continuedFromTaskId,
       submissionId,
       terminalLifecycle,
-      keepTerminalOpen && terminalLifecycle === 'disposable' ? 1 : 0,
+      keepTerminalOpen
+        && terminalLifecycle === 'disposable'
+        && provider !== 'opencode'
+        ? 1
+        : 0,
       manualCompletion
         && keepTerminalOpen
         && terminalLifecycle === 'disposable'
@@ -853,6 +862,8 @@ export class RelayDatabase {
       'thread_source',
       'session_id',
       'continued_from_task_id',
+      'keep_terminal_open',
+      'manual_completion',
     ]);
     const entries = Object.entries(changes).filter(([key]) => editableFields.has(key));
     if (entries.length === 0) return this.getTask(id);
@@ -886,6 +897,8 @@ export class RelayDatabase {
       'thread_name',
       'thread_source',
       'continued_from_task_id',
+      'keep_terminal_open',
+      'manual_completion',
     ]);
     const entries = Object.entries(changes).filter(([key]) => retryFields.has(key));
     if (entries.length === 0) return this.getTask(id);
@@ -1151,8 +1164,8 @@ export class RelayDatabase {
     return this.projectConfig.markProjectLaunched(id);
   }
 
-  updateProjectInstanceLimits(id, { codex, claude }) {
-    return this.projectConfig.updateProjectInstanceLimits(id, { codex, claude });
+  updateProjectInstanceLimits(id, { codex, claude, opencode }) {
+    return this.projectConfig.updateProjectInstanceLimits(id, { codex, claude, opencode });
   }
 
   updateProjectTerminalSettings(id, settings) {

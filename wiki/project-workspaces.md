@@ -59,12 +59,12 @@ The project path is not repeated inside the compact card. The complete path rema
 The active project scopes:
 
 - Task cards and project-level status counts
-- Codex and Claude provider, model, and effort choices
+- Codex, Claude, and OpenCode direct Execute provider, model, and effort choices
 - Per-provider automatic instance limits and active usage
 - Every disposable terminal launch and its working directory
 - Legacy connected-session controls when an older backend is active
 
-In current direct Execute mode, provider tabs choose Codex or Claude and the selected project's automatic pool supplies the terminal later. No live session is selected when a fresh task is submitted. The provider catalog still drives the adjacent Model and Effort controls. A backend without `capabilities.disposableTerminalPools` retains the former live-session picker as a compatibility path.
+In current direct Execute mode, provider tabs choose Codex, Claude, or OpenCode and the selected project's automatic pool supplies the native terminal or headless process later. No live session is selected when a fresh task is submitted. The provider catalog still drives the adjacent Model and Effort controls. A backend without `capabilities.disposableTerminalPools` retains the former live-session picker as a compatibility path and does not offer OpenCode.
 
 ## Stable CC Relay identity
 
@@ -74,7 +74,7 @@ The terminal picker and task cards render the persisted fields directly. They mu
 
 Each pinned project owns an independent task queue. Queue positions, priority insertion, retry append order, stale reorder validation, pause state, FIFO barriers, and dispatch eligibility are scoped by the task's exact `repo_path`. Reordering Alpha never rewrites Beta positions, pausing Alpha leaves Beta runnable, and a Plan council running in Alpha does not hold direct Codex work at the head of Beta's queue. CC Relay still coordinates shared provider and terminal resources centrally, so provider-wide exclusive tasks remain serialized even though unrelated direct Codex work can run beside them.
 
-Direct execution capacity is controlled by `max_codex_instances` and `max_claude_instances` on each pinned project. Both default to 1 and can be set from 1 through 8 in the left composer panel. A project's active and reserved disposable work consumes only that project's provider limits. Separate projects can therefore use their own limits concurrently, subject to the machine and provider account.
+Direct execution capacity is controlled by `max_codex_instances`, `max_claude_instances`, and `max_opencode_instances` on each pinned project. All three default to 1 and can be set from 1 through 8 in the left composer panel. A project's active and reserved disposable work consumes only that project's provider limits. Separate projects can therefore use their own limits concurrently, subject to the machine and provider account.
 
 > [!note]
 > The configured number is an upper bound, not a promise that every provider process will start instantly. Queue order, exclusive workflow barriers, provider authentication, native launch binding, and machine resources still apply.
@@ -82,7 +82,7 @@ Direct execution capacity is controlled by `max_codex_instances` and `max_claude
 > [!important]
 > Capacity is counted from both active task reservations and exact native launches. A terminal whose cleanup failed remains counted until CC Relay can prove that exact launch is gone. Never release capacity merely because session discovery stopped listing it.
 
-Direct Execute and Planner breakdown need one slot from their selected provider. Plan council needs one Claude and one Codex slot. Each automatic Turbo parent uses one Codex slot at a time for planning or execution, while its configured count limits simultaneous executor parents. Submission also requires project capacity for that execution count plus one planning lane. A Turbo council uses one Claude slot only during its Claude stage. CC Relay still validates Plan council atomically, while Turbo launches and cleans each stage just in time.
+Direct Execute needs one slot from its selected Codex, Claude, or OpenCode provider. Planner breakdown remains Codex or Claude. Plan council needs one Claude and one Codex slot. Each automatic Turbo parent uses one Codex slot at a time for planning or execution, while its configured count limits simultaneous executor parents. Submission also requires project capacity for that execution count plus one planning lane. A Turbo council uses one Claude slot only during its Claude stage. CC Relay still validates Plan council atomically, while Turbo launches and cleans each stage just in time.
 
 > [!important]
 > A backend without `capabilities.parallelClaudeExecution` still has the former global Claude lock. When a direct Claude task waits behind a different active Claude session, project activity and queue summary must say **Restart CC Relay for parallel Claude projects** instead of presenting the delay as ordinary FIFO waiting.
@@ -109,7 +109,7 @@ Each project also owns an in-memory workspace session. Switching Launchpads save
 
 ## Automatic terminal lifecycle
 
-With `capabilities.disposableTerminalPools`, a task is persisted before any provider terminal exists. When the task is runnable and the project has capacity, CC Relay launches a fresh native terminal in the exact project path and binds it through provider-specific proof: the Codex proxy launch reservation or the expected Claude session ID. It requires two stable discovery observations before the task owns the session.
+With `capabilities.disposableTerminalPools`, a task is persisted before any provider execution exists. When the task is runnable and the project has capacity, CC Relay launches a fresh native Codex or Claude terminal in the exact project path and binds it through provider-specific proof: the Codex proxy launch reservation or the expected Claude session ID. OpenCode instead starts a headless native process and accepts its session ID from the structured event stream.
 
 Every native launch has a fresh `launchId`, including a terminal that resumes an older conversation ID. Task completion, failure, cancellation, or interruption releases the task. When the task snapshots project retention as enabled, its final exact launch remains connected without consuming pool capacity. When retention is disabled, CC Relay closes that exact launch. Manually opened windows are never part of automatic cleanup. See [[disposable-terminal-pools]] and [[retained-terminal-sessions]].
 

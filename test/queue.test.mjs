@@ -183,6 +183,125 @@ test('queue runs different Codex terminals concurrently', async () => {
   }
 });
 
+test('a headless OpenCode task persists its native session and token telemetry', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-opencode-queue-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const releases = [];
+  const received = [];
+  const terminalPool = {
+    canRun: () => true,
+    capacityIssue: () => '',
+    async prepare(task) { return task; },
+    async release(taskId) { releases.push(taskId); return { closed: 0, failed: 0 }; },
+  };
+  const runner = {
+    async run(task, { onEvent }) {
+      received.push(task);
+      onEvent({
+        event: {
+          type: 'provider/token-usage',
+          provider: 'opencode',
+          source: 'native',
+          cumulative: true,
+          usage: { totalTokens: 240 },
+        },
+        message: 'OpenCode used 240 tokens so far.',
+      });
+      return { finalResponse: 'OpenCode finished.', sessionId: 'session-opencode', exitCode: 0 };
+    },
+    cancel: () => false,
+  };
+  const queue = new TaskQueue({ database, artifacts, terminalPool, runner });
+
+  try {
+    queue.pause();
+    const task = queue.enqueue({
+      title: 'OpenCode work',
+      prompt: 'Implement it',
+      repoPath: directory,
+      provider: 'opencode',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      thread: {
+        id: null,
+        title: 'Automatic OpenCode worker',
+        source: 'CC Relay managed headless runner',
+        cwd: directory,
+      },
+    });
+    queue.resume();
+    await waitFor(() => database.getTask(task.id).status === 'complete');
+
+    const completed = database.getTask(task.id);
+    assert.equal(received[0].provider, 'opencode');
+    assert.equal(completed.thread_id, 'session-opencode');
+    assert.equal(completed.session_id, 'session-opencode');
+    assert.equal(completed.thread_source, 'CC Relay managed headless runner');
+    assert.equal(completed.result, 'OpenCode finished.');
+    assert.deepEqual(releases, [task.id]);
+    const usage = database.listEvents(task.id)
+      .find((event) => event.payload?.type === 'provider/token-usage');
+    assert.equal(usage.payload.usage.totalTokens, 240);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('a failed OpenCode run keeps the native session for a safe retry', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-opencode-failed-session-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  const terminalPool = {
+    canRun: () => true,
+    capacityIssue: () => '',
+    async prepare(task) { return task; },
+    async release() { return { closed: 0, failed: 0 }; },
+  };
+  const runner = {
+    async run(task, { onEvent }) {
+      onEvent({
+        event: {
+          type: 'opencode/session',
+          provider: 'opencode',
+          sessionId: 'session-before-failure',
+        },
+        message: 'OpenCode session session-before-failure is active.',
+      });
+      throw Object.assign(new Error('OpenCode failed after starting.'), { retryable: false });
+    },
+    cancel: () => false,
+  };
+  const queue = new TaskQueue({ database, artifacts, terminalPool, runner });
+
+  try {
+    const task = queue.enqueue({
+      title: 'OpenCode partial work',
+      prompt: 'Start work',
+      repoPath: directory,
+      provider: 'opencode',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      thread: {
+        id: null,
+        title: 'Automatic OpenCode worker',
+        source: 'CC Relay managed headless runner',
+        cwd: directory,
+      },
+    });
+    await waitFor(() => database.getTask(task.id).status === 'failed');
+
+    const failed = database.getTask(task.id);
+    assert.equal(failed.thread_id, 'session-before-failure');
+    assert.equal(failed.session_id, 'session-before-failure');
+    assert.equal(failed.thread_source, 'CC Relay managed headless runner');
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('a finished-task follow-up starts immediately in the same task row and session', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-direct-follow-up-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
@@ -1100,6 +1219,8 @@ test('manual retry can change executor, model, and effort for an automatic Execu
     const task = queue.enqueue({
       ...directInput('Retry elsewhere', 'saved-codex-thread', directory),
       terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
       model: 'gpt-test',
       effort: 'high',
       continuedFromTaskId: 41,
@@ -1133,6 +1254,14 @@ test('manual retry can change executor, model, and effort for an automatic Execu
     assert.match(markdown, /Model: sonnet/);
     assert.match(markdown, /Effort: max/);
     assert.doesNotMatch(markdown, /Continues task:/);
+
+    database.updateTask(task.id, { status: 'failed', error: 'Claude failed.' });
+    const opencodeRetry = queue.retry(task.id, {
+      execution: { provider: 'opencode', model: 'openai/gpt-test', effort: null },
+    });
+    assert.equal(opencodeRetry.provider, 'opencode');
+    assert.equal(opencodeRetry.keep_terminal_open, false);
+    assert.equal(opencodeRetry.manual_completion, false);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });
@@ -1519,7 +1648,7 @@ test('queued task request can be edited without changing routing, order, or atta
   }
 });
 
-test('automatic queued Execute tasks can switch between Claude and Codex before dispatch', () => {
+test('automatic queued Execute tasks can switch among Claude, Codex, and OpenCode before dispatch', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-switch-queued-provider-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
   const artifacts = new ArtifactStore(join(directory, 'tasks'));
@@ -1539,6 +1668,8 @@ test('automatic queued Execute tasks can switch between Claude and Codex before 
       model: 'opus',
       effort: 'high',
       terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
       continuedFromTaskId: 41,
       attachments: [{
         name: 'switch-reference.png',
@@ -1588,6 +1719,21 @@ test('automatic queued Execute tasks can switch between Claude and Codex before 
     markdown = readFileSync(join(artifacts.taskDirectory(task.id), 'task.md'), 'utf8');
     assert.match(markdown, /Provider: claude/);
     assert.match(markdown, /Model: sonnet/);
+
+    const opencodeTask = queue.edit(task.id, {
+      title: task.title,
+      prompt: task.prompt,
+      provider: 'opencode',
+      model: 'openai/gpt-test',
+      effort: null,
+    });
+    assert.equal(opencodeTask.provider, 'opencode');
+    assert.equal(opencodeTask.keep_terminal_open, false);
+    assert.equal(opencodeTask.manual_completion, false);
+    assert.match(database.listEvents(task.id).at(-1).message, /switched from Claude to OpenCode/i);
+    markdown = readFileSync(join(artifacts.taskDirectory(task.id), 'task.md'), 'utf8');
+    assert.match(markdown, /Provider: opencode/);
+    assert.match(markdown, /Model: openai\/gpt-test/);
 
     const legacy = queue.enqueue({
       ...directInput('Legacy pinned task', 'legacy-provider-switch', directory),

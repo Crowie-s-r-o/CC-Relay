@@ -9,6 +9,11 @@ const FOLLOW_UP_SOURCE_STATUSES = new Set(['open', 'complete', 'failed', 'cancel
 const FOLLOW_UP_ERROR_PREFIX = 'Same-session follow-up';
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
+function providerName(provider) {
+  if (provider === 'opencode') return 'OpenCode';
+  return provider === 'claude' ? 'Claude' : 'Codex';
+}
+
 export function isManualSessionTask(task) {
   return task?.manual_completion === true
     && task?.keep_terminal_open === true
@@ -76,7 +81,7 @@ export class TaskQueue extends EventEmitter {
     if (
       lifecycle !== 'disposable'
       || task?.mode !== 'execute'
-      || !['codex', 'claude'].includes(task?.provider)
+      || !['codex', 'claude', 'opencode'].includes(task?.provider)
     ) return null;
     return task.thread_id || task.thread?.id || null;
   }
@@ -364,6 +369,9 @@ export class TaskQueue extends EventEmitter {
     if (task.terminal_lifecycle !== 'disposable') {
       throw new Error('This task uses a persistent terminal, so automatic close does not apply.');
     }
+    if (task.provider === 'opencode') {
+      throw new Error('OpenCode runs headlessly and has no terminal window to keep open.');
+    }
     if (task.keep_terminal_open === true) return task;
 
     const updated = this.database.updateTask(taskId, { keep_terminal_open: 1 });
@@ -441,7 +449,7 @@ export class TaskQueue extends EventEmitter {
     const nextProvider = executionRequested
       ? String(execution?.provider || '').trim()
       : task.provider;
-    if (executionRequested && !['codex', 'claude'].includes(nextProvider)) {
+    if (executionRequested && !['codex', 'claude', 'opencode'].includes(nextProvider)) {
       throw new Error(`Unsupported AI provider: ${nextProvider}`);
     }
     const optionalSetting = (value, label) => {
@@ -497,6 +505,10 @@ export class TaskQueue extends EventEmitter {
         thread_source: null,
         continued_from_task_id: null,
       } : {}),
+      ...(nextProvider === 'opencode' ? {
+        keep_terminal_open: 0,
+        manual_completion: 0,
+      } : {}),
     });
     if (executionChanged) {
       try {
@@ -518,6 +530,8 @@ export class TaskQueue extends EventEmitter {
           thread_name: task.thread_name,
           thread_source: task.thread_source,
           continued_from_task_id: task.continued_from_task_id,
+          keep_terminal_open: task.keep_terminal_open ? 1 : 0,
+          manual_completion: task.manual_completion ? 1 : 0,
         });
         throw error;
       }
@@ -530,13 +544,13 @@ export class TaskQueue extends EventEmitter {
       this.database.addEvent(
         taskId,
         'queue',
-        `Retry executor changed from ${task.provider === 'claude' ? 'Claude' : 'Codex'} to ${nextProvider === 'claude' ? 'Claude' : 'Codex'}. A fresh ${nextProvider === 'claude' ? 'Claude' : 'Codex'} conversation will be used.`,
+        `Retry executor changed from ${providerName(task.provider)} to ${providerName(nextProvider)}. A fresh ${providerName(nextProvider)} conversation will be used.`,
       );
     } else if (executionChanged) {
       this.database.addEvent(
         taskId,
         'queue',
-        `Retry execution settings changed to ${nextProvider === 'claude' ? 'Claude' : 'Codex'} / ${nextModel || 'model default'} / ${nextEffort || 'effort default'}.`,
+        `Retry execution settings changed to ${providerName(nextProvider)} / ${nextModel || 'model default'} / ${nextEffort || 'effort default'}.`,
       );
     }
     this.database.addEvent(taskId, 'queue', 'Task queued for retry.');
@@ -596,7 +610,7 @@ export class TaskQueue extends EventEmitter {
       throw new Error('Only automatic queued Execute tasks can change AI provider or execution settings.');
     }
     const nextProvider = provider === undefined ? task.provider : provider;
-    if (executionChanged && !['codex', 'claude'].includes(nextProvider)) {
+    if (executionChanged && !['codex', 'claude', 'opencode'].includes(nextProvider)) {
       throw new Error(`Unsupported AI provider: ${nextProvider}`);
     }
     const providerChanged = nextProvider !== task.provider;
@@ -622,6 +636,10 @@ export class TaskQueue extends EventEmitter {
         session_id: null,
         continued_from_task_id: null,
       } : {}),
+      ...(nextProvider === 'opencode' ? {
+        keep_terminal_open: 0,
+        manual_completion: 0,
+      } : {}),
     };
     const updated = this.database.updateQueuedTask(taskId, changes);
     const dispatchGuard = this.dispatchGuards.get(taskId);
@@ -640,6 +658,8 @@ export class TaskQueue extends EventEmitter {
         thread_source: task.thread_source,
         session_id: task.session_id,
         continued_from_task_id: task.continued_from_task_id,
+        keep_terminal_open: task.keep_terminal_open ? 1 : 0,
+        manual_completion: task.manual_completion ? 1 : 0,
       });
       throw error;
     }
@@ -648,7 +668,7 @@ export class TaskQueue extends EventEmitter {
       taskId,
       'queue',
       providerChanged
-        ? `Queued task switched from ${task.provider === 'claude' ? 'Claude' : 'Codex'} to ${nextProvider === 'claude' ? 'Claude' : 'Codex'} before execution. A fresh ${nextProvider === 'claude' ? 'Claude' : 'Codex'} conversation will be used.`
+        ? `Queued task switched from ${providerName(task.provider)} to ${providerName(nextProvider)} before execution. A fresh ${providerName(nextProvider)} conversation will be used.`
         : executionChanged
           ? `Queued task ${executionEditDescription} edited before execution.`
           : titleChanged && promptChanged
@@ -765,8 +785,14 @@ export class TaskQueue extends EventEmitter {
     return task?.mode === 'execute' && task.provider === 'claude';
   }
 
+  isDirectOpenCodeTask(task) {
+    return task?.mode === 'execute' && task.provider === 'opencode';
+  }
+
   isDirectExecutionTask(task) {
-    return this.isConcurrentCodexTask(task) || this.isDirectClaudeTask(task);
+    return this.isConcurrentCodexTask(task)
+      || this.isDirectClaudeTask(task)
+      || this.isDirectOpenCodeTask(task);
   }
 
   // Tasks that occupy exactly one session for one turn and therefore need no barrier
@@ -1504,6 +1530,24 @@ export class TaskQueue extends EventEmitter {
       }
       const outcome = await this.runner.run(routed, {
         onEvent: ({ event, message }) => {
+          if (event?.type === 'opencode/session' && task.provider === 'opencode') {
+            const nativeSessionId = String(event.sessionId || '').trim();
+            const current = this.database.getTask(task.id);
+            if (
+              nativeSessionId
+              && current
+              && (!current.thread_id || current.thread_id === nativeSessionId)
+            ) {
+              const sessionTask = this.database.updateTask(task.id, {
+                thread_id: nativeSessionId,
+                session_id: nativeSessionId,
+                thread_name: current.thread_name || 'OpenCode headless session',
+                thread_source: 'CC Relay managed headless runner',
+              });
+              this.activeTasks.set(task.id, sessionTask);
+              this.artifacts.updateTaskAssignment(sessionTask);
+            }
+          }
           this.artifacts.appendRawEvent(task.id, event);
           const kind = event.provider || (
             event.type === 'item/completed' && event.item?.type === 'agentMessage'
@@ -1523,17 +1567,25 @@ export class TaskQueue extends EventEmitter {
       const result = outcome.finalResponse
         || (task.mode === 'plan'
           ? 'The plan council completed without a final text response.'
-          : 'Codex completed without a final text response.');
+          : `${providerName(task.provider)} completed without a final text response.`);
       const latestTask = this.database.getTask(task.id) || routed;
       const manualSession = isManualSessionTask(latestTask);
-      this.database.updateTask(task.id, {
+      const completedTask = this.database.updateTask(task.id, {
         status: manualSession ? 'open' : 'complete',
         finished_at: manualSession ? null : now(),
         session_id: outcome.sessionId,
+        ...(task.provider === 'opencode' && outcome.sessionId ? {
+          thread_id: outcome.sessionId,
+          thread_name: latestTask.thread_name || 'OpenCode headless session',
+          thread_source: 'CC Relay managed headless runner',
+        } : {}),
         result,
         error: null,
         exit_code: outcome.exitCode,
       });
+      if (task.provider === 'opencode' && outcome.sessionId) {
+        this.artifacts.updateTaskAssignment(completedTask);
+      }
       if (task.mode !== 'plan') {
         this.artifacts.writeResult(task.id, result);
       }

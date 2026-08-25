@@ -23,10 +23,11 @@ Task Activity starts with an expanded execution manifest above the terminal filt
 The summary orders operational state before historical telemetry:
 
 1. Live or final task duration
-2. Current plan progress, when a provider published a plan
-3. Active sub-agent count
-4. Other active signals
-5. Thinking, command, file, message, and error counts
+2. Native cumulative token speed, when a supported provider reported usage
+3. Current plan progress, when a provider published a plan
+4. Active sub-agent count
+5. Other active signals
+6. Thinking, command, file, message, and error counts
 
 The expanded body has two provider-neutral lanes:
 
@@ -37,7 +38,7 @@ The current plan uses the same latest-event ordering as the compact plan metric.
 
 ## Lifecycle rules
 
-Runtime and live worker durations update on the existing one-second duration tick. Frozen outcomes keep the timestamp of their recorded completion.
+Runtime, live worker durations, and running token speed update on the existing one-second duration tick. Frozen outcomes keep the timestamp of their recorded completion. Token speed divides the latest current-attempt native cumulative total by task elapsed seconds and is unavailable until a valid native usage event exists. See [[opencode-provider-and-token-throughput]].
 
 > [!important]
 > A task that is no longer running may not leave a plan step or worker looking live. An `inProgress` step becomes **Unfinished**, and a worker whose final provider state is still running or backgrounded becomes **Unfinished** with its duration frozen at the task end. This mirrors [[provider-plan-and-goal-visibility]] and [[provider-sub-agent-visibility]].
@@ -60,6 +61,7 @@ Provider-controlled step text, owners, worker names, roles, and briefs are escap
 - `public/index.html` owns the stable, expanded-by-default disclosure.
 - `public/task-activity-overview.js` builds the pure overview markup and updates duration nodes.
 - `public/app.js` supplies folded event entries, refreshes the live clocks, and preserves manifest scroll state across live refreshes.
+- `public/token-throughput.js` filters current-attempt native usage and calculates the live or frozen rate.
 - `public/style.css` owns the terminal-native manifest, state cues, terminal-relative Plan cap, scroll bounds, and compact container layout.
 - `test/task-activity-overview.test.mjs` covers default expansion, current-plan selection, worker timing, terminal-state cleanup, escaping, duration refresh, and responsive styling.
 

@@ -89,7 +89,7 @@ test('a disposable Plan council starts beside one running Codex task when both p
 
     assert.deepEqual(
       context.terminalPool.projectStatus(context.directory, [direct]).active,
-      { codex: 1, claude: 0 },
+      { codex: 1, claude: 0, opencode: 0 },
     );
     assert.deepEqual(runnableTitles(context), ['Plan council']);
   } finally {

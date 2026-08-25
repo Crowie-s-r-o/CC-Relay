@@ -148,6 +148,7 @@ import {
   providerInstallationState,
 } from './provider-availability.js';
 import { combinedWeeklyUsagePresentation, providerUsagePresentation } from './provider-usage.js';
+import { tokenThroughput, tokenThroughputFromSnapshot } from './token-throughput.js';
 import { createTextSelectionGuard } from './text-selection-guard.js';
 import { defaultEffortForModel } from './model-effort.js';
 import { desktopUpdatePresentation } from './desktop-update-state.js';
@@ -262,6 +263,9 @@ const FALLBACK_MODELS = {
     catalogModel('fable', 'Fable', 'Fable 5 for the hardest and longest-running tasks.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
     catalogModel('sonnet', 'Sonnet', 'Latest Sonnet model for daily coding work.', { defaultEffort: 'high', efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }),
     catalogModel('haiku', 'Haiku', 'Fast Claude model for simple and narrow tasks.'),
+  ],
+  opencode: [
+    catalogModel('default', 'Configured default', 'Use the default model configured by OpenCode.', { isDefault: true }),
   ],
 };
 
@@ -510,6 +514,7 @@ const state = {
   modelCatalogs: {
     codex: FALLBACK_MODELS.codex,
     claude: FALLBACK_MODELS.claude,
+    opencode: FALLBACK_MODELS.opencode,
   },
   executionSettings: initialComposerState.executionSettings,
   threadExecutionSettings: initialComposerState.threadExecutionSettings,
@@ -578,6 +583,7 @@ const elements = {
   providerTabs: [...document.querySelectorAll('.agent-tab')],
   providerCodexCount: document.querySelector('#provider-codex-count'),
   providerClaudeCount: document.querySelector('#provider-claude-count'),
+  providerOpenCodeCount: document.querySelector('#provider-opencode-count'),
   executionControls: document.querySelector('#execution-controls'),
   modelSelect: document.querySelector('#model-select'),
   modelHint: document.querySelector('#model-hint'),
@@ -633,8 +639,10 @@ const elements = {
   legacyTerminalLaunchButtons: document.querySelector('#legacy-terminal-launch-buttons'),
   maxCodexInstances: document.querySelector('#max-codex-instances'),
   maxClaudeInstances: document.querySelector('#max-claude-instances'),
+  maxOpenCodeInstances: document.querySelector('#max-opencode-instances'),
   codexPoolUsage: document.querySelector('#codex-pool-usage'),
   claudePoolUsage: document.querySelector('#claude-pool-usage'),
+  openCodePoolUsage: document.querySelector('#opencode-pool-usage'),
   terminalLegend: document.querySelector('#terminal-legend'),
   threadInput: document.querySelector('#thread-id'),
   terminalList: document.querySelector('#terminal-list'),
@@ -1310,6 +1318,7 @@ function taskStarringSupported() {
 
 function terminalRetentionRequest(enabled = state.keepTerminalOpen) {
   return state.status?.capabilities?.retainedTerminalSessions === true
+    && state.selectedProvider !== 'opencode'
     && enabled
     ? { keepTerminalOpen: true }
     : {};
@@ -1339,6 +1348,7 @@ function projectInstanceLimits(project = activeProject()) {
   return {
     codex: Number(project?.max_codex_instances || 1),
     claude: Number(project?.max_claude_instances || 1),
+    opencode: Number(project?.max_opencode_instances || 1),
   };
 }
 
@@ -1430,7 +1440,10 @@ function restoreProjectComposerState(path) {
   state.selectedProvider = session.selectedProvider;
   state.taskMode = session.taskMode;
   state.terminalSettings = session.terminalSettings || initialComposerState.terminalSettings;
-  state.executionSettings = session.executionSettings;
+  state.executionSettings = {
+    ...initialComposerState.executionSettings,
+    ...(session.executionSettings || {}),
+  };
   state.threadExecutionSettings = session.threadExecutionSettings || {};
   state.planSettings = session.planSettings;
   state.turboSettings = session.turboSettings;
@@ -2389,6 +2402,9 @@ function eventProvider(entry, task) {
     if (event.payload?.provider === 'claude' || event.kind === 'claude') {
       return 'claude';
     }
+    if (event.payload?.provider === 'opencode' || event.kind === 'opencode') {
+      return 'opencode';
+    }
     if (event.payload?.provider === 'plan' || event.kind === 'plan') {
       return 'council';
     }
@@ -2975,13 +2991,17 @@ function eventPresentation(entry, task) {
     };
   }
 
-  if (['agentMessage', 'agent_message'].includes(item?.type) || payloadType === 'claude/message' || lastEvent?.kind === 'result') {
+  if (
+    ['agentMessage', 'agent_message'].includes(item?.type)
+    || ['claude/message', 'opencode/message'].includes(payloadType)
+    || lastEvent?.kind === 'result'
+  ) {
     const message = String(item?.text || lastEvent?.payload?.text || lastEvent?.message || '').trim();
     return {
       ...common,
       kind: 'message',
       messageRole: 'assistant',
-      glyph: provider === 'claude' ? '✳' : '>_',
+      glyph: provider === 'claude' ? '✳' : provider === 'opencode' ? 'OC' : '>_',
       title: providerLabel(provider),
       status: assistantMessageStatus(entry, task, message),
       message,
@@ -3112,7 +3132,7 @@ function eventPresentation(entry, task) {
   return {
     ...common,
     kind: 'note',
-    glyph: provider === 'claude' ? '✳' : '>_',
+    glyph: provider === 'claude' ? '✳' : provider === 'opencode' ? 'OC' : '>_',
     title: `${providerLabel(provider)} activity`,
     body: eventTextMarkup(lastEvent?.message || 'Activity recorded.'),
   };
@@ -3742,6 +3762,7 @@ function renderEventStream(events, task, {
   // A turn that is no longer running owns no live sub-agents, however its last notification
   // landed, so the active count clears with the turn instead of stranding a number.
   const stats = eventStreamStats(grouped, { turnEnded: task.status !== 'running' });
+  const throughput = tokenThroughput(events, task);
   const overview = taskActivityOverview(grouped, task);
   state.selectedTaskEvents = events;
   state.selectedTaskPrompts = prompts;
@@ -3786,6 +3807,7 @@ function renderEventStream(events, task, {
     ${stats.plan ? `<span class="has-plan"><b>${stats.plan.done}/${stats.plan.total}</b><small>plan steps</small></span>` : ''}
     ${stats.agents ? `<span class="has-agents"><b>${stats.agents}</b><small>sub-agents</small></span>` : ''}
     ${stats.running ? `<span class="is-running"><b>${stats.running}</b><small>active</small></span>` : ''}
+    ${throughput ? `<span class="has-token-speed" data-task-token-speed title="${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds"><b>${throughput.rateLabel}</b><small>tokens/s</small></span>` : ''}
     <span><b>${stats.thinkingTokens.toLocaleString()}</b><small>thinking tokens</small></span>
     <span><b>${stats.commands}</b><small>commands</small></span>
     <span><b>${stats.files}</b><small>file changes</small></span>
@@ -3833,6 +3855,9 @@ function providerLabel(provider) {
   if (provider === 'claude') {
     return 'Claude';
   }
+  if (provider === 'opencode') {
+    return 'OpenCode';
+  }
   if (provider === 'council') {
     return 'Plan council';
   }
@@ -3847,11 +3872,13 @@ function taskProvider(task) {
 }
 
 function providerIcon(provider) {
-  return provider === 'claude' ? '✳' : '&gt;_';
+  if (provider === 'claude') return '✳';
+  return provider === 'opencode' ? 'OC' : '&gt;_';
 }
 
 function providerIconClass(provider) {
-  return provider === 'claude' ? 'agent-icon-claude' : 'agent-icon-codex';
+  if (provider === 'claude') return 'agent-icon-claude';
+  return provider === 'opencode' ? 'agent-icon-opencode' : 'agent-icon-codex';
 }
 
 function threadDisplayName(thread) {
@@ -3894,7 +3921,11 @@ function taskRelayLabel(task) {
   const thread = state.threads.find((item) => item.id === task.thread_id);
   if (thread && threadProvider(thread) === 'codex') return `CC Relay ${relayNumber(thread)}`;
   if (thread) return `Claude · ${thread.title || 'session'}`;
-  if (task.thread_name) return task.provider === 'codex' ? `CC Relay · ${task.thread_name}` : `Claude · ${task.thread_name}`;
+  if (task.thread_name) {
+    return task.provider === 'codex'
+      ? `CC Relay · ${task.thread_name}`
+      : `${providerLabel(task.provider)} · ${task.thread_name}`;
+  }
   if (task.terminal_lifecycle === 'disposable') {
     if (task.mode === 'plan') return 'Automatic Claude + Codex';
     if (task.mode === 'turbo') return taskUsesSingleExecutorTurbo(task) ? 'Automatic Turbo pipeline' : 'Automatic Codex fleet';
@@ -5311,6 +5342,7 @@ function updateSubmitState() {
   const openingSession = usesDisposableTerminalPools()
     && state.status?.capabilities?.manualSessionTasks === true
     && state.keepTerminalOpen
+    && state.selectedProvider !== 'opencode'
     && state.taskMode === 'execute'
     && !isExecuteCouncilEnabled();
   elements.submitButton.disabled = state.submitting || Boolean(issue);
@@ -5340,6 +5372,7 @@ function setComposerPending(pending) {
   if (!elements.keepTerminalOpenOption.hidden) {
     elements.keepTerminalOpen.disabled = pending
       || !activeProject()
+      || state.selectedProvider === 'opencode'
       || state.projectSettingsSaving
       || state.status?.capabilities?.retainedTerminalSessions !== true;
   }
@@ -5453,6 +5486,7 @@ function providerInfo(provider) {
 function renderProviderTabs() {
   const codex = providerInfo('codex');
   const claude = providerInfo('claude');
+  const opencode = providerInfo('opencode');
   const automatic = usesDisposableTerminalPools();
   const terminalPool = state.status?.terminalPool;
   const pool = terminalPool
@@ -5462,6 +5496,7 @@ function renderProviderTabs() {
   const limits = projectInstanceLimits();
   const codexInstallation = providerInstallationState(state.status, 'codex');
   const claudeInstallation = providerInstallationState(state.status, 'claude');
+  const openCodeInstallation = providerInstallationState(state.status, 'opencode');
   elements.providerTabsContainer.hidden = !automatic;
   elements.providerTabsContainer.setAttribute('aria-hidden', String(!automatic));
   elements.providerCodexCount.textContent = automatic
@@ -5488,6 +5523,15 @@ function renderProviderTabs() {
       : claude.available
         ? isDirectClaudeEnabled() ? 'CLI ready' : 'Restart CC Relay'
         : 'Not connected';
+  elements.providerOpenCodeCount.textContent = automatic
+    ? openCodeInstallation === 'checking'
+      ? 'Checking installation'
+      : openCodeInstallation === 'missing'
+        ? 'Not installed'
+        : opencode.authenticated
+          ? `${Number(pool?.active?.opencode || 0)} / ${limits.opencode} active`
+          : state.status?.opencode?.reason === 'signed_out' ? 'Sign in required' : 'Auth check failed'
+    : 'Automatic only';
 
   for (const tab of elements.providerTabs) {
     const selected = tab.dataset.provider === state.selectedProvider;
@@ -5514,11 +5558,17 @@ function renderProviderTabs() {
   elements.maxClaudeInstances.disabled = !activeProject()
     || state.poolLimitSaving
     || (automatic && claudeInstallation === 'missing');
+  elements.maxOpenCodeInstances.disabled = !activeProject()
+    || state.poolLimitSaving
+    || (automatic && openCodeInstallation === 'missing');
   elements.maxCodexInstances.title = automatic && codexInstallation === 'missing'
     ? 'Install the Codex CLI to configure Codex instances.'
     : '';
   elements.maxClaudeInstances.title = automatic && claudeInstallation === 'missing'
     ? 'Install the Claude CLI to configure Claude instances.'
+    : '';
+  elements.maxOpenCodeInstances.title = automatic && openCodeInstallation === 'missing'
+    ? 'Install the OpenCode CLI to configure OpenCode instances.'
     : '';
   elements.providerInput.value = state.selectedProvider;
   elements.terminalPanel.setAttribute('aria-labelledby', `provider-${state.selectedProvider}`);
@@ -5559,6 +5609,8 @@ function renderHeaderRunningTasks() {
       task.starred,
       task.prompt,
       task.latestAgentUpdate?.provider,
+      task.latestTokenUsage?.usage?.totalTokens,
+      task.latestTokenUsage?.provider,
       task.status,
       task.manual_completion,
       taskMonitorResponseHash(task),
@@ -5582,7 +5634,9 @@ function renderHeaderRunningTasks() {
     const relay = taskRelayLabel(task);
     const monitor = taskMonitorPresentation(task);
     const response = taskMonitorResponse(task, monitor);
-    const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}${task.starred ? ', starred' : ''}, ${project}, ${relay}`;
+    const throughput = tokenThroughputFromSnapshot(task.latestTokenUsage, task);
+    const speedLabel = throughput ? `${throughput.rateLabel} tokens/s` : '';
+    const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}${task.starred ? ', starred' : ''}, ${project}, ${relay}${speedLabel ? `, ${speedLabel}` : ''}`;
     return `
       <button
         class="header-running-task ${projectIdentityColorClass(task.repo_path)}${monitor.terminalSession ? ' header-terminal-session' : ''}"
@@ -5599,6 +5653,7 @@ function renderHeaderRunningTasks() {
           <b>#${String(task.id).padStart(3, '0')}</b>
           ${monitor.terminalSession ? `<span class="header-running-state" data-state="${escapeHtml(monitor.state)}">${escapeHtml(monitor.label)}</span>` : ''}
           <span class="header-running-loc" title="${escapeHtml(task.repo_path)}"><span class="header-running-project">${escapeHtml(project)}</span> · ${escapeHtml(relay)}</span>
+          ${throughput ? `<span class="header-running-token-speed" data-header-token-speed="${task.id}" title="${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds">${throughput.rateLabel} tokens/s</span>` : ''}
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
         <strong class="header-running-prompt" title="${escapeHtml(taskDisplayName(task))}">${escapeHtml(compactText(taskDisplayName(task), 96))}</strong>
@@ -6436,10 +6491,23 @@ function refreshTaskDurations() {
       element.textContent = taskDurationLabel(task);
     }
   }
+  for (const element of elements.headerRunningMonitor.querySelectorAll('[data-header-token-speed]')) {
+    const task = runningById.get(Number(element.dataset.headerTokenSpeed));
+    const throughput = task && tokenThroughputFromSnapshot(task.latestTokenUsage, task);
+    if (!throughput) continue;
+    element.textContent = `${throughput.rateLabel} tokens/s`;
+    element.title = `${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds`;
+  }
   const selected = state.selectedTaskForEvents;
   if (selected && elements.termDuration) {
     const fresh = tasksById.get(selected.id) || selected;
     elements.termDuration.textContent = terminalDurationLabel(fresh);
+    const speedElement = elements.eventMetrics.querySelector('[data-task-token-speed]');
+    const throughput = speedElement && tokenThroughput(state.selectedTaskEvents, fresh);
+    if (throughput) {
+      speedElement.querySelector('b').textContent = throughput.rateLabel;
+      speedElement.title = `${Math.round(throughput.totalTokens).toLocaleString()} used tokens / ${throughput.elapsedSeconds.toFixed(1)} seconds`;
+    }
     refreshActivityOverviewDurations(elements.eventOverview);
   }
 }
@@ -7606,7 +7674,11 @@ async function selectTask(taskId) {
         : preparing ? 'This task is already being prepared. Cancel it before editing.' : '';
     elements.detailActions.append(editButton);
   }
-  if (task.status === 'running' && task.terminal_lifecycle === 'disposable') {
+  if (
+    task.status === 'running'
+    && task.terminal_lifecycle === 'disposable'
+    && task.provider !== 'opencode'
+  ) {
     const retentionSupported = state.status?.capabilities?.liveTerminalRetention === true;
     const retentionEnabled = task.keep_terminal_open === true;
     const retentionPending = state.terminalRetentionSavingTaskIds.has(task.id);
@@ -7726,7 +7798,14 @@ async function loadSnapshot() {
   // Browser selections reference concrete DOM nodes. Hold background rendering while a
   // user is selecting or copying so the periodic snapshot cannot replace those nodes.
   await textSelectionGuard.waitForClear();
+  const previousOpenCodeCheck = state.status?.opencode?.checkedAt || null;
   state.status = statusBody;
+  if (
+    statusBody.opencode?.checkedAt
+    && statusBody.opencode.checkedAt !== previousOpenCodeCheck
+  ) {
+    void loadModels('opencode');
+  }
   reconcileProviderSelection();
   state.tasks = tasksBody.tasks;
   const runningRetentionTaskIds = new Set(state.tasks
@@ -7918,7 +7997,7 @@ function selectProvider(provider, { focus = false } = {}) {
   renderThreads();
   loadModels(provider);
   if (councilClosed) {
-    elements.formMessage.textContent = 'Plan council turned off. Claude selected for direct execution.';
+    elements.formMessage.textContent = `Plan council turned off. ${providerLabel(provider)} selected for direct execution.`;
   }
   if (focus) {
     document.querySelector(`#provider-${provider}`)?.focus();
@@ -7961,29 +8040,39 @@ function renderAutomaticTerminalPool() {
   if (document.activeElement !== elements.maxClaudeInstances) {
     elements.maxClaudeInstances.value = String(limits.claude);
   }
+  if (document.activeElement !== elements.maxOpenCodeInstances) {
+    elements.maxOpenCodeInstances.value = String(limits.opencode);
+  }
   elements.maxCodexInstances.disabled = !project || state.poolLimitSaving;
   elements.maxClaudeInstances.disabled = !project || state.poolLimitSaving;
+  elements.maxOpenCodeInstances.disabled = !project || state.poolLimitSaving;
   const retentionSupported = state.status?.capabilities?.retainedTerminalSessions === true;
   const manualSessionsSupported = state.status?.capabilities?.manualSessionTasks === true;
   const directSessionMode = state.taskMode === 'execute' && !isExecuteCouncilEnabled();
-  elements.keepTerminalOpen.checked = state.keepTerminalOpen;
+  const headlessOpenCode = directSessionMode && state.selectedProvider === 'opencode';
+  elements.keepTerminalOpen.checked = headlessOpenCode ? false : state.keepTerminalOpen;
   elements.keepTerminalOpen.disabled = !project
     || !retentionSupported
+    || headlessOpenCode
     || state.submitting
     || state.projectSettingsSaving;
   elements.keepTerminalOpenOption.dataset.intent = directSessionMode ? 'session' : 'retention';
-  elements.keepTerminalOpenOption.dataset.active = String(state.keepTerminalOpen);
+  elements.keepTerminalOpenOption.dataset.active = String(!headlessOpenCode && state.keepTerminalOpen);
   elements.keepTerminalOpenOption.querySelector('strong').textContent = directSessionMode
     ? 'Terminal session mode'
     : 'Keep workflow terminals open';
-  elements.keepTerminalOpenHelp.textContent = retentionSupported
+  elements.keepTerminalOpenHelp.textContent = headlessOpenCode
+    ? 'OpenCode runs headlessly, so there is no terminal window to retain. Its native session ID is still recorded with the task.'
+    : retentionSupported
     ? directSessionMode
       ? manualSessionsSupported
         ? `Direct tasks in ${project?.name || 'this project'} stay open between turns and complete only when you press Complete session in Task activity. Their terminal stays open too. This setting is not shared with other projects.`
         : 'Restart CC Relay to keep direct tasks open for manual completion. Terminal retention still works with this backend.'
       : `This workflow completes automatically, but its terminals stay connected afterward and after CC Relay exits. This setting is not shared with other projects.`
     : 'Restart CC Relay to enable retained terminal sessions.';
-  elements.terminalPoolControls.textContent = state.keepTerminalOpen
+  elements.terminalPoolControls.textContent = headlessOpenCode
+    ? 'CC Relay starts OpenCode directly, streams its native progress and token usage, then releases this execution slot.'
+    : state.keepTerminalOpen
     ? directSessionMode && manualSessionsSupported
       ? 'Session mode opens a dedicated terminal workspace. Send as many turns as needed, then finish the task manually.'
       : 'CC Relay keeps the workflow terminals open after the automatic task outcome.'
@@ -7993,8 +8082,10 @@ function renderAutomaticTerminalPool() {
   setProjectTerminalSettingsDisabled(!project || state.projectSettingsSaving);
   if (providerIsMissing('codex')) elements.maxCodexInstances.disabled = true;
   if (providerIsMissing('claude')) elements.maxClaudeInstances.disabled = true;
+  if (providerIsMissing('opencode')) elements.maxOpenCodeInstances.disabled = true;
   elements.codexPoolUsage.textContent = `${Number(active.codex || 0)} active · max ${limits.codex}`;
   elements.claudePoolUsage.textContent = `${Number(active.claude || 0)} active · max ${limits.claude}`;
+  elements.openCodePoolUsage.textContent = `${Number(active.opencode || 0)} active · max ${limits.opencode}`;
 
   if (!project) {
     elements.sessionMessage.textContent = 'Choose a pinned project to configure its automatic terminal instances.';
@@ -8004,6 +8095,8 @@ function renderAutomaticTerminalPool() {
       : `Turbo will launch one planner plus ${state.turboSettings.workerCount} disposable Codex workers in ${project.name}.`;
   } else if (isExecuteCouncilEnabled()) {
     elements.sessionMessage.textContent = `Plan council will launch one Claude and one Codex terminal in ${project.name}.`;
+  } else if (headlessOpenCode) {
+    elements.sessionMessage.textContent = `New OpenCode tasks run as headless native sessions in ${project.name}.`;
   } else {
     elements.sessionMessage.textContent = state.keepTerminalOpen && manualSessionsSupported
       ? `New ${providerLabel(state.selectedProvider)} tasks open persistent terminal workspaces in ${project.name}.`
@@ -8022,9 +8115,11 @@ async function saveProjectInstanceLimits() {
   if (!project || state.poolLimitSaving) return;
   const codex = Number(elements.maxCodexInstances.value);
   const claude = Number(elements.maxClaudeInstances.value);
+  const opencode = Number(elements.maxOpenCodeInstances.value);
   if (
     !Number.isInteger(codex) || codex < 1 || codex > 8
     || !Number.isInteger(claude) || claude < 1 || claude > 8
+    || !Number.isInteger(opencode) || opencode < 1 || opencode > 8
   ) {
     elements.formMessage.textContent = 'Max instances must be whole numbers from 1 to 8.';
     renderAutomaticTerminalPool();
@@ -8038,11 +8133,12 @@ async function saveProjectInstanceLimits() {
       body: JSON.stringify({
         maxCodexInstances: codex,
         maxClaudeInstances: claude,
+        maxOpenCodeInstances: opencode,
       }),
     });
     state.projects = state.projects.map((item) => item.id === body.project.id ? body.project : item);
     if (state.status?.terminalPool) {
-      state.status.terminalPool.limits = { codex, claude };
+      state.status.terminalPool.limits = { codex, claude, opencode };
     }
     elements.formMessage.textContent = `Automatic limits saved for ${body.project.name}.`;
   } catch (error) {
@@ -8680,6 +8776,7 @@ function prepareTaskEditor(task, { mode, executionEditable }) {
   state.taskEditSettings = executionEditable ? {
     codex: { model: '', effort: '' },
     claude: { model: '', effort: '' },
+    opencode: { model: '', effort: '' },
     [task.provider]: { model: task.model || '', effort: task.effort || '' },
   } : null;
   elements.taskEditModal.dataset.mode = mode;
@@ -8715,7 +8812,7 @@ function prepareTaskEditor(task, { mode, executionEditable }) {
     focusTarget.focus();
   });
   if (executionEditable) {
-    Promise.all([loadModels('codex'), loadModels('claude')]).then(() => {
+    Promise.all([loadModels('codex'), loadModels('claude'), loadModels('opencode')]).then(() => {
       if (elements.taskEditModal.open && state.editingTaskId === task.id) renderTaskEditExecution();
     });
   }
@@ -8750,7 +8847,7 @@ function renderTaskEditExecution() {
   const provider = state.taskEditProvider;
   const settings = state.taskEditSettings?.[provider];
   if (!provider || !settings) return;
-  elements.taskEditProvider.innerHTML = ['codex', 'claude'].map((candidate) => {
+  elements.taskEditProvider.innerHTML = ['codex', 'claude', 'opencode'].map((candidate) => {
     const unavailable = providerIsMissing(candidate)
       && candidate !== state.taskEditOriginalProvider;
     return `<option value="${candidate}"${unavailable ? ' disabled' : ''}>${providerLabel(candidate)}${unavailable ? ' · not installed' : ''}</option>`;
@@ -8823,7 +8920,7 @@ async function saveTaskEdit() {
     effort: state.taskEditSettings?.[provider]?.effort || null,
   } : null;
   if (mode === 'retry' && !selectedExecution) {
-    elements.taskEditMessage.textContent = 'Choose Codex or Claude as the retry executor.';
+    elements.taskEditMessage.textContent = 'Choose Codex, Claude, or OpenCode as the retry executor.';
     return;
   }
   state.taskEditSubmitting = true;
@@ -10252,7 +10349,7 @@ elements.form.addEventListener('submit', async (event) => {
       return;
     }
     if (submissionProvider !== state.selectedProvider) {
-      setComposerAlert('Provider selection changed unexpectedly. Select Codex or Claude again before adding the task.');
+      setComposerAlert('Provider selection changed unexpectedly. Select Codex, Claude, or OpenCode again before adding the task.');
       return;
     }
     if (councilRequested && submissionProvider !== 'codex') {
@@ -10315,6 +10412,7 @@ elements.form.addEventListener('submit', async (event) => {
   const automaticTerminals = usesDisposableTerminalPools();
   const retainTerminals = automaticTerminals
     && state.status?.capabilities?.retainedTerminalSessions === true
+    && submissionProvider !== 'opencode'
     && state.keepTerminalOpen;
   const dispatchIdleRouting = state.status?.capabilities?.dispatchIdleRouting === true
     && !automaticTerminals;
@@ -10903,7 +11001,11 @@ elements.keepTerminalOpen.addEventListener('change', () => {
  * listener below exactly once. The steppers are siblings of the tab buttons, never children,
  * so no click, key, or spinner interaction here reaches provider selection.
  */
-for (const input of [elements.maxCodexInstances, elements.maxClaudeInstances]) {
+for (const input of [
+  elements.maxCodexInstances,
+  elements.maxClaudeInstances,
+  elements.maxOpenCodeInstances,
+]) {
   input.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
@@ -10912,6 +11014,7 @@ for (const input of [elements.maxCodexInstances, elements.maxClaudeInstances]) {
 }
 elements.maxCodexInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.maxClaudeInstances.addEventListener('change', saveProjectInstanceLimits);
+elements.maxOpenCodeInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.addProjectButton.addEventListener('click', () => chooseProject(false));
 elements.projectList.addEventListener('click', async (event) => {
   const button = event.target.closest('[data-project-action]');
@@ -10985,7 +11088,11 @@ for (const tab of elements.providerTabs) {
   tab.addEventListener('keydown', (event) => {
     if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
     event.preventDefault();
-    selectProvider(tab.dataset.provider === 'codex' ? 'claude' : 'codex', { focus: true });
+    const availableTabs = elements.providerTabs.filter((candidate) => !candidate.disabled);
+    const currentIndex = availableTabs.indexOf(tab);
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    const next = availableTabs[(currentIndex + direction + availableTabs.length) % availableTabs.length];
+    if (next) selectProvider(next.dataset.provider, { focus: true });
   });
 }
 elements.modelSelect.addEventListener('input', () => {
@@ -11334,7 +11441,7 @@ elements.taskEditClose.addEventListener('click', closeTaskEditor);
 elements.taskEditCancel.addEventListener('click', closeTaskEditor);
 elements.taskEditSave.addEventListener('click', saveTaskEdit);
 elements.taskEditProvider.addEventListener('change', () => {
-  if (!['codex', 'claude'].includes(elements.taskEditProvider.value)) return;
+  if (!['codex', 'claude', 'opencode'].includes(elements.taskEditProvider.value)) return;
   state.taskEditProvider = elements.taskEditProvider.value;
   const settings = state.taskEditSettings?.[state.taskEditProvider];
   const models = state.modelCatalogs[state.taskEditProvider] || [];
@@ -11634,7 +11741,7 @@ renderTurboControls();
 renderAttachmentComposer();
 renderTaskReferences();
 updateSubmitState();
-Promise.all([rendererStateReady, rendererStateReady.then(() => load()), loadThreads({ silent: false }), loadModels('codex'), loadModels('claude'), loadTerminalDisplays()]).catch((error) => {
+Promise.all([rendererStateReady, rendererStateReady.then(() => load()), loadThreads({ silent: false }), loadModels('codex'), loadModels('claude'), loadModels('opencode'), loadTerminalDisplays()]).catch((error) => {
   elements.queueSummary.textContent = error.message;
 });
 

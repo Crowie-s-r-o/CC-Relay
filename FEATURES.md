@@ -2,25 +2,26 @@
 
 ## What CC Relay is
 
-CC Relay is a local workspace and task orchestrator for Codex and Claude Code. It connects to AI sessions that are already authenticated with your subscriptions, lets you queue work against a selected project, and coordinates when and where that work runs.
+CC Relay is a local workspace and task orchestrator for Codex, Claude Code, and OpenCode. It connects to provider sessions that are already authenticated or configured in their native CLIs, lets you queue work against a selected project, and coordinates when and where that work runs.
 
-CC Relay does not call the OpenAI or Anthropic APIs directly. It uses the installed Codex and Claude Code tools, preserves their conversation context, and stores task history and artifacts locally.
+CC Relay does not call model-provider APIs directly. It delegates execution and authentication to the installed Codex, Claude Code, and OpenCode tools, preserves their native conversation context, and stores task history and artifacts locally.
 
 CC Relay is designed to make AI development work easier to control:
 
-- Pin projects and set separate maximum Codex and Claude instances for each one.
+- Pin projects and set separate maximum Codex, Claude, and OpenCode instances for each one.
 - Queue prompts instead of waiting for one task to finish before preparing the next.
 - Give tasks recognizable names, star important records to keep them at the top, and rename titles at any stage.
-- Search every saved task command and assistant response inside the selected project.
+- Search every saved task command and provider response inside the selected project.
 - Attach earlier task messages, AI responses, or both as context for new work.
 - Choose the provider, model, and reasoning effort without keeping a target terminal open.
-- Launch a fresh provider terminal only when a queued task receives capacity.
-- Optionally keep final task terminal sessions open, with an independent saved choice for every project.
+- Launch a fresh Codex or Claude terminal, or a headless OpenCode process, only when a queued task receives capacity.
+- Optionally keep final Codex and Claude task terminal sessions open, with an independent saved choice for every project.
 - Run independent tasks concurrently up to each project's provider limits.
 - Continue a direct Codex or Claude task by relaunching and resuming its saved conversation.
-- Retry a failed direct task with a newly selected Codex or Claude executor, model, and effort.
+- Retry a failed direct task with a newly selected Codex, Claude, or OpenCode executor, model, and effort.
 - Attach screenshots and other reference images to tasks.
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
+- See cumulative native token use and tokens per second during supported provider runs.
 - Monitor Claude session, Claude weekly, Fable weekly, Codex five-hour, and Codex weekly subscription usage in the global header.
 - Persist prompts, events, results, plans, errors, and attachments locally.
 - Generate a date-selected daily changelog from saved prompts and AI responses.
@@ -30,19 +31,19 @@ CC Relay is designed to make AI development work easier to control:
 
 ### Execute
 
-Execute sends one task to one selected provider. CC Relay creates the terminal and conversation when the task starts.
+Execute sends one task to one selected provider. CC Relay creates a terminal and conversation for Codex or Claude, or starts a headless native session for OpenCode, when the task starts.
 
 Use Execute when the task is already clear and you want an agent to perform the work, such as implementing a feature, fixing a bug, editing files, running tests, reviewing code, or answering a focused technical question.
 
 You can choose:
 
-- Codex or Claude Code
+- Codex, Claude Code, or OpenCode
 - The active project and its automatic provider pool
 - The model and reasoning effort
 - Optional reference images
 - Normal queueing or priority execution
 
-The project's Codex and Claude limits control how many independent direct tasks can run at once. Every fresh task receives a fresh conversation. An explicit continuation resumes its saved conversation and is serialized against any other work using that conversation ID. **Keep task terminals open** is disabled by default for each project. Enabling it keeps the final window connected without consuming an active task slot, and Continue session or Retry reuses it while it remains idle. The choice affects only the selected project and applies to new tasks immediately.
+The project's Codex, Claude, and OpenCode limits control how many independent direct tasks can run at once. Every fresh task receives a fresh conversation. Codex and Claude support explicit continuation, serialized against any other work using that conversation ID. OpenCode saves its native session ID and resumes it when the same task is retried. **Keep task terminals open** applies only to Codex and Claude and is disabled by default for each project. Enabling it keeps the final window connected without consuming an active task slot, and Continue session or Retry reuses it while it remains idle. The choice affects only the selected project and applies to new tasks immediately.
 
 **Best for:** well-defined work that needs one agent and one execution context.
 
@@ -89,7 +90,7 @@ You can choose:
 
 | Workflow | Main purpose | Agents | Project changes | Parallel execution |
 | --- | --- | --- | --- | --- |
-| Execute | Complete a clear task | One disposable Codex or Claude instance | Allowed | Up to the project provider limit |
+| Execute | Complete a clear task | One disposable Codex, Claude, or OpenCode instance | Allowed | Up to the project provider limit |
 | Execute with Plan council | Produce a reviewed plan | Selectable Claude/Codex author, opposite-provider reviewer, original-provider reviser | No, read-only | Staged review loop |
 | Forward-planning Turbo | Plan and execute a large objective | One fresh planner, then one fresh executor per prompt | Planner is read-only, executor can edit | Several planned prompts can execute concurrently |
 
@@ -97,13 +98,13 @@ You can choose:
 
 ### Project Launchpad
 
-Pin frequently used folders and treat each one as a workspace. A project card scopes tasks, activity, plans, provider settings, and instance limits. The composer opens Claude and Codex automatically only for runnable work.
+Pin frequently used folders and treat each one as a workspace. A project card scopes tasks, activity, plans, provider settings, and instance limits. The composer offers Claude, Codex, and OpenCode automatically only for runnable work.
 
 ### Task queue and CC Relay assignment
 
 Tasks are stored in SQLite and survive restarts. Each project owns its queue order, pause state, FIFO barriers, and provider limits. Waiting tasks can be reordered. Disposable tasks are not assigned manually because the pool creates their terminal when they start. Legacy persistent tasks retain compatible reassignment support.
 
-The task-list search checks task names, original commands, every accepted Relay follow-up, every saved Codex and Claude response, final results, and recorded errors. Search is case, accent, and punctuation insensitive, supports quoted phrases and task numbers, and ranks the strongest evidence first. Starred matches form a stable group above other matches while preserving relevance order inside each group. Matching cards show a highlighted command or response excerpt. Search spans all dates in the selected project; filtered results stay inspectable but do not expose reorder, assignment, or parallel-batch controls.
+The task-list search checks task names, original commands, every accepted Relay follow-up, every saved provider response, final results, and recorded errors. Search is case, accent, and punctuation insensitive, supports quoted phrases and task numbers, and ranks the strongest evidence first. Starred matches form a stable group above other matches while preserving relevance order inside each group. Matching cards show a highlighted command or response excerpt. Search spans all dates in the selected project; filtered results stay inspectable but do not expose reorder, assignment, or parallel-batch controls.
 
 Task names are optional and fall back to a compact form of the request. The pencil beside every
 ordinary task title opens a focused inline editor, including while a task is running or after it
@@ -117,7 +118,7 @@ reordering remains available inside the starred and unstarred groups.
 
 Task Activity includes a compact continuation dock for direct tasks and for a completed Turbo task's final execution session. A follow-up always reuses the selected task row and saved conversation. While a direct task is running, Codex and interactive Claude accept exact active-turn updates without creating queue work. Running Claude keeps the dock editable while earlier updates are being delivered, captures every send in order, and sends a stable native Claude draft before the next Relay update instead of blocking the operator. Attachment-bearing updates remain recognizable after Claude converts their path lines into cumulative image chips and shortens the collapsed paste, so the guarded submit schedule does not leave them waiting for manual Enter. After a supported task finishes, CC Relay uses a live retained session immediately, or reserves a free provider slot, relaunches the saved conversation, and sends the next turn without creating a task. If no slot is free, submission stays on the finished task and asks the user to try again. The Prompts disclosure above the event rail lists the original request and every accepted follow-up.
 
-Retrying a failed, cancelled, or interrupted automatic Execute task opens its execution settings first. The executor, model, and effort can change before the task returns to the queue. Keeping the same executor preserves the saved conversation when available. Switching between Codex and Claude starts a fresh provider conversation while preserving the task ID, request, images, and queue history.
+Retrying a failed, cancelled, or interrupted automatic Execute task opens its execution settings first. The executor, model, and effort can change before the task returns to the queue. Keeping the same executor preserves the saved conversation when available. Switching among Codex, Claude, and OpenCode starts a fresh provider conversation while preserving the task ID, request, images, and queue history.
 
 ### Run now
 
@@ -133,11 +134,25 @@ Right-click a task card to attach My messages, AI responses, or Both to the new-
 
 ### Task activity
 
-CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, Conversation, My messages, and AI messages. Conversation keeps both speakers together in chronological order. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex or Claude response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Follow mode and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
+CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, Conversation, My messages, and AI messages. Conversation keeps both speakers together in chronological order. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex, Claude, or OpenCode response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Follow mode and log copying make long executions easier to monitor. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
+
+### OpenCode execution and live token speed
+
+OpenCode is a third direct Execute provider beside Codex and Claude. Relay discovers the installed CLI and its configured model catalog, then starts `opencode run --format json` as a headless child process in the selected project. OpenCode does not open or retain a Terminal.app window. Its project limit still participates in the same queue capacity and cleanup rules.
+
+Relay reads native OpenCode `step_finish` token statistics as the run progresses. It emits one cumulative usage record after each reported step and reconciles an incomplete final stream from the saved native session export when needed. Codex and Claude native usage events use the same normalized record. The visible speed is:
+
+```text
+native cumulative token total / elapsed task seconds
+```
+
+The native total is used when the CLI supplies one. Otherwise Relay sums input, output, reasoning, cache-read, and cache-write tokens. Running speeds refresh once per second. A finished task freezes the denominator at its finish time, while a manually open terminal session without a finish time freezes at its latest native usage event. Estimated or stale events from an earlier retry attempt are excluded.
+
+The current value appears in Task Activity and in the global running-task monitor. OpenCode aggregate `stats` output is not used for task speed because it spans broader CLI history rather than the current Relay attempt. See [OpenCode provider and token throughput](wiki/opencode-provider-and-token-throughput.md).
 
 ### Task changes
 
-The task detail **Changes** action opens on **Exact task edits**, a per-file sequence of patches that Codex or Claude reported for that task. **Workspace window** keeps the original working-tree snapshot comparison so shell commands, external tools, and other disk changes remain inspectable. Relay labels the exact view as provider-reported evidence and calls out any file-change record that did not include a patch.
+The task detail **Changes** action opens on **Exact task edits**, a per-file sequence of patches that Codex or Claude reported for that task. **Workspace window** keeps the original working-tree snapshot comparison so OpenCode, shell commands, external tools, and other disk changes remain inspectable. Relay labels the exact view as provider-reported evidence and calls out any file-change record that did not include a patch.
 
 ### Provider subscription usage
 

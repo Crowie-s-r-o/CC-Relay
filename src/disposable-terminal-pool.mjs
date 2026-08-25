@@ -4,7 +4,17 @@ import { join } from 'node:path';
 import { resolveClaudeTranscriptPath } from './claude-transcript-tail.mjs';
 import { claudeFirstLaunchSettings } from './claude-launch-settings.mjs';
 
-const PROVIDERS = ['codex', 'claude'];
+const PROVIDERS = ['codex', 'claude', 'opencode'];
+const TERMINAL_PROVIDERS = ['codex', 'claude'];
+
+function emptyProviderCounts() {
+  return { codex: 0, claude: 0, opencode: 0 };
+}
+
+function providerName(provider) {
+  if (provider === 'opencode') return 'OpenCode';
+  return provider === 'claude' ? 'Claude' : 'Codex';
+}
 
 export function inspectClaudeConversation(repoPath, sessionId, {
   resolveTranscriptPath = resolveClaudeTranscriptPath,
@@ -78,20 +88,21 @@ export function isDisposableTerminalTask(task) {
 }
 
 export function disposableTerminalRequirements(task) {
-  if (!isDisposableTerminalTask(task)) return { codex: 0, claude: 0 };
-  if (task.mode === 'plan') return { codex: 1, claude: 1 };
+  if (!isDisposableTerminalTask(task)) return emptyProviderCounts();
+  if (task.mode === 'plan') return { codex: 1, claude: 1, opencode: 0 };
   if (task.mode === 'turbo') {
     // One Turbo parent owns one native terminal at a time. A queued planner can overlap with
     // several already-planned parents, but each parent execution is one fresh Codex session.
-    return { codex: 1, claude: 0 };
+    return { codex: 1, claude: 0, opencode: 0 };
   }
   if (['execute', 'breakdown'].includes(task.mode) && PROVIDERS.includes(task.provider)) {
     return {
       codex: task.provider === 'codex' ? 1 : 0,
       claude: task.provider === 'claude' ? 1 : 0,
+      opencode: task.provider === 'opencode' ? 1 : 0,
     };
   }
-  return { codex: 0, claude: 0 };
+  return emptyProviderCounts();
 }
 
 export function disposableTerminalConfigurationRequirements(task) {
@@ -106,6 +117,7 @@ export function disposableTerminalConfigurationRequirements(task) {
     codex: executionCount + 1,
     claude: councilEnabled
       && task.turbo?.councilTerminalExecution !== false ? 1 : 0,
+    opencode: 0,
   };
 }
 
@@ -142,6 +154,7 @@ export class DisposableTerminalPool {
     return {
       codex: Number(project?.max_codex_instances || 1),
       claude: Number(project?.max_claude_instances || 1),
+      opencode: Number(project?.max_opencode_instances || 1),
     };
   }
 
@@ -150,7 +163,7 @@ export class DisposableTerminalPool {
     const limits = this.limits(task.repo_path);
     for (const provider of PROVIDERS) {
       if (required[provider] > limits[provider]) {
-        return `${task.mode === 'turbo' ? 'Turbo' : 'This task'} needs ${required[provider]} ${provider === 'codex' ? 'Codex' : 'Claude'} instance${required[provider] === 1 ? '' : 's'}, but this project allows ${limits[provider]}.`;
+        return `${task.mode === 'turbo' ? 'Turbo' : 'This task'} needs ${required[provider]} ${providerName(provider)} instance${required[provider] === 1 ? '' : 's'}, but this project allows ${limits[provider]}.`;
       }
     }
     return '';
@@ -163,9 +176,11 @@ export class DisposableTerminalPool {
     ) return;
     for (const [taskId, launches] of this.allocations) {
       const retained = launches.filter((launch) => (
-        typeof this.launcher.terminalForLaunch === 'function'
+        launch.virtual === true || (
+          typeof this.launcher.terminalForLaunch === 'function'
           ? !launch.launchId || this.launcher.terminalForLaunch(launch.launchId)
           : !launch.threadId || this.launcher.terminalForThread(launch.threadId)
+        )
       ));
       if (retained.length > 0) this.allocations.set(taskId, retained);
       else this.allocations.delete(taskId);
@@ -174,7 +189,7 @@ export class DisposableTerminalPool {
 
   usage(repoPath, reservedTasks = []) {
     this.reconcileAllocations();
-    const usage = { codex: 0, claude: 0 };
+    const usage = emptyProviderCounts();
     const allocatedByTask = new Map();
 
     // A native window can take several seconds to bind its conversation identity. Count that
@@ -183,7 +198,7 @@ export class DisposableTerminalPool {
     for (const pending of this.pendingTurboLaunches) {
       if (pending.repoPath === repoPath && PROVIDERS.includes(pending.provider)) {
         usage[pending.provider] += 1;
-        const allocated = allocatedByTask.get(pending.taskId) || { codex: 0, claude: 0 };
+        const allocated = allocatedByTask.get(pending.taskId) || emptyProviderCounts();
         allocated[pending.provider] += 1;
         allocatedByTask.set(pending.taskId, allocated);
       }
@@ -196,7 +211,7 @@ export class DisposableTerminalPool {
         || launches.find((launch) => launch.thread?.cwd)?.thread.cwd
         || null;
       if (allocationPath !== repoPath) continue;
-      const allocated = allocatedByTask.get(taskId) || { codex: 0, claude: 0 };
+      const allocated = allocatedByTask.get(taskId) || emptyProviderCounts();
       for (const launch of launches) {
         if (!PROVIDERS.includes(launch.provider)) continue;
         usage[launch.provider] += 1;
@@ -214,7 +229,7 @@ export class DisposableTerminalPool {
       ) continue;
       countedReservations.add(task.id);
       const required = disposableTerminalRequirements(task);
-      const allocated = allocatedByTask.get(task.id) || { codex: 0, claude: 0 };
+      const allocated = allocatedByTask.get(task.id) || emptyProviderCounts();
       for (const provider of PROVIDERS) {
         usage[provider] += Math.max(0, required[provider] - allocated[provider]);
       }
@@ -401,7 +416,7 @@ export class DisposableTerminalPool {
     if (!['planner', 'council', 'worker'].includes(role)) {
       throw new Error('A Turbo terminal stage needs a planner, council, or worker role.');
     }
-    if (!PROVIDERS.includes(provider)) {
+    if (!TERMINAL_PROVIDERS.includes(provider)) {
       throw new Error(`Unsupported Turbo terminal provider: ${provider}`);
     }
     const allocations = this.allocations.get(task.id) || [];
@@ -612,7 +627,9 @@ export class DisposableTerminalPool {
       'queue',
       task.mode === 'turbo'
         ? 'Turbo will launch one planner terminal and one execution terminal only when each stage starts.'
-        : 'Launching disposable terminal instances for this task.',
+        : task.provider === 'opencode'
+          ? 'Reserving a headless OpenCode execution slot for this task.'
+          : 'Launching disposable terminal instances for this task.',
     );
     try {
       if (task.mode === 'plan') {
@@ -639,6 +656,25 @@ export class DisposableTerminalPool {
         // limits concurrent parent executions in the queue. Returning without a launch here
         // prevents idle pre-warmed windows; the runner opens and closes each stage just in time.
         return task;
+      }
+
+      if (task.provider === 'opencode') {
+        if (isCancelled()) throw cancelledError();
+        this.rememberAllocation(task.id, {
+          provider: 'opencode',
+          repoPath: task.repo_path,
+          launchId: null,
+          threadId: task.thread_id || null,
+          thread: null,
+          virtual: true,
+        });
+        const updated = this.database.updateTask(task.id, {
+          thread_name: task.thread_name || 'OpenCode headless session',
+          thread_source: 'CC Relay managed headless runner',
+        });
+        this.artifacts.updateTaskAssignment(updated);
+        this.database.addEvent(task.id, 'queue', 'OpenCode headless execution slot is ready.');
+        return updated;
       }
 
       const provider = task.provider;
@@ -680,6 +716,7 @@ export class DisposableTerminalPool {
     let closed = 0;
     const retained = [];
     for (const allocation of [...allocations].reverse()) {
+      if (allocation.virtual === true) continue;
       if (!allocation.launchId && !allocation.threadId) {
         // Nothing exact to close. Reporting this as closed would overstate cleanup, and
         // closing by a null conversation ID used to match whichever owned launch was still
@@ -736,6 +773,7 @@ export class DisposableTerminalPool {
     let retainedCount = 0;
     const failed = [];
     for (const allocation of allocations) {
+      if (allocation.virtual === true) continue;
       try {
         if (!allocation.launchId || typeof this.launcher.retainOwnedLaunch !== 'function') {
           throw new Error('CC Relay cannot promote this terminal launch to a retained session.');

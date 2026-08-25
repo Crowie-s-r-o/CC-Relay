@@ -27,6 +27,8 @@ type: index
 - [[live-terminal-retention]]
 - [[live-terminal-retention-review]]
 - [[provider-installation-detection]]
+- [[opencode-provider-and-token-throughput]]
+- [[opencode-token-throughput-review]]
 - [[provider-usage-monitor]]
 - [[provider-usage-fable-correction-review]]
 - [[queued-provider-switching]]

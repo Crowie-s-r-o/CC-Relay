@@ -29,10 +29,20 @@ test('selection moves from a confirmed missing provider to an installed provider
   assert.equal(availableProviderSelection(status, 'codex'), 'claude');
 });
 
-test('selection remains stable when both providers are missing', () => {
+test('selection can move to OpenCode when Codex and Claude are missing', () => {
   const status = {
     codex: { pending: false, available: false, reason: 'not_installed' },
     claude: { pending: false, available: false, reason: 'not_installed' },
+    opencode: { pending: false, available: true, authenticated: true },
+  };
+  assert.equal(availableProviderSelection(status, 'codex'), 'opencode');
+});
+
+test('selection remains stable when every provider is missing', () => {
+  const status = {
+    codex: { pending: false, available: false, reason: 'not_installed' },
+    claude: { pending: false, available: false, reason: 'not_installed' },
+    opencode: { pending: false, available: false, reason: 'not_installed' },
   };
   assert.equal(availableProviderSelection(status, 'codex'), 'codex');
 });

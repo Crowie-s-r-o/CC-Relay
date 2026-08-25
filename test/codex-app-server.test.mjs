@@ -1844,6 +1844,10 @@ test('shared app-server lists connected threads and completes a queued turn', as
     assert.equal(result.finalResponse, 'Task finished.');
     assert.equal(result.sessionId, THREAD_ID);
     assert.equal(events.some(({ event }) => event.type === 'turn/completed'), true);
+    const usage = events.find(({ event }) => event.type === 'provider/token-usage');
+    assert.equal(usage.event.provider, 'codex');
+    assert.equal(usage.event.source, 'native');
+    assert.equal(usage.event.usage.totalTokens, 2400);
     assert.equal(events.find(({ event }) => event.type === 'turn/completed').event.tokenUsage.last.reasoningOutputTokens, 900);
     const reasoning = events.find(({ event }) => event.type === 'item/updated');
     assert.equal(reasoning.event.item.type, 'reasoning');

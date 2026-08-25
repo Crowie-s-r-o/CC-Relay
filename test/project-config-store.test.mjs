@@ -16,7 +16,7 @@ test('localhost and desktop databases share migrated project configuration', (t)
   const seed = new RelayDatabase(localhostFile);
   const first = seed.addProject({ path: '/repo/one', name: 'one' });
   const second = seed.addProject({ path: '/repo/two', name: 'two' });
-  seed.updateProjectInstanceLimits(first.id, { codex: 4, claude: 2 });
+  seed.updateProjectInstanceLimits(first.id, { codex: 4, claude: 2, opencode: 3 });
   seed.updateProjectColor(first.id, '#f05268');
   seed.updateProjectStandupCustomPrompt(first.id, 'Use product terminology.');
   seed.updateProjectTerminalSettings(first.id, {
@@ -45,6 +45,7 @@ test('localhost and desktop databases share migrated project configuration', (t)
         path: project.path,
         codex: project.max_codex_instances,
         claude: project.max_claude_instances,
+        opencode: project.max_opencode_instances,
         color: project.color,
         standupPrompt: project.standup_custom_prompt,
       })),
@@ -53,6 +54,7 @@ test('localhost and desktop databases share migrated project configuration', (t)
           path: '/repo/one',
           codex: 4,
           claude: 2,
+          opencode: 3,
           color: '#f05268',
           standupPrompt: 'Use product terminology.',
         },
@@ -60,6 +62,7 @@ test('localhost and desktop databases share migrated project configuration', (t)
           path: '/repo/two',
           codex: 1,
           claude: 1,
+          opencode: 1,
           color: null,
           standupPrompt: '',
         },
@@ -97,8 +100,9 @@ test('localhost and desktop databases share migrated project configuration', (t)
     );
 
     const sharedFirst = desktop.getProjectByPath('/repo/one');
-    desktop.updateProjectInstanceLimits(sharedFirst.id, { codex: 6, claude: 3 });
+    desktop.updateProjectInstanceLimits(sharedFirst.id, { codex: 6, claude: 3, opencode: 5 });
     assert.equal(localhost.getProject(sharedFirst.id).max_codex_instances, 6);
+    assert.equal(localhost.getProject(sharedFirst.id).max_opencode_instances, 5);
     desktop.updateProjectColor(sharedFirst.id, '#28bfe8');
     assert.equal(localhost.getProject(sharedFirst.id).color, '#28bfe8');
     desktop.updateProjectStandupCustomPrompt(sharedFirst.id, 'Lead with shipped outcomes.');
@@ -192,6 +196,7 @@ test('older shared project rows gain an empty Standup prompt without losing conf
     assert.equal(project.standup_custom_prompt, '');
     assert.equal(project.max_codex_instances, 3);
     assert.equal(project.max_claude_instances, 2);
+    assert.equal(project.max_opencode_instances, 1);
     assert.equal(project.color, '#123456');
     assert.equal(
       database.updateProjectStandupCustomPrompt(project.id, 'Use legacy product names.')

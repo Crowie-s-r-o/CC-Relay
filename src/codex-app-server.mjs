@@ -8,6 +8,13 @@ import {
 } from './claude-binary.mjs';
 import { CODEX_UPDATE_PROMPT_OVERRIDE } from './project-launcher.mjs';
 import { withRelayNonInteractiveInstruction } from './relay-prompt.mjs';
+import {
+  addTokenUsage,
+  codexTurnTokenUsage,
+  normalizeTokenUsage,
+  providerTokenUsageEvent,
+  tokenUsageMessage,
+} from './token-usage.mjs';
 import { RelayWebSocketProxy } from './websocket-proxy.mjs';
 
 export const SHARED_CODEX_ENDPOINT = 'ws://127.0.0.1:4769';
@@ -720,6 +727,10 @@ export class CodexAppServer extends EventEmitter {
     }
     if (method === 'thread/tokenUsage/updated') {
       active.tokenUsage = params.tokenUsage || null;
+      active.turnTokenUsage = codexTurnTokenUsage(active.tokenUsage);
+      const cumulative = addTokenUsage(active.completedTokenUsage, active.turnTokenUsage);
+      const event = providerTokenUsageEvent('codex', cumulative);
+      active.onEvent({ event, message: tokenUsageMessage('codex', event.usage) });
       return;
     }
     if (method === 'item/reasoning/summaryTextDelta') {
@@ -927,6 +938,8 @@ export class CodexAppServer extends EventEmitter {
     active.turnId = turnId;
     active.finalResponse = '';
     active.reasoningSummaries = new Map();
+    active.completedTokenUsage = addTokenUsage(active.completedTokenUsage, active.turnTokenUsage);
+    active.turnTokenUsage = normalizeTokenUsage({});
     active.tokenUsage = null;
     active.earlyCompletion = null;
     this.diagnostic('task.codex.goal_continuation.started', {
@@ -1361,6 +1374,8 @@ export class CodexAppServer extends EventEmitter {
         goalContinuation: null,
         cancelRequested: false,
         subscribed: false,
+        completedTokenUsage: normalizeTokenUsage({}),
+        turnTokenUsage: normalizeTokenUsage({}),
         onEvent,
         onStderr,
         resolve,

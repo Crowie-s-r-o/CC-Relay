@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   latestAgentUpdate,
+  latestTokenUsage,
   runningTaskFeed,
   taskBelongsInMonitor,
 } from '../src/running-task-feed.mjs';
@@ -36,6 +37,56 @@ test('latest agent update reads Codex and Claude response events', () => {
     text: 'Latest response',
     provider: 'claude',
     createdAt: '2026-07-20T10:00:02.000Z',
+  });
+});
+
+test('latest agent update recognizes an OpenCode response', () => {
+  const events = [{
+    id: 1,
+    kind: 'opencode',
+    message: 'OpenCode response',
+    payload: { type: 'opencode/message', provider: 'opencode', text: 'OpenCode response' },
+    created_at: '2026-08-25T10:00:01.000Z',
+  }];
+  assert.deepEqual(latestAgentUpdate(events), {
+    text: 'OpenCode response',
+    provider: 'opencode',
+    createdAt: '2026-08-25T10:00:01.000Z',
+  });
+});
+
+test('latest token usage keeps only cumulative native provider statistics', () => {
+  const events = [
+    {
+      id: 1,
+      kind: 'opencode',
+      payload: {
+        type: 'provider/token-usage',
+        provider: 'opencode',
+        source: 'native',
+        cumulative: true,
+        usage: { totalTokens: 300 },
+      },
+      created_at: '2026-08-25T10:00:01.000Z',
+    },
+    {
+      id: 2,
+      kind: 'opencode',
+      payload: {
+        type: 'provider/token-usage',
+        provider: 'opencode',
+        source: 'estimated',
+        cumulative: true,
+        usage: { totalTokens: 400 },
+      },
+      created_at: '2026-08-25T10:00:02.000Z',
+    },
+  ];
+  assert.deepEqual(latestTokenUsage(events), {
+    provider: 'opencode',
+    usage: { totalTokens: 300 },
+    source: 'native',
+    createdAt: '2026-08-25T10:00:01.000Z',
   });
 });
 

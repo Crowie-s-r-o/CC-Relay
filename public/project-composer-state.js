@@ -81,6 +81,7 @@ export function freshProjectComposerState() {
     executionSettings: {
       codex: { model: null, effort: '', source: 'default', taskId: null },
       claude: { model: null, effort: '', source: 'default', taskId: null },
+      opencode: { model: 'default', effort: '', source: 'default', taskId: null },
     },
     threadExecutionSettings: {},
     planSettings: {
@@ -111,12 +112,19 @@ export function freshProjectComposerState() {
 }
 
 export function providerEligibleForComposer(session, provider) {
-  if (!['codex', 'claude'].includes(provider)) return false;
+  if (!['codex', 'claude', 'opencode'].includes(provider)) return false;
   if (provider === 'codex') return true;
   return session?.taskMode === 'execute' && session?.planSettings?.enabled !== true;
 }
 
 export function executionSettingsForThread(session, provider, threadId) {
+  session.executionSettings ||= {};
+  session.executionSettings[provider] ||= {
+    model: provider === 'opencode' ? 'default' : null,
+    effort: '',
+    source: 'default',
+    taskId: null,
+  };
   const providerSettings = session.executionSettings[provider];
   if (!threadId) return providerSettings;
   session.threadExecutionSettings ||= {};

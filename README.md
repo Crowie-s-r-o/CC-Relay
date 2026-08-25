@@ -9,14 +9,14 @@
 
 ### [Download the latest version](https://github.com/Crowie-s-r-o/CC-Relay/releases/latest)
 
-**Stop babysitting AI terminals.** CC Relay is a local command center for Codex and Claude Code. Queue work across projects, control concurrency, watch every task live, and let two providers challenge important plans. It uses your existing CLI subscriptions, not API keys.
+**Stop babysitting AI terminals.** CC Relay is a local command center for Codex, Claude Code, and OpenCode. Queue work across projects, control concurrency, watch every task live, and let Codex and Claude challenge important plans. It uses your existing CLI authentication, not Relay-managed API keys.
 
 ![CC Relay orchestrating projects and AI tasks](docs/assets/cc-relay-overview.png)
 
 ## Why Relay
 
-1. **Control provider concurrency.** Separate per-project limits for Codex and Claude, with terminals launched only when a task has every slot it needs.
-2. **Use disposable terminals by default.** Each execution gets its own terminal that launches minimized by default and closes automatically when the work ends.
+1. **Control provider concurrency.** Separate per-project limits for Codex, Claude, and OpenCode, with execution started only when a task has every slot it needs.
+2. **Use disposable execution by default.** Codex and Claude receive owned terminals that launch minimized and close automatically. OpenCode runs as a bounded headless process with the same queue lifecycle.
 3. **Run many projects from one Launchpad.** Repositories, queues, limits, history, and task state in one place.
 4. **Queue the next prompts now.** Add, reorder, or edit queued work while tasks run; Relay dispatches on capacity.
 5. **Make important plans survive a challenge.** Plan council has one provider author a plan and the other review it critically.
@@ -28,6 +28,7 @@
 - **One global task monitor.** Follow running work and open terminal sessions across every project from compact status cards, without leaving the repository you are working in.
 - **Terminal session workspaces.** Keep a direct task open across as many turns as needed, steer work while it runs, resume the saved conversation later, and explicitly finish the session when the job is done.
 - **Plans, goals, and workers in one view.** Task Activity shows runtime, current plan steps, Codex goals, sub-agent assignments, commands, file changes, messages, errors, and results as they happen.
+- **Live native token speed.** Task Activity and the running-task monitor show cumulative provider-reported token use as tokens per second, recalculated throughout each run.
 - **Searchable history and task-owned diffs.** Search task names, prompts, follow-ups, responses, results, and errors. Changes opens on exact patches reported by the task, with a separate Workspace window for every disk change observed while it ran.
 - **A queue built for real work.** Star any task to keep it at the top, rename titles inline at any stage, reorder waiting work, use Run now for urgent dispatch, and continue completed conversations.
 - **Reference images and local artifacts.** Attach screenshots and other visual context, then keep prompts, plans, events, results, errors, and attachments stored locally with the task.
@@ -47,7 +48,7 @@ Grab the packaged app from the [latest GitHub Release](https://github.com/Crowie
 
 Signed macOS builds and installed Windows builds then check the same GitHub repository for releases every five minutes. Updates download in the background and install when you restart or normally quit CC Relay. The Windows portable build remains a manual download. The first macOS release that contains the automatic updater still needs the normal DMG installation once.
 
-No source checkout or Node.js needed. Before queueing work, sign in to at least one provider CLI: Codex with ChatGPT, or Claude Code with a Claude subscription.
+No source checkout or Node.js needed. Before queueing work, prepare at least one provider CLI: Codex with ChatGPT, Claude Code with a Claude subscription, or OpenCode with at least one configured model provider.
 
 ## The loop
 
@@ -58,11 +59,11 @@ While work runs:
 - **Every project at once.** Several repositories can execute side by side, each with its own queue, limits, and history.
 - **Hear and see the finish.** A sound plays when a task ends, and completed tasks stack up as notifications you can click through and review one by one.
 - **Read the terminal fast.** Live output is colorized, every view shows its current signal count, **Conversation** shows your messages and AI responses together, and separate role filters can isolate either side.
-- **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low, and you can continue any saved task later exactly where it left off.
+- **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low. Relay saves the native conversation ID for continuation or retry where the provider supports it.
 
 | Workflow | Best for |
 | --- | --- |
-| Execute | One focused Codex or Claude task |
+| Execute | One focused Codex, Claude, or OpenCode task |
 | Plan council | One provider writes the plan, the other tears it apart, the author revises |
 | Forward-planning Turbo | A fresh planner builds the graph, then one fresh executor owns the complete implementation |
 | Planner | Reusable project plans released through the normal queue |
@@ -76,7 +77,7 @@ It binds to `127.0.0.1`, keeps provider credentials inside their CLIs, stores ta
 
 ## Development
 
-Running from source requires Node.js 24+ and at least one authenticated provider CLI.
+Running from source requires Node.js 24+ and at least one authenticated or configured provider CLI.
 
 ```bash
 git clone https://github.com/Crowie-s-r-o/CC-Relay.git

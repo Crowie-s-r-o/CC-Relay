@@ -174,7 +174,7 @@ The selected tasks must share the selected Codex terminal's workspace. Their ima
 
 ## Planner breakdowns as queue work
 
-The [[planner]] runs an AI task breakdown as an ordinary `mode: 'breakdown'` queue task on the chosen provider. In current automatic mode, the task launches a disposable terminal only when it receives a project slot. It appears in Queue and History like any other work and follows the same project scope, cancellation, and retry rules. It is **not** exclusive: `isSingleSessionTask` groups it with direct Codex and Claude execution. Plan council and Turbo remain globally workflow-exclusive, while a current disposable Plan council has the documented same-project capacity-sharing exception.
+The [[planner]] runs an AI task breakdown as an ordinary `mode: 'breakdown'` queue task on the chosen Codex or Claude provider. In current automatic mode, the task launches a disposable terminal only when it receives a project slot. It appears in Queue and History like any other work and follows the same project scope, cancellation, and retry rules. It is **not** exclusive: `isSingleSessionTask` groups it with direct Codex, Claude, and OpenCode execution. Plan council and Turbo remain globally workflow-exclusive, while a current disposable Plan council has the documented same-project capacity-sharing exception.
 
 Its parsed proposals are reviewed in the Planner and only become normal `mode: 'execute'` tasks through an explicit user action: **Queue selected tasks** for a flat batch, or **Run plan** for a dependency-ordered plan run that enqueues each step as its dependencies complete. Both use the same `queue.enqueue` path as the composer, so a plan-run step is indistinguishable from a composer task in Queue, History, and Task Activity, including cancel and retry. Nothing in a breakdown auto-executes.
 
@@ -204,7 +204,7 @@ A task whose persisted status is still `queued` exposes **Edit** in Task Activit
 
 ## Configurable manual retry
 
-A failed, cancelled, or interrupted automatic Execute task opens the execution editor before manual retry. The operator may select Codex or Claude, a model, and an effort. Keeping the provider preserves its saved conversation ID, while changing providers clears provider-specific conversation fields and starts fresh. Task identity, prompt, title, images, project, and history remain intact. See [[configurable-task-retry]].
+A failed, cancelled, or interrupted automatic Execute task opens the execution editor before manual retry. The operator may select Codex, Claude, or OpenCode, a model, and an effort. Keeping the provider preserves its saved conversation ID, while changing providers clears provider-specific conversation fields and starts fresh. Task identity, prompt, title, images, project, and history remain intact. See [[configurable-task-retry]].
 
 Plan council, Turbo, breakdown, legacy persistent, and automatic retry paths keep their workflow-owned configuration. A current renderer gates configurable retry through `capabilities.retryTaskExecutionSettings`; an older backend receives the original bodyless retry request.
 
@@ -248,7 +248,7 @@ The legacy composer offers **Use an idle CC Relay when available** above its ter
 > [!note]
 > Task 208 on July 21, 2026 exposed the old Codex-only routing condition and global direct Claude lock while task 207 was running on another Claude UUID. CC Relay now routes within the selected provider and gives each direct Claude session independent runner ownership.
 
-Fresh disposable Execute tasks always start new conversations. Retries and explicit continuations resume their persisted Codex or Claude conversation IDs in newly launched terminals. On macOS the owned Claude terminal displays the turn and CC Relay mirrors its transcript into Task Activity. See [[disposable-terminal-pools]] and [[diagnostics]].
+Fresh disposable Execute tasks always start new conversations. Codex and Claude retries or explicit continuations resume their persisted conversation IDs in newly launched terminals. OpenCode retry resumes its persisted native session in a headless process and does not expose the continuation dock. On macOS the owned Claude terminal displays the turn and CC Relay mirrors its transcript into Task Activity. See [[disposable-terminal-pools]], [[opencode-provider-and-token-throughput]], and [[diagnostics]].
 
 > [!important]
 > Do not restore background fresh-context execution. A separately created app-server thread is visible in CC Relay Task Activity but not in the selected native terminal, which makes that terminal appear stalled.
@@ -264,7 +264,7 @@ Direct Codex and direct Claude tasks execute concurrently up to the selected pro
 > [!important]
 > Treat `mode = execute` with `provider = claude` as direct execution for project scheduling, not as a project-wide exclusive entry. Before launch, reserve one Claude project slot. After binding, reserve its conversation ID as well. `ClaudeExecutionRunner` tracks active processes by task ID and session ID, allowing different conversations to overlap while rejecting duplicate work on one conversation.
 
-Automatic Turbo is capacity-managed rather than a project-wide exclusive parent. Each executing Turbo prompt owns one fresh Codex terminal, and one queued prompt may own a fresh planner terminal. Queued direct Codex and Claude tasks can run beside them whenever their own provider limit has a free slot. This specifically prevents Claude work from waiting behind unrelated Codex Turbo work. Ready Turbo parents also run beside each other up to the configured execution count. Plan council and legacy persistent exclusive workflows still block that overlap. See [[turbo-execution]].
+Automatic Turbo is capacity-managed rather than a project-wide exclusive parent. Each executing Turbo prompt owns one fresh Codex terminal, and one queued prompt may own a fresh planner terminal. Queued direct Codex, Claude, and OpenCode tasks can run beside them whenever their own provider limit has a free slot. This specifically prevents independent provider work from waiting behind unrelated Codex Turbo work. Ready Turbo parents also run beside each other up to the configured execution count. Plan council and legacy persistent exclusive workflows still block that overlap. See [[turbo-execution]].
 
 Turbo look-ahead is an internal preparation phase, not a second queue lane. It leaves the parent in its existing FIFO `position`, so priority submissions, manual reorder, pause, and direct provider concurrency retain their normal behavior. One automatic planner per project may prepare the earliest unplanned Turbo parent whenever a Codex slot is free. A `ready` parent can start its sole executor when it reaches an eligible queue position and an execution lane is available.
 

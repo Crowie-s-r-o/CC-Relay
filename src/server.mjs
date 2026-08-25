@@ -29,6 +29,12 @@ import {
 } from './disposable-terminal-pool.mjs';
 import { LaunchOwnershipRegistry } from './launch-ownership-registry.mjs';
 import { CLAUDE_MODELS, validateExecutionSettings } from './model-catalog.mjs';
+import { OpenCodeRunner } from './opencode-runner.mjs';
+import {
+  OpenCodeRuntimeStatus,
+  openCodeDefaultModel,
+  openCodeIsConfidentlyUnavailable,
+} from './opencode-runtime-status.mjs';
 import { PlanCouncilRunner } from './plan-council-runner.mjs';
 import { validatePlanCouncilConfig } from './plan-council-config.mjs';
 import {
@@ -196,6 +202,8 @@ const claudeExecution = new ClaudeExecutionRunner({
   hookBridge: claudeHookBridge,
   diagnostic,
 });
+const opencodeRuntime = new OpenCodeRuntimeStatus();
+const opencodeRunner = new OpenCodeRunner({ command: () => opencodeRuntime.command });
 const planCouncil = new PlanCouncilRunner({
   claude: PLAN_COUNCIL_TERMINAL_EXECUTION ? claudeExecution : claudeRunner,
   codex: codexAppServer,
@@ -210,6 +218,7 @@ const turboRunner = new TurboRunner({ codex: codexAppServer, artifacts, councilR
 const runner = new RelayRunner({
   codex: codexAppServer,
   claude: claudeExecution,
+  opencode: opencodeRunner,
   planCouncil,
   turbo: turboRunner,
 });
@@ -437,6 +446,11 @@ function activateCodexRuntime(status) {
 const claudeRuntime = new ClaudeRuntimeStatus({ command: claudeBinaryPath });
 // Cache read only. Never spawns, never blocks, so it is safe on any request path.
 const currentClaudeStatus = () => claudeRuntime.current();
+const currentOpenCodeStatus = () => opencodeRuntime.current();
+const currentOpenCodeModels = () => {
+  const models = opencodeRuntime.models();
+  return models.length > 0 ? models : [openCodeDefaultModel()];
+};
 const claudeUsageProbe = new ClaudeUsageProbe({
   command: claudeBinaryPath,
   cwd: DATA_ROOT,
@@ -752,6 +766,18 @@ function requireClaudeReady(action = 'Claude execution') {
   return claudeRuntimeStatus;
 }
 
+function requireOpenCodeReady(action = 'OpenCode execution') {
+  const status = currentOpenCodeStatus();
+  void opencodeRuntime.refresh();
+  if (openCodeIsConfidentlyUnavailable(status)) {
+    if (status.reason === 'not_installed') {
+      throw new Error(`${action} needs the OpenCode CLI. Install OpenCode and CC Relay will detect it automatically.`);
+    }
+    throw new Error(`${action} needs a configured OpenCode provider. Run \`opencode auth login\`; CC Relay will detect it automatically.`);
+  }
+  return status;
+}
+
 function providerIsReady(status) {
   return status?.available === true && status?.authenticated === true;
 }
@@ -997,15 +1023,18 @@ export const server = createServer(async (request, response) => {
       const tasks = database.listTasks();
       const monitoredTasks = agentUpdates.feed(tasks);
       const claudeRuntimeStatus = currentClaudeStatus();
+      const openCodeRuntimeStatus = currentOpenCodeStatus();
       sendJson(response, 200, {
         ...queue.status(projectPath),
         codex: { ...runtimeStatus, appServer: codexAppServer.status() },
         claude: claudeRuntimeStatus,
+        opencode: openCodeRuntimeStatus,
         providerUsage: providerUsage.current(),
         desktopUpdate: desktopUpdateState,
         desktopZoom: desktopZoomState,
         capabilities: {
           directClaudeExecution: true,
+          directOpenCodeExecution: true,
           parallelClaudeExecution: true,
           imageAttachments: true,
           taskDiffPreview: true,
@@ -1050,6 +1079,7 @@ export const server = createServer(async (request, response) => {
           sharedProjectConfig: true,
           projectTerminalSettings: true,
           providerUsage: true,
+          taskTokenThroughput: true,
           projectColors: true,
           aiStandupGeneration: true,
           aiStandupChangelog: true,
@@ -1099,6 +1129,7 @@ export const server = createServer(async (request, response) => {
 
     if (request.method === 'GET' && pathname === '/api/threads') {
       const claudeRuntimeStatus = currentClaudeStatus();
+      const openCodeRuntimeStatus = currentOpenCodeStatus();
       const [codexResult, claudeResult] = await Promise.allSettled([
         codexAppServer.listConnectedThreads(),
         claudeSessions.listSessions(),
@@ -1127,6 +1158,12 @@ export const server = createServer(async (request, response) => {
             available: claudeRuntimeStatus.available && claudeRuntimeStatus.authenticated,
             connectedCount: claudeThreads.length,
             planCapable: claudeRuntimeStatus.available && claudeRuntimeStatus.authenticated,
+          },
+          {
+            id: 'opencode',
+            label: 'OpenCode',
+            available: openCodeRuntimeStatus.available && openCodeRuntimeStatus.authenticated,
+            connectedCount: 0,
           },
         ],
         connection: {
@@ -1175,6 +1212,15 @@ export const server = createServer(async (request, response) => {
           provider,
           available: claudeRuntimeStatus.available && claudeRuntimeStatus.authenticated,
           models: CLAUDE_MODELS,
+        });
+        return;
+      }
+      if (provider === 'opencode') {
+        const openCodeRuntimeStatus = currentOpenCodeStatus();
+        sendJson(response, 200, {
+          provider,
+          available: openCodeRuntimeStatus.available && openCodeRuntimeStatus.authenticated,
+          models: currentOpenCodeModels(),
         });
         return;
       }
@@ -1458,6 +1504,9 @@ export const server = createServer(async (request, response) => {
       if (!existingProject) throw new Error('Pinned project not found.');
       const codex = validateInstanceLimit(body.maxCodexInstances, 'Codex');
       const claude = validateInstanceLimit(body.maxClaudeInstances, 'Claude');
+      const opencode = Object.hasOwn(body, 'maxOpenCodeInstances')
+        ? validateInstanceLimit(body.maxOpenCodeInstances, 'OpenCode')
+        : Number(existingProject.max_opencode_instances || 1);
       const blockedTask = database.listTasks().find((task) => {
         if (
           task.status !== 'queued'
@@ -1465,17 +1514,20 @@ export const server = createServer(async (request, response) => {
           || resolve(task.repo_path) !== resolve(existingProject.path)
         ) return false;
         const required = disposableTerminalConfigurationRequirements(task);
-        return required.codex > codex || required.claude > claude;
+        return required.codex > codex
+          || required.claude > claude
+          || required.opencode > opencode;
       });
       if (blockedTask) {
         const required = disposableTerminalConfigurationRequirements(blockedTask);
         throw new Error(
-          `Task ${blockedTask.id} is already queued and needs ${required.codex} Codex and ${required.claude} Claude instances. Finish or cancel it before lowering these limits.`,
+          `Task ${blockedTask.id} is already queued and needs ${required.codex} Codex, ${required.claude} Claude, and ${required.opencode} OpenCode instances. Finish or cancel it before lowering these limits.`,
         );
       }
       const project = database.updateProjectInstanceLimits(Number(projectMatch[1]), {
         codex,
         claude,
+        opencode,
       });
       queue.schedule();
       broadcast({ projects: true });
@@ -1950,8 +2002,11 @@ export const server = createServer(async (request, response) => {
       const provider = mode === 'execute' && typeof body.provider === 'string'
         ? body.provider.trim()
         : mode === 'execute' ? 'codex' : mode === 'turbo' ? 'codex' : 'council';
-      if (mode === 'execute' && !['codex', 'claude'].includes(provider)) {
+      if (mode === 'execute' && !['codex', 'claude', 'opencode'].includes(provider)) {
         throw new Error(`Unsupported AI provider: ${provider}`);
+      }
+      if (provider === 'opencode' && !disposable) {
+        throw new Error('OpenCode execution uses the automatic headless runner. Enable automatic execution and try again.');
       }
       const existingSubmission = database.getTaskBySubmissionId(submissionId);
       if (existingSubmission) {
@@ -1988,8 +2043,12 @@ export const server = createServer(async (request, response) => {
           id: null,
           provider: sessionProvider,
           cwd: project.path,
-          title: `Automatic ${sessionProvider === 'claude' ? 'Claude' : 'Codex'} instance`,
-          source: 'CC Relay managed terminal pool',
+          title: sessionProvider === 'opencode'
+            ? 'Automatic OpenCode worker'
+            : `Automatic ${sessionProvider === 'claude' ? 'Claude' : 'Codex'} instance`,
+          source: sessionProvider === 'opencode'
+            ? 'CC Relay managed headless runner'
+            : 'CC Relay managed terminal pool',
         };
         resolvedSession = { source: 'automatic-pool', thread };
       } else {
@@ -2194,6 +2253,33 @@ export const server = createServer(async (request, response) => {
           terminalLifecycle,
           keepTerminalOpen,
           manualCompletion,
+          terminalLayout,
+        });
+        sendJson(response, 201, { task });
+        return;
+      }
+      if (provider === 'opencode') {
+        requireOpenCodeReady('OpenCode execution');
+        const execution = validateExecutionSettings({
+          model: body.model,
+          effort: body.effort,
+          models: currentOpenCodeModels(),
+        });
+        const task = queue.enqueue({
+          title,
+          prompt,
+          thread,
+          provider,
+          mode,
+          ...execution,
+          attachments,
+          runNow,
+          submissionId,
+          preferIdleTerminal: false,
+          repoPath: thread.cwd,
+          terminalLifecycle,
+          keepTerminalOpen: false,
+          manualCompletion: false,
           terminalLayout,
         });
         sendJson(response, 201, { task });
@@ -2571,14 +2657,17 @@ export const server = createServer(async (request, response) => {
       const changes = { title, prompt };
       if (Object.hasOwn(body, 'provider')) {
         const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
-        if (!['codex', 'claude'].includes(provider)) {
+        if (!['codex', 'claude', 'opencode'].includes(provider)) {
           throw new Error(`Unsupported AI provider: ${provider}`);
         }
         if (provider === 'claude') requireClaudeReady('Claude execution');
+        if (provider === 'opencode') requireOpenCodeReady('OpenCode execution');
         const execution = validateExecutionSettings({
           model: body.model,
           effort: body.effort,
-          models: provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
+          models: provider === 'codex'
+            ? await codexAppServer.listModels()
+            : provider === 'opencode' ? currentOpenCodeModels() : CLAUDE_MODELS,
         });
         Object.assign(changes, { provider, ...execution });
       } else if (Object.hasOwn(body, 'model') || Object.hasOwn(body, 'effort')) {
@@ -2738,14 +2827,17 @@ export const server = createServer(async (request, response) => {
           throw new Error('Only automatic Execute tasks can change executor or effort when retrying.');
         }
         const provider = typeof body.provider === 'string' ? body.provider.trim() : '';
-        if (!['codex', 'claude'].includes(provider)) {
-          throw new Error('Choose Codex or Claude as the retry executor.');
+        if (!['codex', 'claude', 'opencode'].includes(provider)) {
+          throw new Error('Choose Codex, Claude, or OpenCode as the retry executor.');
         }
         if (provider === 'claude') requireClaudeReady('Claude execution');
+        if (provider === 'opencode') requireOpenCodeReady('OpenCode execution');
         const execution = validateExecutionSettings({
           model: body.model,
           effort: body.effort,
-          models: provider === 'codex' ? await codexAppServer.listModels() : CLAUDE_MODELS,
+          models: provider === 'codex'
+            ? await codexAppServer.listModels()
+            : provider === 'opencode' ? currentOpenCodeModels() : CLAUDE_MODELS,
         });
         retryExecution = { provider, ...execution };
       }
@@ -2753,6 +2845,7 @@ export const server = createServer(async (request, response) => {
       if (
         task.mode === 'execute'
         && task.terminal_lifecycle === 'disposable'
+        && ['codex', 'claude'].includes(task.provider)
         && task.keep_terminal_open
         && task.thread_id
         && (!retryExecution || retryExecution.provider === task.provider)
@@ -3004,6 +3097,7 @@ server.listen(PORT, HOST, () => {
   // Provider readiness is probed in the background from here on. Ordinary status and queue
   // requests never spawn probes. The explicit standup action launches one isolated AI run.
   claudeRuntime.start();
+  opencodeRuntime.start();
   providerUsage.start();
   refreshCodexStatus().then((status) => {
     if (!status.available || !status.authenticated) {
@@ -3025,6 +3119,7 @@ server.listen(PORT, HOST, () => {
 export async function shutdown() {
   providerUsage.stop();
   claudeRuntime.stop();
+  opencodeRuntime.stop();
   relayEndpointUrl = null;
   claudeHookBridge.clear();
   standupGenerator.cancel();

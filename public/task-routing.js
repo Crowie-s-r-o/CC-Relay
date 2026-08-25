@@ -1,5 +1,5 @@
 const WORKFLOW_MODES = new Set(['execute', 'turbo']);
-const PROVIDERS = new Set(['codex', 'claude']);
+const PROVIDERS = new Set(['codex', 'claude', 'opencode']);
 
 function selectedValue(items, validValues, label) {
   const choices = [...items];

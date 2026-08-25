@@ -1,29 +1,30 @@
 ---
 name: Disposable Terminal Pools
-description: Per-project Claude and Codex instance limits, fresh task terminals, exact cleanup, and conversation resume.
+description: Per-project Claude, Codex, and OpenCode limits, fresh execution, exact cleanup, and conversation resume.
 type: architecture
 tags:
   - relay
   - terminal
   - codex
   - claude
+  - opencode
   - queue
   - continuation
 ---
 
 # Disposable Terminal Pools
 
-New CC Relay work uses a per-project disposable terminal pool. The composer chooses a provider and project, not an already open terminal. When the task reaches a runnable queue position and capacity is available, CC Relay opens the required native Claude or Codex terminal windows, binds each launch to the session that appeared from it, runs the work, and closes those exact windows when the task reaches a terminal outcome.
+New CC Relay work uses a per-project disposable execution pool. The composer chooses a provider and project, not an already open terminal. When the task reaches a runnable queue position and capacity is available, CC Relay opens the required native Claude or Codex terminal window and binds its conversation, or reserves a virtual OpenCode allocation and starts a headless native process. Relay releases the exact allocation when the task reaches a terminal outcome.
 
-The left composer panel exposes **Codex max instances** and **Claude max instances** for the selected Launchpad project. Both default to 1 and accept whole numbers from 1 through 8. The values are stored on `projects.max_codex_instances` and `projects.max_claude_instances`. Capacity is project-local, so a running Codex task in one project does not consume another project's Codex limit.
+The left composer panel exposes **Codex max instances**, **Claude max instances**, and **OpenCode max instances** for the selected Launchpad project. All three default to 1 and accept whole numbers from 1 through 8. The values are stored on `projects.max_codex_instances`, `projects.max_claude_instances`, and `projects.max_opencode_instances`. Capacity is project-local, so a running provider task in one project does not consume another project's limit.
 
 `GET /api/status?projectPath=` advertises `capabilities.disposableTerminalPools`, `capabilities.resumableDisposableSessions`, and a `terminalPool` snapshot:
 
 ```json
 {
   "repoPath": "/project",
-  "limits": { "codex": 3, "claude": 2 },
-  "active": { "codex": 1, "claude": 0 }
+  "limits": { "codex": 3, "claude": 2, "opencode": 2 },
+  "active": { "codex": 1, "claude": 0, "opencode": 1 }
 }
 ```
 
@@ -36,11 +37,11 @@ Automatic tasks persist `terminal_lifecycle = 'disposable'` and their requested 
 The ordinary single-session lifecycle is:
 
 1. The queue checks the complete provider requirement against the selected project's limits and currently reserved work.
-2. `DisposableTerminalPool.prepare()` launches each required provider through `TerminalLaunchCoordinator`.
-3. Each launch receives a fresh native `launchId`. Codex binding uses the shared proxy's launch reservation. Claude binding uses the fresh session UUID, or the saved conversation UUID for a resume.
+2. `DisposableTerminalPool.prepare()` launches each required Codex or Claude provider through `TerminalLaunchCoordinator`. OpenCode receives a virtual allocation without Terminal.app ownership.
+3. Each terminal launch receives a fresh native `launchId`. Codex binding uses the shared proxy's launch reservation. Claude binding uses the fresh session UUID, or the saved conversation UUID for a resume. OpenCode reports its native session ID from the JSON event stream.
 4. The bound conversation IDs and display names are persisted on the task before the runner starts.
 5. The ordinary runner executes the task and persists its result, error, session ID, events, and artifacts.
-6. By default, `DisposableTerminalPool.release()` closes every exact CC Relay-owned native launch in reverse order, whether the task completed, failed, was cancelled, or CC Relay interrupted it.
+6. By default, `DisposableTerminalPool.release()` closes every exact CC Relay-owned native launch in reverse order and releases every virtual OpenCode allocation, whether the task completed, failed, was cancelled, or CC Relay interrupted it.
 7. When the task snapshots `keep_terminal_open = true`, the final prepared launch is promoted through `DisposableTerminalPool.retain()` instead. It leaves pool capacity and bulk shutdown cleanup without losing exact ownership. See [[retained-terminal-sessions]].
 
 Automatic Turbo uses just-in-time stage launches instead of `prepare()` opening a fleet. Its lifecycle is:
@@ -60,6 +61,11 @@ Automatic Turbo uses just-in-time stage launches instead of `prepare()` opening 
 > prevents slow Fish startup from consuming Return while leaving a long provider command held at
 > the shell prompt. See [[claude-fable-reviewed-plan-execution]].
 
+OpenCode does not use this native terminal startup path. `OpenCodeRunner` owns one detached headless
+process group, streams newline-delimited JSON, and terminates that group on cancellation or bounded
+stream failure. OpenCode cannot be retained as a terminal or converted to manual session mode. See
+[[opencode-provider-and-token-throughput]].
+
 Cleanup uses `ProjectLauncher.closeOwnedLaunch(launchId)`, not a title, working directory, process-name search, or whichever session happens to have the same provider. CC Relay never closes a manually opened terminal as part of this lifecycle.
 
 If exact native cleanup fails, the allocation remains counted. CC Relay records the failure and refuses to pretend that capacity was released. A later reconciliation drops the retained allocation only after the exact launch is no longer tracked.
@@ -72,7 +78,8 @@ Retention promotion follows the same fail-closed rule. If an exact launch cannot
 
 `disposableTerminalRequirements()` computes the reservation needed by a runnable task:
 
-- Direct Execute and Planner breakdown: one instance of the chosen provider.
+- Direct Execute: one instance of the chosen Codex, Claude, or OpenCode provider.
+- Planner breakdown: one instance of the chosen Codex or Claude provider.
 - Execute Plan council: one Claude author instance and one Codex reviewer instance.
 - Automatic Turbo planning or execution parent: one Codex slot at a time.
 - A Turbo council stage: one additional Claude slot only while Claude owns the active author or review stage.
@@ -86,7 +93,7 @@ Plan council still allocates both provider terminals before its execution begins
 
 ## Conversation resume
 
-When a fresh task binds successfully, its persisted `thread_id` becomes the durable conversation ID. After the terminal closes, **Continue session** remains available for finished direct Claude and Codex tasks. A completed automatic Turbo task uses the same mechanism for its final execution conversation, never for its read-only planner conversation.
+When a fresh task binds successfully, its persisted `thread_id` becomes the durable conversation ID. After the terminal closes, **Continue session** remains available for finished direct Claude and Codex tasks. A completed automatic Turbo task uses the same mechanism for its final execution conversation, never for its read-only planner conversation. OpenCode also persists its native session ID, but currently uses it only when the same task is retried and does not expose the interactive continuation dock.
 
 A continuation keeps the source task ID and first checks that the project has a free instance of the required provider. When capacity is available, CC Relay marks that same task running, opens a new native terminal, and runs:
 
@@ -136,6 +143,8 @@ The current composer creates disposable work whenever the backend advertises the
 - `src/disposable-terminal-pool.mjs`
 - `src/project-launcher.mjs`
 - `src/claude-launch-settings.mjs`
+- `src/opencode-runner.mjs`
+- `src/opencode-runtime-status.mjs`
 - `src/terminal-launch-coordinator.mjs`
 - `src/queue.mjs`
 - `src/database.mjs`
@@ -146,6 +155,8 @@ The current composer creates disposable work whenever the backend advertises the
 - `public/task-continuation-state.js`
 - `public/task-prompt-history.js`
 - `test/disposable-terminal-pool.test.mjs`
+- `test/opencode-runner.test.mjs`
+- `test/opencode-runtime-status.test.mjs`
 - `test/project-launcher.test.mjs`
 - `test/terminal-launch-coordinator.test.mjs`
 - `test/queue.test.mjs`
@@ -153,6 +164,6 @@ The current composer creates disposable work whenever the backend advertises the
 - `test/task-continuation-state.test.mjs`
 - `test/task-prompt-history.test.mjs`
 
-See [[project-workspaces]], [[task-history]], [[planner]], [[plan-council]], [[claude-terminal-visibility]], [[claude-launch-settings]], and [[terminal-close-review]].
+See [[project-workspaces]], [[task-history]], [[planner]], [[plan-council]], [[opencode-provider-and-token-throughput]], [[claude-terminal-visibility]], [[claude-launch-settings]], and [[terminal-close-review]].
 
-#relay #terminal #codex #claude #queue #continuation
+#relay #terminal #codex #claude #opencode #queue #continuation

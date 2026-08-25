@@ -17,6 +17,12 @@ test('CC Relay runner routes execution to the selected AI provider', async () =>
         return { finalResponse: 'Claude result' };
       },
     },
+    opencode: {
+      async run() {
+        calls.push('opencode');
+        return { finalResponse: 'OpenCode result' };
+      },
+    },
     planCouncil: {
       async run() {
         calls.push('plan');
@@ -33,9 +39,10 @@ test('CC Relay runner routes execution to the selected AI provider', async () =>
 
   assert.equal((await runner.run({ mode: 'execute', provider: 'claude' })).finalResponse, 'Claude result');
   assert.equal((await runner.run({ mode: 'execute', provider: 'codex' })).finalResponse, 'Codex result');
+  assert.equal((await runner.run({ mode: 'execute', provider: 'opencode' })).finalResponse, 'OpenCode result');
   assert.equal((await runner.run({ mode: 'plan', provider: 'council' })).finalResponse, 'Plan result');
   assert.equal((await runner.run({ mode: 'turbo', provider: 'codex' })).finalResponse, 'Turbo result');
-  assert.deepEqual(calls, ['claude', 'codex', 'plan', 'turbo']);
+  assert.deepEqual(calls, ['claude', 'codex', 'opencode', 'plan', 'turbo']);
 });
 
 test('CC Relay runner exposes Turbo preparation separately and scopes cancellation', async () => {
