@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import electronUpdater from 'electron-updater';
 import { desktopMenuRequired, desktopMenuTemplate } from './desktop-menu.mjs';
+import { configureDesktopPermissions } from './desktop-microphone.mjs';
 import { createGitHubReleaseChecker } from './desktop-release-discovery.mjs';
 import { desktopRendererUrl, desktopTitlebarOptions } from './desktop-titlebar.mjs';
 import { desktopZoomDirectionForInput, nextDesktopZoomFactor } from './desktop-zoom.mjs';
@@ -255,6 +256,7 @@ async function createWindow() {
       sandbox: true,
     },
   });
+  configureDesktopPermissions(mainWindow.webContents.session, rendererUrl);
   publishDesktopZoomState(mainWindow.webContents.getZoomFactor());
   desktopDiagnostic('desktop.window.created', {
     width: 1540,

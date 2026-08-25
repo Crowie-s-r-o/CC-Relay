@@ -32,6 +32,7 @@
 - **Searchable history and task-owned diffs.** Search task names, prompts, follow-ups, responses, results, and errors. Changes opens on exact patches reported by the task, with a separate Workspace window for every disk change observed while it ran.
 - **A queue built for real work.** Star any task to keep it at the top, rename titles inline at any stage, reorder waiting work, use Run now for urgent dispatch, and continue completed conversations.
 - **Reference images and local artifacts.** Attach screenshots and other visual context, then keep prompts, plans, events, results, errors, and attachments stored locally with the task.
+- **Local push-to-talk prompting.** Hold a configurable key combination, speak, and release to insert a faster-whisper CPU transcription directly into the task prompt.
 - **Completion you will not miss.** Choose a sound or spoken announcement, collect finished tasks in a durable Ready for review stack, and mark them reviewed individually or together.
 - **AI changelogs on demand.** Standup turns completed work from a selected one-day or two-day range into concise Added, Changed, Fixed, and Security notes using a fresh isolated provider session, with an optional default prompt saved for each project.
 - **A desktop that adapts.** Move and resize the task monitor, switch themes, zoom the whole app, retain terminals when useful, and receive automatic updates on supported desktop installs.
@@ -49,6 +50,8 @@ Grab the packaged app from the [latest GitHub Release](https://github.com/Crowie
 Signed macOS builds and installed Windows builds then check the same GitHub repository for releases every five minutes. Updates download in the background and install when you restart or normally quit CC Relay. The Windows portable build remains a manual download. The first macOS release that contains the automatic updater still needs the normal DMG installation once.
 
 No source checkout or Node.js needed. Before queueing work, prepare at least one provider CLI: Codex with ChatGPT, Claude Code with a Claude subscription, or OpenCode with at least one configured model provider.
+
+Voice input is optional. Turn it on in **Terminal settings**, choose **Set up engine**, and keep Relay open while it creates a private Python runtime and downloads the multilingual faster-whisper base model. Setup requires Python 3.9 or newer and an internet connection. After setup, hold the displayed activation keys while speaking and release any one of them to stop and transcribe on the CPU. The default is `Ctrl+Shift+Space`, and the key combination is configurable.
 
 ## The loop
 
@@ -98,6 +101,6 @@ CC Relay is source-available under the [PolyForm Noncommercial License 1.0.0](LI
 
 Copies previously received under MIT keep those MIT rights; PolyForm governs newly offered versions.
 
-Bundled fonts retain their own OFL 1.1 terms; see [third-party notices](THIRD_PARTY_NOTICES.md).
+Bundled fonts and optional locally downloaded voice components retain their own terms; see [third-party notices](THIRD_PARTY_NOTICES.md).
 
 Copyright (c) 2026 Patrik Kelemen.

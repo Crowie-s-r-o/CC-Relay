@@ -2453,6 +2453,87 @@ summary:focus-visible,
   line-height: 1.45;
 }
 
+/* Push-to-talk stays visually related to audio settings without borrowing notification copy. */
+.voice-input-settings {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.voice-input-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.voice-input-control-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, 180px);
+  gap: 16px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfdfc;
+}
+
+.voice-input-control-row > span:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.voice-input-control-row strong {
+  color: #40544d;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.voice-input-control-row small,
+.voice-input-status {
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.voice-input-shortcut {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 9px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--slate);
+  background: #fff;
+  cursor: pointer;
+}
+
+.voice-input-shortcut kbd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-input-shortcut > span {
+  color: var(--blue);
+  font-size: 9px;
+  font-weight: 750;
+}
+
+.voice-input-shortcut[data-capturing="true"] {
+  border-color: var(--blue);
+  box-shadow: 0 0 0 3px rgb(47 75 240 / 10%);
+}
+
+.voice-input-engine-row .button {
+  width: 100%;
+}
+
+.voice-input-status[data-state="error"] { color: var(--danger); }
+.voice-input-status[data-state="ready"] { color: var(--signal); }
+
 @media (max-width: 760px) {
   .terminal-layout-settings { grid-template-columns: 1fr 1fr; }
   .terminal-layout-display { grid-column: 1 / -1; }
@@ -2460,6 +2541,7 @@ summary:focus-visible,
   .terminal-layout-footer { align-items: stretch; flex-direction: column; }
   .terminal-layout-footer .button { width: 100%; }
   .completion-alert-control-row { grid-template-columns: minmax(0, 1fr); }
+  .voice-input-control-row { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (max-width: 520px) {
@@ -2561,6 +2643,123 @@ textarea {
 
 textarea::placeholder {
   color: #899792;
+}
+
+.voice-input-composer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+  margin-top: 6px;
+  padding: 5px 7px 5px 6px;
+  border: 1px solid #d7dfdc;
+  border-radius: 9px;
+  background: #f5f8f7;
+}
+
+.voice-input-composer[hidden] { display: none; }
+
+.voice-input-hold {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 3px 7px 3px 3px;
+  border: 0;
+  border-radius: 7px;
+  color: #40544d;
+  background: transparent;
+  font-size: 9px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.voice-input-hold:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 1px;
+}
+
+.voice-input-glyph {
+  position: relative;
+  display: inline-grid;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 7px;
+  color: #52635d;
+  background: #e3e9e7;
+}
+
+.voice-input-glyph i {
+  width: 6px;
+  height: 9px;
+  border: 1.5px solid currentColor;
+  border-radius: 4px;
+}
+
+.voice-input-glyph b {
+  position: absolute;
+  top: 12px;
+  width: 8px;
+  height: 4px;
+  border-bottom: 1.5px solid currentColor;
+  border-left: 1.5px solid currentColor;
+  border-radius: 0 0 0 5px;
+  transform: rotate(-45deg);
+}
+
+.voice-input-composer-status {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.voice-input-composer[data-state="listening"] {
+  border-color: color-mix(in srgb, #d43f62 42%, #d7dfdc);
+  background: color-mix(in srgb, #d43f62 5%, #f5f8f7);
+}
+
+.voice-input-composer[data-state="listening"] .voice-input-glyph {
+  color: #fff;
+  background: #d43f62;
+  box-shadow: 0 0 0 4px rgb(212 63 98 / 10%);
+}
+
+.voice-input-composer[data-state="listening"] .voice-input-composer-status {
+  color: #a51f46;
+}
+
+.voice-input-composer[data-state="requesting"] .voice-input-glyph,
+.voice-input-composer[data-state="processing"] .voice-input-glyph,
+.voice-input-composer[data-state="transcribing"] .voice-input-glyph {
+  color: #fff;
+  background: var(--blue);
+}
+
+.voice-input-composer[data-state="error"] {
+  border-color: color-mix(in srgb, var(--danger) 42%, #d7dfdc);
+}
+
+.voice-input-composer[data-state="error"] .voice-input-composer-status {
+  color: var(--danger);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .voice-input-composer[data-state="listening"] .voice-input-glyph {
+    animation: voice-input-pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@keyframes voice-input-pulse {
+  0%, 100% { box-shadow: 0 0 0 3px rgb(212 63 98 / 9%); }
+  50% { box-shadow: 0 0 0 7px rgb(212 63 98 / 14%); }
 }
 
 .attachment-composer {
@@ -14107,6 +14306,38 @@ html[data-theme="dark"] .completion-speech-choices label {
   background: var(--app-control);
 }
 
+html[data-theme="dark"] .voice-input-control-row,
+html[data-theme="dark"] .voice-input-shortcut,
+html[data-theme="dark"] .voice-input-composer {
+  border-color: var(--app-border);
+  color: var(--app-text-body);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .voice-input-control-row strong,
+html[data-theme="dark"] .voice-input-hold {
+  color: var(--app-text-body);
+}
+
+html[data-theme="dark"] .voice-input-glyph {
+  color: var(--app-text-muted);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .voice-input-composer[data-state="listening"] {
+  border-color: color-mix(in srgb, #ff6f91 46%, var(--app-border));
+  background: color-mix(in srgb, #ff6f91 7%, var(--app-control));
+}
+
+html[data-theme="dark"] .voice-input-composer[data-state="listening"] .voice-input-glyph {
+  color: #15161a;
+  background: #ff6f91;
+}
+
+html[data-theme="dark"] .voice-input-composer[data-state="listening"] .voice-input-composer-status {
+  color: #ff91aa;
+}
+
 html[data-theme="dark"] .completion-speech-options {
   border-color: var(--app-border);
   background: var(--app-well);
@@ -14128,6 +14359,12 @@ html[data-theme="dark"] .completion-speech-options legend,
 html[data-theme="dark"] .completion-speech-word-setting small,
 html[data-theme="dark"] .completion-speech-word-input,
 html[data-theme="dark"] .completion-speech-example > span {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .voice-input-control-row small,
+html[data-theme="dark"] .voice-input-status,
+html[data-theme="dark"] .voice-input-composer-status {
   color: var(--app-text-muted);
 }
 

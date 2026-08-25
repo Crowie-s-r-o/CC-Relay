@@ -85,6 +85,10 @@ import { TerminalLaunchCoordinator } from './terminal-launch-coordinator.mjs';
 import { TerminalRuntimeResolver } from './terminal-runtime-resolver.mjs';
 import { taskTitleFromInput, titleFromPrompt } from './task-title.mjs';
 import { normalizeUiPreferences } from './ui-preferences.mjs';
+import {
+  MAX_VOICE_AUDIO_BYTES,
+  VoiceInputService,
+} from './voice-input-service.mjs';
 import { TurboPlanCouncilReviewer } from './turbo-plan-council.mjs';
 import { validateTurboCouncilConfig } from './turbo-council-config.mjs';
 import { TurboRunner } from './turbo-runner.mjs';
@@ -131,6 +135,7 @@ let relayEndpointUrl = null;
 
 const diagnostics = new DiagnosticLog(join(DATA_ROOT, 'relay-diagnostics.jsonl'));
 const diagnostic = (event, details) => diagnostics.write(event, details);
+const voiceInput = new VoiceInputService({ dataRoot: DATA_ROOT, diagnostic });
 const claudeHookBridge = new ClaudeHookBridge({
   endpoint: () => relayEndpointUrl,
   diagnostic,
@@ -511,6 +516,23 @@ async function readJson(request, maxBytes = 1024 * 1024) {
     return {};
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
+async function readBuffer(request, maxBytes, tooLargeMessage) {
+  const chunks = [];
+  let size = 0;
+  const contentLength = Number(request.headers['content-length'] || 0);
+  if (contentLength > maxBytes) {
+    throw Object.assign(new Error(tooLargeMessage), { statusCode: 413 });
+  }
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) {
+      throw Object.assign(new Error(tooLargeMessage), { statusCode: 413 });
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
 }
 
 function taskIdFromPath(pathname) {
@@ -1032,6 +1054,7 @@ export const server = createServer(async (request, response) => {
         providerUsage: providerUsage.current(),
         desktopUpdate: desktopUpdateState,
         desktopZoom: desktopZoomState,
+        voiceInput: voiceInput.status(),
         capabilities: {
           directClaudeExecution: true,
           directOpenCodeExecution: true,
@@ -1089,6 +1112,7 @@ export const server = createServer(async (request, response) => {
           crossProcessLaunchOwnership: true,
           desktopUpdates: IS_DESKTOP,
           desktopZoomControls: IS_DESKTOP && typeof desktopZoomHandler === 'function',
+          pushToTalkVoiceInput: true,
         },
         taskCount: tasks.length,
         // Keep the legacy field exact for older renderers. Current renderers prefer the
@@ -1101,6 +1125,28 @@ export const server = createServer(async (request, response) => {
         dualBackendDetected: launchOwnership.dualBackendDetected(),
         projectConfig: { file: database.projectConfigPath },
       });
+      return;
+    }
+
+    if (request.method === 'GET' && pathname === '/api/voice-input/status') {
+      sendJson(response, 200, voiceInput.status());
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/voice-input/setup') {
+      await readJson(request, 1024);
+      sendJson(response, 200, await voiceInput.setup());
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/voice-input/transcribe') {
+      const mimeType = String(request.headers['content-type'] || '');
+      const audio = await readBuffer(
+        request,
+        MAX_VOICE_AUDIO_BYTES,
+        'Voice recordings may be at most 12 MB.',
+      );
+      sendJson(response, 200, await voiceInput.transcribe(audio, mimeType));
       return;
     }
 
@@ -3099,6 +3145,9 @@ server.listen(PORT, HOST, () => {
   claudeRuntime.start();
   opencodeRuntime.start();
   providerUsage.start();
+  if (database.uiPreferences()?.voiceInput?.enabled === true) {
+    void voiceInput.prewarm();
+  }
   refreshCodexStatus().then((status) => {
     if (!status.available || !status.authenticated) {
       console.log('Codex is unavailable or not authenticated. Check `codex login status`.');
@@ -3132,6 +3181,7 @@ export async function shutdown() {
   }
   sseClients.clear();
   server.close();
+  await voiceInput.shutdown();
   await queue.shutdown();
   await projectLauncher.closeOwnedTerminals();
   launchOwnership.stop();

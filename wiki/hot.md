@@ -7,6 +7,15 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 25: the task composer now supports local CPU push-to-talk dictation.** Enable voice
+> input in Terminal settings, perform the explicit faster-whisper setup, then hold the configurable
+> activation keys and release any one of them to stop recording. Relay inserts the multilingual
+> base-model transcript at the current prompt selection, deletes the transient clip, and retains
+> only the app-wide enabled state and shortcut. The default is `Ctrl+Shift+Space`, and shortcuts
+> work while the Relay window is active. See [[push-to-talk-voice-input]] and
+> [[durable-ui-layout-preferences]].
+
+> [!important]
 > **August 25: OpenCode is now a third direct Execute provider with live token speed.**
 > The automatic composer places OpenCode beside Codex and Claude, discovers its configured model
 > catalog, gives it an independent project capacity, and runs it headlessly with a durable native

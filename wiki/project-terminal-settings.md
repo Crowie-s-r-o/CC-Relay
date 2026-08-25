@@ -67,8 +67,14 @@ The window-layout booleans use the shared `.terminal-settings-switch` pill. **Ar
 
 The completion section uses aligned full-width sound and voice rows. **Voice announcement** retains the shared switch, then nests its content checkboxes, 1 through 12 task-name word limit, and exact spoken preview in `.completion-speech-options`. The fieldset stays visible but disabled while voice is off. See [[task-completion-alerts]].
 
+The app-wide **Voice input** section follows completion alerts. It contains the push-to-talk switch,
+shortcut capture, and explicit local engine setup or repair action. This section is intentionally
+not project-scoped even though it shares the terminal settings dialog. The composer rail and
+settings both render from the durable global `voiceInput` preference and backend engine status.
+See [[push-to-talk-voice-input]] and [[durable-ui-layout-preferences]].
+
 > [!important]
-> `.terminal-layout-settings`, `.completion-alert-settings`, `.terminal-layout-heading`, `.completion-alert-heading`, `.terminal-background-toggle`, and `.completion-speech-toggle` kept their class names through the redesign. Dark-theme parity for this dialog is spread across six blocks in `public/style.css`, and `test/dark-mode.test.mjs` asserts several of those selectors by name. Any new class in this dialog needs its own `html[data-theme="dark"]` rule in the end-of-cascade repair block, or it will show a white surface in the midnight shell.
+> `.terminal-layout-settings`, `.completion-alert-settings`, `.terminal-layout-heading`, `.completion-alert-heading`, `.terminal-background-toggle`, and `.completion-speech-toggle` kept their class names through the redesign. Dark-theme parity for this dialog is spread across six blocks in `public/style.css`, and `test/dark-mode.test.mjs` asserts several of those selectors by name. Voice input adds explicit dark rules for `.voice-input-control-row`, `.voice-input-shortcut`, `.voice-input-composer`, and their live states. Any new class in this dialog needs its own `html[data-theme="dark"]` rule in the end-of-cascade repair block, or it will show a white surface in the midnight shell.
 
 > [!important]
 > The minimized-window explanation now lives in the **Open new terminals minimized** switch row, so `resetTerminalLayoutStatus()` writes only "Grid launches use the next available cell." That reset runs on every dialog open. Any copy moved out of `#terminal-layout-status` into static markup must be removed from that function in the same change, or the dialog repeats itself the moment it is opened.

@@ -124,6 +124,14 @@ Retrying a failed, cancelled, or interrupted automatic Execute task opens its ex
 
 Run now places an urgent task ahead of other waiting tasks. It does not interrupt work that is already running or bypass provider instance limits.
 
+### Push-to-talk voice input
+
+The task composer supports optional local dictation. Enable it in **Terminal settings**, set up the local engine once, then hold the configured activation keys while the CC Relay window is active. Releasing the main key or any required modifier immediately stops the microphone, runs faster-whisper on the CPU, and inserts the transcript at the current prompt selection. The on-screen microphone control follows the same hold and release behavior.
+
+The default shortcut is `Ctrl+Shift+Space`. Shortcut capture accepts exact combinations of Control, Alt, Shift, or Meta plus a supported letter, digit, function, punctuation, space, Caps Lock, or numpad key. The choice is an app-wide durable preference.
+
+Setup requires Python 3.9 or newer and an internet connection. Relay creates an isolated runtime in its application data, pins faster-whisper 1.2.1, downloads the multilingual base model, and loads it with CPU `int8` inference. Recorded clips are bounded, processed one at a time, and deleted after each transcription. Relay releases microphone tracks even when the activation keys are released before the operating-system permission prompt finishes.
+
 ### Reference images
 
 Tasks can include PNG, JPEG, or WebP reference images. CC Relay validates and stores them locally, then provides them to the selected workflow without uploading them to a separate CC Relay service.

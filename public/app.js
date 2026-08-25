@@ -39,6 +39,14 @@ import {
   completionSpeechText,
   normalizeCompletionAlertPreferences,
 } from './completion-alerts.js';
+import {
+  normalizeVoiceInputPreferences,
+  PushToTalkRecorder,
+  voiceShortcutFromKeyboardEvent,
+  voiceShortcutLabel,
+  voiceShortcutMatches,
+  voiceShortcutReleased,
+} from './voice-input.js';
 import { parallelClaudeRestartRequired, projectQueueRestartRequired } from './project-queue-state.js';
 import { terminalClosePresentation } from './terminal-close-state.js';
 import {
@@ -349,6 +357,13 @@ function cachedCompletionAlertPreferences() {
   });
 }
 
+function cachedVoiceInputPreferences() {
+  return normalizeVoiceInputPreferences({
+    enabled: localStorage.getItem('relay.voiceInputEnabled') === 'true',
+    shortcut: localStorage.getItem('relay.voiceInputShortcut'),
+  });
+}
+
 function normalizeRunningTaskLayout(value) {
   const rows = Number(value?.rows);
   const width = Number(value?.width);
@@ -427,6 +442,12 @@ const state = {
   projectCompletionNotifications: new ProjectCompletionNotifications(localStorage),
   completionAlerts: new CompletionAlerts(),
   completionAlertPreferences: cachedCompletionAlertPreferences(),
+  voiceInputPreferences: cachedVoiceInputPreferences(),
+  voiceInputEngine: { state: 'checking', installed: false },
+  voiceInputActivity: 'idle',
+  voiceInputMessage: '',
+  voiceInputSetupPending: false,
+  voiceShortcutCapturing: false,
   runningTaskLayout: cachedRunningTaskLayout(),
   reorderPending: false,
   loadPromise: null,
@@ -678,6 +699,13 @@ const elements = {
   completionSpeechExample: document.querySelector('#completion-speech-example'),
   completionAlertPreview: document.querySelector('#completion-alert-preview'),
   completionAlertStatus: document.querySelector('#completion-alert-status'),
+  voiceInputSettings: document.querySelector('#voice-input-settings'),
+  voiceInputEnabled: document.querySelector('#voice-input-enabled'),
+  voiceInputControls: document.querySelector('#voice-input-controls'),
+  voiceInputShortcut: document.querySelector('#voice-input-shortcut'),
+  voiceInputShortcutLabel: document.querySelector('#voice-input-shortcut-label'),
+  voiceInputSetup: document.querySelector('#voice-input-setup'),
+  voiceInputStatus: document.querySelector('#voice-input-status'),
   providerUsage: document.querySelector('#provider-usage'),
   providerUsageMeters: [...document.querySelectorAll('[data-usage-key]')],
   themeToggle: document.querySelector('#theme-toggle'),
@@ -834,6 +862,10 @@ const elements = {
   prompt: document.querySelector('#task-prompt'),
   taskName: document.querySelector('#task-name'),
   promptLabel: document.querySelector('#prompt-label'),
+  voiceInputComposer: document.querySelector('#voice-input-composer'),
+  voiceInputHold: document.querySelector('#voice-input-hold'),
+  voiceInputHoldLabel: document.querySelector('#voice-input-hold-label'),
+  voiceInputComposerStatus: document.querySelector('#voice-input-composer-status'),
   attachmentRoute: document.querySelector('#attachment-route'),
   attachmentCount: document.querySelector('#attachment-count'),
   attachmentDropzone: document.querySelector('#attachment-dropzone'),
@@ -914,6 +946,8 @@ const elements = {
   queueDetailResizer: document.querySelector('#queue-detail-resizer'),
   terminalHeightResizer: document.querySelector('#terminal-height-resizer'),
 };
+
+let voiceRecorder = null;
 
 function terminalLayout() {
   return {
@@ -1150,6 +1184,7 @@ function uiPreferencesPayload() {
     headerPosition: currentHeaderPosition(),
     runningTaskLayout: state.runningTaskLayout,
     completionAlerts: state.completionAlertPreferences,
+    voiceInput: state.voiceInputPreferences,
   };
 }
 
@@ -1166,6 +1201,9 @@ function cacheUiPreferences(preferences = uiPreferencesPayload()) {
   localStorage.setItem('relay.completionSound', completionAlerts.sound);
   localStorage.setItem('relay.completionSpeech', String(completionAlerts.speak));
   localStorage.setItem('relay.completionSpeechOptions', JSON.stringify(completionAlerts.speech));
+  const voiceInput = normalizeVoiceInputPreferences(preferences.voiceInput);
+  localStorage.setItem('relay.voiceInputEnabled', String(voiceInput.enabled));
+  localStorage.setItem('relay.voiceInputShortcut', voiceInput.shortcut);
 }
 
 function completionAlertExampleTask() {
@@ -1196,6 +1234,225 @@ function setCompletionAlertPreferences(value, { persist = true } = {}) {
   state.completionAlertPreferences = normalizeCompletionAlertPreferences(value);
   renderCompletionAlertSettings();
   if (persist) queueUiPreferencesSave();
+}
+
+function voiceInputSupported() {
+  return state.status?.capabilities?.pushToTalkVoiceInput === true;
+}
+
+function setVoiceInputPreferences(value, { persist = true } = {}) {
+  const previousEnabled = state.voiceInputPreferences.enabled;
+  state.voiceInputPreferences = normalizeVoiceInputPreferences(value);
+  if (previousEnabled && !state.voiceInputPreferences.enabled) voiceRecorder?.cancel();
+  renderVoiceInput();
+  if (persist) queueUiPreferencesSave();
+}
+
+function adoptVoiceInputStatus(value) {
+  if (!value || typeof value !== 'object') return;
+  state.voiceInputEngine = value;
+  renderVoiceInput();
+}
+
+function voiceEngineSettingsCopy() {
+  const engine = state.voiceInputEngine;
+  if (state.voiceInputSetupPending || engine.state === 'installing') {
+    return 'Installing faster-whisper and downloading the multilingual base model. Keep CC Relay open.';
+  }
+  if (engine.state === 'ready') {
+    return engine.workerReady
+      ? 'Ready. The CPU speech model is loaded for fast local transcription.'
+      : 'Ready. The CPU speech model loads automatically when voice input starts.';
+  }
+  if (engine.state === 'error') {
+    return engine.error || 'The local voice engine needs repair.';
+  }
+  if (engine.state === 'checking') return 'Checking the local voice engine.';
+  return 'Set up once to install faster-whisper 1.2.1 and download the multilingual base model locally.';
+}
+
+function voiceEngineReady() {
+  return state.voiceInputEngine.installed === true
+    && !['checking', 'installing', 'setup-required'].includes(state.voiceInputEngine.state);
+}
+
+function renderVoiceInput() {
+  const supported = voiceInputSupported();
+  const { enabled, shortcut } = state.voiceInputPreferences;
+  const shortcutLabel = voiceShortcutLabel(shortcut, navigator.platform);
+  const engineReady = voiceEngineReady();
+  const engineHealthy = state.voiceInputEngine.installed === true
+    && state.voiceInputEngine.state === 'ready';
+  const installing = state.voiceInputSetupPending || state.voiceInputEngine.state === 'installing';
+
+  elements.voiceInputSettings.hidden = !supported;
+  elements.voiceInputComposer.hidden = !supported;
+  elements.voiceInputEnabled.checked = enabled;
+  elements.voiceInputEnabled.disabled = !supported || installing;
+  elements.voiceInputControls.dataset.enabled = String(enabled);
+  elements.voiceInputShortcut.disabled = !supported || !enabled || installing;
+  elements.voiceInputShortcut.dataset.capturing = String(state.voiceShortcutCapturing);
+  elements.voiceInputShortcutLabel.textContent = state.voiceShortcutCapturing
+    ? 'Press shortcut'
+    : shortcutLabel;
+  elements.voiceInputShortcut.querySelector(':scope > span').textContent = state.voiceShortcutCapturing
+    ? 'Esc cancels'
+    : 'Change';
+  elements.voiceInputSetup.disabled = !supported || installing || engineHealthy;
+  elements.voiceInputSetup.textContent = installing
+    ? 'Setting up...'
+    : engineHealthy
+      ? 'Engine ready'
+      : state.voiceInputEngine.state === 'error'
+        ? 'Repair engine'
+        : 'Set up engine';
+  elements.voiceInputStatus.textContent = voiceEngineSettingsCopy();
+  elements.voiceInputStatus.dataset.state = state.voiceInputEngine.state || 'checking';
+
+  const activity = state.voiceInputActivity;
+  let holdLabel = `Hold ${shortcutLabel} to talk`;
+  let status = state.voiceInputMessage || 'Release to transcribe locally.';
+  if (!enabled) {
+    holdLabel = 'Turn on voice input';
+    status = 'Enable push-to-talk in Settings.';
+  } else if (!engineReady) {
+    holdLabel = installing ? 'Setting up voice input' : 'Set up voice input';
+    status = voiceEngineSettingsCopy();
+  } else if (activity === 'requesting') {
+    holdLabel = 'Keep holding';
+    status = 'Requesting microphone access.';
+  } else if (activity === 'listening') {
+    holdLabel = 'Listening';
+    status = 'Release to stop and transcribe.';
+  } else if (activity === 'processing') {
+    holdLabel = 'Recording complete';
+    status = 'Finishing the audio clip.';
+  } else if (activity === 'transcribing') {
+    holdLabel = 'Transcribing';
+    status = 'Running faster-whisper on CPU.';
+  }
+  elements.voiceInputComposer.dataset.state = activity;
+  elements.voiceInputHoldLabel.textContent = holdLabel;
+  elements.voiceInputComposerStatus.textContent = status;
+  elements.voiceInputHold.disabled = !supported || installing || activity === 'transcribing';
+  elements.voiceInputHold.setAttribute('aria-pressed', String(activity === 'listening'));
+  elements.voiceInputHold.title = status;
+}
+
+function openVoiceInputSettings() {
+  resetTerminalLayoutStatus();
+  renderCompletionAlertSettings();
+  renderVoiceInput();
+  if (!elements.terminalSettingsModal.open) elements.terminalSettingsModal.showModal();
+  requestAnimationFrame(() => {
+    if (!state.voiceInputPreferences.enabled) elements.voiceInputEnabled.focus();
+    else if (state.voiceInputEngine.state !== 'ready') elements.voiceInputSetup.focus();
+  });
+}
+
+async function setupVoiceInput() {
+  if (state.voiceInputSetupPending || !voiceInputSupported()) return;
+  state.voiceInputSetupPending = true;
+  state.voiceInputEngine = { ...state.voiceInputEngine, state: 'installing' };
+  renderVoiceInput();
+  try {
+    const status = await api('/api/voice-input/setup', {
+      method: 'POST',
+      body: '{}',
+      timeoutMs: 12 * 60 * 1000,
+      timeoutMessage: (seconds) => `Voice setup did not answer within ${seconds} seconds. It may still be downloading the local model.`,
+    });
+    adoptVoiceInputStatus(status);
+  } catch (error) {
+    state.voiceInputEngine = {
+      ...state.voiceInputEngine,
+      state: 'error',
+      installed: false,
+      error: error.message,
+    };
+  } finally {
+    state.voiceInputSetupPending = false;
+    renderVoiceInput();
+  }
+}
+
+function voiceMicrophoneError(error) {
+  if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+    return 'Microphone access was denied. Allow CC Relay to use the microphone, then try again.';
+  }
+  if (error?.name === 'NotFoundError' || error?.name === 'DevicesNotFoundError') {
+    return 'No microphone is available.';
+  }
+  return error?.message || 'CC Relay could not record the microphone.';
+}
+
+function setVoiceInputActivity(activity, message = '') {
+  state.voiceInputActivity = activity;
+  state.voiceInputMessage = message;
+  renderVoiceInput();
+}
+
+function insertVoiceTranscript(text) {
+  const transcript = String(text || '').trim();
+  if (!transcript) return false;
+  const start = Number.isInteger(elements.prompt.selectionStart)
+    ? elements.prompt.selectionStart
+    : elements.prompt.value.length;
+  const end = Number.isInteger(elements.prompt.selectionEnd)
+    ? elements.prompt.selectionEnd
+    : start;
+  const before = elements.prompt.value.slice(0, start);
+  const after = elements.prompt.value.slice(end);
+  const leading = before && !/[\s([{]$/.test(before) ? ' ' : '';
+  const trailing = after && !/^[\s,.;:!?)]/.test(after) ? ' ' : '';
+  const replacement = `${leading}${transcript}${trailing}`;
+  elements.prompt.setRangeText(replacement, start, end, 'end');
+  elements.prompt.dispatchEvent(new Event('input', { bubbles: true }));
+  elements.prompt.focus();
+  saveProjectComposerState();
+  return true;
+}
+
+async function transcribeVoiceAudio(audio) {
+  if (!(audio instanceof Blob) || audio.size < 256) {
+    setVoiceInputActivity('error', 'Hold push-to-talk a little longer so Relay can hear you.');
+    return;
+  }
+  setVoiceInputActivity('transcribing');
+  try {
+    const result = await api('/api/voice-input/transcribe', {
+      method: 'POST',
+      body: audio,
+      headers: { 'Content-Type': audio.type || 'audio/webm' },
+      timeoutMs: 2 * 60 * 1000,
+      timeoutMessage: () => 'Voice transcription did not finish within two minutes.',
+    });
+    if (!insertVoiceTranscript(result.text)) {
+      setVoiceInputActivity('idle', 'No speech was detected. Hold the keys and try again.');
+      return;
+    }
+    if (state.status?.voiceInput) {
+      state.status.voiceInput = { ...state.status.voiceInput, state: 'ready', workerReady: true };
+    }
+    state.voiceInputEngine = { ...state.voiceInputEngine, state: 'ready', installed: true, workerReady: true };
+    setVoiceInputActivity('idle', 'Dictation added to the task prompt.');
+  } catch (error) {
+    setVoiceInputActivity('error', error.message);
+  }
+}
+
+function startVoiceInput() {
+  if (state.voiceInputActivity === 'transcribing' || state.voiceInputSetupPending) return;
+  if (
+    !voiceInputSupported()
+    || !state.voiceInputPreferences.enabled
+    || !voiceEngineReady()
+  ) {
+    openVoiceInputSettings();
+    return;
+  }
+  state.voiceInputMessage = '';
+  void voiceRecorder.press();
 }
 
 function setRunningTaskLayout(value, { persist = true } = {}) {
@@ -1242,6 +1499,7 @@ async function restoreUiPreferences() {
     setHeaderPosition(preferences.headerPosition, { persist: false });
     setRunningTaskLayout(preferences.runningTaskLayout, { persist: false });
     setCompletionAlertPreferences(preferences.completionAlerts, { persist: false });
+    setVoiceInputPreferences(preferences.voiceInput, { persist: false });
     cacheUiPreferences(preferences);
     applyPanelWidths();
     applyTerminalHeight();
@@ -7800,6 +8058,7 @@ async function loadSnapshot() {
   await textSelectionGuard.waitForClear();
   const previousOpenCodeCheck = state.status?.opencode?.checkedAt || null;
   state.status = statusBody;
+  adoptVoiceInputStatus(statusBody.voiceInput);
   if (
     statusBody.opencode?.checkedAt
     && statusBody.opencode.checkedAt !== previousOpenCodeCheck
@@ -11375,6 +11634,7 @@ for (const tab of elements.modeTabs) {
 elements.terminalSettingsButton.addEventListener('click', () => {
   resetTerminalLayoutStatus();
   renderCompletionAlertSettings();
+  renderVoiceInput();
   elements.terminalSettingsModal.showModal();
 });
 elements.terminalSettingsClose.addEventListener('click', () => {
@@ -11382,6 +11642,24 @@ elements.terminalSettingsClose.addEventListener('click', () => {
 });
 elements.terminalSettingsModal.addEventListener('click', (event) => {
   if (event.target === elements.terminalSettingsModal) elements.terminalSettingsModal.close();
+});
+elements.terminalSettingsModal.addEventListener('close', () => {
+  state.voiceShortcutCapturing = false;
+  renderVoiceInput();
+});
+elements.voiceInputEnabled.addEventListener('change', () => {
+  setVoiceInputPreferences({
+    ...state.voiceInputPreferences,
+    enabled: elements.voiceInputEnabled.checked,
+  });
+});
+elements.voiceInputShortcut.addEventListener('click', () => {
+  if (elements.voiceInputShortcut.disabled) return;
+  state.voiceShortcutCapturing = true;
+  renderVoiceInput();
+});
+elements.voiceInputSetup.addEventListener('click', () => {
+  void setupVoiceInput();
 });
 elements.completionSound.addEventListener('change', () => {
   setCompletionAlertPreferences({
@@ -11436,6 +11714,81 @@ elements.completionAlertPreview.addEventListener('click', () => {
     && !state.completionAlertPreferences.speak
     ? 'Both completion alerts are off.'
     : 'Preview played.';
+});
+
+voiceRecorder = new PushToTalkRecorder({
+  onState: (activity) => {
+    if (activity === 'captured') setVoiceInputActivity('processing');
+    else setVoiceInputActivity(activity);
+  },
+  onAudio: (audio) => {
+    void transcribeVoiceAudio(audio);
+  },
+  onError: (error) => {
+    setVoiceInputActivity('error', voiceMicrophoneError(error));
+  },
+});
+
+document.addEventListener('keydown', (event) => {
+  if (state.voiceShortcutCapturing) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    if (event.key === 'Escape') {
+      state.voiceShortcutCapturing = false;
+      renderVoiceInput();
+      return;
+    }
+    const shortcut = voiceShortcutFromKeyboardEvent(event);
+    if (!shortcut) return;
+    state.voiceShortcutCapturing = false;
+    setVoiceInputPreferences({ ...state.voiceInputPreferences, shortcut });
+    return;
+  }
+  if (
+    !voiceInputSupported()
+    || document.querySelector('dialog[open]')
+    || !voiceShortcutMatches(event, state.voiceInputPreferences.shortcut)
+  ) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  if (!event.repeat) startVoiceInput();
+}, true);
+
+document.addEventListener('keyup', (event) => {
+  if (!voiceShortcutReleased(event, state.voiceInputPreferences.shortcut)) return;
+  if (!voiceRecorder?.held && state.voiceInputActivity !== 'listening') return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  voiceRecorder.release();
+}, true);
+
+elements.voiceInputHold.addEventListener('pointerdown', (event) => {
+  if (event.button !== 0) return;
+  event.preventDefault();
+  elements.voiceInputHold.setPointerCapture?.(event.pointerId);
+  startVoiceInput();
+});
+for (const eventName of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  elements.voiceInputHold.addEventListener(eventName, (event) => {
+    if (elements.voiceInputHold.hasPointerCapture?.(event.pointerId)) {
+      elements.voiceInputHold.releasePointerCapture(event.pointerId);
+    }
+    voiceRecorder?.release();
+  });
+}
+elements.voiceInputHold.addEventListener('keydown', (event) => {
+  if (![' ', 'Enter'].includes(event.key)) return;
+  event.preventDefault();
+  if (!event.repeat) startVoiceInput();
+});
+elements.voiceInputHold.addEventListener('keyup', (event) => {
+  if (![' ', 'Enter'].includes(event.key)) return;
+  event.preventDefault();
+  voiceRecorder?.release();
+});
+window.addEventListener('blur', () => voiceRecorder?.release());
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') voiceRecorder?.release();
 });
 elements.taskEditClose.addEventListener('click', closeTaskEditor);
 elements.taskEditCancel.addEventListener('click', closeTaskEditor);
@@ -11709,6 +12062,7 @@ elements.detailEvents.addEventListener('toggle', (event) => {
 }, true);
 
 renderCompletionAlertSettings();
+renderVoiceInput();
 const uiPreferencesReady = restoreUiPreferences();
 const completionReviewsReady = migrateCompletionReviews();
 const rendererStateReady = Promise.all([uiPreferencesReady, completionReviewsReady]);

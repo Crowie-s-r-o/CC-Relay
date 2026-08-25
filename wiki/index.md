@@ -13,6 +13,7 @@ type: index
 - [[active-project-composer-colors]]
 - [[launchpad-completion-notifications]]
 - [[task-completion-alerts]]
+- [[push-to-talk-voice-input]]
 - [[shared-project-configuration]]
 - [[project-terminal-settings]]
 - [[macos-terminal-grid-coordinates]]

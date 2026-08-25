@@ -1,10 +1,13 @@
 export const UI_PREFERENCES_SETTING = 'ui-layout-preferences';
+export const DEFAULT_VOICE_INPUT_SHORTCUT = 'Control+Shift+Space';
 
 const COMPLETION_SOUNDS = new Set(['none', 'chime', 'bell', 'pulse']);
 const RUNNING_TASK_ROWS = new Set([1, 2, 3]);
 const RUNNING_TASK_WIDTHS = new Set([230, 286, 360]);
 const COMPLETION_SPEECH_MIN_WORDS = 1;
 const COMPLETION_SPEECH_MAX_WORDS = 12;
+const VOICE_SHORTCUT_MODIFIERS = ['Control', 'Alt', 'Shift', 'Meta'];
+const VOICE_SHORTCUT_CODE = /^(?:Key[A-Z]|Digit[0-9]|F(?:[1-9]|1\d|2[0-4])|Space|CapsLock|Backquote|Minus|Equal|BracketLeft|BracketRight|Backslash|Semicolon|Quote|Comma|Period|Slash|Numpad(?:[0-9]|Add|Subtract|Multiply|Divide|Decimal))$/;
 
 function boundedNumber(value, minimum, maximum) {
   const number = Number(value);
@@ -20,6 +23,28 @@ function completionSpeechWordLimit(value) {
     COMPLETION_SPEECH_MAX_WORDS,
     Math.max(COMPLETION_SPEECH_MIN_WORDS, Math.round(number)),
   );
+}
+
+export function normalizeVoiceInputShortcut(value) {
+  const parts = typeof value === 'string' ? value.split('+') : [];
+  const code = parts.at(-1);
+  if (!VOICE_SHORTCUT_CODE.test(code || '')) return DEFAULT_VOICE_INPUT_SHORTCUT;
+  const requestedModifiers = new Set(parts.slice(0, -1));
+  if (
+    requestedModifiers.size !== parts.length - 1
+    || [...requestedModifiers].some((part) => !VOICE_SHORTCUT_MODIFIERS.includes(part))
+  ) return DEFAULT_VOICE_INPUT_SHORTCUT;
+  return [
+    ...VOICE_SHORTCUT_MODIFIERS.filter((modifier) => requestedModifiers.has(modifier)),
+    code,
+  ].join('+');
+}
+
+export function normalizeVoiceInputPreferences(value) {
+  return {
+    enabled: value?.enabled === true,
+    shortcut: normalizeVoiceInputShortcut(value?.shortcut),
+  };
 }
 
 export function normalizeUiPreferences(value) {
@@ -50,6 +75,7 @@ export function normalizeUiPreferences(value) {
     rows: RUNNING_TASK_ROWS.has(requestedRunningTaskRows) ? requestedRunningTaskRows : 1,
     width: RUNNING_TASK_WIDTHS.has(requestedRunningTaskWidth) ? requestedRunningTaskWidth : 286,
   };
+  const voiceInput = normalizeVoiceInputPreferences(value.voiceInput);
   if (composer == null || queue == null) return null;
   return {
     panelWidths: { composer, queue },
@@ -57,6 +83,7 @@ export function normalizeUiPreferences(value) {
     headerPosition,
     runningTaskLayout,
     completionAlerts,
+    voiceInput,
   };
 }
 

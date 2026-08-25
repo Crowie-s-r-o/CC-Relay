@@ -11,6 +11,8 @@ files:
 mac:
   category: public.app-category.developer-tools
   icon: icon.png
+  extendInfo:
+    NSMicrophoneUsageDescription: CC Relay uses the microphone only while you hold push-to-talk to transcribe a task prompt locally.
   target:
     - dmg
     - zip

@@ -15,6 +15,7 @@ CC Relay persists its global interface layout in the shared configuration databa
 - Monitor bar position, `top` or `bottom`
 - Running-task monitor rows, one through three, and card width, Compact, Default, or Wide
 - Completion sound choice, voice enabled state, selected spoken parts, and task-name word limit
+- Push-to-talk enabled state and canonical activation shortcut
 
 `GET /api/ui-preferences` restores the record. `PATCH /api/ui-preferences` validates bounded pixel
 values and writes it through `ProjectConfigStore`. The renderer updates browser `localStorage` at
@@ -33,6 +34,12 @@ when that origin still has them. On later runs, database state wins and refreshe
 Task alert settings use the same durability path because desktop ports also change between
 launches. The renderer waits for this record before its first task snapshot, so a saved **Silent**
 choice cannot lose a startup race to the default chime. See [[task-completion-alerts]].
+
+Push-to-talk uses the same app-wide record. Its `voiceInput` member contains only `enabled` and a
+canonical `shortcut`; the default is `Control+Shift+Space`. Backend and renderer normalizers use
+the same modifier ordering and supported physical key codes, while local storage provides only the
+fast origin-local cache. Engine binaries, model files, microphone permissions, and recordings are
+not preferences. See [[push-to-talk-voice-input]].
 
 Files:
 

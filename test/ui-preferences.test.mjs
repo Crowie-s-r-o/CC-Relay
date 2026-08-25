@@ -4,7 +4,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { RelayDatabase } from '../src/database.mjs';
-import { normalizeUiPreferences, parseUiPreferences } from '../src/ui-preferences.mjs';
+import {
+  normalizeUiPreferences,
+  normalizeVoiceInputPreferences,
+  normalizeVoiceInputShortcut,
+  parseUiPreferences,
+} from '../src/ui-preferences.mjs';
 
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8');
@@ -20,6 +25,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
       speak: true,
       speech: { project: false, task: true, status: true, taskWords: 4 },
     },
+    voiceInput: { enabled: false, shortcut: 'Control+Shift+Space' },
   }), {
     panelWidths: { composer: 582, queue: 499 },
     terminalHeight: 701,
@@ -30,6 +36,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
       speak: true,
       speech: { project: false, task: true, status: true, taskWords: 4 },
     },
+    voiceInput: { enabled: false, shortcut: 'Control+Shift+Space' },
   });
   assert.equal(normalizeUiPreferences({ panelWidths: { composer: 399, queue: 500 } }), null);
   assert.deepEqual(normalizeUiPreferences({
@@ -42,6 +49,9 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
   })?.runningTaskLayout, { rows: 1, width: 286 });
+  assert.deepEqual(normalizeUiPreferences({
+    panelWidths: { composer: 580, queue: 500 },
+  })?.voiceInput, { enabled: false, shortcut: 'Control+Shift+Space' });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
     runningTaskLayout: { rows: 8, width: 999 },
@@ -69,6 +79,21 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   assert.equal(parseUiPreferences('{broken'), null);
 });
 
+test('voice input preferences keep a canonical configurable shortcut', () => {
+  assert.equal(normalizeVoiceInputShortcut('Meta+Shift+KeyV'), 'Shift+Meta+KeyV');
+  assert.equal(normalizeVoiceInputShortcut('Alt+F8'), 'Alt+F8');
+  assert.equal(normalizeVoiceInputShortcut('Backquote'), 'Backquote');
+  assert.equal(normalizeVoiceInputShortcut('Control+Enter'), 'Control+Shift+Space');
+  assert.equal(normalizeVoiceInputShortcut('Control+Control+Space'), 'Control+Shift+Space');
+  assert.deepEqual(normalizeVoiceInputPreferences({
+    enabled: true,
+    shortcut: 'Meta+Shift+KeyV',
+  }), {
+    enabled: true,
+    shortcut: 'Shift+Meta+KeyV',
+  });
+});
+
 test('UI preferences persist in durable shared configuration', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-ui-preferences-'));
   const databasePath = join(directory, 'relay.sqlite');
@@ -83,6 +108,7 @@ test('UI preferences persist in durable shared configuration', () => {
       speak: false,
       speech: { project: true, task: true, status: false, taskWords: 6 },
     },
+    voiceInput: { enabled: true, shortcut: 'Alt+F8' },
   });
   let database = new RelayDatabase(databasePath, { projectConfigPath: configPath });
   try {
@@ -102,6 +128,7 @@ test('renderer restores and saves layout through the durable preferences API', (
   assert.match(app, /method: 'PATCH',[\s\S]*?body: JSON\.stringify\(uiPreferencesPayload\(\)\)/);
   assert.match(app, /setHeaderPosition\(preferences\.headerPosition, \{ persist: false \}\)/);
   assert.match(app, /setRunningTaskLayout\(preferences\.runningTaskLayout, \{ persist: false \}\)/);
+  assert.match(app, /setVoiceInputPreferences\(preferences\.voiceInput, \{ persist: false \}\)/);
   assert.match(app, /const uiPreferencesReady = restoreUiPreferences\(\)/);
   assert.match(app, /const rendererStateReady = Promise\.all\(\[uiPreferencesReady, completionReviewsReady\]\)/);
   assert.match(app, /rendererStateReady\.then\(\(\) => load\(\)\)/);
