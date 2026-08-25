@@ -2,6 +2,12 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.23] - 2026-08-25
+
+### Changed
+
+- Turbo now starts fresh planning for each prompt and uses one execution session.
+
 ## [0.2.22] - 2026-08-23
 
 ### Changed
