@@ -2,6 +2,16 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.25] - 2026-08-26
+
+### Added
+
+- Push-to-talk shortcuts are now configurable.
+
+### Fixed
+
+- Token throughput reporting is now corrected.
+
 ## [0.2.24] - 2026-08-25
 
 ### Added
