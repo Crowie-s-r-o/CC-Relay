@@ -74,6 +74,7 @@ export function openCodeSessionSnapshot(value, {
   let usage = normalizeTokenUsage({});
   let finalResponse = '';
   const countedParts = new Set();
+  const reasoningParts = new Map();
   for (const message of relevant) {
     const parts = messageParts(message);
     const finishParts = parts.filter((part) => (
@@ -96,8 +97,16 @@ export function openCodeSessionSnapshot(value, {
       .map((part) => String(part.text).trim())
       .join('\n\n');
     if (response) finalResponse = response;
+    for (const [index, part] of parts.entries()) {
+      if (part?.type !== 'reasoning') continue;
+      const text = String(part.text || '').trim();
+      if (!text) continue;
+      const messageId = messageIdentifier(message) || 'message';
+      const id = String(part.id || `${messageId}-reasoning-${index}`);
+      reasoningParts.set(id, { id, messageId, text });
+    }
   }
-  return { usage, finalResponse };
+  return { usage, finalResponse, reasoningParts: [...reasoningParts.values()] };
 }
 
 export function readOpenCodeSession({
@@ -150,7 +159,10 @@ function toolItem(record) {
 }
 
 export function openCodeRunArguments(task) {
-  const args = ['run', '--format', 'json', '--auto', '--dir', task.repo_path];
+  // OpenCode intentionally suppresses reasoning records in a non-interactive run unless
+  // `--thinking` is explicit, including when its JSON session export contains those parts.
+  // Relay needs the native record so Task Activity can show it live through the Thinking switch.
+  const args = ['run', '--format', 'json', '--thinking', '--auto', '--dir', task.repo_path];
   if (task.thread_id) args.push('--session', task.thread_id);
   if (task.model && task.model !== 'default') args.push('--model', task.model);
   if (task.effort) args.push('--variant', task.effort);
@@ -217,6 +229,31 @@ export class OpenCodeRunner {
     const finishedMessageIds = new Set();
     const usageByStep = new Map();
     const responsePartsByMessage = new Map();
+    const reasoningTextByPart = new Map();
+    let anonymousReasoningIndex = 0;
+
+    const emitReasoning = ({ id, messageId: nativeMessageId, text }, reconciledFrom = null) => {
+      const value = String(text || '').trim();
+      if (!value) return false;
+      const itemId = String(id || `${nativeMessageId || reportedSessionId || task.id}-reasoning-${anonymousReasoningIndex++}`);
+      if (reasoningTextByPart.get(itemId) === value) return false;
+      reasoningTextByPart.set(itemId, value);
+      onEvent({
+        event: {
+          type: 'item/completed',
+          provider: 'opencode',
+          ...(reconciledFrom ? { reconciledFrom } : {}),
+          item: {
+            id: itemId,
+            type: 'reasoning',
+            status: 'completed',
+            summary: [{ text: value }],
+          },
+        },
+        message: 'OpenCode reasoning recorded.',
+      });
+      return true;
+    };
 
     const observeSession = (record) => {
       const observedSessionId = sessionId(record);
@@ -280,6 +317,14 @@ export class OpenCodeRunner {
       if (!observeSession(record)) return;
       const recordMessageId = messageId(record);
       if (recordMessageId) observedMessageIds.add(recordMessageId);
+      if (record?.type === 'reasoning') {
+        emitReasoning({
+          id: record.part?.id || record.id,
+          messageId: recordMessageId,
+          text: record.part?.text || record.text,
+        });
+        return;
+      }
       if (record?.type === 'text') {
         const value = String(record.part?.text || record.text || '').trim();
         if (value) {
@@ -419,6 +464,9 @@ export class OpenCodeRunner {
                 messageIds: observedMessageIds,
                 startedAt,
               });
+              for (const reasoning of snapshot.reasoningParts) {
+                emitReasoning(reasoning, 'session-export');
+              }
               if (snapshot.usage.totalTokens > cumulativeUsage.totalTokens) {
                 cumulativeUsage = snapshot.usage;
                 const event = {

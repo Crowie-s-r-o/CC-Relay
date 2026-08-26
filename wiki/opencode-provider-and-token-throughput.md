@@ -47,7 +47,7 @@ For a fresh task Relay starts a detached child process in the selected repositor
 of:
 
 ```text
-opencode run --format json --auto --dir <project> [--model <provider/model>] [--variant <effort>] [--file <attachment>] <prompt>
+opencode run --format json --thinking --auto --dir <project> [--model <provider/model>] [--variant <effort>] [--file <attachment>] <prompt>
 ```
 
 For a retry with a saved native conversation, Relay also supplies `--session <session-id>`. The
@@ -62,9 +62,18 @@ hold cancellation indefinitely.
 The JSON stream is authoritative during the run:
 
 - `text` becomes an OpenCode assistant message.
+- `reasoning` becomes a completed provider-exposed reasoning entry controlled by the Task Activity
+  **Thinking** switch.
 - `tool_use` becomes a provider tool lifecycle item.
 - `step_finish` contributes native token usage.
 - `error` becomes a task-level provider error.
+
+> [!important]
+> OpenCode 1.18.23 defaults `--thinking` to false for non-interactive runs, even with
+> `--format json`. Its durable session export can therefore contain a reasoning part that the live
+> JSON stream omitted. Relay always passes `--thinking` and stores each resulting record as the
+> same escaped, filterable reasoning item used by the Task Activity terminal. A bounded export
+> reconciliation also restores reasoning parts when the final stream is otherwise incomplete.
 
 Some OpenCode versions can complete without including the final step or text record in the live JSON
 stream. Relay detects missing finish evidence, a zero token total, or a missing final response and
@@ -108,6 +117,12 @@ Relay trusts a provider's explicit total when present. If the provider omits it,
 output, reasoning, cache-read, and cache-write tokens. The complete normalized record represents all
 native tokens reported as used. Rate calculation deliberately selects only its output component.
 
+Reasoning text and reasoning-token accounting are independent provider signals. The verified
+`ninfer-salad/qwen3.8-27b` session exposed a non-empty native reasoning part while its OpenCode
+`step-finish` and session totals both reported `reasoning: 0`. Relay shows the text through the
+Thinking switch and keeps the numeric thinking-token metric at zero. It does not estimate tokens
+from text or relabel ordinary output tokens as reasoning.
+
 ## Speed calculation
 
 The visible rate is calculated as:
@@ -137,9 +152,9 @@ Only events that satisfy all of these conditions can drive the metric:
 This excludes estimates, another provider's telemetry, and usage retained from an earlier retry.
 The newest valid cumulative event appears as **tokens/s** in both Task Activity and the global
 running-task monitor. Task Activity labels the metric as **output tokens/s** and also shows exact
-**input tokens** and **output tokens** totals. Hover detail includes reasoning, cache-read,
-cache-write, and provider-total values. Native usage rows are folded as telemetry rather than counted
-as conversation, command, or file signals.
+**input tokens**, **output tokens**, and provider-reported **thinking tokens** totals. Hover detail
+includes reasoning, cache-read, cache-write, and provider-total values. Native usage rows are folded
+as telemetry rather than counted as conversation, command, or file signals.
 
 > [!warning]
 > Codex events recorded before the August 25 correction used `last` while claiming to be cumulative.
@@ -168,6 +183,7 @@ history, while the JSON step records and bounded session export identify the cur
 - `test/token-throughput-ui.test.mjs`
 
 See [[provider-installation-detection]], [[disposable-terminal-pools]], [[task-activity-overview]],
-[[interface-layout]], [[opencode-token-throughput-review]], and [[token-throughput-correction]].
+[[interface-layout]], [[opencode-token-throughput-review]], [[opencode-thinking-visibility-review]],
+and [[token-throughput-correction]].
 
 #relay #opencode #providers #telemetry #task-activity

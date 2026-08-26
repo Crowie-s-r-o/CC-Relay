@@ -2928,6 +2928,7 @@ const PLAN_STEP_TEXT_LIMIT = 220;
 const PLAN_EXPLANATION_LIMIT = 600;
 const PLAN_OWNER_LIMIT = 48;
 const GOAL_OBJECTIVE_LIMIT = 300;
+const REASONING_PREVIEW_LIMIT = 50_000;
 // `title` is hover-only and is not reliably announced by assistive technology, so it is a
 // convenience rather than the record. The lossless channel is the copied log.
 const ROW_TITLE_LIMIT = 600;
@@ -2943,6 +2944,13 @@ const PLAN_PARTIAL_NOTE = `${PLAN_PARTIAL_HINT}: the newest revision carried onl
 function clampText(value, limit) {
   const text = String(value ?? '');
   return text.length > limit ? `${text.slice(0, limit - 1).trimEnd()}…` : text;
+}
+
+function reasoningPreview(value) {
+  const text = String(value ?? '');
+  if (text.length <= REASONING_PREVIEW_LIMIT) return text;
+  const omitted = text.length - REASONING_PREVIEW_LIMIT;
+  return `${text.slice(0, REASONING_PREVIEW_LIMIT).trimEnd()}\n\n[${omitted.toLocaleString()} characters hidden from preview; Copy log retains the complete reasoning.]`;
 }
 
 // The rule renderEventStream already applies to sub-agents: a task that is no longer running
@@ -3347,7 +3355,7 @@ function eventPresentation(entry, task) {
       status: entry.completedEvent ? 'Complete' : 'Thinking',
       label: providerLabel(provider).toLowerCase(),
       streaming: Boolean(entry.startedEvent && !entry.completedEvent),
-      preview: summary,
+      preview: reasoningPreview(summary),
     };
   }
 

@@ -22,6 +22,14 @@ tags:
 > usage from the thread-wide total minus a fixed pre-attempt baseline, and divides cumulative output
 > only by task elapsed time. See [[token-throughput-correction]].
 
+> [!warning]
+> **August 26 reasoning follow-up:** the original OpenCode launch omitted `--thinking`.
+> OpenCode 1.18.23 defaults that option off for non-interactive runs, so session export could contain
+> a reasoning part that never reached Relay's JSON stream. Relay now requests thinking records,
+> normalizes them into the existing Task Activity reasoning item, and recovers them from export when
+> reconciliation is already required. Numeric reasoning usage remains the provider's value and is
+> never inferred from the visible text. See [[opencode-provider-and-token-throughput]].
+
 The review traced provider selection, validation, scheduling, process ownership, native session
 persistence, token accounting, retry isolation, event rendering, and cleanup. No blocking finding
 remains. OpenCode is limited to automatic direct Execute work, while Plan council, Turbo, Planner,
@@ -40,7 +48,7 @@ The installed OpenCode 1.18.23 CLI was also checked directly. Relay found it at
    catalog, and stores a disposable task without terminal-retention flags.
 3. The scheduler checks the project's independent OpenCode limit. The disposable pool reserves one
    virtual slot without launching Terminal.app.
-4. `OpenCodeRunner` starts `opencode run --format json --auto --dir <project>` with bounded streams,
+4. `OpenCodeRunner` starts `opencode run --format json --thinking --auto --dir <project>` with bounded streams,
    the Relay non-interactive instruction, attachments, and any saved session, model, or variant.
 5. The first valid native session identifier emits `opencode/session`. The queue immediately persists
    it as both the task conversation and provider session, including when a later stream record fails.

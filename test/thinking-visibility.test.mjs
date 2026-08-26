@@ -21,3 +21,10 @@ test('thinking visibility keeps counts and copied output aligned with the render
   assert.match(app, /state\.visibleEventEntries\s*\.map\(\(entry\) => eventCopyText/);
   assert.match(app, /updateEventControls\(filterCounts, reasoningCount\)/);
 });
+
+test('reasoning previews are bounded while Copy log keeps the stored text', () => {
+  assert.match(app, /const REASONING_PREVIEW_LIMIT = 50_000/);
+  assert.match(app, /preview: reasoningPreview\(summary\)/);
+  assert.match(app, /Copy log retains the complete reasoning/);
+  assert.match(app, /item\?\.type === 'reasoning'[\s\S]*?lines\.push\(\(item\.summary \|\| \[\]\)/);
+});

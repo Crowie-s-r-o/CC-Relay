@@ -859,6 +859,25 @@ test('thinking summaries are visible by default and can be removed from any even
   assert.equal(filterEventEntries(entries, 'highlights', { showThinking: false }).length, 1);
 });
 
+test('OpenCode reasoning stays toggleable telemetry instead of an AI response', () => {
+  const event = itemEvent('opencode-reasoning', 'completed', 'reasoning', {
+    kind: 'opencode',
+    item: {
+      status: 'completed',
+      summary: [{ text: 'Checking the native OpenCode response.' }],
+    },
+  });
+  event.payload.provider = 'opencode';
+  const entries = groupEventEntries([event]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(eventEntryCategory(entries[0]), 'system');
+  assert.equal(eventStreamStats(entries).messages, 0);
+  assert.equal(filterEventEntries(entries, 'all').length, 1);
+  assert.equal(filterEventEntries(entries, 'all', { showThinking: false }).length, 0);
+  assert.equal(filterEventEntries(entries, 'highlights').length, 0);
+});
+
 /* Plan checklist and Codex goal ----------------------------------------------
    Plan events carry no `payload.item.id`, so without a dedicated fold every
    revision would land in the generic `event-<id>` branch and the scrollback

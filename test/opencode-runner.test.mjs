@@ -43,6 +43,18 @@ test('OpenCode runner streams native messages and cumulative token usage', async
     onStderr: () => {},
   });
   child.stdout.write(`${JSON.stringify({ type: 'step_start', sessionID: 'session-7', part: {} })}\n`);
+  const reasoningRecord = JSON.stringify({
+    type: 'reasoning',
+    sessionID: 'session-7',
+    part: {
+      id: 'reasoning-7',
+      messageID: 'message-7',
+      text: 'Checking the requested behavior.',
+      time: { start: 1, end: 2 },
+    },
+  });
+  child.stdout.write(`${reasoningRecord}\n`);
+  child.stdout.write(`${reasoningRecord}\n`);
   child.stdout.write(`${JSON.stringify({ type: 'step_finish', sessionID: 'session-7', part: { tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 30, write: 4 } } } })}\n`);
   child.stdout.write(`${JSON.stringify({ type: 'step_finish', sessionID: 'session-7', part: { tokens: { input: 40, output: 10, reasoning: 2, cache: { read: 8, write: 1 } } } })}\n`);
   child.stdout.write(`${JSON.stringify({ type: 'text', sessionID: 'session-7', part: { text: 'Finished work.' } })}\n`);
@@ -54,8 +66,8 @@ test('OpenCode runner streams native messages and cumulative token usage', async
   assert.equal(outcome.finalResponse, 'Finished work.');
   assert.equal(outcome.sessionId, 'session-7');
   assert.equal(calls[0].command, '/bin/opencode');
-  assert.deepEqual(calls[0].args.slice(0, 7), [
-    'run', '--format', 'json', '--auto', '--dir', '/repo', '--model',
+  assert.deepEqual(calls[0].args.slice(0, 8), [
+    'run', '--format', 'json', '--thinking', '--auto', '--dir', '/repo', '--model',
   ]);
   assert.ok(calls[0].args.includes('anthropic/claude-sonnet-4'));
   assert.ok(calls[0].args.includes('/repo/reference.png'));
@@ -67,6 +79,13 @@ test('OpenCode runner streams native messages and cumulative token usage', async
   assert.equal(usageEvents[0].event.usage.totalTokens, 159);
   assert.equal(usageEvents[1].event.usage.totalTokens, 220);
   assert.equal(usageEvents[1].event.source, 'native');
+  const reasoningEvents = events.filter((entry) => entry.event.item?.type === 'reasoning');
+  assert.equal(reasoningEvents.length, 1);
+  const [reasoning] = reasoningEvents;
+  assert.equal(reasoning.event.type, 'item/completed');
+  assert.equal(reasoning.event.provider, 'opencode');
+  assert.equal(reasoning.event.item.id, 'reasoning-7');
+  assert.equal(reasoning.event.item.summary[0].text, 'Checking the requested behavior.');
 });
 
 test('OpenCode run arguments resume the native session and omit the default model', () => {
@@ -77,8 +96,8 @@ test('OpenCode run arguments resume the native session and omit the default mode
     prompt: 'Continue',
     attachments: [],
   });
-  assert.deepEqual(args.slice(0, 8), [
-    'run', '--format', 'json', '--auto', '--dir', '/repo', '--session', 'session-9',
+  assert.deepEqual(args.slice(0, 9), [
+    'run', '--format', 'json', '--thinking', '--auto', '--dir', '/repo', '--session', 'session-9',
   ]);
   assert.equal(args.includes('--model'), false);
 });
@@ -205,6 +224,11 @@ test('OpenCode reconciles a missing final stream event from its native session e
             time: { created: 1_100 },
           },
           parts: [
+            {
+              id: 'reasoning-10',
+              type: 'reasoning',
+              text: 'Recovering the missing stream records.',
+            },
             { id: 'text-10', type: 'text', text: 'Recovered response.' },
             {
               id: 'finish-10',
@@ -248,6 +272,9 @@ test('OpenCode reconciles a missing final stream event from its native session e
   const response = events.find((entry) => entry.event.type === 'opencode/message');
   assert.equal(response.event.text, 'Recovered response.');
   assert.equal(response.event.reconciledFrom, 'session-export');
+  const reasoning = events.find((entry) => entry.event.item?.type === 'reasoning');
+  assert.equal(reasoning.event.reconciledFrom, 'session-export');
+  assert.equal(reasoning.event.item.summary[0].text, 'Recovering the missing stream records.');
 });
 
 test('OpenCode session snapshots isolate this run and prefer step-finish usage', () => {
@@ -260,7 +287,10 @@ test('OpenCode session snapshots isolate this run and prefer step-finish usage',
           time: { created: 500 },
           tokens: { total: 9_999 },
         },
-        parts: [{ type: 'text', text: 'Old response.' }],
+        parts: [
+          { id: 'reasoning-old', type: 'reasoning', text: 'Inspecting old work.' },
+          { type: 'text', text: 'Old response.' },
+        ],
       },
       {
         info: {
@@ -270,6 +300,7 @@ test('OpenCode session snapshots isolate this run and prefer step-finish usage',
           tokens: { total: 9_999 },
         },
         parts: [
+          { id: 'reasoning-current', type: 'reasoning', text: 'Inspecting current work.' },
           { type: 'text', text: 'Current response.' },
           { id: 'finish-current', type: 'step-finish', tokens: { total: 120 } },
         ],
@@ -278,5 +309,11 @@ test('OpenCode session snapshots isolate this run and prefer step-finish usage',
   }, { messageIds: ['current-message'], startedAt: 1_000 });
 
   assert.equal(snapshot.usage.totalTokens, 120);
+  assert.equal(snapshot.usage.reasoningTokens, 0);
   assert.equal(snapshot.finalResponse, 'Current response.');
+  assert.deepEqual(snapshot.reasoningParts, [{
+    id: 'reasoning-current',
+    messageId: 'current-message',
+    text: 'Inspecting current work.',
+  }]);
 });

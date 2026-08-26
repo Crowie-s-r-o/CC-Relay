@@ -7,6 +7,16 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **August 26: OpenCode reasoning is now visible through the Thinking switch.** OpenCode 1.18.23
+> suppresses reasoning records by default in non-interactive mode, even though the durable session
+> export can contain them. Relay now launches JSON runs with `--thinking`, converts native reasoning
+> parts into the existing escaped and filterable Task Activity rows, and recovers them during bounded
+> export reconciliation. Reasoning text stays independent from the numeric provider usage field, so
+> a provider-reported zero remains zero instead of becoming an estimate. See
+> [[opencode-provider-and-token-throughput]], [[opencode-thinking-visibility-review]], and
+> [[interface-layout]].
+
+> [!important]
 > **August 25: inflated token speed now uses current-attempt output accounting.** Real Codex tasks
 > proved that `thread/tokenUsage/updated.last` is one response, not a cumulative task total, and
 > that input plus output over wall time is not generation speed. Relay now subtracts a fixed
