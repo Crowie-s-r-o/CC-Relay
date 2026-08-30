@@ -2,6 +2,16 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.27] - 2026-08-30
+
+### Added
+
+- OpenCode reasoning is now exposed in the relay.
+
+### Fixed
+
+- Token throughput now remains accurate.
+
 ## [0.2.26] - 2026-08-26
 
 ### Added
