@@ -43,7 +43,7 @@ You can choose:
 - Optional reference images
 - Normal queueing or priority execution
 
-The project's Codex, Claude, and OpenCode limits control how many independent direct tasks can run at once. Every fresh task receives a fresh conversation. Codex and Claude support explicit continuation, serialized against any other work using that conversation ID. OpenCode saves its native session ID and resumes it when the same task is retried. **Keep task terminals open** applies only to Codex and Claude and is disabled by default for each project. Enabling it keeps the final window connected without consuming an active task slot, and Continue session or Retry reuses it while it remains idle. The choice affects only the selected project and applies to new tasks immediately.
+The project's Codex, Claude, and OpenCode limits control how many independent direct tasks can run at once. Every fresh task receives a fresh conversation. Codex and Claude support explicit continuation, serialized against any other work using that conversation ID. OpenCode saves its native session ID and resumes it when the same task is retried. **Keep task terminals open** applies only to Codex and Claude and is disabled by default for each project. Enabling it keeps the final window connected without consuming an active task slot, and Continue session or Retry reuses it while it remains idle. Direct Terminal session mode tasks stay open for more turns until the operator completes them or their retained terminal closes. The choice affects only the selected project and applies to new tasks immediately.
 
 **Best for:** well-defined work that needs one agent and one execution context.
 
@@ -98,7 +98,7 @@ You can choose:
 
 ### Project Launchpad
 
-Pin frequently used folders and treat each one as a workspace. A project card scopes tasks, activity, plans, provider settings, and instance limits. The composer offers Claude, Codex, and OpenCode automatically only for runnable work.
+Pin frequently used folders and treat each one as a workspace. A project card scopes tasks, activity, plans, provider settings, and instance limits. Drag a card by its grip to reorder the Launchpad, or focus the grip and use Left or Right. The order persists across restarts without changing the selected project. The composer offers Claude, Codex, and OpenCode automatically only for runnable work.
 
 ### Task queue and CC Relay assignment
 
@@ -126,7 +126,7 @@ Run now places an urgent task ahead of other waiting tasks. It does not interrup
 
 ### Push-to-talk voice input
 
-The task composer supports optional local dictation. Enable it in **Terminal settings**, set up the local engine once, then hold the configured activation keys while the CC Relay window is active. Releasing the main key or any required modifier immediately stops the microphone, runs faster-whisper on the CPU, and inserts the transcript at the current prompt selection. The on-screen microphone control follows the same hold and release behavior.
+The task composer supports optional local dictation. Enable it in **Terminal settings**, select the system default or a named microphone, set up the local engine once, then hold the configured activation keys while the CC Relay window is active. Releasing the main key or any required modifier immediately stops the microphone, runs faster-whisper on the CPU, and inserts the transcript at the current prompt selection. The on-screen microphone control follows the same hold and release behavior. A saved named input is resolved again after desktop origin changes, and an empty low-bitrate clip identifies the microphone that captured silence so a virtual or disconnected source is not mistaken for a speech-model failure.
 
 The default primary shortcut is `Ctrl+Shift+Space`, and an optional alternate shortcut can trigger the same recording. Each shortcut button accepts an exact combination of Control, Alt, Shift, or Meta plus a supported letter, digit, function, punctuation, space, Caps Lock, or numpad key. Both choices are app-wide durable preferences.
 
@@ -142,7 +142,7 @@ Right-click a task card to attach My messages, AI responses, or Both to the new-
 
 ### Task activity
 
-CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, Conversation, My messages, and AI messages. A separate **Thinking** switch starts on and can hide provider-exposed Codex reasoning summaries and OpenCode reasoning blocks without changing the selected view. Conversation keeps both speakers together in chronological order. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex, Claude, or OpenCode response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Signal counts, the status bar, and Copy log all follow the same visible set. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
+CC Relay converts raw provider events into a readable activity stream containing commands, tool calls, file changes, messages, errors, and final results. The filter rail shows live counts for All, Highlights, Commands, Conversation, My messages, and AI messages. A separate **Thinking** switch starts on and can hide provider-exposed Codex reasoning summaries and OpenCode reasoning blocks without changing the selected view. Conversation keeps both speakers together in chronological order. My messages includes the canonical original request plus accepted updates, while AI messages includes only actual Codex, Claude, or OpenCode response text and excludes provider status notices. Filtered rows keep their original signal numbers, and tool rows show elapsed time when the provider reports it. Signal counts, the status bar, and Copy log all follow the same visible set. Task Activity text can also be selected directly; live refreshes preserve the range, and the desktop right-click menu exposes native Copy. Prompt Copy writes only the user-authored prompt bodies, without generated numbering or an Original request label.
 
 ### OpenCode execution and native token accounting
 

@@ -3,6 +3,9 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import {
+  normalizeVoiceInputPreferences as normalizeRendererVoiceInputPreferences,
+} from '../public/voice-input.js';
 import { RelayDatabase } from '../src/database.mjs';
 import {
   normalizeUiPreferences,
@@ -40,6 +43,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
       enabled: false,
       shortcut: 'Control+Shift+Space',
       alternateShortcut: null,
+      microphoneLabel: null,
     },
   });
   assert.equal(normalizeUiPreferences({ panelWidths: { composer: 399, queue: 500 } }), null);
@@ -59,6 +63,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
     enabled: false,
     shortcut: 'Control+Shift+Space',
     alternateShortcut: null,
+    microphoneLabel: null,
   });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
@@ -97,10 +102,12 @@ test('voice input preferences keep two distinct canonical configurable shortcuts
     enabled: true,
     shortcut: 'Meta+Shift+KeyV',
     alternateShortcut: 'Control+F5',
+    microphoneLabel: '  Desk   microphone  ',
   }), {
     enabled: true,
     shortcut: 'Shift+Meta+KeyV',
     alternateShortcut: 'Control+F5',
+    microphoneLabel: 'Desk microphone',
   });
   assert.equal(normalizeVoiceInputPreferences({
     shortcut: 'F5',
@@ -110,6 +117,16 @@ test('voice input preferences keep two distinct canonical configurable shortcuts
     shortcut: 'F5',
     alternateShortcut: 'Enter',
   }).alternateShortcut, null);
+  const sharedPreference = {
+    enabled: true,
+    shortcut: 'Meta+Shift+KeyV',
+    alternateShortcut: 'Control+F5',
+    microphoneLabel: '  Desk   microphone  ',
+  };
+  assert.deepEqual(
+    normalizeRendererVoiceInputPreferences(sharedPreference),
+    normalizeVoiceInputPreferences(sharedPreference),
+  );
 });
 
 test('UI preferences persist in durable shared configuration', () => {
@@ -130,6 +147,7 @@ test('UI preferences persist in durable shared configuration', () => {
       enabled: true,
       shortcut: 'Alt+F8',
       alternateShortcut: 'Meta+KeyV',
+      microphoneLabel: 'Desk microphone',
     },
   });
   let database = new RelayDatabase(databasePath, { projectConfigPath: configPath });

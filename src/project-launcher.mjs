@@ -227,19 +227,21 @@ export function claudeRelayCommand(
   const settingsArgument = settings
     ? ` --settings ${quote(JSON.stringify(settings))}`
     : '';
-  // A task-owned launch carries the queued turn's model and effort so the terminal is already
-  // configured when it opens. `--permission-mode` is deliberately refused here: the relaunch
-  // command emits it INSTEAD of `--dangerously-skip-permissions`, so wiring it into this builder
-  // without that exclusion would silently send both. Council stages keep the relaunch path.
-  if (launchSettings?.permissionMode || launchSettings?.tools?.length
-    || launchSettings?.addDirectories?.length) {
-    throw new Error('A Claude terminal launch command carries model and effort only.');
-  }
+  // A task-owned launch carries the complete queued turn settings so the first provider process
+  // is ready before prompt delivery. Plan mode replaces the unrestricted permission flag.
+  const permissionArgument = launchSettings?.permissionMode
+    ? ` --permission-mode ${quote(launchSettings.permissionMode)}`
+    : ' --dangerously-skip-permissions';
   const launchArguments = [
     ...(launchSettings?.model ? [' --model ', quote(launchSettings.model)] : []),
     ...(launchSettings?.effort ? [' --effort ', quote(launchSettings.effort)] : []),
+    ...(launchSettings?.tools?.length
+      ? [' --tools ', quote(launchSettings.tools.join(','))]
+      : []),
+    ...(launchSettings?.addDirectories || [])
+      .flatMap((directory) => [' --add-dir ', quote(directory)]),
   ].join('');
-  return `${bin} --dangerously-skip-permissions${sessionArgument}${launchArguments}${settingsArgument}`;
+  return `${bin}${permissionArgument}${sessionArgument}${launchArguments}${settingsArgument}`;
 }
 
 export function normalizeTerminalLayout(layout) {
@@ -1202,8 +1204,8 @@ JSON.stringify(screens.map((screen, index) => {
     // Codex receives model and effort on its first TUI command so a newly opened planner or
     // worker window identifies the settings that its app-server turn will use.
     codexLaunchSettings = null,
-    // A task-owned Claude launch passes the queued turn's { model, effort } here so the first
-    // command is already configured. Interactive Launchpad launches never set it, which is what
+    // A task-owned Claude launch passes the queued turn settings here so the first command is
+    // already configured. Interactive Launchpad launches never set it, which is what
     // keeps the user-facing "Launch Claude in project" command exactly as documented.
     claudeLaunchSettings = null,
   } = {}) {
@@ -1213,7 +1215,7 @@ JSON.stringify(screens.map((screen, index) => {
       throw new Error(`Unsupported AI provider: ${provider}`);
     }
     if (claudeLaunchSettings && provider !== 'claude') {
-      throw new Error('Only a Claude terminal launch can carry model and effort settings.');
+      throw new Error('Only a Claude terminal launch can carry Claude settings.');
     }
     if (codexLaunchSettings && provider !== 'codex') {
       throw new Error('Only a Codex terminal launch can carry model and effort settings.');

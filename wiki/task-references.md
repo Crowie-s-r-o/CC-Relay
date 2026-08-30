@@ -41,7 +41,7 @@ The expanded prompt is the durable record. There is no task-reference database s
 
 ## UI and accessibility
 
-`#task-reference-menu` is one fixed menu outside the periodically rebuilt task list. It clamps to the viewport, closes on outside pointer input, scroll, resize, or Escape, and returns focus to the source card after a keyboard dismissal. Menu items support Arrow keys, Home, and End. A right-click inside selected card text keeps the native browser menu so Copy still works. The composer tickets use a perforated task-number edge as their single visual signature and have matching compact and dark-theme rules.
+`#task-reference-menu` is one fixed menu outside the periodically rebuilt task list. It clamps to the viewport, closes on outside pointer input, scroll, resize, or Escape, and returns focus to the source card after a keyboard dismissal. Menu items support Arrow keys, Home, and End. A right-click inside selected card text keeps the native browser menu so Copy still works. The Electron main process supplies that selected-text Copy menu because `BrowserWindow` has no automatic page context menu. The composer tickets use a perforated task-number edge as their single visual signature and have matching compact and dark-theme rules. See [[stable-text-selection]].
 
 ## Files and verification
 

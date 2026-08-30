@@ -1,6 +1,6 @@
 ---
 name: Claude Launch Settings
-description: Task model and effort travel on the first disposable Claude launch command, and the pid-bound proof that lets the executor skip its stop-and-relaunch.
+description: Complete task settings travel on the first disposable Claude launch command, with pid-bound proof that lets the executor skip its stop-and-relaunch.
 type: architecture
 tags:
   - relay
@@ -12,9 +12,10 @@ tags:
 # Claude Launch Settings
 
 > [!important]
-> A disposable Claude terminal for a direct Execute task now opens **already configured**. The
-> queued turn's `--model` and `--effort` are on the first launch command, next to the session
-> argument and the hook `--settings` payload that were already there. `ClaudeTerminalExecutor`
+> A disposable Claude terminal for direct Execute or Plan council now opens **already configured**.
+> Direct work carries `--model` and `--effort`. Plan council also carries its plan permission,
+> tool allowlist, and attachment directories. These are on the first launch command next to the
+> session argument and hook `--settings` payload. `ClaudeTerminalExecutor`
 > skips `relaunchForTask` when the launcher can prove the live process is the one it started with
 > exactly those settings. Every uncertainty keeps the old stop-and-relaunch unchanged.
 
@@ -42,8 +43,10 @@ stored task row through the same function, so "the settings match" is a fact and
 
 - `claudeTerminalExecutionSettings(task)` is what the executor would relaunch with. It moved here
   out of `src/claude-terminal-executor.mjs` unchanged.
+- `claudeCompleteLaunchSettings(task)` removes the runtime `apply` marker and returns the complete
+  settings object accepted by a task-owned launch.
 - `claudeFirstLaunchSettings(task)` is the subset a first launch may carry: **model and effort
-  only**, and `null` for anything else.
+  only**, for direct Execute compatibility.
 - `claudeLaunchSettingsRecord(launchSettings, hookSettings)` is the structured fact stored against
   one exact native launch, including the hook payload in its serialized form.
 - `claudeLaunchSettingsMatch(recorded, settings, hookSettings)` is a total comparison over model,
@@ -56,6 +59,7 @@ stored task row through the same function, so "the settings match" is a fact and
 claude --dangerously-skip-permissions --session-id <fresh-uuid>   --model <model> --effort <effort> --settings <hooks>
 claude --dangerously-skip-permissions --resume     <conversation> --model <model> --effort <effort> --settings <hooks>
 claude --dangerously-skip-permissions --session-id <saved-uuid>   --model <model> --effort <effort> --settings <hooks>
+claude --permission-mode plan --session-id <council-uuid> --model <model> --effort <effort> --tools <tools> --add-dir <attachments> --settings <hooks>
 ```
 
 The hook `--settings` payload needed no change. `ClaudeHookBridge.settingsForSession()` already
@@ -63,10 +67,10 @@ mints a **stable per-session token**, and the launcher already called it, so the
 command is byte-identical to what `register()` hands the executor later. Registration therefore
 stays where it is, immediately before the turn.
 
-`claudeRelayCommand()` **throws** if it is handed a permission mode, a tool list, or
-add-directories. The relaunch command emits `--permission-mode <mode>` *instead of*
-`--dangerously-skip-permissions`; a future caller that wired plan mode through the launch builder
-without that exclusion would silently send both.
+`claudeRelayCommand()` emits `--permission-mode <mode>` instead of
+`--dangerously-skip-permissions` when complete Plan council settings are present. Tool lists and
+add-directories travel on that same command. Tests reject the conflicting unrestricted flag from
+the resulting Plan command.
 
 ## Skip conditions
 
@@ -104,12 +108,10 @@ production evidence that the churn is gone.
 
 ## Preserved fallbacks
 
-- **Plan council and Turbo keep the relaunch.** Their Claude stage synthesizes its settings at run
-  time (`claudeStageTask` swaps in the council author's model and adds plan mode plus a tool
-  allowlist), so the pool cannot derive them from the stored row without mirroring literals in a
-  second place. Mirroring them wrong and *agreeing* would run a council stage misconfigured with
-  no relaunch to correct it, which is strictly worse than the churn. Unifying this means routing
-  `claudeStageTask` through `claudeFirstLaunchSettings`, which is a separate change.
+- **Plan council shares one stage-task builder.** The pool derives its complete first-launch
+  settings through `claudeCouncilLaunchTask`, and the runner uses the same builder for execution.
+  Model, effort, permission mode, tools, and attachment directories therefore cannot drift.
+- **Turbo keeps the relaunch.** Its Claude stage still synthesizes settings separately at run time.
 - **Legacy interactive Launchpad launches are unchanged.** The user-facing "Launch Claude in
   project" buttons pass no launch settings, so their command is byte-identical to before and their
   terminals are never treated as pre-configured.

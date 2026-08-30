@@ -12,7 +12,10 @@ CC Relay stores the Launchpad project catalog in a dedicated per-user SQLite dat
 - Windows: `~/AppData/Roaming/dual-agent-orchestrator/relay-config.sqlite`
 - Linux: `~/.config/dual-agent-orchestrator/relay-config.sqlite`
 
-The shared records include pinned project path, display name, order, last launch time, maximum Codex, Claude, and OpenCode instances, terminal retention, legacy idle routing, terminal layout, the optional default Standup prompt, and the active project path. The renderer reads projects and the active path from `GET /api/projects`, writes explicit selections through `POST /api/projects/active`, saves terminal choices through `PATCH /api/projects/:id/settings`, and saves Standup guidance through `PATCH /api/projects/:id/standup-prompt`.
+The shared records include pinned project path, display name, order, last launch time, maximum Codex, Claude, and OpenCode instances, terminal retention, legacy idle routing, terminal layout, the optional default Standup prompt, and the active project path. The renderer reads projects and the active path from `GET /api/projects`, writes explicit selections through `POST /api/projects/active`, saves order through `POST /api/projects/reorder`, saves terminal choices through `PATCH /api/projects/:id/settings`, and saves Standup guidance through `PATCH /api/projects/:id/standup-prompt`.
+
+> [!important]
+> Project reorder writes carry both the complete expected ID order and the complete replacement ID order. `ProjectConfigStore.reorderProjects()` locks the shared database, rejects a stale expected order, rejects missing or duplicate IDs, and renumbers every row in one transaction. This prevents one live backend from silently overwriting an order saved by the other backend.
 
 ## Isolation boundary
 

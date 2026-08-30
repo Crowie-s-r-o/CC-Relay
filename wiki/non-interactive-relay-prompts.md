@@ -28,7 +28,7 @@ The notice is added at the final provider boundary rather than when a task is sa
 
 `withRelayNonInteractiveInstruction()` is idempotent, so a prompt that already carries the exact notice is not decorated twice. The added completion-depth sentence remains on the same logical line as the rest of the notice, preserving the three-line shape of a one-line Claude live follow-up and its existing guarded paste-delivery contract.
 
-This placement preserves the original prompt in the database, Task Activity, prompt history, task artifacts, retry identity, and continuation events. Only the provider-delivered text is decorated.
+This placement preserves the canonical prompt in the database, prompt history, task artifacts, retry identity, and continuation events. Task Activity uses that canonical record when no provider echo exists. When a completed follow-up has both Relay's provisional receipt and a later provider echo, the conversation keeps only the provider event and shows its delivery-time notice. See [[terminal-conversation-filters]].
 
 ## Existing fallback behavior
 

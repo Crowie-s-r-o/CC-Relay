@@ -211,6 +211,10 @@ test('automatic terminals default closed and apply the project terminal mode imm
   assert.match(server, /sourceTask\.keep_terminal_open/);
   assert.match(server, /const connectedThread = resumeDisposable[\s\S]*retainedThread \|\|/);
   assert.match(style, /\.terminal-keep-open-option input:checked/);
+  assert.match(composer, /class="connection-help"[\s\S]*?id="keep-terminal-open-option"[\s\S]*?id="terminal-settings-button"/);
+  assert.match(composer, /class="terminal-status-line"[\s\S]*?id="session-message"[\s\S]*?id="terminal-pool-controls"/);
+  assert.match(style, /\.terminal-keep-open-option \{[\s\S]*?display: inline-flex;[\s\S]*?min-height: 26px;/);
+  assert.match(style, /\.button\.compact\.terminal-settings-button \{[\s\S]*?height: 26px;[\s\S]*?min-height: 26px;/);
 });
 
 test('a Codex launch timeout explains a possible required update in the app', () => {

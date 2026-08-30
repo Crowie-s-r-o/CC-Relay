@@ -66,6 +66,28 @@ function sameProjects(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function normalizeProjectOrder(ids, label) {
+  if (!Array.isArray(ids)) throw new Error(`${label} must be an array.`);
+  const normalized = ids.map((id) => Number(id));
+  if (normalized.some((id) => !Number.isInteger(id) || id <= 0)) {
+    throw new Error(`${label} must contain positive integer project IDs.`);
+  }
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error(`${label} cannot contain duplicate project IDs.`);
+  }
+  return normalized;
+}
+
+function sameOrder(left, right) {
+  return left.length === right.length && left.every((id, index) => id === right[index]);
+}
+
+function sameProjectIds(left, right) {
+  if (left.length !== right.length) return false;
+  const expected = new Set(left);
+  return right.every((id) => expected.has(id));
+}
+
 export class ProjectConfigStore {
   constructor(filePath, { database = null, legacyDatabase = null } = {}) {
     this.filePath = resolve(filePath);
@@ -399,6 +421,32 @@ export class ProjectConfigStore {
     `).run(terminalLayout ? JSON.stringify(terminalLayout) : null);
     const projects = this.listProjects();
     this.syncLegacyMirror();
+    return projects;
+  }
+
+  reorderProjects(projectIds, expectedProjectIds) {
+    const nextIds = normalizeProjectOrder(projectIds, 'Project order');
+    const expectedIds = normalizeProjectOrder(expectedProjectIds, 'Expected project order');
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const currentIds = projectRows(this.database).map((project) => project.id);
+      if (!sameOrder(currentIds, expectedIds)) {
+        throw new Error('The project order changed while it was being reordered. Refresh and try again.');
+      }
+      if (!sameProjectIds(currentIds, nextIds)) {
+        throw new Error('Project order must contain every pinned project exactly once.');
+      }
+      const updatePosition = this.database.prepare(`
+        UPDATE projects SET position = ? WHERE id = ?
+      `);
+      nextIds.forEach((id, index) => updatePosition.run(index + 1, id));
+      this.database.exec('COMMIT');
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+    const projects = projectRows(this.database);
+    this.syncLegacyMirror(projects);
     return projects;
   }
 

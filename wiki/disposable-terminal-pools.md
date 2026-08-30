@@ -80,13 +80,15 @@ Retention promotion follows the same fail-closed rule. If an exact launch cannot
 
 - Direct Execute: one instance of the chosen Codex, Claude, or OpenCode provider.
 - Planner breakdown: one instance of the chosen Codex or Claude provider.
-- Execute Plan council: one Claude author instance and one Codex reviewer instance.
+- Execute Plan council: every provider that still owns an unfinished checkpoint stage. A new council needs one Claude and one Codex instance. A final-revision-only resume needs only the original author provider.
 - Automatic Turbo planning or execution parent: one Codex slot at a time.
 - A Turbo council stage: one additional Claude slot only while Claude owns the active author or review stage.
 
 A task whose requirement is larger than the project's configured maximum is rejected when it is submitted. Turbo applies an additional pipeline configuration check: the Codex maximum must fit one planning lane plus the selected number of concurrent execution lanes. Lowering limits is also refused when it would strand a disposable task that is already queued.
 
-Plan council still allocates both provider terminals before its execution begins. Turbo opens only the stage that is about to run. A partial stage launch failure closes that exact launch before capacity is reported free.
+Plan council allocates both provider terminals before a new execution begins. On resume, it reconstructs `plan.json`, `draft.md`, and `review.md` before scheduling and launches only providers that still own unfinished stages. A saved draft plus review opens one fresh author terminal for revision and does not reopen the completed reviewer. Turbo opens only the stage that is about to run. A partial stage launch failure closes that exact launch before capacity is reported free.
+
+If all three provider stages are checkpointed but the final project-local `plan.md` write failed, the council has a zero-provider requirement. It may run without pool capacity, launches no terminal, and retries only the canonical artifact write.
 
 > [!important]
 > A disposable Plan council is globally serialized against another Plan council or Turbo parent because `PlanCouncilRunner` still owns one council at a time. It is not a same-project drain barrier for disposable single-session work. A council may start beside running Execute or Planner breakdown tasks, and those tasks may start beside the council, when the combined atomic requirements fit the project's separate Codex and Claude limits. Legacy persistent councils keep the former project-draining barrier.
@@ -108,9 +110,11 @@ See [[codex-update-prompt-freeze]].
 
 A direct Execute Claude launch, fresh or resumed, carries the queued turn's model and effort on
 that first command, so the terminal opens already configured and `ClaudeTerminalExecutor` no longer
-stops and relaunches the process the user just watched open. The skip requires a structured,
-pid-bound record of what CC Relay itself launched; Plan council, Turbo, adopted terminals, and
-interactive Launchpad launches keep the existing relaunch. See [[claude-launch-settings]].
+stops and relaunches the process the user just watched open. Plan council also carries its complete
+model, effort, plan permission, tool allowlist, and attachment directory settings on the first
+process. The skip requires a structured, pid-bound record of what CC Relay itself launched;
+Turbo, adopted terminals, and interactive Launchpad launches keep the existing relaunch. See
+[[claude-launch-settings]].
 
 A task-owned Codex launch also carries its selected model and reasoning effort on the first native command. Turbo uses this to make the planning terminal visibly match the planner settings and the later execution terminal visibly match the execution settings. The app-server turn still receives the same validated pair, so the terminal and task activity cannot disagree.
 

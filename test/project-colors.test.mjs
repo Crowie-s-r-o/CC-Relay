@@ -88,8 +88,9 @@ test('Relay and talent-finder resolve to clearly separated automatic hues', () =
 test('project identity remains visible across Launchpad and running-task cards', () => {
   assert.match(
     app,
-    /class="header-running-project">\$\{escapeHtml\(project\)\}<\/span> · \$\{escapeHtml\(relay\)\}/,
+    /class="header-running-prompt"[\s\S]{0,220}class="header-running-project"[\s\S]{0,120}\$\{escapeHtml\(project\)\}/,
   );
+  assert.match(app, /class="header-running-loc">\$\{escapeHtml\(relay\)\}<\/span>/);
   assert.match(
     style,
     /\.project-chip\[class\*="project-color-"\] \{[\s\S]*?border-color: color-mix\(in srgb, var\(--project-accent\) 12%, var\(--line\)\);[\s\S]*?background: color-mix\(in srgb, var\(--project-accent\) 4%, #fff\);/,
@@ -121,8 +122,9 @@ test('project identity remains visible across Launchpad and running-task cards',
   );
   assert.match(
     style,
-    /\.header-running-project \{\s*color: var\(--project-accent, var\(--running\)\);\s*font-weight: 800;/,
+    /\.header-running-project \{[\s\S]*?flex: 0 0 auto;[\s\S]*?min-width: 3ch;[\s\S]*?color: var\(--project-accent, var\(--running\)\);[\s\S]*?text-overflow: ellipsis;/,
   );
+  assert.match(style, /\.header-running-task-name \{\s*flex: 1 1 0;\s*min-width: 0;/);
   assert.doesNotMatch(
     style,
     /\.header-running-task::before/,

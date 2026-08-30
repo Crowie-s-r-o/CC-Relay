@@ -14,9 +14,15 @@ import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import test from 'node:test';
 import {
+  createVoiceSignalMonitor,
+  discoverVoiceInputDevices,
+  enumerateVoiceInputDevices,
   PushToTalkRecorder,
   normalizeVoiceInputPreferences,
   preferredVoiceMimeType,
+  voiceRecordingLooksSilent,
+  voiceSignalDetected,
+  voiceSignalLevel,
   voiceShortcutFromKeyboardEvent,
   voiceShortcutKeyLabels,
   voiceShortcutLabel,
@@ -68,6 +74,7 @@ test('voice shortcuts are configurable, exact, and stop on any required key rele
     enabled: true,
     shortcut: captured,
     alternateShortcut: null,
+    microphoneLabel: null,
   });
   assert.deepEqual(normalizeVoiceInputPreferences({
     enabled: true,
@@ -77,6 +84,7 @@ test('voice shortcuts are configurable, exact, and stop on any required key rele
     enabled: true,
     shortcut: captured,
     alternateShortcut: 'F5',
+    microphoneLabel: null,
   });
   assert.equal(voiceShortcutMatches(keyEvent('KeyV', {
     ctrlKey: true,
@@ -122,9 +130,22 @@ class FakeMediaRecorder extends EventTarget {
   }
 }
 
-function fakeStream() {
-  const track = { stopped: false, stop() { this.stopped = true; } };
-  return { track, stream: { getTracks: () => [track] } };
+class EmptyMediaRecorder extends FakeMediaRecorder {
+  stop() {
+    this.state = 'inactive';
+    this.dispatchEvent(new Event('stop'));
+  }
+}
+
+function fakeStream(label = '') {
+  const track = { label, stopped: false, stop() { this.stopped = true; } };
+  return {
+    track,
+    stream: {
+      getTracks: () => [track],
+      getAudioTracks: () => [track],
+    },
+  };
 }
 
 test('push-to-talk records while held and ends the microphone stream on release', async () => {
@@ -147,6 +168,186 @@ test('push-to-talk records while held and ends the microphone stream on release'
   assert.ok(audio instanceof Blob);
   assert.equal(audio.type, 'audio/webm;codecs=opus');
   assert.deepEqual(states, ['requesting', 'listening', 'processing', 'captured']);
+});
+
+test('push-to-talk selects a named microphone and reports its exact source', async () => {
+  const source = fakeStream('Desk microphone');
+  const requests = [];
+  let recorded = null;
+  let now = 1_000;
+  const mediaDevices = {
+    enumerateDevices: async () => [
+      { kind: 'audioinput', deviceId: 'default', label: 'Default - Virtual audio' },
+      { kind: 'audioinput', deviceId: 'desk-mic', label: 'Desk microphone' },
+      { kind: 'videoinput', deviceId: 'camera', label: 'Camera' },
+    ],
+    getUserMedia: async (constraints) => {
+      requests.push(constraints);
+      return source.stream;
+    },
+  };
+  assert.deepEqual(await enumerateVoiceInputDevices(mediaDevices), [
+    { deviceId: 'default', label: 'Default - Virtual audio', isDefault: true },
+    { deviceId: 'desk-mic', label: 'Desk microphone', isDefault: false },
+  ]);
+  const recorder = new PushToTalkRecorder({
+    mediaDevices,
+    MediaRecorderClass: FakeMediaRecorder,
+    preferredDeviceLabel: 'Desk microphone',
+    now: () => now,
+    onAudio: (audio, metadata) => { recorded = { audio, metadata }; },
+  });
+  assert.equal(await recorder.press(), true);
+  now = 3_250;
+  assert.equal(recorder.release(), true);
+  assert.deepEqual(requests, [{
+    audio: {
+      autoGainControl: true,
+      channelCount: { ideal: 1 },
+      echoCancellation: true,
+      noiseSuppression: true,
+      deviceId: { exact: 'desk-mic' },
+    },
+    video: false,
+  }]);
+  assert.equal(recorded.metadata.deviceLabel, 'Desk microphone');
+  assert.equal(recorded.metadata.durationMs, 2_250);
+});
+
+test('settings reveal named microphones through one released permission stream', async () => {
+  const permissionSource = fakeStream('Default microphone');
+  let enumerations = 0;
+  const requests = [];
+  const mediaDevices = {
+    enumerateDevices: async () => {
+      enumerations += 1;
+      if (enumerations === 1) throw new Error('labels unavailable before permission');
+      return [
+        { kind: 'audioinput', deviceId: 'default', label: 'Default - AirPods Max' },
+        { kind: 'audioinput', deviceId: 'airpods', label: 'AirPods Max' },
+        { kind: 'audioinput', deviceId: 'teams', label: 'Microsoft Teams Audio' },
+      ];
+    },
+    getUserMedia: async (constraints) => {
+      requests.push(constraints);
+      return permissionSource.stream;
+    },
+  };
+  const devices = await discoverVoiceInputDevices(mediaDevices, { requestPermission: true });
+  assert.equal(devices.length, 3);
+  assert.equal(devices[1].label, 'AirPods Max');
+  assert.deepEqual(requests, [{ audio: true, video: false }]);
+  assert.equal(permissionSource.track.stopped, true);
+});
+
+test('saved microphone selection survives labels hidden on a new renderer origin', async () => {
+  const fallback = fakeStream('Virtual audio');
+  const selected = fakeStream('Desk microphone');
+  const requests = [];
+  let enumerations = 0;
+  const mediaDevices = {
+    enumerateDevices: async () => {
+      enumerations += 1;
+      return enumerations === 1
+        ? [{ kind: 'audioinput', deviceId: 'default', label: '' }]
+        : [
+          { kind: 'audioinput', deviceId: 'default', label: 'Default - Virtual audio' },
+          { kind: 'audioinput', deviceId: 'desk-mic', label: 'Desk microphone' },
+        ];
+    },
+    getUserMedia: async (constraints) => {
+      requests.push(constraints);
+      return constraints.audio.deviceId ? selected.stream : fallback.stream;
+    },
+  };
+  const recorder = new PushToTalkRecorder({
+    mediaDevices,
+    MediaRecorderClass: FakeMediaRecorder,
+    preferredDeviceLabel: 'Desk microphone',
+  });
+  assert.equal(await recorder.press(), true);
+  assert.equal(fallback.track.stopped, true);
+  assert.equal(selected.track.stopped, false);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].audio.deviceId, { exact: 'desk-mic' });
+  recorder.cancel();
+  assert.equal(selected.track.stopped, true);
+});
+
+test('encoded Opus silence is distinguished from a voiced recording', () => {
+  assert.equal(voiceRecordingLooksSilent(
+    new Blob([Buffer.alloc(968)], { type: 'audio/webm;codecs=opus' }),
+    2_880,
+  ), true);
+  assert.equal(voiceRecordingLooksSilent(
+    new Blob([Buffer.alloc(24_000)], { type: 'audio/webm;codecs=opus' }),
+    2_880,
+  ), false);
+  assert.equal(voiceRecordingLooksSilent(
+    new Blob([Buffer.alloc(100)], { type: 'audio/wav' }),
+    2_880,
+  ), false);
+});
+
+test('live microphone levels distinguish a speech signal and release audio analysis', () => {
+  const values = [];
+  let disconnected = 0;
+  let closed = 0;
+  let cleared = null;
+  class FakeAudioContext {
+    createMediaStreamSource() {
+      return {
+        connect() {},
+        disconnect() { disconnected += 1; },
+      };
+    }
+
+    createAnalyser() {
+      return {
+        fftSize: 0,
+        smoothingTimeConstant: 0,
+        getFloatTimeDomainData(samples) {
+          samples.fill(0.02);
+        },
+        disconnect() { disconnected += 1; },
+      };
+    }
+
+    resume() { return Promise.resolve(); }
+    close() { closed += 1; return Promise.resolve(); }
+  }
+  const monitor = createVoiceSignalMonitor({}, {
+    AudioContextClass: FakeAudioContext,
+    onLevel: (level, peakLevel) => values.push({ level, peakLevel }),
+    setIntervalFn: () => 71,
+    clearIntervalFn: (timer) => { cleared = timer; },
+  });
+  assert.ok(monitor);
+  assert.equal(voiceSignalDetected(monitor.peakLevel), true);
+  assert.ok(Math.abs(voiceSignalLevel(new Float32Array([0.02, -0.02])) - 0.02) < 0.00001);
+  assert.equal(voiceSignalDetected(voiceSignalLevel(new Float32Array(8))), false);
+  assert.equal(values.length, 1);
+  monitor.stop();
+  assert.equal(cleared, 71);
+  assert.equal(disconnected, 2);
+  assert.equal(closed, 1);
+});
+
+test('an empty clip names the microphone that produced no audio', async () => {
+  const source = fakeStream('Unfed virtual microphone');
+  const errors = [];
+  let now = 1_000;
+  const recorder = new PushToTalkRecorder({
+    mediaDevices: { getUserMedia: async () => source.stream },
+    MediaRecorderClass: EmptyMediaRecorder,
+    now: () => now,
+    onError: (error) => errors.push(error.message),
+  });
+  assert.equal(await recorder.press(), true);
+  now = 2_000;
+  recorder.release();
+  assert.deepEqual(errors, ['Unfed virtual microphone captured no microphone audio.']);
+  assert.equal(source.track.stopped, true);
 });
 
 test('releasing before microphone permission resolves never leaves capture running', async () => {
@@ -419,13 +620,20 @@ test('voice input UI, API, CPU worker, and packaged microphone disclosure stay c
   assert.match(html, /id="voice-input-enabled"[^>]*role="switch"/);
   assert.match(html, /id="voice-input-shortcut"[\s\S]*?id="voice-input-shortcut-label"/);
   assert.match(html, /id="voice-input-alternate-shortcut"[\s\S]*?id="voice-input-alternate-shortcut-label"/);
+  assert.match(html, /id="voice-input-microphone"/);
+  assert.match(html, /id="voice-input-device-status"/);
   assert.match(html, /id="voice-input-hold"[\s\S]*?Hold Ctrl\+Shift\+Space to talk/);
+  assert.match(html, /class="voice-input-meter"/);
   assert.match(html, /Release any activation key to stop/);
   assert.match(style, /\.voice-input-composer\[data-state="listening"\]/);
   assert.match(style, /html\[data-theme="dark"\] \.voice-input-composer/);
+  assert.match(style, /html\[data-theme="dark"\] \.voice-input-microphone-select/);
   assert.match(app, /\.find\(\(shortcut\) => shortcut && voiceShortcutMatches\(event, shortcut\)\)/);
   assert.match(app, /voiceShortcutReleased\(event, activeShortcut\)/);
   assert.match(app, /api\('\/api\/voice-input\/transcribe'/);
+  assert.match(app, /captured only digital silence\. Choose another input in Settings\./);
+  assert.match(app, /discoverVoiceInputDevices\(navigator\.mediaDevices, \{ requestPermission \}\)/);
+  assert.match(app, /Speech signal detected on/);
   assert.match(app, /elements\.prompt\.setRangeText\(replacement, start, end, 'end'\)/);
   assert.match(server, /pushToTalkVoiceInput: true/);
   assert.match(server, /pathname === '\/api\/voice-input\/setup'/);

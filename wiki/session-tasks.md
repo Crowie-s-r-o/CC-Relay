@@ -14,7 +14,7 @@ tags:
 
 A session task is a task row carrying `keep_terminal_open = true` with `terminal_lifecycle = 'disposable'`. Its retained native terminal survives the task outcome, and **Continue session** runs later turns in the same task row and saved conversation. The August 3, 2026 session-surface work makes these tasks visibly different and operable from CC Relay, aimed at long-running research sessions. Only direct single-session work gets the full session strip: `mode` execute or breakdown with provider codex or claude. Plan council keeps its workflow presentation. Turbo keeps its two-stage presentation and exposes continuation only for the final executor conversation.
 
-Direct Execute tasks created with the project's **Terminal session mode** also carry `manual_completion = true`. They alternate between `running` and `open`, accept unlimited same-task turns, and finish only through **Complete session**. Their stronger queue-card rail, manual badge, project activity state, completion control, recovery rules, and final continuation boundary are documented in [[manual-terminal-session-mode]]. Existing retained tasks without that flag still complete automatically and keep the original continuation behavior described on this page.
+Direct Execute tasks created with the project's **Terminal session mode** also carry `manual_completion = true`. They alternate between `running` and `open`, accept unlimited same-task turns, and finish through **Complete session** or confirmed retained-terminal closure. Their stronger queue-card rail, manual badge, project activity state, completion controls, recovery rules, and final continuation boundary are documented in [[manual-terminal-session-mode]]. Existing retained tasks without that flag still complete automatically and keep the original continuation behavior described on this page.
 
 ## Queue cards
 
@@ -25,8 +25,9 @@ Direct Execute tasks created with the project's **Terminal session mode** also c
 ## Task Activity session surface
 
 - `#session-strip` sits between the detail header and the plan preview: provider, relay, and model context, a state pill, the optional **Complete session** button, a **Close terminal** kill button, and `#session-strip-message` (`role="status"`) for outcomes. Status writes are inequality-guarded so the live region is not re-announced by the two-second poll.
-- Kill reuses the existing `DELETE /api/terminals/:threadId` and the per-thread `terminalControl` ownership state from `/api/threads`. The button is enabled only when `capabilities.terminalControl` is present, the session thread is listed, and `terminalControl.canClose === true`; a queued, running, or retrying task on the terminal blocks the close upstream in `terminalControlState`. `window.confirm` precedes the destructive call, and errors land in the strip message, never the composer.
+- Kill reuses the existing `DELETE /api/terminals/:threadId` and the per-thread `terminalControl` ownership state from `/api/threads`. The button is enabled only when `capabilities.terminalControl` is present, the session thread is listed, and `terminalControl.canClose === true`; a queued, running, or retrying task on the terminal blocks the close upstream in `terminalControlState`. `window.confirm` precedes the destructive call, and errors land in the strip message, never the composer. Closing an `open` manual session completes that task after the native close succeeds; closing a retained task that already has a terminal outcome changes no task outcome.
 - After a successful close, the server records a queue event on the retained task (`The retained terminal window was closed from CC Relay.`) selected by `retainedSessionTaskForThread()` in `src/terminal-control.mjs` (strict `keep_terminal_open === true` plus disposable lifecycle, highest task id wins, status-agnostic because the coordinator already refused active terminals). The event write is wrapped so it can never fail the close, and the route broadcasts `{ threads: true, tasks: true, taskId }`. Non-retained closes keep the original `{ threads: true }` payload.
+- A backend timer independently reconciles externally closed open manual sessions. Two distinct successful provider discoveries must omit the exact provider and thread ID before `TaskQueue.completeSessionAfterTerminalClose()` runs. Failed or stale discovery is ignored, a repeated consumer of one observation is deduplicated, and rediscovery resets the pending miss.
 - `#session-history` replaces the flat Prompts and Result disclosures for direct session tasks (both are hidden while their copy keys stay populated). Ordinary, plan, and turbo tasks render exactly as before; `promptSection.hidden` and `resultSection.hidden` are now assigned on every path.
 
 ## Conversation pairing
@@ -49,6 +50,7 @@ Direct Execute tasks created with the project's **Terminal session mode** also c
 
 - Older backend without `responses`: the timeline synthesizes from the task row; nothing crashes and no new capability flag was invented.
 - Missing `capabilities.terminalControl`: the kill button is disabled with a restart title.
+- Missing `capabilities.manualSessionTerminalCloseCompletion`: manual sessions retain the earlier explicit-only completion wording, and closing a retained terminal does not claim to complete the task.
 - Restart CC Relay (or rebuild the desktop bundle) to serve `responses` and the retained-close task event; a refreshed renderer degrades cleanly against an older process until then.
 
 ## Files and coverage

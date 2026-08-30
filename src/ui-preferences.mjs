@@ -47,10 +47,14 @@ export function normalizeVoiceInputShortcut(value) {
 export function normalizeVoiceInputPreferences(value) {
   const shortcut = normalizeVoiceInputShortcut(value?.shortcut);
   const alternateShortcut = canonicalVoiceInputShortcut(value?.alternateShortcut);
+  const microphoneLabel = typeof value?.microphoneLabel === 'string'
+    ? value.microphoneLabel.trim().replace(/\s+/g, ' ').slice(0, 200) || null
+    : null;
   return {
     enabled: value?.enabled === true,
     shortcut,
     alternateShortcut: alternateShortcut === shortcut ? null : alternateShortcut,
+    microphoneLabel,
   };
 }
 

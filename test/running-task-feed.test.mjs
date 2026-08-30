@@ -90,6 +90,35 @@ test('latest token usage keeps only cumulative native provider statistics', () =
   });
 });
 
+test('a new task-attempt boundary hides the preceding turn usage', () => {
+  const events = [
+    {
+      id: 1,
+      kind: 'codex',
+      payload: {
+        type: 'provider/token-usage',
+        provider: 'codex',
+        source: 'native',
+        cumulative: true,
+        usage: { totalTokens: 300 },
+      },
+      created_at: '2026-08-25T10:00:01.000Z',
+    },
+    {
+      id: 2,
+      kind: 'queue',
+      payload: {
+        type: 'relay/task-attempt-started',
+        provider: 'codex',
+        attemptStartedAt: '2026-08-25T11:00:00.000Z',
+      },
+      created_at: '2026-08-25T11:00:00.000Z',
+    },
+  ];
+
+  assert.equal(latestTokenUsage(events), null);
+});
+
 test('task monitor is global and retains only valid open manual sessions after running work', () => {
   const manualSession = {
     status: 'open',

@@ -1827,21 +1827,19 @@ test('a task-owned Claude launch command carries model and effort for fresh, res
   );
 });
 
-// The relaunch command emits --permission-mode INSTEAD of --dangerously-skip-permissions. Wiring
-// a council stage through this builder without that exclusion would send both, so it refuses.
-test('a Claude launch command refuses plan-mode settings instead of emitting conflicting flags', () => {
-  assert.throws(
-    () => claudeRelayCommand('s', shellQuote, 'claude', null, null, { model: 'fable', permissionMode: 'plan' }),
-    /model and effort only/,
+test('a Claude launch command applies complete Plan council settings without conflicting flags', () => {
+  const command = claudeRelayCommand('s', shellQuote, 'claude', null, null, {
+    model: 'fable',
+    effort: 'max',
+    permissionMode: 'plan',
+    tools: ['Read', 'Glob'],
+    addDirectories: ['/repo/images'],
+  });
+  assert.equal(
+    command,
+    "claude --permission-mode 'plan' --session-id 's' --model 'fable' --effort 'max' --tools 'Read,Glob' --add-dir '/repo/images'",
   );
-  assert.throws(
-    () => claudeRelayCommand('s', shellQuote, 'claude', null, null, { tools: ['Read'] }),
-    /model and effort only/,
-  );
-  assert.throws(
-    () => claudeRelayCommand('s', shellQuote, 'claude', null, null, { addDirectories: ['/repo/images'] }),
-    /model and effort only/,
-  );
+  assert.doesNotMatch(command, /dangerously-skip-permissions/);
 });
 
 test('a Claude launch records its settings against the first provider process and forgets them when the pid changes', async () => {

@@ -245,6 +245,15 @@ function liveClaudeMessageId(event) {
     : '';
 }
 
+function repeatableClaudeProgressKey(event) {
+  if (event?.payload?.type !== 'claude/progress') return '';
+  const message = String(event.message || '').trim();
+  if (!message) return '';
+  // IDs and timestamps are deliberately excluded. Everything operator-visible and every
+  // progress payload field must still match before two adjacent records share one row.
+  return JSON.stringify([event.kind || '', message, event.payload]);
+}
+
 function userMessageText(item) {
   if (item?.type !== 'userMessage' || !Array.isArray(item.content)) return '';
   return item.content
@@ -273,10 +282,28 @@ function promptMatchesDeliveredText(promptText, deliveredText) {
   if (!prompt || !delivered) return false;
   if (prompt === delivered) return true;
   if (!delivered.startsWith(prompt)) return false;
-  return delivered
-    .slice(prompt.length)
-    .trimStart()
-    .startsWith('CC Relay orchestrator notice:');
+  const suffix = delivered.slice(prompt.length).trimStart();
+  return suffix.startsWith('CC Relay orchestrator notice:')
+    || suffix.startsWith('Relay orchestrator notice:');
+}
+
+function isDecoratedPromptDelivery(promptText, deliveredText) {
+  const prompt = String(promptText || '').trim();
+  const delivered = String(deliveredText || '').trim();
+  return prompt !== delivered && promptMatchesDeliveredText(prompt, delivered);
+}
+
+function promptEventWithKind(event, prompt) {
+  return {
+    ...event,
+    payload: {
+      ...event.payload,
+      item: {
+        ...event.payload.item,
+        promptKind: prompt.kind || event.payload.item.promptKind || 'message',
+      },
+    },
+  };
 }
 
 function canonicalPromptEvent(event, prompt) {
@@ -320,6 +347,66 @@ function syntheticPromptEvent(prompt, index, provider) {
   };
 }
 
+// A finished follow-up first records a canonical Relay event, then Codex can report the text it
+// actually received as another user-message item. The receipt is only a fallback for providers
+// that do not echo user input. Once a distinct delivery appears before the next follow-up receipt,
+// hiding the provisional event keeps the conversation at one visible message per submitted turn.
+function reconcileFollowUpReceiptEvents(events, prompts) {
+  const followUpsById = new Map(prompts
+    .filter((prompt) => prompt.kind === 'follow-up')
+    .map((prompt) => [String(prompt.id || '').trim(), prompt])
+    .filter(([id]) => id));
+  if (followUpsById.size === 0) {
+    return { hiddenReceiptIndexes: new Set(), deliveryPromptsByIndex: new Map() };
+  }
+
+  const receiptsByPrompt = new Map();
+  events.forEach((event, index) => {
+    const item = event?.payload?.item;
+    const text = userMessageText(item);
+    if (!text) return;
+    const identifiers = [item?.clientId, item?.id]
+      .map((value) => typeof value === 'string' ? value.trim() : '')
+      .filter(Boolean);
+    const prompt = identifiers.map((id) => followUpsById.get(id)).find(Boolean);
+    if (!prompt || text !== prompt.text) return;
+    const indexes = receiptsByPrompt.get(prompt) || [];
+    indexes.push(index);
+    receiptsByPrompt.set(prompt, indexes);
+  });
+
+  const receiptGroups = [...receiptsByPrompt]
+    .map(([prompt, indexes]) => ({ prompt, indexes, start: indexes[0] }))
+    .sort((left, right) => left.start - right.start);
+  const hiddenReceiptIndexes = new Set();
+  const deliveryPromptsByIndex = new Map();
+  receiptGroups.forEach((group, groupIndex) => {
+    const end = receiptGroups[groupIndex + 1]?.start ?? events.length;
+    const deliveryIndexes = [];
+    for (let index = group.start + 1; index < end; index += 1) {
+      const item = events[index]?.payload?.item;
+      const deliveredText = userMessageText(item);
+      if (!promptMatchesDeliveredText(group.prompt.text, deliveredText)) continue;
+      const identifiers = [item?.clientId, item?.id]
+        .map((value) => typeof value === 'string' ? value.trim() : '')
+        .filter(Boolean);
+      if (
+        isDecoratedPromptDelivery(group.prompt.text, deliveredText)
+        || !identifiers.includes(String(group.prompt.id || '').trim())
+      ) {
+        deliveryIndexes.push(index);
+      }
+    }
+    if (deliveryIndexes.length > 0) {
+      for (const index of group.indexes) {
+        if (index < end) hiddenReceiptIndexes.add(index);
+      }
+      for (const index of deliveryIndexes) deliveryPromptsByIndex.set(index, group.prompt);
+    }
+  });
+  return { hiddenReceiptIndexes, deliveryPromptsByIndex };
+}
+
 export function mergePromptMessages(events, prompts, { provider = 'codex' } = {}) {
   const canonicalPrompts = (Array.isArray(prompts) ? prompts : [])
     .map((prompt, index) => ({
@@ -331,23 +418,33 @@ export function mergePromptMessages(events, prompts, { provider = 'codex' } = {}
       matched: false,
     }))
     .filter((prompt) => prompt.text);
+  const sourceEvents = Array.isArray(events) ? events : [];
+  const {
+    hiddenReceiptIndexes,
+    deliveryPromptsByIndex,
+  } = reconcileFollowUpReceiptEvents(sourceEvents, canonicalPrompts);
   const promptsByItemKey = new Map();
 
-  const merged = (Array.isArray(events) ? events : []).map((event) => {
+  const merged = sourceEvents.flatMap((event, eventIndex) => {
+    if (hiddenReceiptIndexes.has(eventIndex)) return [];
     const item = event?.payload?.item;
     const deliveredText = userMessageText(item);
-    if (!deliveredText) return event;
+    if (!deliveredText) return [event];
     const itemKeys = userMessageKeys(item);
-    const prompt = itemKeys
+    const prompt = deliveryPromptsByIndex.get(eventIndex)
+      || itemKeys
       .map((key) => promptsByItemKey.get(key))
       .find(Boolean)
       || canonicalPrompts.find((candidate) => (
         !candidate.matched && promptMatchesDeliveredText(candidate.text, deliveredText)
       ));
-    if (!prompt) return event;
+    if (!prompt) return [event];
     prompt.matched = true;
     for (const key of itemKeys) promptsByItemKey.set(key, prompt);
-    return canonicalPromptEvent(event, prompt);
+    return [prompt.kind === 'follow-up'
+      && isDecoratedPromptDelivery(prompt.text, deliveredText)
+      ? promptEventWithKind(event, prompt)
+      : canonicalPromptEvent(event, prompt)];
   });
 
   for (const prompt of canonicalPrompts.filter((candidate) => !candidate.matched)) {
@@ -445,6 +542,8 @@ export function groupEventEntries(events) {
   const entriesByGoalThreadId = new Map();
   const entriesByTokenProvider = new Map();
   const codexAgentIdsByItemId = new Map();
+  let repeatedProgressEntry = null;
+  let repeatedProgressKey = '';
   // A backgrounded sub-agent's task notification can be written to the transcript before the
   // launch record it belongs to, so the fold targets are collected before grouping starts.
   const subAgentItemIds = new Set();
@@ -557,6 +656,33 @@ export function groupEventEntries(events) {
 
   for (const event of list) {
     const item = event?.payload?.item;
+    const progressKey = repeatableClaudeProgressKey(event);
+
+    if (progressKey && repeatedProgressEntry && progressKey === repeatedProgressKey) {
+      repeatedProgressEntry.events.push(event);
+      repeatedProgressEntry.repeatCount += 1;
+      continue;
+    }
+
+    // Any different provider record is a chronological boundary. A later heartbeat starts a
+    // fresh row, even when it has the same text as an earlier group.
+    repeatedProgressEntry = null;
+    repeatedProgressKey = '';
+
+    if (progressKey) {
+      repeatedProgressEntry = {
+        id: `event-${event.id}`,
+        events: [event],
+        startedEvent: null,
+        updatedEvent: null,
+        completedEvent: null,
+        agentFinishedEvent: null,
+        repeatCount: 1,
+      };
+      repeatedProgressKey = progressKey;
+      entries.push(repeatedProgressEntry);
+      continue;
+    }
 
     if (event?.payload?.type === 'provider/token-usage') {
       const entry = entryForTokenProvider(event.payload.provider || event.kind || 'provider');
@@ -683,6 +809,11 @@ export function groupEventEntries(events) {
   }
 
   return entries;
+}
+
+export function eventEntryRepeatCount(entry) {
+  const count = Number(entry?.repeatCount);
+  return Number.isSafeInteger(count) && count > 1 ? count : 1;
 }
 
 export function entryItem(entry) {

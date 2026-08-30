@@ -5,6 +5,7 @@ import {
   entryLastEvent,
   eventEntryCategory,
   eventMessageCounts,
+  eventEntryRepeatCount,
   filterEventEntries,
   goalEntryDetails,
   groupEventEntries,
@@ -34,6 +35,12 @@ import {
   projectColorClasses,
   projectColorTokens,
 } from './project-colors.js';
+import {
+  buildProjectReorderRequest,
+  dropProjectInOrder,
+  moveProjectInOrder,
+  projectOrderIds,
+} from './project-reorder.js';
 import { ProjectCompletionNotifications } from './project-completion-notifications.js';
 import {
   CompletionAlerts,
@@ -41,8 +48,11 @@ import {
   normalizeCompletionAlertPreferences,
 } from './completion-alerts.js';
 import {
+  discoverVoiceInputDevices,
   normalizeVoiceInputPreferences,
   PushToTalkRecorder,
+  voiceRecordingLooksSilent,
+  voiceSignalDetected,
   voiceShortcutFromKeyboardEvent,
   voiceShortcutKeyLabels,
   voiceShortcutLabel,
@@ -364,6 +374,7 @@ function cachedVoiceInputPreferences() {
     enabled: localStorage.getItem('relay.voiceInputEnabled') === 'true',
     shortcut: localStorage.getItem('relay.voiceInputShortcut'),
     alternateShortcut: localStorage.getItem('relay.voiceInputAlternateShortcut'),
+    microphoneLabel: localStorage.getItem('relay.voiceInputMicrophoneLabel'),
   });
 }
 
@@ -391,6 +402,9 @@ const state = {
   activeProjectPath: localStorage.getItem('relay.activeProjectPath') || null,
   projectConfigLoaded: false,
   activeProjectSaveSequence: 0,
+  projectReorderPending: false,
+  projectDrag: null,
+  projectDragClickSuppressed: false,
   taskView: localStorage.getItem('relay.taskView') === 'history' ? 'history' : 'queue',
   historyPeriod: ['day', 'week', 'month'].includes(localStorage.getItem('relay.historyPeriod'))
     ? localStorage.getItem('relay.historyPeriod') : 'week',
@@ -450,6 +464,11 @@ const state = {
   voiceInputActivity: 'idle',
   voiceInputMessage: '',
   voiceInputSetupPending: false,
+  voiceInputDevices: [],
+  voiceInputDeviceLabel: '',
+  voiceInputDeviceRefreshSequence: 0,
+  voiceInputLevel: 0,
+  voiceInputPeakLevel: 0,
   voiceShortcutCaptureTarget: null,
   activeVoiceShortcut: null,
   runningTaskLayout: cachedRunningTaskLayout(),
@@ -711,6 +730,8 @@ const elements = {
   voiceInputShortcutLabel: document.querySelector('#voice-input-shortcut-label'),
   voiceInputAlternateShortcut: document.querySelector('#voice-input-alternate-shortcut'),
   voiceInputAlternateShortcutLabel: document.querySelector('#voice-input-alternate-shortcut-label'),
+  voiceInputMicrophone: document.querySelector('#voice-input-microphone'),
+  voiceInputDeviceStatus: document.querySelector('#voice-input-device-status'),
   voiceInputSetup: document.querySelector('#voice-input-setup'),
   voiceInputStatus: document.querySelector('#voice-input-status'),
   providerUsage: document.querySelector('#provider-usage'),
@@ -925,6 +946,7 @@ const elements = {
   desktopZoomLevel: document.querySelector('#desktop-zoom-level'),
   desktopZoomIn: document.querySelector('#desktop-zoom-in'),
   projectList: document.querySelector('#project-list'),
+  projectReorderStatus: document.querySelector('#project-reorder-status'),
   projectCloseModal: document.querySelector('#project-close-modal'),
   projectCloseCard: document.querySelector('#project-close-card'),
   projectCloseTitle: document.querySelector('#project-close-title'),
@@ -1217,6 +1239,11 @@ function cacheUiPreferences(preferences = uiPreferencesPayload()) {
   } else {
     localStorage.removeItem('relay.voiceInputAlternateShortcut');
   }
+  if (voiceInput.microphoneLabel) {
+    localStorage.setItem('relay.voiceInputMicrophoneLabel', voiceInput.microphoneLabel);
+  } else {
+    localStorage.removeItem('relay.voiceInputMicrophoneLabel');
+  }
 }
 
 function completionAlertExampleTask() {
@@ -1256,12 +1283,84 @@ function voiceInputSupported() {
 function setVoiceInputPreferences(value, { persist = true } = {}) {
   const previousEnabled = state.voiceInputPreferences.enabled;
   state.voiceInputPreferences = normalizeVoiceInputPreferences(value);
+  voiceRecorder?.setPreferredDeviceLabel(state.voiceInputPreferences.microphoneLabel);
   if (previousEnabled && !state.voiceInputPreferences.enabled) {
     state.activeVoiceShortcut = null;
     voiceRecorder?.cancel();
   }
   renderVoiceInput();
   if (persist) queueUiPreferencesSave();
+}
+
+function voiceInputDefaultDeviceLabel() {
+  const source = state.voiceInputDevices.find((device) => device.isDefault)
+    || state.voiceInputDevices[0];
+  return String(source?.label || '')
+    .replace(/^default\s*-\s*/i, '')
+    .trim();
+}
+
+function renderVoiceInputDevices() {
+  const selectedLabel = state.voiceInputPreferences.microphoneLabel;
+  const defaultLabel = voiceInputDefaultDeviceLabel();
+  const namedDevices = [];
+  const seenLabels = new Set();
+  for (const device of state.voiceInputDevices) {
+    if (device.isDefault || !device.label || seenLabels.has(device.label)) continue;
+    seenLabels.add(device.label);
+    namedDevices.push(device);
+  }
+  const signature = JSON.stringify({ selectedLabel, defaultLabel, namedDevices });
+  if (elements.voiceInputMicrophone.dataset.signature !== signature) {
+    elements.voiceInputMicrophone.dataset.signature = signature;
+    elements.voiceInputMicrophone.replaceChildren();
+    const defaultOption = document.createElement('option');
+    defaultOption.value = '';
+    defaultOption.textContent = defaultLabel
+      ? `System default: ${defaultLabel}`
+      : 'System default microphone';
+    elements.voiceInputMicrophone.append(defaultOption);
+    for (const device of namedDevices) {
+      const option = document.createElement('option');
+      option.value = device.label;
+      option.textContent = device.label;
+      elements.voiceInputMicrophone.append(option);
+    }
+    if (selectedLabel && !seenLabels.has(selectedLabel)) {
+      const unavailable = document.createElement('option');
+      unavailable.value = selectedLabel;
+      unavailable.textContent = `${selectedLabel} (unavailable)`;
+      elements.voiceInputMicrophone.append(unavailable);
+    }
+  }
+  elements.voiceInputMicrophone.value = selectedLabel || '';
+  const labelsHidden = state.voiceInputDevices.length > 0
+    && state.voiceInputDevices.every((device) => !device.label);
+  if (state.voiceInputDevices.length === 0) {
+    elements.voiceInputDeviceStatus.textContent = 'No microphone inputs found.';
+  } else if (labelsHidden) {
+    elements.voiceInputDeviceStatus.textContent = 'Allow microphone access to list the available inputs.';
+  } else if (selectedLabel && !seenLabels.has(selectedLabel)) {
+    elements.voiceInputDeviceStatus.textContent = `${selectedLabel} is unavailable. Relay will use the system default.`;
+  } else {
+    const available = namedDevices.length;
+    elements.voiceInputDeviceStatus.textContent = defaultLabel
+      ? `${available} named ${available === 1 ? 'input' : 'inputs'} available. System default: ${defaultLabel}.`
+      : `${available} named ${available === 1 ? 'input' : 'inputs'} available.`;
+  }
+}
+
+async function refreshVoiceInputDevices({ requestPermission = false } = {}) {
+  const sequence = ++state.voiceInputDeviceRefreshSequence;
+  let devices;
+  try {
+    devices = await discoverVoiceInputDevices(navigator.mediaDevices, { requestPermission });
+  } catch {
+    devices = [];
+  }
+  if (sequence !== state.voiceInputDeviceRefreshSequence) return;
+  state.voiceInputDevices = devices;
+  renderVoiceInput();
 }
 
 function adoptVoiceInputStatus(value) {
@@ -1314,6 +1413,25 @@ function renderVoiceShortcutKeycaps(container, shortcut, placeholder) {
   });
 }
 
+function renderVoiceInputLevel() {
+  const visualLevel = Math.min(1, Math.max(0, state.voiceInputLevel * 18));
+  elements.voiceInputComposer.style.setProperty('--voice-level', visualLevel.toFixed(3));
+  elements.voiceInputComposer.style.setProperty(
+    '--voice-meter-height',
+    `${Math.round(2 + visualLevel * 8)}px`,
+  );
+  elements.voiceInputComposer.dataset.signal = voiceSignalDetected(state.voiceInputPeakLevel)
+    ? 'detected'
+    : 'quiet';
+  if (state.voiceInputActivity !== 'listening') return;
+  const source = state.voiceInputDeviceLabel || 'the selected microphone';
+  const status = voiceSignalDetected(state.voiceInputPeakLevel)
+    ? `Speech signal detected on ${source}. Release to transcribe.`
+    : `Using ${source}. Speak now and watch the level.`;
+  elements.voiceInputComposerStatus.textContent = status;
+  elements.voiceInputHold.title = status;
+}
+
 function renderVoiceInput() {
   const supported = voiceInputSupported();
   const { enabled, shortcut, alternateShortcut } = state.voiceInputPreferences;
@@ -1334,6 +1452,8 @@ function renderVoiceInput() {
   elements.voiceInputEnabled.checked = enabled;
   elements.voiceInputEnabled.disabled = !supported || installing;
   elements.voiceInputControls.dataset.enabled = String(enabled);
+  renderVoiceInputDevices();
+  elements.voiceInputMicrophone.disabled = !supported || !enabled || installing;
   for (const button of [elements.voiceInputShortcut, elements.voiceInputAlternateShortcut]) {
     button.disabled = !supported || !enabled || installing;
   }
@@ -1394,7 +1514,10 @@ function renderVoiceInput() {
     status = 'Requesting microphone access.';
   } else if (activity === 'listening') {
     holdLabel = 'Listening';
-    status = 'Release to stop and transcribe.';
+    const source = state.voiceInputDeviceLabel || 'the selected microphone';
+    status = voiceSignalDetected(state.voiceInputPeakLevel)
+      ? `Speech signal detected on ${source}. Release to transcribe.`
+      : `Using ${source}. Speak now and watch the level.`;
   } else if (activity === 'processing') {
     holdLabel = 'Recording complete';
     status = 'Finishing the audio clip.';
@@ -1408,6 +1531,7 @@ function renderVoiceInput() {
   elements.voiceInputHold.disabled = !supported || installing || activity === 'transcribing';
   elements.voiceInputHold.setAttribute('aria-pressed', String(activity === 'listening'));
   elements.voiceInputHold.title = status;
+  renderVoiceInputLevel();
 }
 
 function openVoiceInputSettings() {
@@ -1415,6 +1539,7 @@ function openVoiceInputSettings() {
   renderCompletionAlertSettings();
   renderVoiceInput();
   if (!elements.terminalSettingsModal.open) elements.terminalSettingsModal.showModal();
+  void refreshVoiceInputDevices({ requestPermission: state.voiceInputPreferences.enabled });
   requestAnimationFrame(() => {
     if (!state.voiceInputPreferences.enabled) elements.voiceInputEnabled.focus();
     else if (state.voiceInputEngine.state !== 'ready') elements.voiceInputSetup.focus();
@@ -1458,6 +1583,10 @@ function voiceMicrophoneError(error) {
 }
 
 function setVoiceInputActivity(activity, message = '') {
+  if (activity === 'requesting') {
+    state.voiceInputLevel = 0;
+    state.voiceInputPeakLevel = 0;
+  }
   state.voiceInputActivity = activity;
   state.voiceInputMessage = message;
   renderVoiceInput();
@@ -1484,9 +1613,32 @@ function insertVoiceTranscript(text) {
   return true;
 }
 
-async function transcribeVoiceAudio(audio) {
+function voiceInputNoSpeechMessage(audio, recording = {}) {
+  const source = String(recording.deviceLabel || state.voiceInputDeviceLabel || '').trim();
+  if (voiceRecordingLooksSilent(audio, recording.durationMs)) {
+    return `${source || 'The selected microphone'} captured only digital silence. Choose another input in Settings.`;
+  }
+  if (Number.isFinite(recording.peakSignalLevel) && !voiceSignalDetected(recording.peakSignalLevel)) {
+    return `No speech signal reached Relay from ${source || 'the selected microphone'}. Choose another input in Settings or move closer to the microphone.`;
+  }
+  if (voiceSignalDetected(recording.peakSignalLevel)) {
+    return `Relay heard audio from ${source || 'the selected microphone'} but could not recognize words. Speak a full sentence and try again.`;
+  }
+  return source
+    ? `No speech was detected from ${source}. Hold the keys and try again.`
+    : 'No speech was detected from the selected microphone. Hold the keys and try again.';
+}
+
+async function transcribeVoiceAudio(audio, recording = {}) {
+  if (audio instanceof Blob && voiceRecordingLooksSilent(audio, recording.durationMs)) {
+    setVoiceInputActivity('error', voiceInputNoSpeechMessage(audio, recording));
+    return;
+  }
   if (!(audio instanceof Blob) || audio.size < 256) {
-    setVoiceInputActivity('error', 'Hold push-to-talk a little longer so Relay can hear you.');
+    const message = audio instanceof Blob && recording.durationMs >= 400
+      ? voiceInputNoSpeechMessage(audio, recording)
+      : 'Hold push-to-talk a little longer so Relay can hear you.';
+    setVoiceInputActivity('error', message);
     return;
   }
   setVoiceInputActivity('transcribing');
@@ -1499,7 +1651,7 @@ async function transcribeVoiceAudio(audio) {
       timeoutMessage: () => 'Voice transcription did not finish within two minutes.',
     });
     if (!insertVoiceTranscript(result.text)) {
-      setVoiceInputActivity('idle', 'No speech was detected. Hold the keys and try again.');
+      setVoiceInputActivity('idle', voiceInputNoSpeechMessage(audio, recording));
       return;
     }
     if (state.status?.voiceInput) {
@@ -1984,28 +2136,155 @@ async function saveProjectColor() {
   }
 }
 
+function projectReorderSupported() {
+  return state.status?.capabilities?.projectReorder === true && state.projects.length > 1;
+}
+
+function clearProjectDropMarkers() {
+  for (const chip of elements.projectList.querySelectorAll('.project-chip')) {
+    chip.classList.remove('project-drop-before', 'project-drop-after', 'project-dragging');
+  }
+}
+
+function cleanupProjectDrag({ suppressClick = false } = {}) {
+  clearProjectDropMarkers();
+  elements.projectList.style.removeProperty('--project-drag-accent');
+  state.projectDrag = null;
+  if (!suppressClick) return;
+  state.projectDragClickSuppressed = true;
+  window.setTimeout(() => {
+    state.projectDragClickSuppressed = false;
+  }, 0);
+}
+
+function projectDropEdge(event, chip) {
+  const bounds = chip.getBoundingClientRect();
+  return event.clientX < bounds.left + bounds.width / 2 ? 'before' : 'after';
+}
+
+function scrollProjectListForDrag(clientX) {
+  const bounds = elements.projectList.getBoundingClientRect();
+  const edge = Math.min(40, bounds.width / 4);
+  if (clientX < bounds.left + edge) elements.projectList.scrollLeft -= 16;
+  else if (clientX > bounds.right - edge) elements.projectList.scrollLeft += 16;
+}
+
+function orderedProjects(projectIds) {
+  const projectsById = new Map(state.projects.map((project) => [project.id, project]));
+  const projects = projectIds.map((id) => projectsById.get(id)).filter(Boolean);
+  return projects.length === state.projects.length ? projects : null;
+}
+
+function focusProjectReorderHandle(projectId) {
+  window.requestAnimationFrame(() => {
+    elements.projectList
+      .querySelector(`[data-project-id="${projectId}"] [data-project-action="reorder"]`)
+      ?.focus();
+  });
+}
+
+function projectListFocusTarget() {
+  const active = document.activeElement;
+  if (!active || !elements.projectList.contains(active)) return null;
+  const chip = active.closest?.('[data-project-id]');
+  const projectId = Number(chip?.dataset.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0) return null;
+  return {
+    projectId,
+    action: active.dataset?.projectAction || null,
+  };
+}
+
+function restoreProjectListFocus(target) {
+  if (!target) return;
+  const chip = elements.projectList.querySelector(`[data-project-id="${target.projectId}"]`);
+  const control = target.action
+    ? chip?.querySelector(`[data-project-action="${target.action}"]`)
+    : chip;
+  control?.focus({ preventScroll: true });
+}
+
+async function persistProjectOrder(expectedProjectIds, projectIds, { focusProjectId = null } = {}) {
+  if (state.projectReorderPending) return;
+  const request = buildProjectReorderRequest(expectedProjectIds, projectIds);
+  const optimisticProjects = request ? orderedProjects(request.projectIds) : null;
+  if (!request || !optimisticProjects) {
+    cleanupProjectDrag({ suppressClick: true });
+    return;
+  }
+  const movedProject = optimisticProjects.find((project) => project.id === Number(focusProjectId));
+  state.projectReorderPending = true;
+  state.projects = optimisticProjects;
+  cleanupProjectDrag({ suppressClick: true });
+  elements.projectList.dataset.reordering = 'true';
+  renderProjects();
+
+  let body = null;
+  let reorderError = null;
+  try {
+    body = await api('/api/projects/reorder', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  } catch (error) {
+    reorderError = error;
+  } finally {
+    state.projectReorderPending = false;
+    delete elements.projectList.dataset.reordering;
+  }
+
+  if (reorderError) {
+    const message = /project order changed/i.test(reorderError.message)
+      ? 'Project order changed elsewhere. Refreshed; try again.'
+      : `Could not reorder projects: ${reorderError.message}`;
+    elements.formMessage.textContent = message;
+    elements.projectReorderStatus.textContent = message;
+    try {
+      await loadProjects();
+    } catch (refreshError) {
+      elements.formMessage.textContent = `${message} The Launchpad could not refresh: ${refreshError.message}`;
+    }
+  } else {
+    if (Array.isArray(body?.projects)) state.projects = body.projects;
+    renderProjects();
+    const position = state.projects.findIndex((project) => project.id === movedProject?.id) + 1;
+    const message = movedProject && position > 0
+      ? `${movedProject.name} moved to position ${position} of ${state.projects.length}.`
+      : 'Project order updated.';
+    elements.projectReorderStatus.textContent = message;
+  }
+  if (focusProjectId) focusProjectReorderHandle(focusProjectId);
+}
+
 function renderProjects() {
   renderComposerProjectIdentity();
+  if (state.projectDrag) return;
+  const focusTarget = projectListFocusTarget();
   const supported = state.status?.capabilities?.projectLauncher === true;
   elements.addProjectButton.disabled = !supported;
   if (!supported) {
     elements.projectList.innerHTML = '<span class="project-empty">Restart CC Relay to enable project launching</span>';
+    restoreProjectListFocus(focusTarget);
     return;
   }
   if (!state.projects.length) {
     elements.projectList.innerHTML = '<span class="project-empty">Add a project to start queueing work</span>';
+    restoreProjectListFocus(focusTarget);
     return;
   }
   const colorClasses = projectColorClasses(state.projects.map((project) => project.path));
+  const reorderable = projectReorderSupported();
   elements.projectList.innerHTML = state.projects.map((project, index) => {
     const activity = projectActivity(project.path);
     const notificationCount = state.projectCompletionNotifications.count(project.path);
     const completionNotice = notificationCount
       ? ` ${notificationCount} finished task${notificationCount === 1 ? '' : 's'} not checked.`
       : '';
-    const accessibleLabel = `${project.name}, ${activity.status}. ${activity.label}.${completionNotice}`;
+    const reorderNotice = reorderable ? ' Draggable project.' : '';
+    const accessibleLabel = `${project.name}, ${activity.status}. ${activity.label}.${completionNotice}${reorderNotice}`;
     return `
-    <article class="project-chip ${colorClasses[index]} ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}"${projectIdentityStyleAttribute(project.path)} data-activity="${activity.state}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-label="${escapeHtml(accessibleLabel)}" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
+    <article class="project-chip ${reorderable ? 'project-chip-reorderable' : ''} ${colorClasses[index]} ${sameProjectPath(project.path, state.activeProjectPath) ? 'selected' : ''}"${projectIdentityStyleAttribute(project.path)} data-activity="${activity.state}" data-project-id="${project.id}" data-project-path="${escapeHtml(project.path)}" title="${escapeHtml(project.path)}" tabindex="0" role="button" aria-label="${escapeHtml(accessibleLabel)}" aria-pressed="${sameProjectPath(project.path, state.activeProjectPath)}">
+      ${reorderable ? `<span class="project-drag-handle" data-project-action="reorder" draggable="${!state.projectReorderPending}" role="button" tabindex="0" aria-disabled="${state.projectReorderPending}" aria-label="Reorder ${escapeHtml(project.name)}. Drag, or use Left and Right arrow keys." aria-keyshortcuts="ArrowLeft ArrowRight" title="Drag to reorder projects">⠿</span>` : ''}
       <div class="project-chip-head">
         <button class="project-pin" type="button" data-project-action="color" aria-label="Change ${escapeHtml(project.name)} color" title="Change project color" ${state.status?.capabilities?.projectColors === true ? '' : 'disabled'}>
           ${escapeHtml(project.name.slice(0, 1).toUpperCase())}
@@ -2020,6 +2299,7 @@ function renderProjects() {
     </article>
   `;
   }).join('');
+  restoreProjectListFocus(focusTarget);
 }
 
 function projectActivity(path) {
@@ -2127,6 +2407,7 @@ function relayActivity(thread) {
 }
 
 async function loadProjects() {
+  if (state.projectDrag || state.projectReorderPending) return;
   if (state.status?.capabilities?.projectLauncher !== true) {
     renderProjects();
     return;
@@ -3223,6 +3504,7 @@ function eventPresentation(entry, task) {
     state: stateName,
     status: eventStatusLabel(entry),
     duration,
+    repeatCount: eventEntryRepeatCount(entry),
   };
 
   // Sub-agent runs read as their own signal: a team session is the reason a Claude task can
@@ -3478,7 +3760,8 @@ function eventPresentation(entry, task) {
 function renderEventEntry(entry, task, index) {
   const presentation = eventPresentation(entry, task);
   const providerClass = presentation.provider === 'council' ? 'plan' : presentation.provider;
-  const time = formatEventTime(entryFirstEvent(entry)?.created_at);
+  const timeEvent = presentation.repeatCount > 1 ? entryLastEvent(entry) : entryFirstEvent(entry);
+  const time = formatEventTime(timeEvent?.created_at);
   const classes = [
     'event-entry',
     `event-entry-${escapeHtml(presentation.state)}`,
@@ -3611,6 +3894,10 @@ function renderEventEntryInner(p, time) {
 
   const inline = p.inline ? `<span class="term-signal-inline">${p.inline}</span>` : '';
   const status = p.status ? `<span class="term-signal-state">${escapeHtml(p.status)}</span>` : '';
+  const repeatCount = Number(p.repeatCount) || 1;
+  const repeat = repeatCount > 1
+    ? `<span class="term-repeat-count" aria-label="${escapeHtml(`${repeatCount.toLocaleString()} identical status updates grouped`)}" title="${escapeHtml(`This status occurred ${repeatCount.toLocaleString()} times in a row.`)}">×${escapeHtml(repeatCount.toLocaleString())}</span>`
+    : '';
   const elapsed = p.duration ? `<span class="term-elapsed">${escapeHtml(p.duration)}</span>` : '';
   const row = `
     <div class="term-signal-row">
@@ -3618,6 +3905,7 @@ function renderEventEntryInner(p, time) {
       <span class="term-signal-title">${escapeHtml(p.title)}</span>
       ${inline}
       ${status}
+      ${repeat}
       ${elapsed}
       <time class="term-time">${escapeHtml(time)}</time>
     </div>`;
@@ -3637,7 +3925,11 @@ function renderEventEntryInner(p, time) {
 
 function eventCopyText(entry, task) {
   const presentation = eventPresentation(entry, task);
-  const event = entryFirstEvent(entry);
+  const recordedRepeatCount = Number(entry?.repeatCount);
+  const repeatCount = Number.isSafeInteger(recordedRepeatCount) && recordedRepeatCount > 1
+    ? recordedRepeatCount
+    : 1;
+  const event = repeatCount > 1 ? entryLastEvent(entry) : entryFirstEvent(entry);
   const item = entryItem(entry);
   const speaker = presentation.messageRole === 'user'
     ? 'You'
@@ -3646,7 +3938,7 @@ function eventCopyText(entry, task) {
     ? presentation.messageRole === 'user' ? 'Message sent' : 'AI message'
     : presentation.title;
   const lines = [
-    `[${formatEventTime(event?.created_at)}] ${speaker} · ${copyTitle} · ${presentation.status}`,
+    `[${formatEventTime(event?.created_at)}] ${speaker} · ${copyTitle} · ${presentation.status}${repeatCount > 1 ? ` · ${repeatCount.toLocaleString()} identical updates` : ''}`,
   ];
   if (isSubAgentEntry(entry)) {
     const details = subAgentEntryDetails(entry);
@@ -6028,11 +6320,15 @@ function renderHeaderRunningTasks() {
           <i aria-hidden="true"></i>
           <b>#${String(task.id).padStart(3, '0')}</b>
           ${monitor.terminalSession ? `<span class="header-running-state" data-state="${escapeHtml(monitor.state)}">${escapeHtml(monitor.label)}</span>` : ''}
-          <span class="header-running-loc" title="${escapeHtml(task.repo_path)}"><span class="header-running-project">${escapeHtml(project)}</span> · ${escapeHtml(relay)}</span>
+          <span class="header-running-loc">${escapeHtml(relay)}</span>
           ${throughput ? `<span class="header-running-token-speed" data-header-token-speed="${task.id}" title="${tokenSpeedTitle(throughput)}">${throughput.rateLabel} tokens/s</span>` : ''}
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
-        <strong class="header-running-prompt" title="${escapeHtml(taskDisplayName(task))}">${escapeHtml(compactText(taskDisplayName(task), 96))}</strong>
+        <strong class="header-running-prompt" title="${escapeHtml(`${project} · ${taskDisplayName(task)}`)}">
+          <span class="header-running-project" title="${escapeHtml(task.repo_path)}">${escapeHtml(project)}</span>
+          <span class="header-running-project-separator" aria-hidden="true">·</span>
+          <span class="header-running-task-name">${escapeHtml(compactText(taskDisplayName(task), 96))}</span>
+        </strong>
         <span class="header-running-response" data-provider="${escapeHtml(updateProvider)}" title="${escapeHtml(response)}">
           <b>${escapeHtml(providerLabel(updateProvider))}</b>
           <span>${escapeHtml(compactText(response, 200))}</span>
@@ -7552,6 +7848,7 @@ function renderSessionStrip(task, active) {
   const completeButton = elements.sessionCompleteButton;
   const completing = state.completingSessionTaskId === task.id;
   const completionSupported = state.status?.capabilities?.manualSessionTasks === true;
+  const closeCompletionSupported = state.status?.capabilities?.manualSessionTerminalCloseCompletion === true;
   completeButton.dataset.taskId = String(task.id);
   completeButton.hidden = !manualSession;
   completeButton.dataset.state = task.status === 'complete'
@@ -7575,14 +7872,16 @@ function renderSessionStrip(task, active) {
     ? 'Restart CC Relay to complete terminal session tasks here.'
     : task.status === 'complete'
       ? thread
-        ? 'This task was completed manually. Closing its retained terminal is a separate action.'
-        : 'This task was completed manually. Its terminal is already closed.'
+        ? 'This terminal session is complete. Closing its retained terminal is a separate action.'
+        : 'This terminal session is complete. Its terminal is closed.'
       : task.status === 'running'
         ? 'Wait for the current turn to finish before completing the session.'
         : task.status === 'open'
           ? thread
             ? 'Mark this task complete. The retained terminal will remain open.'
-            : 'Mark this task complete. This does not relaunch its closed terminal.'
+            : closeCompletionSupported
+              ? 'CC Relay will complete this task after it confirms that the terminal is closed.'
+              : 'Mark this task complete. This does not relaunch its closed terminal.'
           : 'The session can be completed after its first turn finishes.';
 
   const supported = state.status?.capabilities?.terminalControl === true;
@@ -7612,7 +7911,9 @@ function renderSessionStrip(task, active) {
     closeReason = control?.reason || 'CC Relay does not own this terminal window, so it cannot close it.';
   } else {
     button.disabled = false;
-    closeReason = 'Closes the native terminal window and ends this session.';
+    closeReason = closeCompletionSupported && manualSession && task.status === 'open'
+      ? 'Closes the native terminal window and completes this terminal session task.'
+      : 'Closes the native terminal window and ends this session.';
   }
   button.title = closeReason;
 
@@ -7648,7 +7949,9 @@ function renderSessionStrip(task, active) {
         : task.status === 'open'
           ? thread
             ? 'Ready for another message. Complete the session only when this workspace is finished.'
-            : 'The task is still open. Send a message to relaunch its saved conversation, or complete the session now.'
+            : closeCompletionSupported
+              ? 'CC Relay is confirming that the terminal closed and will complete this task automatically.'
+              : 'The task is still open. Complete the session now or send a message to relaunch its saved conversation.'
           : 'The terminal workspace will stay open after its first turn.'
     : closeReason;
   // A close outcome has to outlive the two-second refresh. Without this the success or
@@ -7701,10 +8004,16 @@ async function killSessionTerminal() {
   const message = elements.sessionStripMessage;
   if (!Number.isFinite(taskId) || !taskId || !threadId || state.killingSessionTaskId) return;
   const thread = state.threads.find((item) => item.id === threadId) || null;
+  const task = state.tasks.find((item) => item.id === taskId) || state.selectedTaskForEvents;
+  const completesTask = state.status?.capabilities?.manualSessionTerminalCloseCompletion === true
+    && isManualSessionTask(task)
+    && task?.status === 'open';
   message.dataset.taskId = String(taskId);
   if (!thread) {
     message.dataset.kind = 'error';
-    message.textContent = 'This terminal is no longer connected. Continue session relaunches the saved conversation.';
+    message.textContent = completesTask
+      ? 'This terminal is no longer connected. CC Relay will complete the task after confirming the closure.'
+      : 'This terminal is no longer connected. Continue session relaunches the saved conversation.';
     return;
   }
   if (thread.terminalControl?.canClose !== true) {
@@ -7713,7 +8022,10 @@ async function killSessionTerminal() {
     return;
   }
   const number = String(taskId).padStart(3, '0');
-  if (!window.confirm(`Close the retained terminal for task #${number}? The connected session will end; Continue session can relaunch the saved conversation later.`)) return;
+  const confirmation = completesTask
+    ? `Close the retained terminal for task #${number}? Closing it also completes this terminal session task.`
+    : `Close the retained terminal for task #${number}? The connected session will end; Continue session can relaunch the saved conversation later.`;
+  if (!window.confirm(confirmation)) return;
   state.killingSessionTaskId = taskId;
   const pendingTask = state.tasks.find((item) => item.id === taskId) || null;
   if (pendingTask) renderSessionStrip(pendingTask, true);
@@ -7723,7 +8035,9 @@ async function killSessionTerminal() {
     if (state.selectedThreadId === threadId) state.selectedThreadId = null;
     message.dataset.kind = 'success';
     message.dataset.closedThreadId = threadId;
-    message.textContent = `The retained terminal for task #${number} was closed.`;
+    message.textContent = completesTask
+      ? `The retained terminal for task #${number} was closed and the session task was completed.`
+      : `The retained terminal for task #${number} was closed.`;
     renderThreads();
   } catch (error) {
     message.dataset.kind = 'error';
@@ -8425,6 +8739,7 @@ function renderAutomaticTerminalPool() {
   elements.maxOpenCodeInstances.disabled = !project || state.poolLimitSaving;
   const retentionSupported = state.status?.capabilities?.retainedTerminalSessions === true;
   const manualSessionsSupported = state.status?.capabilities?.manualSessionTasks === true;
+  const closeCompletionSupported = state.status?.capabilities?.manualSessionTerminalCloseCompletion === true;
   const directSessionMode = state.taskMode === 'execute' && !isExecuteCouncilEnabled();
   const headlessOpenCode = directSessionMode && state.selectedProvider === 'opencode';
   elements.keepTerminalOpen.checked = headlessOpenCode ? false : state.keepTerminalOpen;
@@ -8443,7 +8758,9 @@ function renderAutomaticTerminalPool() {
     : retentionSupported
     ? directSessionMode
       ? manualSessionsSupported
-        ? `Direct tasks in ${project?.name || 'this project'} stay open between turns and complete only when you press Complete session in Task activity. Their terminal stays open too. This setting is not shared with other projects.`
+        ? closeCompletionSupported
+          ? `Direct tasks in ${project?.name || 'this project'} stay open between turns. Press Complete session to finish while keeping the terminal, or close the terminal to finish both. This setting is not shared with other projects.`
+          : `Direct tasks in ${project?.name || 'this project'} stay open between turns and complete only when you press Complete session in Task activity. Their terminal stays open too. This setting is not shared with other projects.`
         : 'Restart CC Relay to keep direct tasks open for manual completion. Terminal retention still works with this backend.'
       : `This workflow completes automatically, but its terminals stay connected afterward and after CC Relay exits. This setting is not shared with other projects.`
     : 'Restart CC Relay to enable retained terminal sessions.';
@@ -8451,7 +8768,9 @@ function renderAutomaticTerminalPool() {
     ? 'CC Relay starts OpenCode directly, streams its native progress and token usage, then releases this execution slot.'
     : state.keepTerminalOpen
     ? directSessionMode && manualSessionsSupported
-      ? 'Session mode opens a dedicated terminal workspace. Send as many turns as needed, then finish the task manually.'
+      ? closeCompletionSupported
+        ? 'Session mode opens a dedicated terminal workspace. Send as many turns as needed, then finish explicitly or close its terminal.'
+        : 'Session mode opens a dedicated terminal workspace. Send as many turns as needed, then finish the task manually.'
       : 'CC Relay keeps the workflow terminals open after the automatic task outcome.'
     : state.taskMode === 'turbo' && usesSingleExecutorTurbo()
       ? 'Turbo opens a fresh planner, closes it after planning, then opens one fresh executor for the complete plan. The executor conversation remains resumable.'
@@ -11393,7 +11712,105 @@ elements.maxCodexInstances.addEventListener('change', saveProjectInstanceLimits)
 elements.maxClaudeInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.maxOpenCodeInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.addProjectButton.addEventListener('click', () => chooseProject(false));
+elements.projectList.addEventListener('dragstart', (event) => {
+  const handle = event.target.closest('[data-project-action="reorder"]');
+  const chip = handle?.closest('[data-project-id]');
+  if (
+    !handle
+    || !chip
+    || !event.dataTransfer
+    || handle.getAttribute('aria-disabled') === 'true'
+    || !projectReorderSupported()
+    || state.projectReorderPending
+    || state.projectDrag
+  ) {
+    event.preventDefault();
+    return;
+  }
+  const draggedId = Number(chip.dataset.projectId);
+  const expectedProjectIds = projectOrderIds(state.projects);
+  if (!expectedProjectIds.includes(draggedId)) {
+    event.preventDefault();
+    return;
+  }
+  state.projectDrag = {
+    draggedId,
+    expectedProjectIds,
+    targetId: null,
+    edge: null,
+  };
+  state.projectDragClickSuppressed = true;
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('text/plain', String(draggedId));
+  const accent = getComputedStyle(chip).getPropertyValue('--project-accent').trim();
+  if (accent) elements.projectList.style.setProperty('--project-drag-accent', accent);
+  chip.classList.add('project-dragging');
+});
+elements.projectList.addEventListener('dragover', (event) => {
+  const drag = state.projectDrag;
+  const chip = event.target.closest('[data-project-id]');
+  const targetId = Number(chip?.dataset.projectId);
+  if (!drag) return;
+  scrollProjectListForDrag(event.clientX);
+  clearProjectDropMarkers();
+  elements.projectList
+    .querySelector(`[data-project-id="${drag.draggedId}"]`)
+    ?.classList.add('project-dragging');
+  if (!chip || !drag.expectedProjectIds.includes(targetId)) {
+    drag.targetId = null;
+    drag.edge = null;
+    return;
+  }
+  if (targetId === drag.draggedId) {
+    drag.targetId = null;
+    drag.edge = null;
+    return;
+  }
+  event.preventDefault();
+  event.dataTransfer.dropEffect = 'move';
+  drag.targetId = targetId;
+  drag.edge = projectDropEdge(event, chip);
+  chip.classList.add(drag.edge === 'before' ? 'project-drop-before' : 'project-drop-after');
+});
+elements.projectList.addEventListener('dragleave', (event) => {
+  if (!event.relatedTarget || !elements.projectList.contains(event.relatedTarget)) {
+    clearProjectDropMarkers();
+  }
+});
+elements.projectList.addEventListener('drop', (event) => {
+  const drag = state.projectDrag;
+  const chip = event.target.closest('[data-project-id]');
+  const targetId = Number(chip?.dataset.projectId);
+  if (!drag || !chip || !drag.expectedProjectIds.includes(targetId)) {
+    cleanupProjectDrag({ suppressClick: true });
+    return;
+  }
+  event.preventDefault();
+  const edge = targetId === drag.targetId && drag.edge
+    ? drag.edge
+    : projectDropEdge(event, chip);
+  const projectIds = dropProjectInOrder(
+    drag.expectedProjectIds,
+    drag.draggedId,
+    targetId,
+    edge,
+  );
+  if (!projectIds) {
+    cleanupProjectDrag({ suppressClick: true });
+    return;
+  }
+  void persistProjectOrder(drag.expectedProjectIds, projectIds, {
+    focusProjectId: drag.draggedId,
+  });
+});
+elements.projectList.addEventListener('dragend', () => {
+  if (state.projectDrag) cleanupProjectDrag({ suppressClick: true });
+});
 elements.projectList.addEventListener('click', async (event) => {
+  if (state.projectDragClickSuppressed) {
+    event.preventDefault();
+    return;
+  }
   const button = event.target.closest('[data-project-action]');
   const chip = event.target.closest('[data-project-id]');
   if (!chip) return;
@@ -11411,6 +11828,7 @@ elements.projectList.addEventListener('click', async (event) => {
     openProjectCloseConfirmation(project);
     return;
   }
+  if (button.dataset.projectAction === 'reorder') return;
   button.disabled = true;
   try {
     await launchProject(project, button.dataset.provider);
@@ -11420,6 +11838,32 @@ elements.projectList.addEventListener('click', async (event) => {
   }
 });
 elements.projectList.addEventListener('keydown', (event) => {
+  const reorderHandle = event.target.closest('[data-project-action="reorder"]');
+  if (reorderHandle) {
+    if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+      if (['Enter', ' '].includes(event.key)) {
+        event.preventDefault();
+        elements.projectReorderStatus.textContent = 'Use Left or Right arrow to move this project.';
+      }
+      return;
+    }
+    event.preventDefault();
+    if (state.projectReorderPending) return;
+    const chip = reorderHandle.closest('[data-project-id]');
+    const projectId = Number(chip?.dataset.projectId);
+    const expectedProjectIds = projectOrderIds(state.projects);
+    const direction = event.key === 'ArrowLeft' ? -1 : 1;
+    const projectIds = moveProjectInOrder(expectedProjectIds, projectId, direction);
+    if (!projectIds) {
+      const project = state.projects.find((item) => item.id === projectId);
+      elements.projectReorderStatus.textContent = project
+        ? `${project.name} is already ${direction < 0 ? 'first' : 'last'}.`
+        : '';
+      return;
+    }
+    void persistProjectOrder(expectedProjectIds, projectIds, { focusProjectId: projectId });
+    return;
+  }
   const chip = event.target.closest('[data-project-id]');
   if (!chip || event.target.closest('button') || !['Enter', ' '].includes(event.key)) return;
   event.preventDefault();
@@ -11754,6 +12198,7 @@ elements.terminalSettingsButton.addEventListener('click', () => {
   renderCompletionAlertSettings();
   renderVoiceInput();
   elements.terminalSettingsModal.showModal();
+  void refreshVoiceInputDevices({ requestPermission: state.voiceInputPreferences.enabled });
 });
 elements.terminalSettingsClose.addEventListener('click', () => {
   elements.terminalSettingsModal.close();
@@ -11770,6 +12215,19 @@ elements.voiceInputEnabled.addEventListener('change', () => {
     ...state.voiceInputPreferences,
     enabled: elements.voiceInputEnabled.checked,
   });
+  if (elements.voiceInputEnabled.checked) {
+    void refreshVoiceInputDevices({ requestPermission: true });
+  }
+});
+elements.voiceInputMicrophone.addEventListener('change', () => {
+  setVoiceInputPreferences({
+    ...state.voiceInputPreferences,
+    microphoneLabel: elements.voiceInputMicrophone.value || null,
+  });
+  state.voiceInputMessage = elements.voiceInputMicrophone.value
+    ? `Microphone set to ${elements.voiceInputMicrophone.value}.`
+    : 'Voice input will use the system default microphone.';
+  renderVoiceInput();
 });
 for (const [button, target] of [
   [elements.voiceInputShortcut, 'primary'],
@@ -11840,17 +12298,31 @@ elements.completionAlertPreview.addEventListener('click', () => {
 });
 
 voiceRecorder = new PushToTalkRecorder({
+  preferredDeviceLabel: state.voiceInputPreferences.microphoneLabel,
   onState: (activity) => {
     if (activity === 'captured') setVoiceInputActivity('processing');
     else setVoiceInputActivity(activity);
   },
-  onAudio: (audio) => {
-    void transcribeVoiceAudio(audio);
+  onDevice: ({ label }) => {
+    state.voiceInputDeviceLabel = label;
+    void refreshVoiceInputDevices();
+  },
+  onLevel: (level, peakLevel) => {
+    state.voiceInputLevel = level;
+    state.voiceInputPeakLevel = peakLevel;
+    renderVoiceInputLevel();
+  },
+  onAudio: (audio, recording) => {
+    void transcribeVoiceAudio(audio, recording);
   },
   onError: (error) => {
     state.activeVoiceShortcut = null;
     setVoiceInputActivity('error', voiceMicrophoneError(error));
   },
+});
+void refreshVoiceInputDevices();
+navigator.mediaDevices?.addEventListener?.('devicechange', () => {
+  void refreshVoiceInputDevices();
 });
 
 document.addEventListener('keydown', (event) => {

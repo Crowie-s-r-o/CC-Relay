@@ -8,7 +8,7 @@ const markup = readFileSync(new URL('../public/index.html', import.meta.url), 'u
 
 test('desktop Launchpad uses one compact horizontal card row without vertical clipping', () => {
   assert.match(style, /\.project-list \{\s*grid-area: list;\s*display: flex;[\s\S]*?padding-block: 2px;\s*overflow-x: auto;\s*overflow-y: hidden;/);
-  assert.match(style, /\.project-chip \{\s*display: grid;\s*flex: 0 0 176px;[\s\S]*?grid-template-areas: "head activity close";\s*grid-template-columns: minmax\(0, 1fr\) auto 16px;[\s\S]*?height: 30px;/);
+  assert.match(style, /\.project-chip \{\s*position: relative;\s*display: grid;\s*flex: 0 0 176px;\s*grid-template-areas: "head activity close";\s*grid-template-columns: minmax\(0, 1fr\) auto 16px;[\s\S]*?height: 30px;/);
   assert.match(style, /@media \(min-width: 1345px\) \{[\s\S]*?\.app-header \{\s*height: 58px;[\s\S]*?\.project-dock \{\s*height: 44px;\s*min-height: 44px;/);
   assert.match(style, /\.workspace \{\s*height: calc\(100vh - var\(--desktop-titlebar-height\) - var\(--app-header-height, 58px\) - 44px\)/);
   const selectedStyle = style.slice(

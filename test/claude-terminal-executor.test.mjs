@@ -3177,6 +3177,7 @@ async function runSteerRecovery(deliveredPrompt, recoveryScreens, options = {}) 
   const screens = [EMPTY_COMPOSER_FRAME, ...recoveryScreens];
   const request = unacknowledgedSteerRequest(deliveredPrompt);
   let screenReads = 0;
+  let clock = 0;
   const { executor, submitted } = makeExecutor({
     sessions: {
       readConnectedSession: async () => ({
@@ -3196,8 +3197,9 @@ async function runSteerRecovery(deliveredPrompt, recoveryScreens, options = {}) 
         ? { ok: true, reason: 'read', text: entry }
         : entry;
     },
-    now: Date.now,
-    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    // Keep the intentionally tiny recovery window independent of unrelated parallel test load.
+    now: () => clock,
+    wait: async (milliseconds) => { clock += milliseconds; },
     steerSubmitNudgeMs: 3,
     steerAcceptanceTimeoutMs: 60,
     submitRetryMs: 3,

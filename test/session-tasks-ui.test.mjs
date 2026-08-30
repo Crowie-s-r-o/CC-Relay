@@ -72,9 +72,10 @@ test('task activity markup carries the session strip and the conversation', () =
   assert.doesNotMatch(strip, /aria-live/);
 });
 
-test('the terminal setting explains manual sessions and automatic workflow retention', () => {
-  assert.match(html, /Direct tasks stay open between turns and finish only when you press Complete session in Task activity\./);
-  assert.match(app, /directSessionMode[\s\S]{0,600}complete only when you press Complete session in Task activity/);
+test('the terminal setting explains both session completion paths and workflow retention', () => {
+  assert.match(html, /Complete session finishes the task without closing its terminal\./);
+  assert.match(app, /manualSessionTerminalCloseCompletion/);
+  assert.match(app, /Press Complete session to finish while keeping the terminal, or close the terminal to finish both/);
   assert.match(app, /This workflow completes automatically, but its terminals stay connected afterward/);
   assert.match(app, /Keep workflow terminals open/);
 });
@@ -303,14 +304,17 @@ test('closing a retained terminal confirms first and reports into the strip', ()
   assert.match(app, /elements\.sessionKillButton\.addEventListener\('click', killSessionTerminal\);/);
 });
 
-test('manual terminal sessions complete only through the dedicated task-detail control', () => {
+test('manual terminal sessions support explicit completion and automatic terminal-close completion', () => {
   const strip = functionBody(app, 'function renderSessionStrip(task, active)');
   assert.match(strip, /const manualSession = isManualSessionTask\(task\)/);
+  assert.match(strip, /manualSessionTerminalCloseCompletion/);
   assert.match(strip, /elements\.sessionStrip\.dataset\.completion = manualSession \? 'manual' : 'automatic'/);
   assert.match(strip, /task\.status === 'open'/);
   assert.match(strip, /'Complete session'/);
   assert.match(strip, /completeButton\.disabled = !completionSupported/);
   assert.match(strip, /The retained terminal will remain open/);
+  assert.match(strip, /will complete this task after it confirms that the terminal is closed/);
+  assert.match(strip, /completes this terminal session task/);
 
   const complete = functionBody(app, 'async function completeTerminalSession()');
   assert.match(complete, /task\.status !== 'open'/);
@@ -318,6 +322,11 @@ test('manual terminal sessions complete only through the dedicated task-detail c
   assert.match(complete, /Session completed\. The retained terminal remains open until you close it\./);
   assert.match(complete, /Session completed\. Its terminal was already closed\./);
   assert.doesNotMatch(complete, /api\(`\/api\/terminals/);
+
+  const close = functionBody(app, 'async function killSessionTerminal()');
+  assert.match(close, /const completesTask = state\.status\?\.capabilities\?\.manualSessionTerminalCloseCompletion === true[\s\S]{0,100}isManualSessionTask\(task\)/);
+  assert.match(close, /Closing it also completes this terminal session task/);
+  assert.match(close, /was closed and the session task was completed/);
 
   assert.match(app, /elements\.sessionCompleteButton\.addEventListener\('click', completeTerminalSession\);/);
   assert.match(app, /task\.status === 'open'[\s\S]{0,220}'Send command'/);

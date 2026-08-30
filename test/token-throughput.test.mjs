@@ -85,6 +85,49 @@ test('a finished manual session freezes at its last native usage event', () => {
   assert.equal(throughput.elapsedSeconds, 4);
 });
 
+test('a follow-up boundary clears prior usage and times only the new attempt', () => {
+  const task = {
+    provider: 'codex',
+    status: 'running',
+    // Manual terminal sessions intentionally retain the first workspace start.
+    started_at: '2026-08-25T10:00:00.000Z',
+  };
+  const boundary = {
+    created_at: '2026-08-25T11:00:00.000Z',
+    payload: {
+      type: 'relay/task-attempt-started',
+      provider: 'codex',
+      attemptStartedAt: '2026-08-25T11:00:00.000Z',
+    },
+  };
+  const prior = usageEvent('2026-08-25T10:00:04.000Z', {
+    totalTokens: 20_200,
+    inputTokens: 20_000,
+    outputTokens: 200,
+  }, 'codex');
+
+  assert.equal(
+    tokenThroughput([prior, boundary], task, Date.parse('2026-08-25T11:00:05.000Z')),
+    null,
+  );
+
+  const current = usageEvent('2026-08-25T11:00:04.000Z', {
+    totalTokens: 10_100,
+    inputTokens: 10_000,
+    outputTokens: 100,
+  }, 'codex');
+  current.payload.attemptStartedAt = '2026-08-25T11:00:00.000Z';
+  const throughput = tokenThroughput(
+    [prior, boundary, current],
+    task,
+    Date.parse('2026-08-25T11:00:05.000Z'),
+  );
+  assert.equal(throughput.inputTokens, 10_000);
+  assert.equal(throughput.outputTokens, 100);
+  assert.equal(throughput.elapsedSeconds, 5);
+  assert.equal(throughput.tokensPerSecond, 20);
+});
+
 test('computed usage is never presented as provider-native throughput', () => {
   const task = {
     provider: 'opencode',

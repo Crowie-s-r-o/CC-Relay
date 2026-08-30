@@ -30,6 +30,14 @@ test('terminal message rows identify the speaker and preserve original signal nu
   assert.match(style, /\.event-provider-claude\.event-message-assistant \.term-response/);
 });
 
+test('repeated Claude status signals render one compact counter with the latest time', () => {
+  assert.match(app, /repeatCount: eventEntryRepeatCount\(entry\)/);
+  assert.match(app, /presentation\.repeatCount > 1 \? entryLastEvent\(entry\) : entryFirstEvent\(entry\)/);
+  assert.match(app, /class="term-repeat-count"[^>]*identical status updates grouped[^>]*>×/);
+  assert.match(app, /repeatCount > 1 \? ` · \$\{repeatCount\.toLocaleString\(\)\} identical updates`/);
+  assert.match(style, /\.term-repeat-count \{[\s\S]*?border-radius: 999px;[\s\S]*?white-space: nowrap;/);
+});
+
 test('terminal rendering merges canonical prompt history without mutating provider events', () => {
   assert.match(app, /mergePromptMessages\(events, prompts, \{ provider: taskProvider\(task\) \}\)/);
   assert.match(app, /state\.selectedTaskPrompts = prompts/);

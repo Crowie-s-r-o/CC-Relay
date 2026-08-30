@@ -6,6 +6,67 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **August 27: repeated Claude working heartbeats now occupy one Task Activity row.** Consecutive
+> `claude/progress` records fold only when their message and complete payload match, update a compact
+> `×N` badge and latest occurrence time, and split again at any real event or changed status. Raw
+> database and artifact evidence remains intact. All 1,752 repository tests pass, `release:check`
+> is green for v0.2.26, and `git diff --check` is clean. See
+> [[claude-terminal-live-output]] and [[task-activity-overview]].
+
+> [!important]
+> **August 27: push-to-talk now proves the selected source has a live signal before blaming speech
+> recognition.** Settings actively reveals named inputs even when initial device enumeration is empty,
+> releases the permission probe, and persists the chosen microphone by label. A four-bar meter shows
+> live input while held, and digital silence is rejected immediately with the exact source named. The
+> local faster-whisper worker transcribed generated speech down to 0.6 percent volume while true silence
+> stayed empty, confirming the repeated failure was capture-source silence. The automatic-terminal
+> fieldset is now 57px high, with 26px session-mode and Settings controls, and the settings dialog is
+> denser and responsive. All 78 focused checks and all 1,749 repository tests pass. See
+> [[push-to-talk-voice-input]], [[project-terminal-settings]], and
+> [[compact-interface-density]].
+
+> [!important]
+> **August 27: follow-ups now have an explicit token-accounting boundary.** Reusing a task and event
+> rail could leave the preceding turn's cached input and output visible until the first new provider
+> snapshot. Manual terminal sessions also measured output rate against the complete workspace age
+> because their lifecycle start is intentionally preserved. Every run now records and stamps its
+> exact attempt start, and both Task Activity and the global monitor reset to that boundary. The 90
+> focused checks and all 1,747 repository tests pass. See [[token-throughput-correction]] and
+> [[same-task-session-continuation]].
+
+> [!important]
+> **August 26: selected Task Activity text now has a native desktop Copy menu.** Terminal
+> scrollback explicitly permits text selection while signal numbers remain excluded, and Electron
+> opens **Copy** for selected read-only text instead of presenting no right-click action. Editable
+> controls receive only their currently available native editing roles, and unselected application
+> surfaces stay menu-free. A real-browser fixture held a 273-character terminal response selection
+> through polling and copied it byte for byte; a fresh second pass had zero browser warnings or
+> errors. The 27 focused checks and all 1,744 repository tests pass, and `release:check` is green for
+> v0.2.26. See [[stable-text-selection]] and [[task-references]].
+
+> [!important]
+> **August 26: the global task monitor always keeps project identity visible, and closing a
+> Terminal session now completes its task.** The project name leads the compact card's prompt row
+> with protected space, so a bottom monitor card cannot lose it to terminal state, token speed, or
+> duration metadata. **Complete session** still finishes a task without closing its retained
+> terminal. Closing that terminal through Relay finishes both immediately. External terminal loss
+> requires two distinct authoritative provider-discovery misses; duplicate or stale polls cannot
+> create a false completion, and rediscovery resets the pending miss. See
+> [[manual-terminal-session-mode]], [[session-tasks]], [[interface-layout]], and
+> [[compact-interface-density]]. An isolated bottom-monitor pass covered default and compact cards
+> at desktop and 600px widths with no overflow or console warnings, and all 1,734 tests pass.
+
+> [!important]
+> **August 26: push-to-talk now identifies and selects the real microphone source.** Live failures
+> proved that the only macOS input was an unfed `Microsoft Teams Audio` virtual device: three normal
+> duration clips were just 436 through 968 bytes of digital silence, so no Whisper setting could
+> recover speech. Terminal settings now lists the system default and named inputs, persists a named
+> choice by label across Electron origin changes, and switches after permission reveals hidden
+> devices. An empty low-bitrate Opus clip names the source and asks for a working microphone instead
+> of repeating the generic no-speech message. See [[push-to-talk-voice-input]] and
+> [[durable-ui-layout-preferences]].
+
 > [!important]
 > **August 26: OpenCode reasoning is now visible through the Thinking switch.** OpenCode 1.18.23
 > suppresses reasoning records by default in non-interactive mode, even though the durable session
@@ -475,7 +536,7 @@ type: hot
 > **August 4: Task Activity now visualizes named Claude and Codex sub-agents through one live worker ledger.** Claude launch and finish notifications fold by tool use ID; Codex spawn, activity, and multi-worker state updates fold by agent thread ID. Worker rows show role or model, brief, and running, background, finished, interrupted, or failed state. Codex `interacted` activity preserves lifecycle instead of falsely finishing a worker, and Claude background command notifications no longer appear as unnamed agents. The earlier Claude premature-close defect remains protected by the unlimited headless background wait, interactive pending-work gates, and fresh-consolidation requirement. All 1,081 tests pass, and an isolated live UI rendered both providers as separate named workers. Restart CC Relay and rebuild the desktop bundle after active tasks finish. See [[provider-sub-agent-visibility]] and [[claude-background-sub-agent-completion]].
 
 > [!important]
-> **August 4: Terminal session mode now keeps both the direct task and its terminal workspace open across as many turns as the operator needs.** Every successful, failed, stopped, or restart-interrupted turn returns the same task to `open`; it never retries automatically and it completes only through **Complete session** in Task Activity. Completion does not close the retained native terminal, and **Close terminal** does not complete the task. Manual session cards have a dedicated terminal rail, Launchpad reports **Session open**, the continuation dock says **Send command**, and the completed task cannot silently reopen. Plan council, Turbo, and the running-task **Stop auto-close** latch keep automatic completion. A temporary live backend verified the actual completion route at desktop and 600 pixel layouts in light and dark themes with zero console errors. Restart CC Relay and rebuild the desktop bundle to activate the schema, route, and renderer. See [[manual-terminal-session-mode]].
+> **August 4 historical note, superseded August 26: Terminal session mode first kept both the direct task and its terminal workspace open across as many turns as the operator needed.** Every successful, failed, stopped, or restart-interrupted turn returned the same task to `open`; it never retried automatically and it originally completed only through **Complete session** in Task Activity. Completion did not close the retained native terminal, and **Close terminal** originally did not complete the task. The August 26 note above adds terminal-close completion. Manual session cards have a dedicated terminal rail, Launchpad reports **Session open**, the continuation dock says **Send command**, and the completed task cannot silently reopen. Plan council, Turbo, and the running-task **Stop auto-close** latch keep automatic completion. A temporary live backend verified the actual completion route at desktop and 600 pixel layouts in light and dark themes with zero console errors. Restart CC Relay and rebuild the desktop bundle to activate the schema, route, and renderer. See [[manual-terminal-session-mode]].
 
 > [!important]
 > **August 4: a running automatic task now has a bright, task-level Stop auto-close safety latch in Task Activity.** Pressing it persists retention for only that task, changes the control to **Auto-close stopped**, and keeps the exact prepared terminal or workflow fleet open at the final outcome. Completion re-reads the task row instead of the dispatch snapshot, automatic retries still close intermediate attempts, and shutdown promotes a prepared latched launch before cancelling the turn. Older backends show a disabled restart state. The complete suite passes 1,067 tests; isolated light, dark, 1180, 720, and 420 pixel checks produced no overflow or console errors. Restart CC Relay and rebuild the desktop bundle to activate the route and renderer. See [[live-terminal-retention]].

@@ -26,7 +26,7 @@
 ## Highlights
 
 - **One global task monitor.** Follow running work and open terminal sessions across every project from compact status cards, without leaving the repository you are working in.
-- **Terminal session workspaces.** Keep a direct task open across as many turns as needed, steer work while it runs, resume the saved conversation later, and explicitly finish the session when the job is done.
+- **Terminal session workspaces.** Keep a direct task open across as many turns as needed, steer work while it runs, and finish it explicitly or by closing its terminal.
 - **Plans, goals, and workers in one view.** Task Activity shows runtime, current plan steps, Codex goals, sub-agent assignments, commands, file changes, messages, errors, and results as they happen.
 - **Live native token accounting.** Task Activity shows cumulative provider-reported input and output use, while it and the running-task monitor show average output tokens per task second throughout each run.
 - **Searchable history and task-owned diffs.** Search task names, prompts, follow-ups, responses, results, and errors. Changes opens on exact patches reported by the task, with a separate Workspace window for every disk change observed while it ran.
@@ -51,7 +51,7 @@ Signed macOS builds and installed Windows builds then check the same GitHub repo
 
 No source checkout or Node.js needed. Before queueing work, prepare at least one provider CLI: Codex with ChatGPT, Claude Code with a Claude subscription, or OpenCode with at least one configured model provider.
 
-Voice input is optional. Turn it on in **Terminal settings**, choose **Set up engine**, and keep Relay open while it creates a private Python runtime and downloads the multilingual faster-whisper base model. Setup requires Python 3.9 or newer and an internet connection. After setup, hold either displayed activation shortcut while speaking and release any one of its keys to stop and transcribe on the CPU. The primary default is `Ctrl+Shift+Space`, and an optional alternate shortcut is configurable.
+Voice input is optional. Turn it on in **Terminal settings**, select a working microphone, choose **Set up engine**, and keep Relay open while it creates a private Python runtime and downloads the multilingual faster-whisper base model. Setup requires Python 3.9 or newer and an internet connection. After setup, hold either displayed activation shortcut while speaking and release any one of its keys to stop and transcribe on the CPU. The primary default is `Ctrl+Shift+Space`, and an optional alternate shortcut is configurable. If a virtual or disconnected input records silence, Relay names that source instead of presenting a generic speech failure.
 
 ## The loop
 

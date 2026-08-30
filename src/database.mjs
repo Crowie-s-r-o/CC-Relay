@@ -570,7 +570,7 @@ export class RelayDatabase {
         task.id,
         'queue',
         task.manual_completion
-          ? 'Terminal session mode enabled. This task stays open between turns until it is completed manually.'
+          ? 'Terminal session mode enabled. This task stays open between turns until it is completed explicitly or its terminal closes.'
           : 'Terminal retention enabled. CC Relay will leave this task session open after its final outcome.',
       );
     }
@@ -1174,6 +1174,10 @@ export class RelayDatabase {
 
   updateAllProjectTerminalLayouts(terminalLayout) {
     return this.projectConfig.updateAllProjectTerminalLayouts(terminalLayout);
+  }
+
+  reorderProjects(projectIds, expectedProjectIds) {
+    return this.projectConfig.reorderProjects(projectIds, expectedProjectIds);
   }
 
   updateProjectColor(id, color) {

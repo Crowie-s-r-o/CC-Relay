@@ -285,3 +285,43 @@ test('the task monitor cache keeps an idle manual session until explicit complet
     assert.equal(cache.entries.size, 0);
   });
 });
+
+test('the task monitor clears cached token usage when a manual-session follow-up starts', () => {
+  withDatabase((database) => {
+    const task = database.createTask({
+      title: 'Terminal workspace',
+      prompt: 'First command',
+      repoPath: '/tmp/alpha',
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
+    });
+    database.updateTask(task.id, {
+      status: 'open',
+      started_at: '2026-08-25T10:00:00.000Z',
+    });
+    database.addEvent(task.id, 'codex', 'Codex used tokens.', {
+      type: 'provider/token-usage',
+      provider: 'codex',
+      source: 'native',
+      cumulative: true,
+      usage: { totalTokens: 300, inputTokens: 250, outputTokens: 50 },
+    });
+
+    const cache = new AgentUpdateCache({
+      latestEventId: (taskId) => database.latestEventId(taskId),
+      listEventsSince: (taskId, sinceId, limit) => database.listEventsSince(taskId, sinceId, limit),
+    });
+    assert.equal(cache.feed([database.getTask(task.id)])[0].latestTokenUsage.usage.totalTokens, 300);
+
+    database.updateTask(task.id, { status: 'running' });
+    database.addEvent(task.id, 'queue', 'Follow-up started.', {
+      type: 'relay/task-attempt-started',
+      provider: 'codex',
+      attemptStartedAt: '2026-08-25T11:00:00.000Z',
+    });
+    assert.equal(cache.feed([database.getTask(task.id)])[0].latestTokenUsage, null);
+  });
+});

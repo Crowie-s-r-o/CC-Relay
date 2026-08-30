@@ -47,17 +47,17 @@ export function claudeTerminalExecutionSettings(task) {
   };
 }
 
-// The subset a FIRST disposable launch may carry today: model and effort only.
-//
-// Plan council and Turbo council stages synthesize their own task object at run time
-// (`claudeStageTask` swaps in the council author's model, adds `terminal_permission_mode: 'plan'`
-// and a tool allowlist), so the pool cannot derive those from the stored row without mirroring
-// literals in a second place. Mirroring them wrong and AGREEING would run a council stage with the
-// wrong settings and no relaunch to correct it, which is far worse than the churn this removes.
-// So anything beyond model and effort returns null here and keeps the existing relaunch path.
+export function claudeCompleteLaunchSettings(task) {
+  const { apply, ...settings } = claudeTerminalExecutionSettings(task);
+  return apply ? settings : null;
+}
+
+// Direct Execute uses only the model and effort subset. Plan council builds its shared stage task
+// first and passes claudeCompleteLaunchSettings() so its permission and tool contract also lands
+// on the first provider process without duplicating those literals in the pool.
 export function claudeFirstLaunchSettings(task) {
-  const settings = claudeTerminalExecutionSettings(task);
-  if (!settings.apply) return null;
+  const settings = claudeCompleteLaunchSettings(task);
+  if (!settings) return null;
   if (settings.permissionMode || settings.tools.length || settings.addDirectories.length) {
     return null;
   }

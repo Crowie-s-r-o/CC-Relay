@@ -7,6 +7,7 @@ import { isTurboExecutionSession } from './task-continuation.mjs';
 const RETRYABLE_STATUSES = new Set(['failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_SOURCE_STATUSES = new Set(['open', 'complete', 'failed', 'cancelled', 'interrupted']);
 const FOLLOW_UP_ERROR_PREFIX = 'Same-session follow-up';
+const MANUAL_SESSION_CLOSE_CONFIRMATIONS = 2;
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function providerName(provider) {
@@ -59,6 +60,8 @@ export class TaskQueue extends EventEmitter {
     this.dispatchGuards = new Map();
     this.retryTimers = new Map();
     this.automaticRetryCounts = new Map();
+    this.tokenUsageAttemptStarts = new Map();
+    this.manualSessionTerminalMisses = new Map();
   }
 
   taskThreadIds(task) {
@@ -404,19 +407,73 @@ export class TaskQueue extends EventEmitter {
     if (task.status !== 'open' || this.activeTasks.has(taskId)) {
       throw new Error('Wait for the current session turn to finish before completing this task.');
     }
-    const updated = this.database.updateTask(taskId, {
+    return this.finishManualSession(
+      task,
+      'Terminal session completed manually. This does not close any retained terminal.',
+    );
+  }
+
+  completeSessionAfterTerminalClose(taskId) {
+    const task = this.database.getTask(taskId);
+    if (
+      !isManualSessionTask(task)
+      || task.status !== 'open'
+      || this.activeTasks.has(taskId)
+    ) return null;
+    return this.finishManualSession(
+      task,
+      'Terminal session completed automatically after its retained terminal closed.',
+    );
+  }
+
+  finishManualSession(task, eventMessage) {
+    const updated = this.database.updateTask(task.id, {
       status: 'complete',
       finished_at: now(),
       error: null,
     });
-    if (task.result) this.artifacts.writeResult(taskId, task.result);
-    this.database.addEvent(
-      taskId,
-      'queue',
-      'Terminal session completed manually. This does not close any retained terminal.',
-    );
-    this.changed(taskId);
+    if (task.result) this.artifacts.writeResult(task.id, task.result);
+    this.database.addEvent(task.id, 'queue', eventMessage);
+    this.manualSessionTerminalMisses.delete(task.id);
+    this.changed(task.id);
     return updated;
+  }
+
+  reconcileManualSessionTerminals(threads, {
+    authoritativeProviders = [],
+    observationId = null,
+  } = {}) {
+    const authoritative = new Set(authoritativeProviders);
+    const liveThreadKeys = new Set((threads || [])
+      .filter((thread) => thread?.id && ['codex', 'claude'].includes(thread?.provider))
+      .map((thread) => `${thread.provider}:${thread.id}`));
+    const candidates = this.database.listTasks().filter((task) => (
+      task.status === 'open'
+      && Boolean(task.thread_id)
+      && isManualSessionTask(task)
+    ));
+    const candidateIds = new Set(candidates.map((task) => task.id));
+    for (const taskId of this.manualSessionTerminalMisses.keys()) {
+      if (!candidateIds.has(taskId)) this.manualSessionTerminalMisses.delete(taskId);
+    }
+    if (observationId === null || observationId === undefined) return [];
+
+    const completed = [];
+    for (const task of candidates) {
+      if (!authoritative.has(task.provider)) continue;
+      if (liveThreadKeys.has(`${task.provider}:${task.thread_id}`)) {
+        this.manualSessionTerminalMisses.delete(task.id);
+        continue;
+      }
+      const previous = this.manualSessionTerminalMisses.get(task.id);
+      if (previous?.observationId === observationId) continue;
+      const misses = (previous?.misses || 0) + 1;
+      this.manualSessionTerminalMisses.set(task.id, { misses, observationId });
+      if (misses < MANUAL_SESSION_CLOSE_CONFIRMATIONS) continue;
+      const finished = this.completeSessionAfterTerminalClose(task.id);
+      if (finished) completed.push(finished);
+    }
+    return completed;
   }
 
   retry(taskId, {
@@ -1213,9 +1270,14 @@ export class TaskQueue extends EventEmitter {
   beginTask(task, { sessionFollowUp = false } = {}) {
     this.activeTasks.set(task.id, task);
     const persisted = this.database.getTask(task.id);
+    const attemptStartedAt = now();
+    // A manual terminal session preserves its first persisted start so the workspace lifetime
+    // remains visible. Token telemetry still belongs to this exact provider attempt, so keep a
+    // separate runtime boundary and stamp every native usage event with it.
+    this.tokenUsageAttemptStarts.set(task.id, attemptStartedAt);
     const startedAt = isManualSessionTask(persisted) && persisted.started_at
       ? persisted.started_at
-      : now();
+      : attemptStartedAt;
     this.database.updateTask(task.id, {
       status: 'running',
       started_at: startedAt,
@@ -1235,6 +1297,11 @@ export class TaskQueue extends EventEmitter {
       sessionFollowUp
         ? `Follow-up started in the same task and conversation${execution.length > 0 ? ` with ${execution.join(', ')}` : ''}.`
         : execution.length > 0 ? `Task started with ${execution.join(', ')}.` : 'Task started.',
+      {
+        type: 'relay/task-attempt-started',
+        provider: task.provider,
+        attemptStartedAt,
+      },
     );
     this.changed(task.id);
     // Captured once per task. A follow-up or retry re-enters here, keeps the original baseline,
@@ -1548,13 +1615,16 @@ export class TaskQueue extends EventEmitter {
               this.artifacts.updateTaskAssignment(sessionTask);
             }
           }
-          this.artifacts.appendRawEvent(task.id, event);
-          const kind = event.provider || (
-            event.type === 'item/completed' && event.item?.type === 'agentMessage'
+          const storedEvent = event?.type === 'provider/token-usage'
+            ? { ...event, attemptStartedAt: this.tokenUsageAttemptStarts.get(task.id) }
+            : event;
+          this.artifacts.appendRawEvent(task.id, storedEvent);
+          const kind = storedEvent.provider || (
+            storedEvent.type === 'item/completed' && storedEvent.item?.type === 'agentMessage'
               ? 'result'
               : 'codex'
           );
-          this.database.addEvent(task.id, kind, message, event);
+          this.database.addEvent(task.id, kind, message, storedEvent);
           this.changed(task.id);
         },
         onStderr: (line) => {
@@ -1661,6 +1731,7 @@ export class TaskQueue extends EventEmitter {
         }
       }
       this.activeTasks.delete(task.id);
+      this.tokenUsageAttemptStarts.delete(task.id);
       this.changed(task.id);
       this.emit('taskIdle', task.id);
       if (this.activeTasks.size === 0) this.emit('idle');

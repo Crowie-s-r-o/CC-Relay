@@ -25,6 +25,11 @@ One Launchpad project is always selected whenever pinned projects exist. Clickin
 
 Project cards are status and selection surfaces, not terminal launch surfaces. They do not contain Codex or Claude buttons. The Launchpad heading has one **Add project** action, which pins and selects a folder without opening a terminal. Manual terminal creation remains available through the composer connection controls. Every unselected card carries a quiet 4 percent flat identity tint and mixed-color outline, with a 7 percent tint on hover. The selected project keeps the same one-pixel border geometry, strengthens the flat identity tint to 11 percent, and adds only a quiet one-pixel shadow. The solid initial tile carries project identity without a surrounding ring. There is no outer keyline or vertical lift, so selection does not create a thick frame or shift the card content.
 
+Pinned projects can be reordered from the compact grip at the start of each card. Pointer dragging shows a two-pixel insertion rail in the dragged project's identity color and scrolls the horizontal list near either edge. A focused grip accepts Left and Right arrow keys and returns focus after the card moves. Reordering changes only the persisted `projects.position` values. It does not select the dragged card, replace the active project, or modify any project-owned queue.
+
+> [!important]
+> Reorder requests contain the complete expected project ID order and complete replacement order. The shared SQLite store validates both under `BEGIN IMMEDIATE` before renumbering positions. A stale cross-process snapshot is rejected and the renderer reloads instead of overwriting another backend's newer order. See [[shared-project-configuration]].
+
 > [!note]
 > Global running-task cards split project and CC Relay ownership in markup. `.header-running-project` uses the resolved project accent, while the adjacent CC Relay name stays neutral. The same accent also controls the flat task surface, border, live dot, and task-number chip. See [[interface-layout]].
 
@@ -41,7 +46,7 @@ Project cards are status and selection surfaces, not terminal launch surfaces. T
 > Desktop project cards are one 30px row and 176px wide. Only the folder name and current state are visible; the complete path remains in the card title. The project list scrolls horizontally when necessary. Do not place activity beneath the project name inside the fixed desktop dock. The heading, project list, and actions share the same wide-screen row.
 
 > [!important]
-> The unpin control owns the final `close` grid area of `.project-chip`. It must be a direct card child after the activity group, never a child of `.project-chip-head`. Nesting it in the name sub-grid places the close button in the middle of the card.
+> The unpin control owns the final `close` grid area of `.project-chip`. It must be a direct card child after the activity group, never a child of `.project-chip-head`. The reorder grip owns the first `drag` grid area. Nesting either control in the name sub-grid breaks the fixed edge columns.
 
 > [!important]
 > Closing a project is a confirmed Launchpad-only action. `.project-unpin` opens

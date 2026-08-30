@@ -4,7 +4,11 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import electronUpdater from 'electron-updater';
-import { desktopMenuRequired, desktopMenuTemplate } from './desktop-menu.mjs';
+import {
+  desktopContextMenuTemplate,
+  desktopMenuRequired,
+  desktopMenuTemplate,
+} from './desktop-menu.mjs';
 import { configureDesktopPermissions } from './desktop-microphone.mjs';
 import { createGitHubReleaseChecker } from './desktop-release-discovery.mjs';
 import { desktopRendererUrl, desktopTitlebarOptions } from './desktop-titlebar.mjs';
@@ -282,6 +286,11 @@ async function createWindow() {
     if (!direction) return;
     event.preventDefault();
     applyDesktopZoom(direction);
+  });
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    const template = desktopContextMenuTemplate(params);
+    if (template.length === 0 || !mainWindow || mainWindow.isDestroyed()) return;
+    Menu.buildFromTemplate(template).popup({ window: mainWindow });
   });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('http://') || url.startsWith('https://')) shell.openExternal(url);

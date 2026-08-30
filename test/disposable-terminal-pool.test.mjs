@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { ArtifactStore } from '../src/artifacts.mjs';
 import { RelayDatabase } from '../src/database.mjs';
@@ -13,6 +13,14 @@ import {
   inspectCodexConversation,
 } from '../src/disposable-terminal-pool.mjs';
 import { ProjectLauncher } from '../src/project-launcher.mjs';
+
+const COUNCIL_CLAUDE_LAUNCH_SETTINGS = {
+  model: 'opus',
+  effort: 'max',
+  permissionMode: 'plan',
+  tools: ['Read', 'Glob', 'Grep', 'AskUserQuestion'],
+  addDirectories: [],
+};
 
 function setup({
   claudeConversationState = () => 'present',
@@ -324,7 +332,7 @@ test('a direct Claude task puts its model and effort on the first launch command
   }
 });
 
-test('a Codex task launches with its visible model and effort while Plan council keeps staged settings', async () => {
+test('direct and Plan council terminals receive their complete settings on the first launch', async () => {
   const context = setup();
   try {
     const codexTask = context.database.createTask({
@@ -344,8 +352,6 @@ test('a Codex task launches with its visible model and effort while Plan council
     });
     await context.pool.release(codexTask.id);
 
-    // The council's Claude stage synthesizes plan mode and a tool allowlist at run time, so the
-    // pool deliberately launches it plain and leaves the executor's restart in charge.
     const council = context.database.createTask({
       title: 'Council',
       prompt: 'Plan it',
@@ -364,9 +370,22 @@ test('a Codex task launches with its visible model and effort while Plan council
     });
     context.artifacts.initializeTask(council);
     await context.pool.prepare(council);
-    for (const launch of context.launches.slice(1)) {
-      assert.equal(launch.options.claudeLaunchSettings, undefined);
-    }
+    assert.deepEqual(context.launches.slice(1).map(({ provider, options }) => ({ provider, options })), [
+      {
+        provider: 'claude',
+        options: {
+          resumeThreadId: null,
+          claudeLaunchSettings: COUNCIL_CLAUDE_LAUNCH_SETTINGS,
+        },
+      },
+      {
+        provider: 'codex',
+        options: {
+          resumeThreadId: null,
+          codexLaunchSettings: { model: 'gpt-5.1-codex-max', effort: 'high' },
+        },
+      },
+    ]);
     await context.pool.release(council.id);
   } finally {
     context.database.close();
@@ -416,14 +435,202 @@ test('a Plan council retry replaces both provider sessions when neither created 
     assert.deepEqual(context.launches.map(({ provider, options }) => ({ provider, options })), [
       {
         provider: 'claude',
-        options: { initializeThreadId: 'saved-empty-claude-author' },
+        options: {
+          initializeThreadId: 'saved-empty-claude-author',
+          claudeLaunchSettings: COUNCIL_CLAUDE_LAUNCH_SETTINGS,
+        },
       },
       {
         provider: 'codex',
-        options: { resumeThreadId: null },
+        options: {
+          resumeThreadId: null,
+          codexLaunchSettings: { model: 'gpt-test', effort: 'max' },
+        },
       },
     ]);
     await context.pool.release(task.id);
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Plan council resume reads draft and review files and launches only a fresh revision author', async () => {
+  const context = setup();
+  try {
+    const task = context.database.createTask({
+      title: 'Resume final council revision',
+      prompt: 'Plan it',
+      repoPath: context.directory,
+      thread: {
+        id: 'saved-codex-reviewer',
+        title: 'Saved Codex reviewer',
+        source: 'test terminal',
+        cwd: context.directory,
+      },
+      provider: 'council',
+      mode: 'plan',
+      council: {
+        authorProvider: 'claude',
+        authorThread: {
+          id: 'large-claude-draft-session',
+          title: 'Large Claude draft session',
+          source: 'test terminal',
+          cwd: context.directory,
+        },
+        authorModel: 'opus',
+        authorEffort: 'max',
+        reviewerProvider: 'codex',
+        reviewerModel: 'gpt-test',
+        reviewerEffort: 'max',
+      },
+      terminalLifecycle: 'disposable',
+    });
+    context.artifacts.initializeTask(task);
+    for (const [stage, content] of [
+      ['draft', '# Saved draft\n'],
+      ['review', '# Saved review\n'],
+    ]) {
+      const stagePath = context.artifacts.planStagePath(task.id, stage, context.directory);
+      mkdirSync(dirname(stagePath), { recursive: true });
+      writeFileSync(stagePath, content, 'utf8');
+    }
+
+    assert.deepEqual(context.pool.requirements(task), { codex: 0, claude: 1, opencode: 0 });
+    const prepared = await context.pool.prepare(task);
+
+    assert.equal(prepared.author_thread_id, 'claude-thread-1');
+    assert.equal(prepared.thread_id, 'saved-codex-reviewer');
+    assert.deepEqual(context.launches.map(({ provider, options }) => ({ provider, options })), [
+      {
+        provider: 'claude',
+        options: {
+          resumeThreadId: null,
+          claudeLaunchSettings: COUNCIL_CLAUDE_LAUNCH_SETTINGS,
+        },
+      },
+    ]);
+    assert.ok(context.database.listEvents(task.id).some(({ message }) => (
+      message.includes('Saved draft.md and review.md were found')
+    )));
+    assert.deepEqual(await context.pool.release(task.id), { closed: 1, failed: 0 });
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a Codex-first council resume launches only a fresh Codex revision author', async () => {
+  const context = setup();
+  try {
+    const task = context.database.createTask({
+      title: 'Resume Codex final revision',
+      prompt: 'Plan it in the reverse order',
+      repoPath: context.directory,
+      thread: {
+        id: 'large-codex-draft-session',
+        title: 'Large Codex draft session',
+        source: 'test terminal',
+        cwd: context.directory,
+      },
+      provider: 'council',
+      mode: 'plan',
+      council: {
+        authorProvider: 'codex',
+        authorThread: {
+          id: 'saved-claude-reviewer',
+          title: 'Saved Claude reviewer',
+          source: 'test terminal',
+          cwd: context.directory,
+        },
+        authorModel: 'gpt-author',
+        authorEffort: 'high',
+        reviewerProvider: 'claude',
+        reviewerModel: 'fable',
+        reviewerEffort: 'max',
+      },
+      terminalLifecycle: 'disposable',
+    });
+    context.artifacts.initializeTask(task);
+    for (const [stage, content] of [
+      ['draft', '# Saved Codex draft\n'],
+      ['review', '# Saved Claude review\n'],
+    ]) {
+      const stagePath = context.artifacts.planStagePath(task.id, stage, context.directory);
+      mkdirSync(dirname(stagePath), { recursive: true });
+      writeFileSync(stagePath, content, 'utf8');
+    }
+
+    assert.deepEqual(context.pool.requirements(task), { codex: 1, claude: 0, opencode: 0 });
+    const prepared = await context.pool.prepare(task);
+
+    assert.equal(prepared.thread_id, 'codex-thread-1');
+    assert.equal(prepared.author_thread_id, 'saved-claude-reviewer');
+    assert.deepEqual(context.launches.map(({ provider, options }) => ({ provider, options })), [
+      {
+        provider: 'codex',
+        options: {
+          resumeThreadId: null,
+          codexLaunchSettings: { model: 'gpt-author', effort: 'high' },
+        },
+      },
+    ]);
+    assert.deepEqual(await context.pool.release(task.id), { closed: 1, failed: 0 });
+  } finally {
+    context.database.close();
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+test('a fully checkpointed council can repair final plan persistence without a provider terminal', async () => {
+  const context = setup();
+  try {
+    const task = context.database.createTask({
+      title: 'Repair final plan file',
+      prompt: 'Plan it',
+      repoPath: context.directory,
+      provider: 'council',
+      mode: 'plan',
+      council: {
+        authorProvider: 'claude',
+        authorModel: 'opus',
+        authorEffort: 'max',
+        reviewerProvider: 'codex',
+        reviewerModel: 'gpt-test',
+        reviewerEffort: 'max',
+      },
+      terminalLifecycle: 'disposable',
+    });
+    context.artifacts.initializeTask(task);
+    context.artifacts.writePlan(task.id, {
+      taskId: task.id,
+      brief: task.prompt,
+      attachments: [],
+      author: {
+        provider: task.author_provider,
+        model: task.author_model,
+        effort: task.author_effort,
+      },
+      reviewer: {
+        provider: task.reviewer_provider,
+        model: task.reviewer_model,
+        effort: task.reviewer_effort,
+      },
+      stages: [],
+      status: 'complete',
+      draft: '# Draft',
+      review: '# Review',
+      finalPlan: '# Final plan',
+    }, { repoPath: context.directory });
+    rmSync(context.artifacts.planPath(task.id, context.directory), { force: true });
+
+    assert.deepEqual(context.pool.requirements(task), { codex: 0, claude: 0, opencode: 0 });
+    assert.equal(context.pool.canRun(task), true);
+    assert.equal(await context.pool.prepare(task), task);
+    assert.deepEqual(context.launches, []);
+    assert.ok(context.database.listEvents(task.id).some(({ message }) => (
+      message.includes('without launching a terminal')
+    )));
   } finally {
     context.database.close();
     rmSync(context.directory, { recursive: true, force: true });

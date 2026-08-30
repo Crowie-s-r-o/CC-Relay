@@ -41,6 +41,12 @@ function roleSettings(task, role) {
   };
 }
 
+export function planCouncilProviderSettings(task, provider) {
+  const authorProvider = task.author_provider === 'codex' ? 'codex' : 'claude';
+  const role = authorProvider === provider ? 'author' : 'reviewer';
+  return { ...roleSettings(task, role), provider };
+}
+
 function providerThread(task, provider) {
   return provider === 'claude'
     ? {
@@ -53,6 +59,21 @@ function providerThread(task, provider) {
       name: task.thread_name,
       source: task.thread_source,
     };
+}
+
+export function claudeCouncilLaunchTask(
+  task,
+  settings = planCouncilProviderSettings(task, 'claude'),
+) {
+  return {
+    ...task,
+    provider: 'claude',
+    model: settings.model,
+    effort: settings.effort,
+    require_terminal: true,
+    terminal_permission_mode: 'plan',
+    terminal_tools: ['Read', 'Glob', 'Grep', 'AskUserQuestion'],
+  };
 }
 
 function attachmentContext(task) {
@@ -264,6 +285,40 @@ function normalizePlan(plan, task, artifactPath) {
   return normalized;
 }
 
+// Fill missing checkpoint text from the matching project-local stage file. Existing checkpoint
+// text always wins, and restoration happens before stage status normalization.
+function restoreStageFileOutputs(task, plan, artifacts) {
+  const restored = { ...plan };
+  for (const stage of STAGE_FILE_FIELDS) {
+    if (text(restored[stage])) continue;
+    const saved = artifacts.readPlanStage(task.id, stage, task.repo_path);
+    if (saved) restored[stage] = saved;
+  }
+  return restored;
+}
+
+export function inspectPlanCouncilCheckpoint(task, artifacts) {
+  const artifactPath = artifacts.planPath(task.id, task.repo_path);
+  const stored = artifacts.readPlan(task.id);
+  if (stored && !planMatchesTask(stored, task)) {
+    const plan = createPlanRecord(task, artifactPath);
+    return { plan, resumedStages: [], pendingStages: [...plan.stages] };
+  }
+  const source = restoreStageFileOutputs(
+    task,
+    stored || createPlanRecord(task, artifactPath),
+    artifacts,
+  );
+  const plan = normalizePlan(source, task, artifactPath);
+  return {
+    plan,
+    resumedStages: plan.stages
+      .filter((stage) => stage.status === 'complete')
+      .map((stage) => stage.id),
+    pendingStages: plan.stages.filter((stage) => stage.status !== 'complete'),
+  };
+}
+
 function claudeStageTask(task, prompt, settings) {
   const thread = providerThread(task, 'claude');
   if (!thread.id) {
@@ -272,17 +327,11 @@ function claudeStageTask(task, prompt, settings) {
     );
   }
   return {
-    ...task,
+    ...claudeCouncilLaunchTask(task, settings),
     prompt,
-    provider: 'claude',
     thread_id: thread.id,
     thread_name: thread.name || thread.id,
     thread_source: thread.source || 'Claude interactive',
-    model: settings.model,
-    effort: settings.effort,
-    require_terminal: true,
-    terminal_permission_mode: 'plan',
-    terminal_tools: ['Read', 'Glob', 'Grep', 'AskUserQuestion'],
   };
 }
 
@@ -448,43 +497,8 @@ export class PlanCouncilRunner {
     });
   }
 
-  /**
-   * Fill stage text the checkpoint record is missing from that stage's Markdown file.
-   *
-   * Text the record already holds always wins: the files are a fallback, never an
-   * override. Restoration happens before normalization so every derived field, the stage
-   * statuses, the plan status, and the resumed-stage announcement, follows from it.
-   */
-  restoreStageFiles(task, plan) {
-    const restored = { ...plan };
-    for (const stage of STAGE_FILE_FIELDS) {
-      if (text(restored[stage])) continue;
-      const saved = this.artifacts.readPlanStage(task.id, stage, task.repo_path);
-      if (saved) restored[stage] = saved;
-    }
-    return restored;
-  }
-
   loadPlan(task) {
-    const artifactPath = this.artifacts.planPath(task.id, task.repo_path);
-    const stored = this.artifacts.readPlan(task.id);
-    if (stored && !planMatchesTask(stored, task)) {
-      // Safety-critical: a stored record that no longer matches the task means the brief
-      // or the provider configuration changed. Both the record and its stage files
-      // describe the previous request, so this council starts over and the next persist
-      // replaces the stale files.
-      return { plan: createPlanRecord(task, artifactPath), resumedStages: [] };
-    }
-    // plan.json stays the primary checkpoint. A missing, unreadable, or partially written
-    // record falls back to the stage files next to plan.md, so a completed stage is never
-    // paid for twice. A record that has the text but lost its file is backfilled by the
-    // first persist of this run.
-    const source = this.restoreStageFiles(task, stored || createPlanRecord(task, artifactPath));
-    const plan = normalizePlan(source, task, artifactPath);
-    return {
-      plan,
-      resumedStages: plan.stages.filter((stage) => stage.status === 'complete').map((stage) => stage.id),
-    };
+    return inspectPlanCouncilCheckpoint(task, this.artifacts);
   }
 
   async run(task, { onEvent = () => {}, onStderr = () => {} } = {}) {

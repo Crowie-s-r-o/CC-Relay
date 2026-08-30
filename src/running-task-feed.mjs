@@ -27,10 +27,13 @@ export function latestAgentUpdate(events) {
   return null;
 }
 
-export function latestTokenUsage(events) {
+function latestTokenUsageState(events) {
   for (let index = (events || []).length - 1; index >= 0; index -= 1) {
     const event = events[index];
     const payload = event?.payload || {};
+    if (payload.type === 'relay/task-attempt-started') {
+      return { usage: null, reset: true };
+    }
     const totalTokens = Number(payload.usage?.totalTokens);
     if (
       payload.type !== 'provider/token-usage'
@@ -40,13 +43,21 @@ export function latestTokenUsage(events) {
       || totalTokens < 0
     ) continue;
     return {
-      provider: normalizedProvider(event),
-      usage: payload.usage,
-      source: payload.source || 'native',
-      createdAt: event.created_at || null,
+      usage: {
+        provider: normalizedProvider(event),
+        usage: payload.usage,
+        source: payload.source || 'native',
+        createdAt: event.created_at || null,
+        ...(payload.attemptStartedAt ? { attemptStartedAt: payload.attemptStartedAt } : {}),
+      },
+      reset: false,
     };
   }
-  return null;
+  return { usage: null, reset: false };
+}
+
+export function latestTokenUsage(events) {
+  return latestTokenUsageState(events).usage;
 }
 
 export function taskBelongsInMonitor(task) {
@@ -95,7 +106,8 @@ export class AgentUpdateCache {
     const events = this.listEventsSince(taskId, entry ? entry.eventId : 0, this.limit);
     // No newer agent message means the previously reported one is still the latest.
     const next = latestAgentUpdate(events) || entry?.update || null;
-    const usage = latestTokenUsage(events) || entry?.usage || null;
+    const usageUpdate = latestTokenUsageState(events);
+    const usage = usageUpdate.usage || (usageUpdate.reset ? null : entry?.usage || null);
     const updated = { eventId: latestId, update: next, usage };
     this.entries.set(taskId, updated);
     return updated;

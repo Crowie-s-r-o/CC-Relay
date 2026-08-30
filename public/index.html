@@ -162,6 +162,7 @@
       <div id="project-list" class="project-list">
         <span class="project-empty">Loading pinned projects</span>
       </div>
+      <span id="project-reorder-status" class="sr-only" role="status" aria-live="polite"></span>
     </nav>
 
     <main class="workspace">
@@ -421,18 +422,20 @@
                   <button id="launch-codex-button" class="button primary compact" type="button">Launch Codex</button>
                   <button id="launch-claude-button" class="button compact launch-claude-button" type="button">Launch Claude</button>
                 </span>
+                <label id="keep-terminal-open-option" class="terminal-keep-open-option" hidden>
+                  <input id="keep-terminal-open" type="checkbox" role="switch" aria-describedby="keep-terminal-open-help terminal-pool-controls">
+                  <span>
+                    <strong>Terminal session mode</strong>
+                    <small id="keep-terminal-open-help" class="sr-only">Direct tasks stay open between turns. Complete session finishes the task without closing its terminal. This setting belongs only to this project.</small>
+                  </span>
+                </label>
                 <button id="terminal-settings-button" class="button compact terminal-settings-button" type="button" aria-haspopup="dialog" aria-controls="terminal-settings-modal">Settings</button>
               </div>
             </div>
-            <p id="session-message" class="field-help" role="status">Finding connected Codex terminals.</p>
-            <p id="terminal-pool-controls" class="terminal-pool-note" hidden>CC Relay opens a fresh terminal for each automatic task.</p>
-            <label id="keep-terminal-open-option" class="terminal-keep-open-option" hidden>
-              <input id="keep-terminal-open" type="checkbox" role="switch">
-              <span>
-                <strong>Terminal session mode</strong>
-                <small id="keep-terminal-open-help">Direct tasks stay open between turns and finish only when you press Complete session in Task activity. Their terminal also stays open. This setting belongs only to this project.</small>
-              </span>
-            </label>
+            <div class="terminal-status-line">
+              <p id="session-message" class="field-help" role="status">Finding connected Codex terminals.</p>
+              <p id="terminal-pool-controls" class="terminal-pool-note" hidden>CC Relay opens a fresh terminal for each automatic task.</p>
+            </div>
             <div id="legacy-terminal-controls">
               <div class="terminal-task-options">
                 <label id="idle-terminal-route" class="terminal-task-option"><input id="prefer-idle-terminal" type="checkbox"> Use an idle CC Relay when available</label>
@@ -566,6 +569,12 @@
                         </button>
                       </div>
                     </div>
+                    <label class="voice-input-control-row voice-input-microphone-row" for="voice-input-microphone">
+                      <span><strong>Microphone</strong><small>Select the input Relay records. A physical microphone must be connected and available to this computer.</small><small id="voice-input-device-status" class="voice-input-device-status" role="status">Checking microphone inputs.</small></span>
+                      <select id="voice-input-microphone" class="voice-input-microphone-select" aria-describedby="voice-input-device-status voice-input-status">
+                        <option value="">System default microphone</option>
+                      </select>
+                    </label>
                     <div class="voice-input-control-row voice-input-engine-row">
                       <span><strong>Local speech engine</strong><small>The multilingual faster-whisper base model uses CPU-only 8-bit inference. Audio stays on this computer.</small></span>
                       <button id="voice-input-setup" class="button compact" type="button">Set up engine</button>
@@ -599,6 +608,7 @@
               <button id="voice-input-hold" class="voice-input-hold" type="button" aria-describedby="voice-input-composer-status">
                 <span class="voice-input-glyph" aria-hidden="true"><i></i><b></b></span>
                 <span id="voice-input-hold-label">Hold Ctrl+Shift+Space to talk</span>
+                <span class="voice-input-meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
               </button>
               <span id="voice-input-composer-status" class="voice-input-composer-status" role="status" aria-live="polite">Voice input is off.</span>
             </div>

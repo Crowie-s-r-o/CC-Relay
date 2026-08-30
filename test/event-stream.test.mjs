@@ -8,6 +8,7 @@ import {
   entryLastEvent,
   eventEntryCategory,
   eventEntryMessageRole,
+  eventEntryRepeatCount,
   eventMessageCounts,
   eventStreamStats,
   filterEventEntries,
@@ -264,6 +265,112 @@ test('message role filters separate sent prompts from AI responses', () => {
   assert.deepEqual(eventMessageCounts(entries), { user: 1, assistant: 1 });
 });
 
+test('a provider delivery echo replaces the provisional Relay follow-up receipt', () => {
+  const prompt = 'Add a manual test mode.';
+  const delivered = `${prompt}\n\nCC Relay orchestrator notice: continue autonomously.`;
+  const events = [
+    itemEvent('relay-follow-up-42-1', 'completed', 'userMessage', {
+      eventId: 197,
+      createdAt: '2026-08-26T19:21:04.000Z',
+      item: { content: [{ type: 'text', text: prompt }] },
+    }),
+    itemEvent('provider-prompt-2', 'started', 'userMessage', {
+      eventId: 202,
+      createdAt: '2026-08-26T19:21:11.000Z',
+      item: { content: [{ type: 'text', text: delivered }] },
+    }),
+    itemEvent('provider-prompt-2', 'completed', 'userMessage', {
+      eventId: 203,
+      createdAt: '2026-08-26T19:21:12.000Z',
+      item: { content: [{ type: 'text', text: delivered }] },
+    }),
+  ];
+  const displayEvents = mergePromptMessages(events, [{
+    id: 'relay-follow-up-42-1',
+    kind: 'follow-up',
+    text: prompt,
+    created_at: '2026-08-26T19:21:04.000Z',
+  }]);
+  const entries = groupEventEntries(displayEvents);
+
+  assert.deepEqual(displayEvents.map((event) => event.id), [202, 203]);
+  assert.equal(displayEvents[0].payload.item.content[0].text, delivered);
+  assert.equal(displayEvents[1].payload.item.content[0].text, delivered);
+  assert.equal(displayEvents[1].payload.item.promptKind, 'follow-up');
+  assert.equal(events[0].payload.item.content[0].text, prompt);
+  assert.equal(entries.length, 1);
+  assert.equal(entryItem(entries[0]).content[0].text, delivered);
+  assert.deepEqual(eventMessageCounts(entries), { user: 1, assistant: 0 });
+});
+
+test('a Relay follow-up receipt remains visible when the provider does not echo it', () => {
+  const prompt = 'Check the remaining edge case.';
+  const displayEvents = mergePromptMessages([
+    itemEvent('relay-follow-up-42-2', 'completed', 'userMessage', {
+      eventId: 204,
+      item: { content: [{ type: 'text', text: prompt }] },
+    }),
+  ], [{
+    id: 'relay-follow-up-42-2',
+    kind: 'follow-up',
+    text: prompt,
+    created_at: '2026-08-26T19:22:00.000Z',
+  }]);
+
+  assert.equal(displayEvents.length, 1);
+  assert.equal(displayEvents[0].payload.item.content[0].text, prompt);
+  assert.equal(displayEvents[0].payload.item.promptKind, 'follow-up');
+});
+
+test('an exact provider echo also replaces a historical Relay follow-up receipt', () => {
+  const prompt = 'Resume the saved session.';
+  const displayEvents = mergePromptMessages([
+    itemEvent('relay-follow-up-42-3', 'completed', 'userMessage', {
+      eventId: 205,
+      item: { content: [{ type: 'text', text: prompt }] },
+    }),
+    itemEvent('provider-prompt-3', 'started', 'userMessage', {
+      eventId: 206,
+      item: { content: [{ type: 'text', text: prompt }] },
+    }),
+    itemEvent('provider-prompt-3', 'completed', 'userMessage', {
+      eventId: 207,
+      item: { content: [{ type: 'text', text: prompt }] },
+    }),
+  ], [{
+    id: 'relay-follow-up-42-3',
+    kind: 'follow-up',
+    text: prompt,
+    created_at: '2026-08-26T19:23:00.000Z',
+  }]);
+
+  assert.deepEqual(displayEvents.map((event) => event.id), [206, 207]);
+  assert.equal(groupEventEntries(displayEvents).length, 1);
+});
+
+test('a legacy Relay notice is recognized as provider-delivered follow-up text', () => {
+  const prompt = 'Verify the older task.';
+  const delivered = `${prompt}\n\nRelay orchestrator notice: continue autonomously.`;
+  const displayEvents = mergePromptMessages([
+    itemEvent('relay-follow-up-42-4', 'completed', 'userMessage', {
+      eventId: 208,
+      item: { content: [{ type: 'text', text: prompt }] },
+    }),
+    itemEvent('provider-prompt-4', 'completed', 'userMessage', {
+      eventId: 209,
+      item: { content: [{ type: 'text', text: delivered }] },
+    }),
+  ], [{
+    id: 'relay-follow-up-42-4',
+    kind: 'follow-up',
+    text: prompt,
+    created_at: '2026-08-26T19:24:00.000Z',
+  }]);
+
+  assert.deepEqual(displayEvents.map((event) => event.id), [209]);
+  assert.equal(displayEvents[0].payload.item.content[0].text, delivered);
+});
+
 test('the original prompt appears in the terminal when the provider did not echo it', () => {
   const displayEvents = mergePromptMessages([{
     id: 2,
@@ -428,6 +535,69 @@ test('claude/progress heartbeats stay out of Highlights while claude/started rem
     payload: { type: 'claude/started' },
   }]);
   assert.equal(filterEventEntries(started, 'highlights').length, 1);
+});
+
+test('consecutive identical Claude progress heartbeats fold into one counted signal', () => {
+  const message = 'Claude is still working in the relay-9 terminal.';
+  const entries = groupEventEntries([
+    {
+      id: 1,
+      kind: 'claude',
+      message,
+      created_at: '2026-07-16T10:00:00.000Z',
+      payload: { type: 'claude/progress', provider: 'claude', sessionId: 'relay-9' },
+    },
+    {
+      id: 2,
+      kind: 'claude',
+      message,
+      created_at: '2026-07-16T10:00:30.000Z',
+      payload: { type: 'claude/progress', provider: 'claude', sessionId: 'relay-9' },
+    },
+    {
+      id: 3,
+      kind: 'claude',
+      message,
+      created_at: '2026-07-16T10:01:00.000Z',
+      payload: { type: 'claude/progress', provider: 'claude', sessionId: 'relay-9' },
+    },
+  ]);
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0].events.length, 3);
+  assert.equal(eventEntryRepeatCount(entries[0]), 3);
+  assert.equal(entryFirstEvent(entries[0]).id, 1);
+  assert.equal(entryLastEvent(entries[0]).id, 3);
+  assert.equal(filterEventEntries(entries, 'all').length, 1);
+  assert.equal(filterEventEntries(entries, 'highlights').length, 0);
+});
+
+test('Claude heartbeat folding stops at any chronological or payload change', () => {
+  const message = 'Claude is still working in the relay-9 terminal.';
+  const progress = (id, payload = {}) => ({
+    id,
+    kind: 'claude',
+    message,
+    created_at: `2026-07-16T10:0${id}:00.000Z`,
+    payload: {
+      type: 'claude/progress',
+      provider: 'claude',
+      sessionId: 'relay-9',
+      ...payload,
+    },
+  });
+  const entries = groupEventEntries([
+    progress(1),
+    progress(2),
+    { id: 3, kind: 'queue', message: 'Task is still running.', created_at: '2026-07-16T10:03:00.000Z' },
+    progress(4),
+    progress(5, { deliveryState: 'idle-without-question' }),
+  ]);
+
+  assert.equal(entries.length, 4);
+  assert.deepEqual(entries.map(eventEntryRepeatCount), [2, 1, 1, 1]);
+  assert.equal(entryFirstEvent(entries[2]).id, 4);
+  assert.equal(entryFirstEvent(entries[3]).id, 5);
 });
 
 test('Claude terminal input requests remain visible in Highlights', () => {

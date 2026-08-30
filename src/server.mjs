@@ -414,6 +414,73 @@ function terminalControlTasks() {
   ));
 }
 
+const MANUAL_SESSION_TERMINAL_CHECK_MS = 4_000;
+let manualSessionTerminalCheckTimer = null;
+let manualSessionTerminalCheckPending = null;
+let manualSessionTerminalObservation = 0;
+
+function reconcileClosedManualSessionTerminals() {
+  if (manualSessionTerminalCheckPending) return manualSessionTerminalCheckPending;
+  manualSessionTerminalCheckPending = (async () => {
+    const providers = new Set(database.listTasks()
+      .filter((task) => task.status === 'open' && task.thread_id && isManualSessionTask(task))
+      .map((task) => task.provider));
+    const observationId = ++manualSessionTerminalObservation;
+    if (providers.size === 0) {
+      queue.reconcileManualSessionTerminals([], { observationId });
+      return [];
+    }
+
+    const [codexResult, claudeResult] = await Promise.allSettled([
+      providers.has('codex')
+        ? codexAppServer.listConnectedThreads({ refresh: true })
+        : Promise.resolve([]),
+      providers.has('claude')
+        ? claudeSessions.listSessions({ refresh: true })
+        : Promise.resolve([]),
+    ]);
+    const threads = [];
+    const authoritativeProviders = [];
+    if (providers.has('codex')) {
+      if (codexResult.status === 'fulfilled' && codexAppServer.threadsStale !== true) {
+        threads.push(...codexResult.value);
+        authoritativeProviders.push('codex');
+      } else if (codexResult.status === 'rejected') {
+        diagnostic('manual_session.terminal_check_failed', {
+          provider: 'codex',
+          error: codexResult.reason?.message || String(codexResult.reason),
+        });
+      }
+    }
+    if (providers.has('claude')) {
+      if (claudeResult.status === 'fulfilled' && claudeSessions.stale !== true) {
+        threads.push(...claudeResult.value);
+        authoritativeProviders.push('claude');
+      } else if (claudeResult.status === 'rejected') {
+        diagnostic('manual_session.terminal_check_failed', {
+          provider: 'claude',
+          error: claudeResult.reason?.message || String(claudeResult.reason),
+        });
+      }
+    }
+    const completed = queue.reconcileManualSessionTerminals(threads, {
+      authoritativeProviders,
+      observationId,
+    });
+    for (const task of completed) {
+      diagnostic('manual_session.completed_after_terminal_close', {
+        taskId: task.id,
+        provider: task.provider,
+        threadId: task.thread_id,
+      });
+    }
+    return completed;
+  })().finally(() => {
+    manualSessionTerminalCheckPending = null;
+  });
+  return manualSessionTerminalCheckPending;
+}
+
 const CODEX_STATUS_REFRESH_MS = 30_000;
 
 // Both provider probes are asynchronous and bounded. They used to be execFileSync, which
@@ -1099,7 +1166,9 @@ export const server = createServer(async (request, response) => {
           retainedTerminalSessions: true,
           liveTerminalRetention: true,
           manualSessionTasks: true,
+          manualSessionTerminalCloseCompletion: true,
           sharedProjectConfig: true,
+          projectReorder: true,
           projectTerminalSettings: true,
           providerUsage: true,
           taskTokenThroughput: true,
@@ -1228,13 +1297,25 @@ export const server = createServer(async (request, response) => {
       const terminal = await terminalCloseCoordinator.close(threadId);
       // The close already succeeded, so a failed bookkeeping write must never surface as an error.
       let closedTaskId = null;
+      let retained = null;
       try {
-        const retained = retainedSessionTaskForThread(database.listTasks(), threadId);
-        if (retained) {
-          database.addEvent(retained.id, 'queue', 'The retained terminal window was closed from CC Relay.');
-          closedTaskId = retained.id;
-        }
+        retained = retainedSessionTaskForThread(database.listTasks(), threadId);
       } catch {}
+      if (retained) {
+        closedTaskId = retained.id;
+        try {
+          database.addEvent(retained.id, 'queue', 'The retained terminal window was closed from CC Relay.');
+        } catch {}
+        try {
+          queue.completeSessionAfterTerminalClose(retained.id);
+        } catch (error) {
+          diagnostic('manual_session.terminal_close_completion_failed', {
+            taskId: retained.id,
+            threadId,
+            error: error.message,
+          });
+        }
+      }
       broadcast(closedTaskId
         ? { threads: true, tasks: true, taskId: closedTaskId }
         : { threads: true });
@@ -1465,6 +1546,20 @@ export const server = createServer(async (request, response) => {
       const body = await readJson(request);
       const project = database.addProject(validateProjectPath(body.path));
       sendJson(response, 201, { project });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/projects/reorder') {
+      const body = await readJson(request);
+      if (!Array.isArray(body.expectedProjectIds)) {
+        throw new Error('expectedProjectIds is required for project reorder.');
+      }
+      if (!Array.isArray(body.projectIds)) {
+        throw new Error('projectIds is required for project reorder.');
+      }
+      const projects = database.reorderProjects(body.projectIds, body.expectedProjectIds);
+      broadcast({ projects: true });
+      sendJson(response, 200, { projects });
       return;
     }
 
@@ -3161,11 +3256,24 @@ server.listen(PORT, HOST, () => {
     void refreshCodexStatus().then((status) => activateCodexRuntime(status));
   }, CODEX_STATUS_REFRESH_MS);
   codexStatusTimer.unref?.();
+  manualSessionTerminalCheckTimer = setInterval(() => {
+    void reconcileClosedManualSessionTerminals().catch((error) => {
+      diagnostic('manual_session.terminal_check_failed', { error: error.message });
+    });
+  }, MANUAL_SESSION_TERMINAL_CHECK_MS);
+  manualSessionTerminalCheckTimer.unref?.();
   console.log(`CC Relay is running at ${endpoint.url}`);
   resolveServerReady(endpoint);
 });
 
 export async function shutdown() {
+  if (manualSessionTerminalCheckTimer) {
+    clearInterval(manualSessionTerminalCheckTimer);
+    manualSessionTerminalCheckTimer = null;
+  }
+  if (manualSessionTerminalCheckPending) {
+    await manualSessionTerminalCheckPending.catch(() => {});
+  }
   providerUsage.stop();
   claudeRuntime.stop();
   opencodeRuntime.stop();

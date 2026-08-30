@@ -49,6 +49,41 @@ export function desktopMenuTemplate({ onZoom }) {
   ];
 }
 
+function joinMenuGroups(groups) {
+  return groups
+    .filter((group) => group.length > 0)
+    .flatMap((group, index, populated) => (
+      index < populated.length - 1 ? [...group, { type: 'separator' }] : group
+    ));
+}
+
+/*
+ * BrowserWindow does not provide Chromium's page context menu automatically. Keep selected
+ * read-only text copyable and give editable controls the standard native editing actions without
+ * exposing a menu over ordinary unselected application surfaces.
+ */
+export function desktopContextMenuTemplate({
+  selectionText = '',
+  isEditable = false,
+  editFlags = {},
+} = {}) {
+  const canCopy = String(selectionText).length > 0 || editFlags.canCopy === true;
+  if (!isEditable) return canCopy ? [{ role: 'copy' }] : [];
+
+  return joinMenuGroups([
+    [
+      ...(editFlags.canUndo ? [{ role: 'undo' }] : []),
+      ...(editFlags.canRedo ? [{ role: 'redo' }] : []),
+    ],
+    [
+      ...(editFlags.canCut ? [{ role: 'cut' }] : []),
+      ...(canCopy ? [{ role: 'copy' }] : []),
+      ...(editFlags.canPaste ? [{ role: 'paste' }] : []),
+    ],
+    editFlags.canSelectAll ? [{ role: 'selectAll' }] : [],
+  ]);
+}
+
 export function desktopMenuRequired(platform = process.platform) {
   return platform === 'darwin';
 }

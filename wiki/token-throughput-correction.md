@@ -54,6 +54,27 @@ attempt.
 Claude still folds exact assistant usage by message ID. OpenCode still folds exact `step_finish`
 usage by step ID. Both already produced monotonic current-attempt totals.
 
+## Follow-up attempt boundaries
+
+A direct follow-up reuses the task ID and event rail. Automatic tasks replace `started_at` with the
+new run time, but manual terminal sessions intentionally preserve their first `started_at` so the
+card continues to describe the complete workspace lifetime. Using that task-level timestamp as the
+only token boundary allowed a manual follow-up to inherit the preceding turn's cached usage until
+the provider emitted its first new token event. Its output rate also used the complete session age
+instead of the new attempt age.
+
+`TaskQueue.beginTask()` now records a `relay/task-attempt-started` event for every run and stamps each
+native token snapshot with the same `attemptStartedAt` value. Task Activity resets at that boundary,
+and the global monitor clears its incremental cached snapshot as soon as it sees the boundary. The
+first provider event then restores input, output, and rate from only the new attempt. A long event
+window can omit the start event safely because each later cumulative snapshot carries the boundary
+itself.
+
+> [!important]
+> `tasks.started_at` remains the lifecycle timestamp. Do not change manual sessions to overwrite it
+> on each message. Token accounting owns a separate attempt boundary because lifecycle duration and
+> provider-attempt duration answer different questions.
+
 The UI calculation is:
 
 ```text
@@ -77,6 +98,8 @@ to preserve its card density.
 
 - `src/token-usage.mjs` derives and subtracts the Codex pre-attempt baseline.
 - `src/codex-app-server.mjs` retains that baseline across one turn and resets it at a goal successor.
+- `src/queue.mjs` records and stamps the exact provider-attempt boundary.
+- `src/running-task-feed.mjs` clears cached prior-turn usage when a follow-up begins.
 - `public/token-throughput.js` uses cumulative output as the rate numerator.
 - `public/app.js` shows input, output, and the average output rate with full native detail on hover.
 - Focused provider, feed, throughput, and UI coverage passes 127 tests.
@@ -84,6 +107,7 @@ to preserve its card density.
   snapshot and covered baseline reset across a Codex goal successor.
 - The complete repository suite passes 1,727 tests. `npm run release:check` confirms v0.2.24 metadata,
   and `git diff --check` is clean.
+- The August 27 follow-up regression passes 90 focused checks and all 1,747 repository tests.
 
 See [[opencode-provider-and-token-throughput]], [[opencode-token-throughput-review]],
 [[task-activity-overview]], and [[interface-layout]].

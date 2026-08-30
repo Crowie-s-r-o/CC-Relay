@@ -14,17 +14,34 @@ export function tokenThroughput(events, task, now = Date.now()) {
   const startedAt = timeValue(task?.started_at);
   if (!startedAt) return null;
   const provider = task?.provider || 'codex';
+  let attemptStartedAt = startedAt;
   let latest = null;
   for (const event of events || []) {
     const payload = event?.payload;
     const eventAt = timeValue(event.created_at);
     if (
+      payload?.type === 'relay/task-attempt-started'
+      && (!payload.provider || payload.provider === provider)
+    ) {
+      const boundaryAt = timeValue(payload.attemptStartedAt) || eventAt;
+      if (boundaryAt >= attemptStartedAt) {
+        attemptStartedAt = boundaryAt;
+        latest = null;
+      }
+      continue;
+    }
+    if (
       payload?.type !== 'provider/token-usage'
       || payload.provider !== provider
       || payload.source !== 'native'
       || payload.cumulative !== true
-      || eventAt < startedAt
     ) continue;
+    const eventAttemptStartedAt = timeValue(payload.attemptStartedAt);
+    if (eventAttemptStartedAt > attemptStartedAt) {
+      attemptStartedAt = eventAttemptStartedAt;
+      latest = null;
+    }
+    if (eventAt < attemptStartedAt) continue;
     const usage = payload.usage || {};
     const totalTokens = Number(usage.totalTokens);
     const inputTokens = Number(usage.inputTokens);
@@ -43,6 +60,7 @@ export function tokenThroughput(events, task, now = Date.now()) {
     if (!latest || eventAt >= latest.eventAt) {
       latest = {
         eventAt,
+        attemptStartedAt,
         totalTokens,
         inputTokens,
         outputTokens,
@@ -64,7 +82,7 @@ export function tokenThroughput(events, task, now = Date.now()) {
   const endAt = task?.status === 'running'
     ? Number(now)
     : finishedAt || latest.eventAt;
-  const elapsedSeconds = Math.max(0.001, (endAt - startedAt) / 1000);
+  const elapsedSeconds = Math.max(0.001, (endAt - latest.attemptStartedAt) / 1000);
   const tokensPerSecond = latest.outputTokens / elapsedSeconds;
   return {
     ...latest,
@@ -83,6 +101,7 @@ export function tokenThroughputFromSnapshot(snapshot, task, now = Date.now()) {
       provider: snapshot.provider || task?.provider,
       source: snapshot.source || 'native',
       cumulative: true,
+      attemptStartedAt: snapshot.attemptStartedAt,
       usage: snapshot.usage,
     },
   }], task, now);

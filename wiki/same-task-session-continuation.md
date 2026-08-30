@@ -24,6 +24,12 @@ Direct task continuation preserves one task as one conversation. `POST /api/task
 6. The prepared database task is merged with the runtime follow-up prompt and only the new attachments before the provider runner starts. This merge is required because pool preparation returns the persisted task, whose canonical `prompt` remains the original request.
 7. Outcome, events, terminal cleanup or retention, and cancellation stay under the source task ID.
 
+Token telemetry keeps a separate run boundary even though the task and conversation IDs remain the
+same. Every `beginTask()` records `relay/task-attempt-started`, and later native usage snapshots carry
+its exact `attemptStartedAt`. This prevents input, output, and output-rate values from leaking across
+follow-ups, especially for manual terminal sessions whose lifecycle `started_at` intentionally
+remains the first workspace start. See [[token-throughput-correction]].
+
 > [!important]
 > A full provider pool rejects immediately with the finished task unchanged. Continuation is not delayed queue work, and configured instance limits are never bypassed.
 
@@ -39,6 +45,8 @@ The task row keeps its original `prompt` unchanged. Every accepted finished-turn
 - the canonical original request;
 - every finished-turn follow-up;
 - every running-turn steering prompt.
+
+The finished-turn `relay-follow-up-*` event is also the renderer fallback for a provider that does not echo user input. When Codex later reports a matching user-message item, [[terminal-conversation-filters]] suppresses that provisional receipt and keeps the one provider-delivered message, including its Relay notice. Persistence remains unchanged.
 
 `GET /api/tasks/:id` exposes that list as `prompts` separately from `events`. The terminal console remains capped at its latest 500 raw events, while prompt history is complete. `public/task-prompt-history.js` normalizes older-backend responses, formats the ordered Prompts disclosure, and supplies its count and latest-prompt preview. The disclosure opens automatically after the first follow-up.
 
@@ -77,6 +85,8 @@ For a running Codex task with an active `/goal`, one Relay run can span several 
 ## Regression coverage
 
 - Closed disposable resume keeps task count and source ID unchanged.
+- A follow-up clears cached prior-turn token usage before its first new provider snapshot.
+- Retained sessions calculate token rate from the current attempt without replacing session lifetime.
 - The pool receives the saved conversation ID.
 - The runner receives the follow-up prompt rather than the persisted original prompt.
 - Full capacity rejects before task state, events, or attachments change.

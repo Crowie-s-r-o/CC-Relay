@@ -30,7 +30,7 @@ The project is currently validated only on macOS. Windows and Linux code must re
 
 - Current tasks use project-scoped disposable provider capacity.
 - Direct work requires one slot for its provider.
-- Plan council reserves one Codex and one Claude slot atomically.
+- Plan council reserves every provider still needed by its saved checkpoint. A new council reserves one Codex and one Claude slot atomically. A final-revision-only resume reserves only the original author provider.
 - Turbo reserves its planner and worker fleet before execution.
 - One saved conversation can have only one queued or running owner.
 - Cancellation, retry, continuation, and shutdown must release only the resources owned by that exact task.

@@ -17,7 +17,7 @@ The macOS Electron title bar uses a `32px` renderer row with a centered `20px` C
 
 - The brand mark is `28px`, header actions are `32px`, and global task-monitor cards default to `286px` wide. The rightmost **Display** cog can switch cards to `230px` or `360px`, expand the rail to two or three 44px rows, move the monitor, change theme, and control whole-app zoom with a visible current percentage.
 - On wide multi-row layouts, row one stays between the brand and action cluster. Rows two and three span the complete padded header width, reclaiming the otherwise empty space below both fixed header regions.
-- A monitored card still exposes metadata, prompt, and latest response, but uses tighter type and a `9px` radius. Open Terminal session mode cards add one compact worded state chip without changing the three-row geometry.
+- A monitored card still exposes metadata, prompt, and latest response, but uses tighter type and a `9px` radius. The project name leads the prompt row with protected space before the task name. Open Terminal session mode cards add one compact worded state chip without changing the three-row geometry.
 - The empty monitor occupies one standard card slot at the selected width and contains only **No active tasks or sessions**.
 - At and below `1344px`, the monitor rail may wrap to its own row.
 
@@ -37,6 +37,9 @@ Each desktop `.project-chip` is `176px` by `30px`. Only the folder name and curr
 - The workflow selector keeps `10px` of internal padding around its heading and two workflow cards. This inset is required in dark mode, where the selector's contrasting well makes the section read as a card.
 - Provider pool steppers remain siblings of the provider tab buttons. See [[interface-layout]].
 - Lifecycle copy is deliberately short so it does not create unnecessary wrapped lines.
+- Automatic terminals use one compact toolbar: the session-mode switch and Settings button are both
+  `26px` high, lifecycle notes share one clipped `13px` row, and the full fieldset is `57px` high.
+  The controls remain on one row at `480px` with no page overflow.
 
 > [!note]
 > Do not remove the workflow selector's horizontal padding while compacting the composer. Without it, both workflow cards sit directly against the visible dark-mode well edge.

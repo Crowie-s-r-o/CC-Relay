@@ -310,8 +310,22 @@ test('a finished-task follow-up starts immediately in the same task row and sess
   const followUpGate = new Promise((resolve) => { releaseFollowUp = resolve; });
   const received = [];
   const runner = {
-    async run(task) {
+    async run(task, { onEvent }) {
       received.push(task);
+      onEvent({
+        event: {
+          type: 'provider/token-usage',
+          provider: 'codex',
+          source: 'native',
+          cumulative: true,
+          usage: {
+            totalTokens: 120,
+            inputTokens: 100,
+            outputTokens: 20,
+          },
+        },
+        message: 'Codex used 120 tokens so far.',
+      });
       await followUpGate;
       return { finalResponse: 'Follow-up result', sessionId: task.thread_id, exitCode: 0 };
     },
@@ -359,6 +373,7 @@ test('a finished-task follow-up starts immediately in the same task row and sess
     assert.equal(received[0].thread_id, 'same-relay');
     assert.equal(received[0].prompt, 'Inspect the remaining edge case.');
     assert.equal(received[0].sessionFollowUp, true);
+    assert.equal(Object.hasOwn(received[0], 'tokenUsageAttemptStartedAt'), false);
     assert.equal(received[0].attachments.length, 1);
     assert.equal(received[0].attachments[0].id, 'image-2');
     assert.equal(readFileSync(received[0].attachments[0].path, 'utf8'), 'follow-up image');
@@ -366,11 +381,17 @@ test('a finished-task follow-up starts immediately in the same task row and sess
     const userMessage = database.listEvents(source.id).find((event) => event.payload?.item?.type === 'userMessage');
     assert.equal(userMessage?.payload.item.content[0].text, 'Inspect the remaining edge case.');
     assert.equal(userMessage?.payload.item.content[1].path, received[0].attachments[0].path);
+    const events = database.listEvents(source.id);
+    const attempt = events.find((event) => event.payload?.type === 'relay/task-attempt-started');
+    const usage = events.find((event) => event.payload?.type === 'provider/token-usage');
+    assert.equal(attempt.payload.provider, 'codex');
+    assert.equal(usage.payload.attemptStartedAt, attempt.payload.attemptStartedAt);
 
     releaseFollowUp();
     await waitFor(() => database.getTask(source.id).status === 'complete');
     assert.equal(database.getTask(source.id).result, 'Follow-up result');
     assert.equal(database.listTasks().length, taskCount);
+    assert.equal(queue.tokenUsageAttemptStarts.size, 0);
   } finally {
     releaseFollowUp();
     await queue.shutdown();
@@ -2744,7 +2765,7 @@ test('automatic tasks retain their prepared terminal when the task opted in', as
   }
 });
 
-test('manual terminal sessions stay open across turns and complete only on explicit finish', async () => {
+test('manual terminal sessions stay open across turns and support explicit finish', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-manual-session-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
   const artifacts = new ArtifactStore(join(directory, 'tasks'));
@@ -2830,6 +2851,81 @@ test('manual terminal sessions stay open across turns and complete only on expli
       /complete and cannot accept more messages/,
     );
     assert.match(database.listEvents(task.id).at(-1).message, /completed manually/i);
+  } finally {
+    await queue.shutdown();
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('an open manual session completes after two authoritative terminal-loss observations', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-manual-session-terminal-loss-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  const artifacts = new ArtifactStore(join(directory, 'tasks'));
+  database.addProject({ path: directory, name: 'Manual session terminal loss' });
+  const queue = new TaskQueue({
+    database,
+    artifacts,
+    runner: { cancel: () => false, run: async () => ({}) },
+  });
+  try {
+    const created = database.createTask({
+      title: 'Close with terminal',
+      prompt: 'Keep this workspace open',
+      repoPath: directory,
+      thread: thread('manual-terminal-loss', directory),
+      provider: 'codex',
+      mode: 'execute',
+      terminalLifecycle: 'disposable',
+      keepTerminalOpen: true,
+      manualCompletion: true,
+    });
+    database.updateTask(created.id, {
+      status: 'open',
+      started_at: new Date().toISOString(),
+    });
+
+    assert.deepEqual(queue.reconcileManualSessionTerminals([], {
+      authoritativeProviders: ['codex'],
+      observationId: 1,
+    }), []);
+    assert.equal(database.getTask(created.id).status, 'open');
+
+    // Repeated consumers of one discovery result must not count as another observation.
+    assert.deepEqual(queue.reconcileManualSessionTerminals([], {
+      authoritativeProviders: ['codex'],
+      observationId: 1,
+    }), []);
+    assert.equal(database.getTask(created.id).status, 'open');
+
+    // Seeing the exact provider thread again clears the pending loss confirmation.
+    queue.reconcileManualSessionTerminals([
+      { id: 'manual-terminal-loss', provider: 'codex' },
+    ], {
+      authoritativeProviders: ['codex'],
+      observationId: 2,
+    });
+    queue.reconcileManualSessionTerminals([], {
+      authoritativeProviders: ['codex'],
+      observationId: 3,
+    });
+    assert.equal(database.getTask(created.id).status, 'open');
+
+    // An inconclusive provider probe neither completes nor resets the session.
+    queue.reconcileManualSessionTerminals([], {
+      authoritativeProviders: [],
+      observationId: 4,
+    });
+    assert.equal(database.getTask(created.id).status, 'open');
+
+    const [completed] = queue.reconcileManualSessionTerminals([], {
+      authoritativeProviders: ['codex'],
+      observationId: 5,
+    });
+    assert.equal(completed.status, 'complete');
+    assert.ok(completed.finished_at);
+    assert.equal(completed.ready_for_review, true);
+    assert.match(database.listEvents(created.id).at(-1).message, /completed automatically.*terminal closed/i);
   } finally {
     await queue.shutdown();
     database.close();

@@ -15,7 +15,7 @@ tags:
 > [!important]
 > Terminal behavior belongs to the exact pinned project. Terminal session or workflow retention, legacy idle CC Relay routing, grid enablement, rows, columns, monitor, and minimized launch must never read a value from another project. The only cross-project write is the explicit **Apply to all projects** window-layout action.
 
-The terminal retention choice defaults to disabled for every new project. Existing explicit project choices remain unchanged. Turning it on changes only the selected project. Direct Execute labels it **Terminal session mode** and snapshots manual completion; Plan council and Turbo label it **Keep workflow terminals open** and retain terminals without changing automatic completion. The renderer no longer reads or writes `relay.keepTerminalOpen`, `relay.preferIdleTerminal`, or `relay.terminalLayout`.
+The terminal retention choice defaults to disabled for every new project. Existing explicit project choices remain unchanged. Turning it on changes only the selected project. Direct Execute labels it **Terminal session mode** and snapshots a session that stays open between turns until explicit completion or confirmed terminal closure; Plan council and Turbo label it **Keep workflow terminals open** and retain terminals without changing automatic completion. The renderer no longer reads or writes `relay.keepTerminalOpen`, `relay.preferIdleTerminal`, or `relay.terminalLayout`.
 
 ## Persistence contract
 
@@ -69,18 +69,30 @@ The completion section uses aligned full-width sound and voice rows. **Voice ann
 
 The app-wide **Voice input** section follows completion alerts. It contains the push-to-talk switch,
 separate primary and alternate shortcut capture buttons, and explicit local engine setup or repair
-action. Each chord renders as individual keycaps. This section is intentionally not project-scoped
-even though it shares the terminal settings dialog. The composer rail and settings both render from
-the durable global `voiceInput` preference and backend engine status.
+action. It also lists the system default and named microphone inputs, preserving a named selection
+across Electron origin changes. Permission-backed discovery refreshes an initially empty or anonymous
+device list and releases its temporary stream. Microphone and speech engine controls share a compact
+two-column row, collapsing to one column on narrow screens. Each chord renders as individual keycaps.
+This section is intentionally not project-scoped even though it shares the terminal settings dialog.
+The composer rail and settings both render from the durable global `voiceInput` preference and backend
+engine status.
 See [[push-to-talk-voice-input]] and [[durable-ui-layout-preferences]].
 
 > [!important]
-> `.terminal-layout-settings`, `.completion-alert-settings`, `.terminal-layout-heading`, `.completion-alert-heading`, `.terminal-background-toggle`, and `.completion-speech-toggle` kept their class names through the redesign. Dark-theme parity for this dialog is spread across six blocks in `public/style.css`, and `test/dark-mode.test.mjs` asserts several of those selectors by name. Voice input adds explicit dark rules for `.voice-input-control-row`, `.voice-input-shortcut`, `.voice-input-composer`, and their live states. Any new class in this dialog needs its own `html[data-theme="dark"]` rule in the end-of-cascade repair block, or it will show a white surface in the midnight shell.
+> `.terminal-layout-settings`, `.completion-alert-settings`, `.terminal-layout-heading`, `.completion-alert-heading`, `.terminal-background-toggle`, and `.completion-speech-toggle` kept their class names through the redesign. Dark-theme parity for this dialog is spread across six blocks in `public/style.css`, and `test/dark-mode.test.mjs` asserts several of those selectors by name. Voice input adds explicit dark rules for `.voice-input-control-row`, `.voice-input-shortcut`, `.voice-input-microphone-select`, `.voice-input-composer`, and their live states. Any new class in this dialog needs its own `html[data-theme="dark"]` rule in the end-of-cascade repair block, or it will show a white surface in the midnight shell.
 
 > [!important]
 > The minimized-window explanation now lives in the **Open new terminals minimized** switch row, so `resetTerminalLayoutStatus()` writes only "Grid launches use the next available cell." That reset runs on every dialog open. Any copy moved out of `#terminal-layout-status` into static markup must be removed from that function in the same change, or the dialog repeats itself the moment it is opened.
 
-The compact rule set collapses the layout grid to two columns, moves the monitor field to its own row, wraps section heads, stacks the sound label above its select, and eventually stacks the three speech choices and spoken preview. The completion alert section is always a single column, which keeps sound and voice aligned at every width.
+The dialog is capped at 620px, uses 30px controls and reduced section padding, and keeps its heading
+and section rhythm dense. The compact rule set collapses the layout grid to two columns, moves the
+monitor field to its own row, wraps section heads, stacks the sound label above its select, and
+eventually stacks the three speech choices and spoken preview. The completion alert section is always
+a single column, which keeps sound and voice aligned at every width.
+
+Outside the dialog, **Terminal session mode** and **Settings** share the automatic-terminal toolbar.
+Both controls are 26px high. The lifecycle messages occupy one clipped 13px status row beneath them,
+so the complete automatic-terminal fieldset is 57px high in the current desktop and narrow layouts.
 
 > [!note]
 > Retention changes apply to new task submissions immediately. When a renderer is temporarily connected to an older backend without `capabilities.projectTerminalSettings`, it keeps the choice in that project's in-memory composer session without showing a restart requirement. A current backend also persists the same snapshot through the project settings API.
@@ -91,6 +103,10 @@ Each submitted task still snapshots `keep_terminal_open`. New direct Execute tas
 
 ## Validation
 
+- August 27 voice and density pass: the terminal fieldset is 57px high at desktop and 480px widths,
+  its session switch and Settings button are both 26px high, and the responsive 620px settings dialog
+  has no horizontal overflow at 1936, 680, or 480 CSS pixels. Source discovery, live metering, and
+  cleanup are covered by the 78 focused tests. The complete suite passes all 1,749 tests.
 - August 13 completion voice pass: the sound and voice controls now align as full-width rows, the
   voice detail panel has responsive light and dark rules, the focused suite passes 65 of 65, and
   the complete suite passes 1,472 of 1,472 tests. Browser control was unavailable for a live

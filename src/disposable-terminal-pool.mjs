@@ -2,7 +2,15 @@ import { readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { resolveClaudeTranscriptPath } from './claude-transcript-tail.mjs';
-import { claudeFirstLaunchSettings } from './claude-launch-settings.mjs';
+import {
+  claudeCompleteLaunchSettings,
+  claudeFirstLaunchSettings,
+} from './claude-launch-settings.mjs';
+import {
+  claudeCouncilLaunchTask,
+  inspectPlanCouncilCheckpoint,
+  planCouncilProviderSettings,
+} from './plan-council-runner.mjs';
 
 const PROVIDERS = ['codex', 'claude', 'opencode'];
 const TERMINAL_PROVIDERS = ['codex', 'claude'];
@@ -158,8 +166,29 @@ export class DisposableTerminalPool {
     };
   }
 
-  capacityIssue(task) {
-    const required = disposableTerminalConfigurationRequirements(task);
+  planCheckpoint(task) {
+    return task?.mode === 'plan'
+      ? inspectPlanCouncilCheckpoint(task, this.artifacts)
+      : null;
+  }
+
+  requirements(task, checkpoint = null) {
+    if (!isDisposableTerminalTask(task) || task.mode !== 'plan') {
+      return disposableTerminalRequirements(task);
+    }
+    const state = checkpoint || this.planCheckpoint(task);
+    const providers = new Set((state?.pendingStages || []).map((stage) => stage.provider));
+    return {
+      codex: providers.has('codex') ? 1 : 0,
+      claude: providers.has('claude') ? 1 : 0,
+      opencode: 0,
+    };
+  }
+
+  capacityIssue(task, checkpoint = null) {
+    const required = task?.mode === 'plan'
+      ? this.requirements(task, checkpoint)
+      : disposableTerminalConfigurationRequirements(task);
     const limits = this.limits(task.repo_path);
     for (const provider of PROVIDERS) {
       if (required[provider] > limits[provider]) {
@@ -228,7 +257,7 @@ export class DisposableTerminalPool {
         || countedReservations.has(task.id)
       ) continue;
       countedReservations.add(task.id);
-      const required = disposableTerminalRequirements(task);
+      const required = this.requirements(task);
       const allocated = allocatedByTask.get(task.id) || emptyProviderCounts();
       for (const provider of PROVIDERS) {
         usage[provider] += Math.max(0, required[provider] - allocated[provider]);
@@ -265,7 +294,7 @@ export class DisposableTerminalPool {
     if (this.hasAllocatedConversation(task)) return false;
     if (this.capacityIssue(task)) return false;
     const usage = this.usage(task.repo_path, reservedTasks);
-    const required = disposableTerminalRequirements(task);
+    const required = this.requirements(task);
     const limits = this.limits(task.repo_path);
     return PROVIDERS.every((provider) => usage[provider] + required[provider] <= limits[provider]);
   }
@@ -619,7 +648,8 @@ export class DisposableTerminalPool {
     if (this.allocations.has(task.id)) {
       throw new Error('This task already owns a disposable terminal allocation.');
     }
-    const issue = this.capacityIssue(task);
+    const checkpoint = this.planCheckpoint(task);
+    const issue = this.capacityIssue(task, checkpoint);
     if (issue) throw Object.assign(new Error(issue), { retryable: false });
 
     this.database.addEvent(
@@ -627,6 +657,10 @@ export class DisposableTerminalPool {
       'queue',
       task.mode === 'turbo'
         ? 'Turbo will launch one planner terminal and one execution terminal only when each stage starts.'
+        : task.mode === 'plan' && checkpoint?.pendingStages?.length === 0
+          ? 'All provider stages are checkpointed. Retrying final plan persistence without launching a terminal.'
+        : task.mode === 'plan' && checkpoint?.pendingStages?.length === 1
+          ? `Saved council artifacts leave only the ${checkpoint.pendingStages[0].label} stage. Launching only that provider.`
         : task.provider === 'opencode'
           ? 'Reserving a headless OpenCode execution slot for this task.'
           : 'Launching disposable terminal instances for this task.',
@@ -635,19 +669,61 @@ export class DisposableTerminalPool {
       if (task.mode === 'plan') {
         // These legacy columns now identify provider terminals, not fixed roles:
         // author_thread_id stores Claude and thread_id stores Codex for both council orders.
-        const claude = await this.launch(task, 'claude', task.author_thread_id, isCancelled);
-        const codex = await this.launch(task, 'codex', task.thread_id, isCancelled);
+        const pendingStages = checkpoint?.pendingStages || [];
+        if (pendingStages.length === 0) {
+          return task;
+        }
+        const pendingProviders = new Set(pendingStages.map((stage) => stage.provider));
+        const revisionOnly = pendingStages.length === 1 && pendingStages[0].id === 'revision';
+        const launched = {};
+        if (pendingProviders.has('claude')) {
+          launched.claude = await this.launch(
+            task,
+            'claude',
+            revisionOnly ? null : task.author_thread_id,
+            isCancelled,
+            {
+              claudeLaunchSettings: claudeCompleteLaunchSettings(
+                claudeCouncilLaunchTask(task),
+              ),
+            },
+          );
+        }
+        if (pendingProviders.has('codex')) {
+          const settings = planCouncilProviderSettings(task, 'codex');
+          launched.codex = await this.launch(
+            task,
+            'codex',
+            revisionOnly ? null : task.thread_id,
+            isCancelled,
+            {
+              codexLaunchSettings: settings.model || settings.effort
+                ? { model: settings.model || null, effort: settings.effort || null }
+                : null,
+            },
+          );
+        }
         const updated = this.database.updateTask(task.id, {
-          thread_id: codex.threadId,
-          thread_name: codex.thread.title,
-          thread_source: codex.thread.source,
-          author_thread_id: claude.threadId,
-          author_thread_name: claude.thread.title,
-          author_thread_source: claude.thread.source,
+          ...(launched.codex ? {
+            thread_id: launched.codex.threadId,
+            thread_name: launched.codex.thread.title,
+            thread_source: launched.codex.thread.source,
+          } : {}),
+          ...(launched.claude ? {
+            author_thread_id: launched.claude.threadId,
+            author_thread_name: launched.claude.thread.title,
+            author_thread_source: launched.claude.thread.source,
+          } : {}),
         });
         this.artifacts.updateTaskAssignment(updated);
         this.artifacts.updateCouncilAuthorAssignment(updated);
-        this.database.addEvent(task.id, 'queue', 'Claude and Codex council terminals are ready.');
+        this.database.addEvent(
+          task.id,
+          'queue',
+          revisionOnly
+            ? `Saved draft.md and review.md were found. A fresh ${providerName(pendingStages[0].provider)} author terminal is ready for the final revision.`
+            : 'Claude and Codex council terminals are ready.',
+        );
         return updated;
       }
 

@@ -47,6 +47,30 @@ The fallback remains important when:
 
 In those cases output still mirrors from the transcript, now without Relay's additional fixed polling delay.
 
+## Repeated heartbeat compaction, August 27, 2026
+
+Long interactive turns can persist one identical `claude/progress` heartbeat on every monitoring
+interval. The database and raw task artifact keep every record for diagnostics, but Task Activity
+now folds consecutive identical heartbeats into one chronological signal. The row shows a compact
+`×N` occurrence badge and the time of the newest heartbeat in that run.
+
+The fold is deliberately narrow:
+
+- the event kind, visible message, and complete progress payload must match;
+- any intervening provider event ends the run, even if the same heartbeat appears again later;
+- a changed session, delivery state, or progress message starts a new row;
+- filter counts and signal numbering use the compact rows, while the status tooltip still reports
+  both displayed-event and raw provider-event counts.
+
+> [!important]
+> Keep this as a renderer fold. Replacing or deleting persisted heartbeats would weaken incident
+> evidence and could make a live terminal gap impossible to reconstruct.
+
+The implementation lives in `public/event-stream.js`, with the badge, newest-time reading, and
+copy-log occurrence count in `public/app.js` and `public/style.css`. Stream tests pin exact
+adjacency and payload boundaries, while renderer source tests pin the visible counter and compact
+pill styling.
+
 ## Verification
 
 - The full repository suite passes 797 of 797 tests.
@@ -54,6 +78,12 @@ In those cases output still mirrors from the transcript, now without Relay's add
 - Claude Code 2.1.220 accepts the generated inline `MessageDisplay` HTTP hook settings through `--settings`.
 - A real macOS filesystem smoke test woke 63 ms after a scheduled transcript append.
 - The source-state comparison measured the original upstream delay as high as 55.4 seconds, establishing why a shorter poll interval alone was insufficient.
+
+> [!note]
+> The August 27 heartbeat-compaction pass completed with 1,752 repository tests passing,
+> `release:check` green for v0.2.26, and `git diff --check` clean. Browser screenshot verification
+> was unavailable because the installed browser plugin runtime could not initialize in the current
+> session; focused renderer and CSS contract tests cover the visible badge at this boundary.
 
 > [!important]
 > Restart the backend or rebuild and reopen the desktop application before validating. A process that started before these modules changed still uses the old polling implementation and launches terminals without the live hook settings.

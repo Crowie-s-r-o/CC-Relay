@@ -28,8 +28,8 @@ test('escapeHtml escapes double and single quotes so it is attribute-safe (Findi
 
 test('app.js interpolates agent-controlled attributes through escapeHtml', () => {
   const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
-  // The header running-task card interpolates task names and responses into title attributes.
-  assert.match(app, /title="\$\{escapeHtml\(taskDisplayName\(task\)\)\}"/);
+  // The header running-task card interpolates project names, task names, and responses into title attributes.
+  assert.match(app, /title="\$\{escapeHtml\(`\$\{project\} · \$\{taskDisplayName\(task\)\}`\)\}"/);
   assert.match(app, /title="\$\{escapeHtml\(response\)\}"/);
   // escapeHtml is the shared imported helper, not a DOM trick that leaves quotes intact.
   assert.match(app, /import \{ escapeHtml \} from '\.\/escape-html\.js'/);

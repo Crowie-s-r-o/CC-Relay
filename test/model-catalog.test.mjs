@@ -7,6 +7,7 @@ import {
 } from '../src/model-catalog.mjs';
 import { supportedClaudeModelCatalog } from '../public/claude-model-selection.js';
 import {
+  claudeCompleteLaunchSettings,
   claudeFirstLaunchSettings,
   claudeTerminalExecutionSettings,
   selectedClaudeTerminalModel,
@@ -82,4 +83,27 @@ test('terminal launch settings pass Fable through and map best to Fable', () => 
     effort: 'max',
   });
   assert.equal(claudeTerminalExecutionSettings({ model: 'best' }).model, 'fable');
+});
+
+test('complete Claude launch settings include Plan tools and unique attachment directories', () => {
+  assert.deepEqual(claudeCompleteLaunchSettings({
+    model: 'opus',
+    effort: 'max',
+    terminal_permission_mode: 'plan',
+    terminal_tools: ['Read', 'Glob', 'Read'],
+    attachments: [
+      { path: '/project/.data/tasks/1/attachments/01.png' },
+      { path: '/project/.data/tasks/1/attachments/02.png' },
+      { path: '/project/reference/diagram.png' },
+    ],
+  }), {
+    model: 'opus',
+    effort: 'max',
+    permissionMode: 'plan',
+    tools: ['Read', 'Glob'],
+    addDirectories: [
+      '/project/.data/tasks/1/attachments',
+      '/project/reference',
+    ],
+  });
 });

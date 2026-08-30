@@ -25,14 +25,18 @@ Task Activity exposes six counted views: **All**, **Highlights**, **Commands**, 
 > [!important]
 > Do not classify every provider event as an AI message. Provider kinds also carry terminal lifecycle, token telemetry, and operator-attention records. `eventEntryMessageRole()` is the strict role boundary.
 
-## Canonical prompt display
+## Prompt reconciliation
 
-`mergePromptMessages()` combines the persisted prompt history with provider events for rendering only. It performs two jobs:
+`mergePromptMessages()` combines the persisted prompt history with provider events for rendering only. It performs three jobs:
 
 1. It inserts a display-only `userMessage` for a canonical prompt that the provider did not echo, including the original Claude request.
-2. When Codex echoes a delivered prompt with the Relay non-interactive notice appended, it replaces only the rendered clone with the canonical user-authored text.
+2. For an original request, it can replace a Codex echo carrying the Relay non-interactive notice with the canonical user-authored text.
+3. A completed follow-up's `relay-follow-up-*` event is a provisional display fallback. If a later, distinct provider user-message item matches that prompt before the next follow-up receipt, the merge suppresses the provisional event and keeps the provider event as the one visible message. Decorated echoes retain the Relay notice because that is the payload delivered to the terminal. Historical exact-text echoes and the earlier `Relay orchestrator notice:` prefix reconcile through the same boundary.
 
-The original event array and database rows are never rewritten. Matching prompt events are deduplicated, copy-log output uses the canonical text, and raw provider-event counts remain separately available in the status title.
+The original event array and database rows are never rewritten. Matching prompt events are deduplicated, copy-log output follows the one selected display event, and raw provider-event counts remain separately available in the status title.
+
+> [!important]
+> A `relay-follow-up-*` item records accepted Relay dispatch, not provider delivery. Keep it visible only when the provider supplies no user-message echo. Never stack it beside the later terminal-delivered item.
 
 ## Visual and interaction contract
 
@@ -78,8 +82,9 @@ runtime, so responsive behavior remains source-contract tested rather than scree
 - `public/app.js`: prompt-history integration, message presentation, stable numbering, elapsed metadata, empty states, and copy labels.
 - `public/index.html` and `public/style.css`: counted controls and the duplex message-channel treatment.
 - `src/database.mjs` and `src/relay-prompt.mjs`: canonical cleanup of Relay's delivery-only instruction when prompt history is read.
-- `test/event-stream.test.mjs`: deduplication, missing provider echoes, role separation, Claude
-  notice exclusion, and provider-specific finality.
+- `test/event-stream.test.mjs`: provisional follow-up receipt replacement, decorated and historical
+  exact provider echoes, missing provider echoes, role separation, Claude notice exclusion, and
+  provider-specific finality.
 - `test/database.test.mjs` and `test/relay-prompt.test.mjs`: delivery-notice stripping without rewriting stored events.
 - `test/terminal-conversation-filters.test.mjs`: renderer wiring, responsive rail, role styling, and stable signal numbering.
 
