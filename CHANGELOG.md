@@ -2,6 +2,16 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.28] - 2026-08-31
+
+### Added
+
+- Claude tab-expanded prompts are now accepted.
+
+### Security
+
+- Diagnostics now protect sensitive prompt data.
+
 ## [0.2.27] - 2026-08-30
 
 ### Added
