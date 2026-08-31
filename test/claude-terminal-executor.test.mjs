@@ -43,6 +43,7 @@ import {
   releasedQueuedPromptRecordText,
   resolveClaudeTranscriptPath,
   sanitizeInjectedPrompt,
+  submittedPromptMatchKind,
   submittedPromptMatches,
   submittedRewrittenPromptMatches,
   userPromptRecordText,
@@ -219,6 +220,29 @@ test('submitted prompt correlation rejects compaction records and accepts hook-p
   );
 });
 
+test('submitted prompt correlation accepts only Claude terminal tab expansion as a complete form', () => {
+  const expected = 'Capability\tWhere\tUse\nCrawler\tcrawl.service.ts\tShared pipeline';
+  const recorded = 'Capability    Where    Use\nCrawler    crawl.service.ts    Shared pipeline';
+
+  assert.equal(submittedPromptMatchKind(expected, expected), 'exact');
+  assert.equal(submittedPromptMatchKind(recorded, expected), 'tab-expanded');
+  assert.equal(submittedPromptMatches(`Injected context\n${recorded}`, expected), true);
+  assert.equal(submittedPromptMatches(recorded.replace('    Where', ' Where'), expected), false);
+  assert.equal(submittedPromptMatches(recorded.replace('Shared pipeline', 'Other pipeline'), expected), false);
+});
+
+test('task 1152 shape expands thirty table tabs by exactly ninety characters', () => {
+  const expected = Array.from(
+    { length: 10 },
+    (_, index) => `row-${index}\tcolumn-a\tcolumn-b\tcolumn-c`,
+  ).join('\n');
+  const recorded = expected.replaceAll('\t', '    ');
+
+  assert.equal((expected.match(/\t/g) || []).length, 30);
+  assert.equal(recorded.length - expected.length, 90);
+  assert.equal(submittedPromptMatchKind(recorded, expected), 'tab-expanded');
+});
+
 // ---- image prompt correlation (production shapes) ----------------------------
 //
 // Every literal below is the shape Claude Code 2.1.220 actually recorded for a CC Relay prompt
@@ -383,10 +407,11 @@ ${RELAY_NON_INTERACTIVE_INSTRUCTION}`;
   );
 });
 
-test('attachmentRewrittenPrompts leaves text-only prompts on strict raw equality', () => {
+test('attachmentRewrittenPrompts leaves text-only prompts without attachment rewrite forms', () => {
   const textOnly = { prompt: 'Ship the release through GET /api/release.', attachments: [] };
   const delivered = taskPrompt(textOnly);
-  // No attachment path, so no rewritten form exists at all: nothing about text-only matching moves.
+  // No attachment path means no image-derived form exists. The separate tab transport rule is not
+  // involved because this prompt contains no tabs.
   assert.deepEqual(attachmentRewrittenPrompts(delivered, []), []);
   assert.deepEqual(attachmentRewrittenPrompts(delivered, ['/data/tasks/9/attachments/01.png']), []);
   // A prompt that differs from the delivered text only by collapsed blank lines is still rejected.
@@ -1704,6 +1729,7 @@ function makeExecutor(overrides = {}) {
   const submitted = [];
   const cancels = [];
   const keys = [];
+  const diagnostics = [];
   // Every terminal-facing action in dispatch order. Ordering is load bearing for the screen
   // gates: a dialog key must never be sent after a paste, and a paste must never precede the
   // composer verification that allowed it.
@@ -1744,9 +1770,10 @@ function makeExecutor(overrides = {}) {
     submitRetryMs: 8000,
     submitRetryBackoffMs: 0,
     submitConfirmMs: 1000,
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
     ...overrides,
   });
-  return { executor, injected, submitted, cancels, keys, timeline, clock };
+  return { executor, injected, submitted, cancels, keys, timeline, clock, diagnostics };
 }
 
 // ---- executor behaviour ------------------------------------------------------
@@ -1782,6 +1809,93 @@ test('terminal turn mirrors the transcript and completes on a stable idle after 
   assert.equal(io.types().includes('item/started'), true);
   assert.equal(io.types().includes('item/completed'), true);
   assert.equal(io.events.some((e) => e.event.type === 'claude/message' && /Listed the files\./.test(e.message)), true);
+});
+
+test('terminal turn completes when Claude records pasted tabs as four spaces', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const task = {
+    ...baseTask,
+    prompt: 'Review the inventory.\nCapability\tWhere\tUse\nCrawler\tcrawl.service.ts\tShared pipeline',
+  };
+  const recordedPrompt = deliveredPrompt(task).replaceAll('\t', '    ');
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    { status: 'busy', append: [userPrompt(recordedPrompt)] },
+    { status: 'busy', append: [assistant('end_turn', [text('The inventory is valid.')])] },
+    { status: 'idle' },
+    { status: 'idle' },
+  ], fake);
+  const { executor, submitted, diagnostics } = makeExecutor({
+    sessions,
+    openTranscript: () => fake.source,
+  });
+  const io = collect();
+
+  const outcome = await executor.runTurn(
+    task,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    io,
+  );
+
+  assert.equal(outcome.finalResponse, 'The inventory is valid.');
+  assert.equal(submitted.length, 0);
+  assert.equal(
+    io.events.find((entry) => entry.event.type === 'claude/started')?.event.promptSubmissionEvidence,
+    'transcript-prompt',
+  );
+  assert.equal(io.events.some((entry) => entry.event.type === 'claude/message'), true);
+  const correlation = diagnostics.find((entry) => (
+    entry.event === 'task.claude.terminal.prompt_correlated'
+  ));
+  assert.equal(correlation.details.taskId, task.id);
+  assert.equal(correlation.details.source, 'transcript-prompt');
+  assert.equal(correlation.details.matchKind, 'tab-expanded');
+  assert.equal(correlation.details.expected.tabs, 4);
+  assert.equal(correlation.details.actual.tabs, 0);
+  assert.equal(correlation.details.actual.chars - correlation.details.expected.chars, 12);
+  assert.equal(
+    diagnostics.some((entry) => entry.event === 'task.claude.terminal.prompt_correlation_mismatch'),
+    false,
+  );
+  assert.equal(
+    diagnostics.some((entry) => entry.event === 'task.claude.terminal.final_observed'),
+    true,
+  );
+  assert.equal(
+    diagnostics.some((entry) => entry.event === 'task.claude.terminal.completed'),
+    true,
+  );
+  assert.equal(JSON.stringify(diagnostics).includes(task.prompt), false);
+});
+
+test('terminal execution does not depend on the diagnostics sink', async () => {
+  const fake = fakeTranscript();
+  fake.append({ type: 'mode' });
+  const sessions = sessionSteps([
+    { status: 'idle' },
+    { status: 'busy', append: [userPrompt(deliveredPrompt())] },
+    { status: 'busy', append: [assistant('end_turn', [text('Diagnostics are optional.')])] },
+    { status: 'idle' },
+    { status: 'idle' },
+  ], fake);
+  const { executor } = makeExecutor({
+    sessions,
+    openTranscript: () => fake.source,
+    diagnostic: () => { throw new Error('diagnostics unavailable'); },
+  });
+
+  const outcome = await executor.runTurn(
+    baseTask,
+    { cancelRequested: false },
+    { id: SESSION_ID },
+    TERMINAL,
+    collect(),
+  );
+
+  assert.equal(outcome.finalResponse, 'Diagnostics are optional.');
 });
 
 test('a backgrounded sub-agent blocks completion until it finishes and Claude consolidates', async () => {
@@ -7683,6 +7797,13 @@ test('an unmatched submission record stops the empty-composer re-injection', asy
   const unverified = io.events.filter((entry) => entry.event.deliveryState === 'unverified-submission');
   assert.equal(unverified.length, 1);
   assert.match(unverified[0].message, /will not paste it again/i);
+  const mismatch = harness.diagnostics.find((entry) => (
+    entry.event === 'task.claude.terminal.prompt_correlation_mismatch'
+  ));
+  assert.equal(mismatch.details.source, 'transcript-prompt');
+  assert.equal(typeof mismatch.details.expected.fingerprint, 'string');
+  assert.equal(typeof mismatch.details.actual.fingerprint, 'string');
+  assert.equal(Object.hasOwn(mismatch.details, 'prompt'), false);
 });
 
 // The same queueing that broke live updates can hit a task's own opening prompt. `runTurn` proves
@@ -9127,13 +9248,16 @@ test('cancellation stops the watcher, sends a best-effort interrupt, and rejects
 
 test('runner gives the default terminal executor the pinned Claude binary', () => {
   const requestAttention = async () => {};
+  const diagnostic = () => {};
   const runner = new ClaudeExecutionRunner({
     command: '/opt/claude/bin/claude',
     sessions: { readConnectedSession: async () => null },
     requestAttention,
+    diagnostic,
   });
   assert.equal(runner.terminalExecutor.command, '/opt/claude/bin/claude');
   assert.equal(runner.terminalExecutor.requestAttention, requestAttention);
+  assert.equal(runner.terminalExecutor.diagnostic, diagnostic);
 });
 
 function headlessRunner(overrides = {}) {
@@ -9166,6 +9290,17 @@ test('runner uses the headless path when the platform is not darwin', async () =
   assert.equal(spawned.length, 1);
 });
 
+test('runner lifecycle does not depend on the diagnostics sink', async () => {
+  const { runner, spawned } = headlessRunner({
+    platform: 'linux',
+    diagnostic: () => { throw new Error('diagnostics unavailable'); },
+  });
+
+  const outcome = await runner.run({ ...baseTask }, collect());
+  assert.equal(outcome.finalResponse, 'Headless done.');
+  assert.equal(spawned.length, 1);
+});
+
 test('runner uses the headless path when no owned terminal resolves on darwin', async () => {
   const { runner, spawned } = headlessRunner({ platform: 'darwin', resolveTerminal: async () => null });
   const outcome = await runner.run({ ...baseTask }, collect());
@@ -9174,15 +9309,23 @@ test('runner uses the headless path when no owned terminal resolves on darwin', 
 });
 
 test('a terminal-required council stage never falls back to headless', async () => {
+  const diagnostics = [];
   const { runner, spawned } = headlessRunner({
     platform: 'darwin',
     resolveTerminal: async () => null,
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
   });
   await assert.rejects(
     runner.run({ ...baseTask, require_terminal: true }, collect()),
     /did not run Claude headlessly/,
   );
   assert.equal(spawned.length, 0);
+  assert.deepEqual(
+    diagnostics.map((entry) => entry.event),
+    ['task.claude.run.started', 'task.claude.run.failed'],
+  );
+  assert.equal(diagnostics[1].details.executionMode, null);
+  assert.match(diagnostics[1].details.error, /did not run Claude headlessly/);
 });
 
 test('an oversized terminal-required council stage fails before injection or headless execution', async () => {
@@ -9273,12 +9416,14 @@ test('Issue 15: a NUL-bearing prompt on an owned darwin terminal also falls back
 
 test('runner drives the terminal executor when an owned terminal resolves on darwin', async () => {
   const spawned = [];
+  const diagnostics = [];
   let terminalCalled = null;
   const runner = new ClaudeExecutionRunner({
     spawnProcess: () => { spawned.push(true); throw new Error('headless must not spawn'); },
     sessions: { readConnectedSession: async () => ({ id: SESSION_ID, source: 'Claude interactive', cwd: '/repo', rawStatus: 'idle', pid: PID }) },
     platform: 'darwin',
     resolveTerminal: async () => ({ ...TERMINAL }),
+    diagnostic: (event, details) => diagnostics.push({ event, details }),
     terminalExecutor: {
       runTurn: async (task, active, session, terminal) => {
         terminalCalled = { taskId: task.id, windowId: terminal.terminalWindowId };
@@ -9292,4 +9437,14 @@ test('runner drives the terminal executor when an owned terminal resolves on dar
   assert.deepEqual(terminalCalled, { taskId: baseTask.id, windowId: WINDOW_ID });
   assert.equal(spawned.length, 0);
   assert.equal(io.types().includes('claude/completed'), true);
+  assert.deepEqual(
+    diagnostics.map((entry) => entry.event),
+    [
+      'task.claude.run.started',
+      'task.claude.run.mode_selected',
+      'task.claude.run.completed',
+    ],
+  );
+  assert.equal(diagnostics[1].details.executionMode, 'terminal');
+  assert.equal(diagnostics[2].details.finalChars, 14);
 });

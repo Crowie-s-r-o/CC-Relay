@@ -1137,9 +1137,18 @@ export class ClaudeExecutionRunner {
         resolveTerminal,
         requestAttention,
         hookBridge,
+        diagnostic,
       });
     this.activeByTask = new Map();
     this.activeBySession = new Map();
+  }
+
+  recordDiagnostic(event, details = {}) {
+    try {
+      this.diagnostic(event, details);
+    } catch {
+      // Diagnostics must never alter provider execution or its safety decisions.
+    }
   }
 
   async waitForIdle(task, active, onEvent) {
@@ -1402,6 +1411,12 @@ export class ClaudeExecutionRunner {
     };
     this.activeByTask.set(taskKey, active);
     this.activeBySession.set(task.thread_id, active);
+    this.recordDiagnostic('task.claude.run.started', {
+      taskId: task.id ?? null,
+      threadId: task.thread_id,
+      model: task.model || null,
+      effort: task.effort || null,
+    });
 
     try {
       const session = await this.waitForIdle(task, active, onEvent);
@@ -1435,6 +1450,11 @@ export class ClaudeExecutionRunner {
         }
       }
       active.executionMode = terminal ? 'terminal' : 'headless';
+      this.recordDiagnostic('task.claude.run.mode_selected', {
+        taskId: task.id ?? null,
+        threadId: task.thread_id,
+        executionMode: active.executionMode,
+      });
       const outcome = terminal
         ? await this.terminalExecutor.runTurn(task, active, session, terminal, { onEvent, onStderr })
         : await this.runHeadless(task, active, { onEvent, onStderr });
@@ -1463,7 +1483,25 @@ export class ClaudeExecutionRunner {
         },
         message: 'Claude completed the task.',
       });
+      this.recordDiagnostic('task.claude.run.completed', {
+        taskId: task.id ?? null,
+        threadId: task.thread_id,
+        executionMode: active.executionMode,
+        finalChars: outcome.finalResponse.length,
+        exitCode: outcome.exitCode,
+      });
       return outcome;
+    } catch (error) {
+      this.recordDiagnostic('task.claude.run.failed', {
+        taskId: task.id ?? null,
+        threadId: task.thread_id,
+        executionMode: active.executionMode,
+        retryable: error.retryable !== false,
+        cancelled: error.cancelled === true,
+        exitCode: error.exitCode ?? null,
+        error: error.message,
+      });
+      throw error;
     } finally {
       if (this.activeByTask.get(taskKey) === active) this.activeByTask.delete(taskKey);
       if (this.activeBySession.get(task.thread_id) === active) this.activeBySession.delete(task.thread_id);
@@ -1604,7 +1642,7 @@ export class ClaudeExecutionRunner {
       throw new ClaudeExecutionError(message, { retryable: false });
     }
 
-    this.diagnostic('task.claude.steer.requested', {
+    this.recordDiagnostic('task.claude.steer.requested', {
       taskId,
       threadId: active.sessionId,
       attachmentCount: attachments.length,
@@ -1612,10 +1650,10 @@ export class ClaudeExecutionRunner {
     });
     try {
       const outcome = await active.steer(value, attachments, options);
-      this.diagnostic('task.claude.steer.completed', outcome);
+      this.recordDiagnostic('task.claude.steer.completed', outcome);
       return outcome;
     } catch (error) {
-      this.diagnostic('task.claude.steer.failed', {
+      this.recordDiagnostic('task.claude.steer.failed', {
         taskId,
         threadId: active.sessionId,
         deliveryUncertain: error.deliveryUncertain === true,

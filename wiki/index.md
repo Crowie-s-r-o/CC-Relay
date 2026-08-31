@@ -95,6 +95,7 @@ type: index
 - [[claude-held-paste-multi-attempt-submit]]
 - [[claude-resume-picker-guard]]
 - [[claude-image-prompt-correlation]]
+- [[claude-tab-prompt-correlation]]
 - [[claude-fable-reviewed-plan-execution]]
 - [[claude-terminal-settings-review]]
 - [[parallel-claude-review]]

@@ -225,6 +225,14 @@ function normalizedPromptText(value) {
     : '';
 }
 
+// Claude Code's interactive composer records a pasted tab as four ASCII spaces. Task 1152
+// reproduced the conversion twice with the same 39,907-character delivered prompt: all 30 tabs
+// became four spaces, producing the same 39,997-character UserPromptSubmit and transcript value on
+// both attempts. Keep the raw form too because a queued prompt is recorded before composer
+// rewriting and future Claude versions may preserve tabs. This remains a complete deterministic
+// transport transform, never general whitespace normalization.
+const expandedTerminalTabs = (value) => String(value ?? '').replaceAll('\t', '    ');
+
 // Claude normally persists a submitted terminal prompt as either one string or one or more
 // user text blocks. Tool results, compact summaries, and slash-command bookkeeping are not
 // prompt-delivery evidence for the turn CC Relay just injected.
@@ -339,13 +347,27 @@ export function releasedQueuedPromptRecordText(record) {
 // hook-injected context before the pasted prompt, so a complete suffix match is also valid.
 // Matching the full expected value keeps `/compact`, compact summaries, attachments, and
 // unrelated terminal activity from being mistaken for this turn.
-export function submittedPromptMatches(value, expectedPrompts) {
+export function submittedPromptMatchKind(value, expectedPrompts) {
   const actual = normalizedPromptText(value);
-  if (!actual) return false;
-  return (Array.isArray(expectedPrompts) ? expectedPrompts : [expectedPrompts])
+  if (!actual) return null;
+  const expected = (Array.isArray(expectedPrompts) ? expectedPrompts : [expectedPrompts])
     .map((expected) => normalizedPromptText(sanitizeInjectedPrompt(expected)))
-    .filter(Boolean)
-    .some((expected) => actual === expected || actual.endsWith(`\n${expected}`));
+    .filter(Boolean);
+  if (expected.some((candidate) => actual === candidate || actual.endsWith(`\n${candidate}`))) {
+    return 'exact';
+  }
+  if (expected.some((candidate) => {
+    if (!candidate.includes('\t')) return false;
+    const expanded = expandedTerminalTabs(candidate);
+    return actual === expanded || actual.endsWith(`\n${expanded}`);
+  })) {
+    return 'tab-expanded';
+  }
+  return null;
+}
+
+export function submittedPromptMatches(value, expectedPrompts) {
+  return submittedPromptMatchKind(value, expectedPrompts) !== null;
 }
 
 export function isSubmittedPromptRecord(record, expectedPrompts) {
@@ -380,8 +402,9 @@ export function isSubmittedPromptRecord(record, expectedPrompts) {
 //
 // The same path referenced twice produces two chips, so occurrences are counted, not unique paths.
 // This derives the complete expected prompt, never a prefix or fragment, so accepting it keeps the
-// task 15 contract exact. A prompt with no known attachment reference returns no rewrite at all,
-// which is why text-only prompts keep pure raw-equality semantics and are unaffected.
+// task 15 contract exact. A prompt with no known attachment reference returns no attachment rewrite
+// at all. Text-only prompts therefore keep complete-prompt correlation, including only the separate
+// terminal tab transport form documented in [[claude-tab-prompt-correlation]].
 //
 // Returns the chip-less bodies plus the exact number of chips that must precede them, so a live
 // candidate is matched by `submittedRewrittenPromptMatches` rather than by string equality against
@@ -429,11 +452,15 @@ export function attachmentRewrittenPromptForms(prompt, attachmentPaths = []) {
   ];
   const bodies = new Set();
   for (const variant of blankLineVariants) {
-    bodies.add(variant);
+    const addTransportForms = (value) => {
+      bodies.add(value);
+      if (value.includes('\t')) bodies.add(expandedTerminalTabs(value));
+    };
+    addTransportForms(variant);
     // Task 58 converted every occurrence across the prompt. Keep the unconverted form too because
     // earlier production captures retained their spaces. Both candidates still represent the
     // complete prompt, so a partially converted or truncated value remains invalid.
-    bodies.add(variant.replaceAll(' /', '\n/'));
+    addTransportForms(variant.replaceAll(' /', '\n/'));
   }
   // A prompt whose entire content is attachment paths leaves nothing behind to identify it, and a
   // chip run alone is not a prompt: with the start index no longer contractual, an empty body would

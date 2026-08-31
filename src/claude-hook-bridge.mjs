@@ -61,6 +61,14 @@ export class ClaudeHookBridge {
     this.byToken = new Map();
   }
 
+  recordDiagnostic(event, details = {}) {
+    try {
+      this.diagnostic(event, details);
+    } catch {
+      // Hook delivery must not depend on the diagnostics sink.
+    }
+  }
+
   entryForSession(sessionId) {
     const id = normalizedSessionId(sessionId);
     if (!id) return null;
@@ -102,6 +110,10 @@ export class ClaudeHookBridge {
     entry.handler = null;
     entry.pending = [];
     const generation = entry.generation;
+    this.recordDiagnostic('claude.hook.registered', {
+      sessionId: entry.sessionId,
+      generation,
+    });
 
     const deliver = (payload, handler) => {
       this.queue(() => {
@@ -113,14 +125,14 @@ export class ClaudeHookBridge {
         try {
           const outcome = handler(payload);
           Promise.resolve(outcome).catch((error) => {
-            this.diagnostic('claude.hook.handler_failed', {
+            this.recordDiagnostic('claude.hook.handler_failed', {
               sessionId: entry.sessionId,
               event: payload?.hook_event_name,
               error: error.message,
             });
           });
         } catch (error) {
-          this.diagnostic('claude.hook.handler_failed', {
+          this.recordDiagnostic('claude.hook.handler_failed', {
             sessionId: entry.sessionId,
             event: payload?.hook_event_name,
             error: error.message,
@@ -136,6 +148,11 @@ export class ClaudeHookBridge {
         entry.handler = handler;
         const pending = entry.pending;
         entry.pending = [];
+        this.recordDiagnostic('claude.hook.activated', {
+          sessionId: entry.sessionId,
+          generation,
+          bufferedEvents: pending.length,
+        });
         for (const payload of pending) deliver(payload, handler);
         return true;
       },
@@ -144,6 +161,10 @@ export class ClaudeHookBridge {
         entry.accepting = false;
         entry.handler = null;
         entry.pending = [];
+        this.recordDiagnostic('claude.hook.deactivated', {
+          sessionId: entry.sessionId,
+          generation,
+        });
         return true;
       },
     };
@@ -152,7 +173,28 @@ export class ClaudeHookBridge {
   receive(token, payload) {
     const entry = this.byToken.get(String(token || ''));
     if (!entry || normalizedSessionId(payload?.session_id) !== entry.sessionId) {
+      this.recordDiagnostic('claude.hook.rejected', {
+        reason: entry ? 'session-mismatch' : 'unknown-token',
+        event: payload?.hook_event_name || null,
+        sessionId: normalizedSessionId(payload?.session_id) || null,
+      });
       return false;
+    }
+    if (['UserPromptSubmit', 'Stop'].includes(payload?.hook_event_name)) {
+      this.recordDiagnostic('claude.hook.received', {
+        sessionId: entry.sessionId,
+        generation: entry.generation,
+        event: payload.hook_event_name,
+        agentScoped: Boolean(payload.agent_id),
+        promptIdPresent: Boolean(payload.prompt_id),
+        promptChars: payload.hook_event_name === 'UserPromptSubmit' && typeof payload.prompt === 'string'
+          ? payload.prompt.length
+          : undefined,
+        finalChars: payload.hook_event_name === 'Stop' && typeof payload.last_assistant_message === 'string'
+          ? payload.last_assistant_message.length
+          : undefined,
+        buffered: typeof entry.handler !== 'function',
+      });
     }
     if (!entry.accepting) {
       return true;
@@ -174,14 +216,14 @@ export class ClaudeHookBridge {
       try {
         const outcome = handler(payload);
         Promise.resolve(outcome).catch((error) => {
-          this.diagnostic('claude.hook.handler_failed', {
+          this.recordDiagnostic('claude.hook.handler_failed', {
             sessionId: entry.sessionId,
             event: payload?.hook_event_name,
             error: error.message,
           });
         });
       } catch (error) {
-        this.diagnostic('claude.hook.handler_failed', {
+        this.recordDiagnostic('claude.hook.handler_failed', {
           sessionId: entry.sessionId,
           event: payload?.hook_event_name,
           error: error.message,

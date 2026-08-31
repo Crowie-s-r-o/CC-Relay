@@ -144,8 +144,8 @@ has to guess Claude's path detector and is extension agnostic for free.
    `1. image.png:` with no trailing space. Paths containing spaces, such as
    `/Users/.../Application Support/...`, are handled because the known path is matched literally.
 2. **Blank line collapse.** Runs of two or more newlines collapse to a single newline. This is
-   scoped to image-bearing prompts: text-only prompts are recorded verbatim, blank lines included,
-   which all the non-image production samples confirm.
+   scoped to image-bearing prompts: text-only prompts preserve blank lines. Literal tabs are the
+   one separately proven terminal transport exception described in [[claude-tab-prompt-correlation]].
 3. **Chip prefix.** One `[Image #N]` chip per removed **occurrence**, joined by single spaces and
    concatenated directly onto the rewritten text with no separator. The indices are strictly
    consecutive ascending integers, and the run starts wherever the **session** had reached, which is
@@ -163,7 +163,8 @@ complete transforms of the whole prompt. Derivation runs on `sanitizeInjectedPro
 line endings normalized first, so it mirrors the text that was actually injected.
 
 The function returns `chipCount: 0` and no bodies when no known attachment path occurs in the
-prompt. That gate is what keeps text-only correlation on pure raw equality.
+prompt. That gate keeps text-only correlation out of the attachment rewrite path. Text-only prompts
+accept only their complete raw or exact tab-expanded terminal transport form.
 
 ### How rule 3 is enforced
 
@@ -268,9 +269,9 @@ In `test/claude-terminal-executor.test.mjs`:
   matches none of them.
 - `attachmentRewrittenPrompts is extension agnostic because it only removes known attachment paths`
   covers `.webp` and `.jpeg`, and an unrelated absolute path that is not an attachment.
-- `attachmentRewrittenPrompts leaves text-only prompts on strict raw equality` asserts no rewrite is
-  produced without an attachment reference, and that a blank-line-collapsed text-only prompt is
-  rejected.
+- `attachmentRewrittenPrompts leaves text-only prompts without attachment rewrite forms` asserts no
+  attachment rewrite is produced without an attachment reference, and that a blank-line-collapsed
+  text-only prompt is rejected.
 - `the rewritten prompt anchor still rejects a different, truncated, or half-rewritten prompt`
   covers a different prompt with the same image, two truncations, a compact summary, a tool result,
   and both half-rewritten forms.

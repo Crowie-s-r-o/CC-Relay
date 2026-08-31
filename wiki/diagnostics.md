@@ -19,8 +19,22 @@ The log records:
 - Waiting for an active thread to become idle
 - Thread resume, turn start, completion, and failure
 - Queue task status changes
+- Claude execution mode selection and terminal prompt injection boundaries
+- Claude hook registration, activation, prompt submission, final response, and deactivation boundaries
+- Claude prompt-correlation success or privacy-safe mismatch shapes
+- Claude terminal final-response observation and run completion or failure
 
 Prompts and model responses are intentionally excluded. IDs, workspace paths, status, provider, model, effort, and errors are included because they are necessary to diagnose terminal handoff failures.
+
+Claude prompt-correlation diagnostics also exclude prompt and response bodies. They record character,
+byte, line, and tab counts, process-keyed HMAC-SHA256 fingerprints, and common prefix and suffix
+lengths. The fingerprint key exists only in memory, which prevents offline guessing from a copied
+log while keeping records within one process comparable. A successful
+`task.claude.terminal.prompt_correlated` names the evidence channel and match kind. A
+`task.claude.terminal.prompt_correlation_mismatch` records raw and tab-expanded edge lengths so a
+deterministic composer rewrite can be identified without adding private content to the log. Follow
+the event chain documented in [[claude-tab-prompt-correlation]] before manually retrying a task that
+may already have run.
 
 ## Codex terminal opens but CC Relay does not connect
 

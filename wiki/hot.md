@@ -6,6 +6,22 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **August 31: Claude table tabs no longer strand a completed terminal reply.** Task 1152 supplied
+> the exact failure: its 39,907-character delivered prompt contained 30 tabs, and Claude persisted
+> both attempts with every tab expanded to four spaces. The resulting 90-character difference was
+> the only mismatch, but Relay kept `transcriptCorrelated` false, showed zero AI messages, and failed
+> after Claude had already written the final response. Correlation now accepts only that complete
+> deterministic transport form, with no general whitespace folding. Structured diagnostics now
+> cover run mode, hook boundaries, injection, correlation or mismatch shapes, final observation,
+> completion, and failure without storing prompt or response text. The focused Claude suites pass
+> 266 of 266 tests, all 1,763 repository tests pass, and `release:check` is green for v0.2.27. Task
+> 1152's failed attempt was then restored from its exact latest-attempt transcript evidence without
+> running Claude again, with the 3,283-character response, a result artifact, no stale error, and an
+> explicit recovery event. A later user follow-up legitimately reopened the same task while keeping
+> that response. See [[claude-tab-prompt-correlation]], [[diagnostics]], and
+> [[claude-terminal-live-output]].
+
 > [!note]
 > **August 27: repeated Claude working heartbeats now occupy one Task Activity row.** Consecutive
 > `claude/progress` records fold only when their message and complete payload match, update a compact

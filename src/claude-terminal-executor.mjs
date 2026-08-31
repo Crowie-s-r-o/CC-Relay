@@ -1,4 +1,5 @@
 import { execFile as execFileCallback } from 'node:child_process';
+import { createHmac, randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
 import { promisify } from 'node:util';
 import {
@@ -20,7 +21,9 @@ import {
   queuedPromptRecordText,
   releasedQueuedPromptRecordText,
   resolveClaudeTranscriptPath,
+  sanitizeInjectedPrompt,
   submittedPromptMatches,
+  submittedPromptMatchKind,
   submittedRewrittenPromptMatches,
   userPromptRecordText,
 } from './claude-transcript-tail.mjs';
@@ -42,6 +45,42 @@ export {
 
 const execFile = promisify(execFileCallback);
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
+// A process-local key makes prompt fingerprints comparable inside one incident without making a
+// copied diagnostics file useful for offline guessing of short prompt text.
+const DIAGNOSTIC_FINGERPRINT_KEY = randomBytes(32);
+
+function diagnosticText(value) {
+  return sanitizeInjectedPrompt(String(value ?? '')).replace(/\r\n?/g, '\n').trimEnd();
+}
+
+function diagnosticTextShape(value) {
+  const text = diagnosticText(value);
+  return {
+    chars: text.length,
+    bytes: Buffer.byteLength(text, 'utf8'),
+    lines: text ? text.split('\n').length : 0,
+    tabs: (text.match(/\t/g) || []).length,
+    fingerprint: createHmac('sha256', DIAGNOSTIC_FINGERPRINT_KEY).update(text).digest('hex'),
+  };
+}
+
+function commonEdgeLengths(leftValue, rightValue) {
+  const left = diagnosticText(leftValue);
+  const right = diagnosticText(rightValue);
+  let prefixChars = 0;
+  while (
+    prefixChars < left.length
+    && prefixChars < right.length
+    && left[prefixChars] === right[prefixChars]
+  ) prefixChars += 1;
+  let suffixChars = 0;
+  while (
+    suffixChars < left.length - prefixChars
+    && suffixChars < right.length - prefixChars
+    && left[left.length - 1 - suffixChars] === right[right.length - 1 - suffixChars]
+  ) suffixChars += 1;
+  return { prefixChars, suffixChars };
+}
 
 // JXA passes the payload through argv, so no AppleScript string escaping is involved and
 // leading dashes, quotes, and newlines survive intact (verified in the injection spike).
@@ -875,6 +914,7 @@ export class ClaudeTerminalExecutor {
     steerRecheckLimit = 8,
     statRetryAttempts = 3,
     statRetryDelayMs = 100,
+    diagnostic = () => {},
   } = {}) {
     this.command = command;
     this.sessions = sessions;
@@ -926,6 +966,15 @@ export class ClaudeTerminalExecutor {
     );
     this.statRetryAttempts = statRetryAttempts;
     this.statRetryDelayMs = statRetryDelayMs;
+    this.diagnostic = diagnostic;
+  }
+
+  recordDiagnostic(event, details = {}) {
+    try {
+      this.diagnostic(event, details);
+    } catch {
+      // Diagnostics must never alter provider execution or its safety decisions.
+    }
   }
 
   async runTurn(task, active, session, terminal, { onEvent, onStderr }) {
@@ -1071,6 +1120,17 @@ export class ClaudeTerminalExecutor {
           { retryable: false },
         );
       }
+
+      this.recordDiagnostic('task.claude.terminal.prompt_injected', {
+        taskId: task.id ?? null,
+        threadId: sessionId,
+        terminalWindowId: activeTerminal.terminalWindowId,
+        transcriptPath: source.path || null,
+        transcriptInitiallyAbsent: initialTranscriptState === 'absent',
+        injectionOffset,
+        hookRegistered: Boolean(hookRegistration),
+        prompt: diagnosticTextShape(prompt),
+      });
 
       onEvent({
         event: {
@@ -2246,14 +2306,18 @@ export class ClaudeTerminalExecutor {
     // raw text alone would leave every image-carrying turn (every plan council stage, every Execute
     // task with attachments) permanently without submission evidence. These are complete derived
     // forms of the same prompt, so accepting them adds no partial-match surface. The chip count is
-    // 0 for a text-only prompt, which keeps raw equality as the only accepted form there.
+    // 0 for a text-only prompt, which keeps complete raw or exact tab-transport equality as the
+    // only accepted forms there.
     const promptAttachmentPaths = taskAttachmentPaths(task);
     const rewrittenForms = attachmentRewrittenPromptForms(prompt, promptAttachmentPaths);
     // Raw evidence is checked first so the reported value always names the form that actually
     // arrived, which makes the rewrite path observable in live diagnostics.
     const promptEvidence = (value, rawEvidence, rewrittenEvidence) => {
-      if (submittedPromptMatches(value, expectedPrompts)) return rawEvidence;
-      if (submittedRewrittenPromptMatches(value, rewrittenForms)) return rewrittenEvidence;
+      const rawMatchKind = submittedPromptMatchKind(value, expectedPrompts);
+      if (rawMatchKind) return { evidence: rawEvidence, matchKind: rawMatchKind };
+      if (submittedRewrittenPromptMatches(value, rewrittenForms)) {
+        return { evidence: rewrittenEvidence, matchKind: 'attachment-rewritten' };
+      }
       return null;
     };
     // The same test without labels, for the one place that only needs to know THAT a record carries
@@ -2346,6 +2410,31 @@ export class ClaudeTerminalExecutor {
     let steeringClosed = false;
     let steeringSequence = 0;
     let steeringTail = Promise.resolve();
+    const diagnosedPromptMismatches = new Set();
+
+    const diagnosePromptMismatch = (sourceName, value) => {
+      const actual = diagnosticText(value);
+      const actualShape = diagnosticTextShape(actual);
+      const mismatchKey = `${sourceName}:${actualShape.fingerprint}`;
+      if (diagnosedPromptMismatches.has(mismatchKey)) return;
+      diagnosedPromptMismatches.add(mismatchKey);
+      const expected = expectedPrompts[0] || '';
+      const tabExpandedExpected = diagnosticText(expected).replaceAll('\t', '    ');
+      this.recordDiagnostic('task.claude.terminal.prompt_correlation_mismatch', {
+        taskId: task.id ?? null,
+        threadId: sessionId,
+        source: sourceName,
+        expected: diagnosticTextShape(expected),
+        actual: actualShape,
+        rawEdges: commonEdgeLengths(expected, actual),
+        tabExpandedEdges: commonEdgeLengths(tabExpandedExpected, actual),
+        attachmentPathCount: promptAttachmentPaths.length,
+        attachmentRewriteCount: rewrittenForms.bodies.length,
+        promptSubmitted,
+        transcriptCorrelated,
+        submitAttempts,
+      });
+    };
 
     const backgroundWorkState = () => {
       const entries = liveSubAgents(context);
@@ -2436,13 +2525,21 @@ export class ClaudeTerminalExecutor {
       reconcileBackgroundWork(before);
       return emitted;
     };
-    const recordFinalSignal = (text, promptId = null) => {
+    const recordFinalSignal = (text, promptId = null, sourceName = 'unknown') => {
       // Deliberately above the pending branch. Both callers are genuine boundaries of the accepted
       // prompt, and a boundary reached while background work is still running is exactly the state
       // the prompt-id guard has to recognize later: that turn ended, its Stop snapshot froze, and
       // every further Stop carries a newer prompt id. Latching only on the clean branch would leave
       // the wedge in place for the case it was written for.
       acceptedTurnEnded = true;
+      this.recordDiagnostic('task.claude.terminal.final_observed', {
+        taskId: task.id ?? null,
+        threadId: sessionId,
+        source: sourceName,
+        finalChars: typeof text === 'string' ? text.trim().length : 0,
+        promptIdPresent: Boolean(promptId),
+        backgroundWorkPending: backgroundWorkPending(),
+      });
       if (backgroundWorkPending()) {
         sawFinal = false;
         finalPromptId = null;
@@ -2710,10 +2807,21 @@ export class ClaudeTerminalExecutor {
     active.steer = submitSteer;
     active.closeSteering = closeSteering;
 
-    const emitPromptSubmitted = (evidence) => {
+    const emitPromptSubmitted = ({ evidence, matchKind }, sourceName, value) => {
       if (promptSubmitted) return;
       promptSubmitted = true;
       lastActivity = this.now();
+      this.recordDiagnostic('task.claude.terminal.prompt_correlated', {
+        taskId: task.id ?? null,
+        threadId: sessionId,
+        source: sourceName,
+        evidence,
+        matchKind,
+        submitAttempts,
+        injectionOffset,
+        expected: diagnosticTextShape(prompt),
+        actual: diagnosticTextShape(value),
+      });
       onEvent({
         event: {
           type: 'claude/started',
@@ -2843,7 +2951,7 @@ export class ClaudeTerminalExecutor {
           if (!hookPromptId && typeof payload.prompt_id === 'string' && payload.prompt_id.trim()) {
             hookPromptId = payload.prompt_id.trim();
           }
-          emitPromptSubmitted(evidence);
+          emitPromptSubmitted(evidence, 'user-prompt-hook', payload.prompt);
           return;
         }
         // Same latch as the unmatched transcript record below, on the earlier channel. This hook
@@ -2860,6 +2968,7 @@ export class ClaudeTerminalExecutor {
           && payload.prompt.trim()
           && payload.prompt.trim() !== '/compact'
         ) {
+          diagnosePromptMismatch('user-prompt-hook', payload.prompt);
           unmatchedSubmissionObserved = true;
         }
         return;
@@ -3082,7 +3191,7 @@ export class ClaudeTerminalExecutor {
           if (!alreadyMirroredAsLatest) rememberFinalHookText(text);
           lastText = text;
         }
-        recordFinalSignal(text, payloadPromptId || hookPromptId);
+        recordFinalSignal(text, payloadPromptId || hookPromptId, 'stop-hook');
       }
     };
 
@@ -3172,8 +3281,9 @@ export class ClaudeTerminalExecutor {
         // the message from the queue, and starting a turn on a prompt that was thrown away would be
         // strictly worse than timing out.
         if (!promptSubmitted) {
+          const consumedPrompt = consumedQueuedPromptRecordText(record);
           const consumedEvidence = promptEvidence(
-            consumedQueuedPromptRecordText(record),
+            consumedPrompt,
             'transcript-queued-release',
             'transcript-queued-release-normalized',
           );
@@ -3182,7 +3292,7 @@ export class ClaudeTerminalExecutor {
             // why correlating here rather than at the enqueue keeps their output out of this turn.
             transcriptCorrelated = true;
             promptProcessingConfirmed = true;
-            emitPromptSubmitted(consumedEvidence);
+            emitPromptSubmitted(consumedEvidence, 'transcript-queued-release', consumedPrompt);
             continue;
           }
         }
@@ -3199,7 +3309,7 @@ export class ClaudeTerminalExecutor {
           }
           transcriptCorrelated = true;
           promptProcessingConfirmed = true;
-          emitPromptSubmitted(recordEvidence);
+          emitPromptSubmitted(recordEvidence, 'transcript-prompt', recordPrompt);
           continue;
         }
         // A real user prompt record that none of the derived forms matched. The reader starts at
@@ -3216,6 +3326,7 @@ export class ClaudeTerminalExecutor {
           && recordPrompt
           && recordPrompt.trim() !== '/compact'
         ) {
+          diagnosePromptMismatch('transcript-prompt', recordPrompt);
           unmatchedSubmissionObserved = true;
         }
         // The UserPromptSubmit hook can arrive before the durable transcript. Ignore every
@@ -3262,7 +3373,7 @@ export class ClaudeTerminalExecutor {
             isTurnFinalAssistantRecord(record)
             && unanchoredSteers.size === 0
           ) {
-            recordFinalSignal(text);
+            recordFinalSignal(text, null, 'transcript');
           }
         }
       }
@@ -3986,6 +4097,11 @@ export class ClaudeTerminalExecutor {
         { retryable: false },
       );
     }
+    this.recordDiagnostic('task.claude.terminal.completed', {
+      taskId: task.id ?? null,
+      threadId: sessionId,
+      finalChars: finalResponse.length,
+    });
     return {
       finalResponse,
       sessionId,
