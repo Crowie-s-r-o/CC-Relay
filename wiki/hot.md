@@ -7,6 +7,17 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **September 1: v0.2.30 release recovery now survives a lockfile failure after the tag is pushed.**
+> A local `legacy-peer-deps=true` preference removed 13 required Windows builder peer packages while
+> a feature commit was finalized. Hosted npm 11.16 rejected `npm ci`, the matrix canceled Windows,
+> and the release draft was never created. The repository now pins strict peer resolution, verifies
+> the builder peers, and performs a strict clean-install dry run before tagging. Pending recovery can
+> dispatch the current workflow from `main` while every job checks out the immutable original tag;
+> v0.2.30 receives a bounded isolated lock repair. `npm run deploy -- --recover-only` completes the
+> pending release without also creating a new version for the tooling fix. See
+> [[open-source-releases]] and [[desktop-updates]].
+
+> [!important]
 > **September 1: the macOS Crowie title bar now shows today's all-provider token sum, and Claude
 > totals include the categories it actually reports.** A persisted Claude conversation proved the
 > old input-plus-output display showed only 113,299 tokens while its native record contained

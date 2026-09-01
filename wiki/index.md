@@ -118,6 +118,7 @@ type: index
 - [[windows-compatibility]]
 - [[open-source-releases|source-available releases]]
 - [[source-release-readiness-review]]
+- [[release-lockfile-recovery-review]]
 - [[desktop-packaging-review]]
 - [[dmg-presentation]]
 - [[packaged-renderer-startup]]

@@ -19,6 +19,7 @@ function optionValue(name) {
 try {
   const manifest = readJson('package.json');
   const lockfile = readJson('package-lock.json');
+  const npmConfig = readFileSync(resolve(projectRoot, '.npmrc'), 'utf8');
   const changelog = readFileSync(resolve(projectRoot, 'CHANGELOG.md'), 'utf8');
   const builder = readFileSync(resolve(projectRoot, 'electron-builder.yml'), 'utf8');
   const desktopWorkflow = readFileSync(
@@ -46,6 +47,17 @@ try {
   }
   if (lockfile.packages?.['']?.license !== manifest.license) {
     throw new Error('package-lock.json root license does not match package.json.');
+  }
+  if (npmConfig.trim() !== 'legacy-peer-deps=false') {
+    throw new Error('.npmrc must keep default peer-dependency resolution enabled.');
+  }
+  const appBuilder = lockfile.packages?.['node_modules/app-builder-lib'];
+  if (!appBuilder) throw new Error('package-lock.json must contain app-builder-lib.');
+  for (const peerName of Object.keys(appBuilder.peerDependencies || {})) {
+    if (appBuilder.peerDependenciesMeta?.[peerName]?.optional === true) continue;
+    if (!lockfile.packages?.[`node_modules/${peerName}`]) {
+      throw new Error(`package-lock.json is missing the required app-builder-lib peer ${peerName}.`);
+    }
   }
   if (!license.startsWith('# PolyForm Noncommercial License 1.0.0\n')) {
     throw new Error('LICENSE must contain the PolyForm Noncommercial 1.0.0 terms.');

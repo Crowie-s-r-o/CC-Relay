@@ -51,24 +51,33 @@ const RELEASE_WATCH_TIMEOUT_MS = 45 * 60_000;
 const RELEASE_WATCH_INTERVAL_MS = 20_000;
 const RELEASE_SETTLE_POLLS = 6;
 const MAC_RELEASE_FEED_NAME = 'latest-mac.yml';
+const PEER_LOCK_REPAIR_TAGS = new Set(['v0.2.30']);
 
 function usage() {
   return `CC Relay deploy
 
 Usage:
-  npm run deploy -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run]
+  npm run deploy -- [auto|patch|minor|major] [--provider auto|codex|claude] [--dry-run] [--recover-only]
 
 Examples:
   npm run deploy
   npm run deploy -- minor --provider claude
   npm run deploy -- patch --dry-run
+  npm run deploy -- --recover-only
 
 Deploy first recovers any validated unpublished local releases in version order.
-It builds and verifies signed macOS artifacts locally, waits for the Windows workflow, and fails if publication does not complete.`;
+It builds and verifies signed macOS artifacts locally, waits for the Windows workflow, and fails if publication does not complete.
+Recover-only completes that pending suffix without creating another release from newer commits.`;
 }
 
 function parseArguments(argv) {
-  const options = { releaseType: 'auto', provider: 'auto', dryRun: false, help: false };
+  const options = {
+    releaseType: 'auto',
+    provider: 'auto',
+    dryRun: false,
+    recoverOnly: false,
+    help: false,
+  };
   let sawReleaseType = false;
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
@@ -78,6 +87,10 @@ function parseArguments(argv) {
     }
     if (value === '--dry-run') {
       options.dryRun = true;
+      continue;
+    }
+    if (value === '--recover-only') {
+      options.recoverOnly = true;
       continue;
     }
     if (value === '--provider') {
@@ -591,6 +604,19 @@ function removeReleaseWorktree(root, workspace) {
   rmSync(root, { recursive: true, force: true });
 }
 
+function installReleaseDependencies(tag, workspace) {
+  if (PEER_LOCK_REPAIR_TAGS.has(tag)) {
+    console.log(`Repairing incomplete peer metadata for ${tag} inside its isolated worktree...`);
+    npm([
+      'install',
+      '--package-lock-only',
+      '--ignore-scripts',
+      '--legacy-peer-deps=false',
+    ], { cwd: workspace, inherit: true });
+  }
+  npm(['ci', '--legacy-peer-deps=false'], { cwd: workspace, inherit: true });
+}
+
 function buildSignedMacReleaseAt(record) {
   const version = record.tag.slice(1);
   const currentHead = gitText(['rev-parse', 'HEAD']).trim();
@@ -611,7 +637,7 @@ function buildSignedMacReleaseAt(record) {
     console.log(`Preparing isolated signed macOS build for ${record.tag}...`);
     git(['worktree', 'add', '--detach', workspace, record.tag], { inherit: true });
     worktreeAdded = true;
-    npm(['ci'], { cwd: workspace, inherit: true });
+    installReleaseDependencies(record.tag, workspace);
     const signedRelease = buildSignedMacRelease({
       projectRoot: workspace,
       version,
@@ -637,14 +663,42 @@ function delay(milliseconds) {
   });
 }
 
-async function watchReleasePublication(tag, sha) {
+function releaseWorkflowRuns() {
+  return ghJson(`repos/${RELEASE_REPOSITORY}/actions/runs?per_page=100`);
+}
+
+function ensureReleaseRecoveryWorkflow(tag, sha) {
+  const run = selectReleaseWorkflowRun(releaseWorkflowRuns(), { tag, sha });
+  if (run && (run.status !== 'completed' || run.conclusion === 'success')) {
+    return { afterRunId: 0 };
+  }
+
+  const afterRunId = Number(run?.id || 0);
+  const reason = run
+    ? `the previous workflow ended as ${run.conclusion || 'unsuccessful'}`
+    : 'no tag workflow is available';
+  console.log(`Dispatching the current recovery workflow for ${tag} because ${reason}...`);
+  gh([
+    'workflow',
+    'run',
+    'build-desktop.yml',
+    '--repo',
+    RELEASE_REPOSITORY,
+    '--ref',
+    'main',
+    '-f',
+    `release_tag=${tag}`,
+  ], { inherit: true });
+  return { afterRunId };
+}
+
+async function watchReleasePublication(tag, sha, { afterRunId = 0 } = {}) {
   const deadline = Date.now() + RELEASE_WATCH_TIMEOUT_MS;
   let settleRemaining = RELEASE_SETTLE_POLLS;
   let lastMessage = '';
   while (Date.now() < deadline) {
     const release = releaseByTag(tag);
-    const runs = ghJson(`repos/${RELEASE_REPOSITORY}/actions/runs?per_page=30&head_sha=${sha}`);
-    const run = selectReleaseWorkflowRun(runs, { tag, sha });
+    const run = selectReleaseWorkflowRun(releaseWorkflowRuns(), { tag, sha, afterRunId });
     const status = releasePublishStatus({
       tag,
       run,
@@ -725,8 +779,11 @@ async function recoverPendingReleases(localTags, options) {
         console.log(`${record.tag} is already pushed; resuming its publication watch.`);
       }
 
+      const watchOptions = refspecs.length === 0
+        ? ensureReleaseRecoveryWorkflow(record.tag, record.sha)
+        : {};
       console.log(`Waiting for GitHub Actions to prepare the Windows release draft for ${record.tag}...`);
-      const outcome = await watchReleasePublication(record.tag, record.sha);
+      const outcome = await watchReleasePublication(record.tag, record.sha, watchOptions);
       if (!outcome.ok) {
         throw new Error(`${outcome.message}\nRecovery stopped at ${record.tag}; later pending releases were not pushed.`);
       }
@@ -745,6 +802,13 @@ function writeJson(path, value) {
 }
 
 function runReleaseGates() {
+  console.log('Checking clean-install lock metadata...');
+  npm([
+    'ci',
+    '--dry-run',
+    '--ignore-scripts',
+    '--legacy-peer-deps=false',
+  ], { inherit: true });
   console.log('Checking commit attribution...');
   npm(['run', 'attribution:check'], { inherit: true });
   console.log('Checking release metadata...');
@@ -790,6 +854,14 @@ async function main() {
     throw new Error(`Latest tag ${latestTag} does not match package version ${currentVersion}.`);
   }
   const recovery = await recoverPendingReleases(localTags, options);
+  if (options.recoverOnly) {
+    if (recovery.pendingTags.length === 0) {
+      console.log('There are no pending releases to recover.');
+    } else if (!options.dryRun) {
+      console.log(`Recovered ${recovery.recoveredTags.join(', ')}. Recover-only mode created no new release.`);
+    }
+    return;
+  }
   const range = latestTag ? `${latestTag}..HEAD` : 'HEAD';
   const commits = parseCommits(range);
   if (commits.length === 0) {

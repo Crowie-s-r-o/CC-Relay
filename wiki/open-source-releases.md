@@ -47,7 +47,7 @@ The command is:
 npm run deploy
 ```
 
-It defaults to `auto` and accepts `auto`, `patch`, `minor`, or `major`, plus `--provider codex|claude|auto` and `--dry-run`.
+It defaults to `auto` and accepts `auto`, `patch`, `minor`, or `major`, plus `--provider codex|claude|auto`, `--dry-run`, and `--recover-only`. Recover-only completes the validated pending release suffix and then stops, even when newer commits exist on `main`.
 
 Automatic version intent is deterministic:
 
@@ -67,7 +67,7 @@ Automatic version intent is deterministic:
 6. Generate structured release notes through an isolated local subscription CLI.
 7. Normalize every supported note into short, deduplicated facts without an item-count limit.
 8. Update `package.json`, `package-lock.json`, and `CHANGELOG.md` together.
-9. Run `release:check`, the complete test suite, and `npm audit --audit-level=high`.
+9. Prove a strict clean install from the lockfile, then run `release:check`, the complete test suite, and `npm audit --audit-level=high`.
 10. Build the macOS DMG and updater ZIP locally, verify their signature lineage and metadata, and create `mac-release.json`.
 11. Create `chore(release): vX.Y.Z` and an annotated `vX.Y.Z` tag.
 12. Push `main` and the tag with one atomic Git operation.
@@ -116,8 +116,34 @@ another retry.
 > [!important]
 > Recovery preflights the complete suffix before changing the remote and always requires publication
 > watching. Deploy has no push-and-stop option because the locally signed macOS handoff is part of
-> release completion. After recovery, deploy either exits successfully when there are no new commits
-> or continues through the normal release flow for commits made after the newest recovered tag.
+> release completion. Normal deploy continues through the release flow for commits made after the
+> newest recovered tag. `npm run deploy -- --recover-only` completes the pending suffix but creates no
+> additional version from newer commits.
+
+### Recovering a failed tagged workflow
+
+The v0.2.30 workflow failed before packaging because a local npm preference had removed the required
+`app-builder-lib` Windows peers from `package-lock.json`. GitHub's strict `npm ci` rejected the lock,
+the matrix canceled Windows, and no draft handoff existed. The tag and release commit were already on
+GitHub, so changing `main` and rerunning the original tag workflow could not apply the repair.
+
+The repository now pins `legacy-peer-deps=false` in `.npmrc`, checks the required builder peers during
+`release:check`, and runs a strict clean-install dry run before creating a release tag. The desktop
+workflow also has a validated `release_tag` dispatch input. A recovery dispatch runs the current
+workflow definition from `main`, verifies that the requested ref is an existing annotated stable tag,
+and checks out that tag for every build and release step. This changes workflow orchestration only;
+it does not move the tag or substitute current application source.
+
+`scripts/deploy.mjs` recognizes a failed or missing tagged run during pending-release recovery,
+dispatches the current workflow, ignores the earlier failed run while the replacement is queued, and
+then performs the normal signed macOS handoff. The one malformed v0.2.30 checkout receives a bounded
+in-worktree lock repair before strict install. The historical tag remains immutable, and the temporary
+worktree is removed after verification.
+
+> [!note]
+> Use `npm run deploy -- --recover-only` when the goal is to finish an already tagged release without
+> immediately versioning the workflow repair itself. A normal deploy still recovers first and then
+> releases any newer commits.
 
 ## AI generation boundary
 

@@ -263,17 +263,28 @@ export function changelogEntryForVersion(changelog, version) {
 
 export const RELEASE_WORKFLOW_PATH = '.github/workflows/build-desktop.yml';
 
-// A release tag and the release commit on main share one SHA, so several workflow runs report
-// the same head. Only the desktop build workflow publishes the GitHub Release, and only its
-// tag-triggered run carries the tag as the head branch.
-export function selectReleaseWorkflowRun(payload, { tag = '', sha = '' } = {}) {
+// A normal release run carries the tag and release SHA. A recovery dispatch runs the current
+// workflow from main but names its validated target tag in the display title. Both forms must be
+// recognized without allowing an unrelated main or CI run to satisfy the publication watch.
+export function selectReleaseWorkflowRun(payload, {
+  tag = '',
+  sha = '',
+  afterRunId = 0,
+} = {}) {
   const runs = Array.isArray(payload?.workflow_runs) ? payload.workflow_runs : [];
+  const minimumId = Number(afterRunId || 0);
   const candidates = runs.filter((run) => {
     if (!run || typeof run !== 'object') return false;
     if (run.path && run.path !== RELEASE_WORKFLOW_PATH) return false;
-    if (sha && run.head_sha !== sha) return false;
-    if (tag && run.head_branch && run.head_branch !== tag) return false;
-    return Boolean(sha || tag);
+    if (Number(run.id || 0) <= minimumId) return false;
+    const tagRun = Boolean(sha || tag)
+      && (!sha || run.head_sha === sha)
+      && (!tag || !run.head_branch || run.head_branch === tag)
+      && (!run.event || run.event === 'push');
+    const recoveryRun = Boolean(tag)
+      && run.event === 'workflow_dispatch'
+      && run.display_title === `Build desktop apps for ${tag}`;
+    return tagRun || recoveryRun;
   });
   if (candidates.length === 0) return null;
   return candidates.reduce((newest, run) => (Number(run.id || 0) > Number(newest.id || 0) ? run : newest));

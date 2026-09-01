@@ -46,6 +46,10 @@ test('npm run deploy owns versioning, verification, tags, and the atomic push', 
   assert.match(deploy, /git\(\['push', '--atomic', 'origin', \.\.\.refspecs\]/);
   assert.doesNotMatch(deploy, /Retry with git push --atomic/);
   assert.match(deploy, /watchReleasePublication\(tag, sha\)/);
+  assert.match(deploy, /--recover-only/);
+  assert.match(deploy, /ensureReleaseRecoveryWorkflow\(record\.tag, record\.sha\)/);
+  assert.match(deploy, /'workflow',\s+'run',\s+'build-desktop\.yml'/);
+  assert.match(deploy, /'ci',\s+'--dry-run',\s+'--ignore-scripts',\s+'--legacy-peer-deps=false'/);
   assert.match(deploy, /function releaseByTag\(tag\)/);
   assert.match(deploy, /releases\?per_page=100/);
   assert.match(deploy, /releaseByTag\(tag\)/);
@@ -66,9 +70,30 @@ test('the desktop build workflow runs the suite on macOS and never skips the rel
   // job, and `needs: build` then skipped the release job while the tag push looked successful.
   assert.match(workflow, /- if: runner\.os == 'macOS'\n\s+run: npm test/);
   assert.doesNotMatch(workflow, /^\s+- run: npm test$/m);
-  assert.match(workflow, /needs: build/);
+  assert.match(workflow, /needs: \[target, build\]/);
+  assert.match(workflow, /run-name: Build desktop apps for \$\{\{ inputs\.release_tag \|\| github\.ref_name \}\}/);
+  assert.match(workflow, /group: desktop-release-\$\{\{ inputs\.release_tag \|\| github\.ref_name \}\}/);
+  assert.match(workflow, /cancel-in-progress: false/);
+  assert.match(workflow, /release_tag:\n\s+description: Annotated release tag to recover/);
+  assert.match(workflow, /ref: \$\{\{ needs\.target\.outputs\.tag \}\}/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch' && needs\.target\.outputs\.tag == 'v0\.2\.30'/);
+  assert.match(workflow, /npm install --package-lock-only --ignore-scripts --legacy-peer-deps=false/);
+  assert.match(workflow, /npm ci --legacy-peer-deps=false/);
   assert.doesNotMatch(workflow, /continue-on-error/);
   assert.doesNotMatch(deploy, /GitHub Actions will build and publish/);
+});
+
+test('the repository lock keeps strict npm peer resolution and Windows builder peers', () => {
+  const npmConfig = readFileSync(join(projectRoot, '.npmrc'), 'utf8');
+  const lockfile = JSON.parse(readFileSync(join(projectRoot, 'package-lock.json'), 'utf8'));
+  const appBuilder = lockfile.packages['node_modules/app-builder-lib'];
+
+  assert.equal(npmConfig.trim(), 'legacy-peer-deps=false');
+  assert.ok(appBuilder);
+  for (const peerName of Object.keys(appBuilder.peerDependencies || {})) {
+    if (appBuilder.peerDependenciesMeta?.[peerName]?.optional === true) continue;
+    assert.ok(lockfile.packages[`node_modules/${peerName}`], `missing app-builder-lib peer ${peerName}`);
+  }
 });
 
 test('GitHub Releases publish locally verified macOS artifacts and hosted Windows artifacts', () => {
@@ -175,6 +200,46 @@ test('the release workflow keeps only complete published desktop releases untouc
     )),
   }), 'published-incomplete');
   assert.equal(await evaluate(complete), 'published-complete');
+});
+
+test('the recovery workflow accepts only existing annotated stable tags', async () => {
+  const workflow = readFileSync(
+    join(projectRoot, '.github', 'workflows', 'build-desktop.yml'),
+    'utf8',
+  );
+  const source = workflow.match(
+    /- id: release-target[\s\S]*?script: \|\n([\s\S]*?)\n\s+result-encoding: string/,
+  )?.[1].replace(/^ {12}/gm, '') || '';
+  const AsyncFunction = Object.getPrototypeOf(async function empty() {}).constructor;
+  const evaluate = async ({ releaseTag = '', ref = 'refs/tags/v1.2.3', type = 'tag' } = {}) => {
+    let requestedRef = '';
+    const result = await new AsyncFunction('github', 'context', source)(
+      {
+        rest: {
+          git: {
+            getRef: async (request) => {
+              requestedRef = request.ref;
+              return { data: { object: { type } } };
+            },
+          },
+        },
+      },
+      {
+        payload: { inputs: releaseTag ? { release_tag: releaseTag } : {} },
+        ref,
+        repo: { owner: 'Crowie-s-r-o', repo: 'CC-Relay' },
+      },
+    );
+    return { result, requestedRef };
+  };
+
+  assert.deepEqual(await evaluate(), { result: 'v1.2.3', requestedRef: 'tags/v1.2.3' });
+  assert.deepEqual(await evaluate({ releaseTag: 'v2.0.1' }), {
+    result: 'v2.0.1',
+    requestedRef: 'tags/v2.0.1',
+  });
+  await assert.rejects(() => evaluate({ releaseTag: 'main' }), /stable vX\.Y\.Z tag/);
+  await assert.rejects(() => evaluate({ type: 'commit' }), /must be an annotated tag/);
 });
 
 test('the public README leads with platform truth, download, and the six core benefits', () => {
@@ -499,6 +564,40 @@ test('release watching reports success only after the tag workflow and release b
   assert.equal(selectReleaseWorkflowRun(payload, { tag: 'v9.9.9', sha: 'missing' }), null);
   assert.equal(selectReleaseWorkflowRun({}, { tag: 'v1.2.3', sha: 'abc' }), null);
   assert.equal(selectReleaseWorkflowRun(payload, {}), null);
+
+  const recoveryPayload = {
+    workflow_runs: [
+      ...payload.workflow_runs,
+      {
+        id: 4,
+        path: '.github/workflows/build-desktop.yml',
+        event: 'workflow_dispatch',
+        display_title: 'Build desktop apps for v1.2.3',
+        head_sha: 'main-fix',
+        head_branch: 'main',
+        status: 'queued',
+        conclusion: null,
+      },
+      {
+        id: 5,
+        path: '.github/workflows/build-desktop.yml',
+        event: 'workflow_dispatch',
+        display_title: 'Build desktop apps for v9.9.9',
+        head_sha: 'main-fix',
+        head_branch: 'main',
+        status: 'queued',
+        conclusion: null,
+      },
+    ],
+  };
+  assert.equal(
+    selectReleaseWorkflowRun(recoveryPayload, { tag: 'v1.2.3', sha: 'abc' }).id,
+    4,
+  );
+  assert.equal(
+    selectReleaseWorkflowRun(recoveryPayload, { tag: 'v1.2.3', sha: 'abc', afterRunId: 4 }),
+    null,
+  );
 
   const waiting = releasePublishStatus({ tag: 'v1.2.3', run: null });
   assert.equal(waiting.done, false);
