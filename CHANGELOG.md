@@ -2,6 +2,18 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.30] - 2026-09-01
+
+### Added
+
+- Daily token telemetry is now available.
+- Conversation metrics are now tracked.
+- Conversation cards now include previews.
+
+### Changed
+
+- The Electron development dependency was updated.
+
 ## [0.2.29] - 2026-09-01
 
 ### Added
