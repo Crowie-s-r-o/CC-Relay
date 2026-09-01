@@ -28,7 +28,7 @@ No renderer, server, database, updater runtime, or application package source ch
 | --- | --- | --- |
 | Functional correctness | Green | `.npmrc`, `scripts/release-check.mjs`, and the strict `npm ci` dry run close the original lockfile path. `.github/workflows/build-desktop.yml` and `ensureReleaseRecoveryWorkflow()` preserve tag identity through recovery. |
 | Regression risk (UI / backend / contracts) | Green | The blast radius is release tooling only. The full 1,787-test application suite passes after an actual strict clean install. |
-| Gap risk (edge cases, error handling, completeness) | Amber | The workflow expressions and scripts are unit-evaluated and YAML-parsed, but only a real GitHub dispatch can prove the hosted handoff. This is the required post-commit mitigation. |
+| Gap risk (edge cases, error handling, completeness) | Green | Hosted recovery run `33542734447` passed target validation, macOS build, Windows build, and draft creation. Local deploy then verified and published all ten required assets. |
 | Code quality (maintainability as safety) | Green | Recovery is explicit, one malformed tag is named in one bounded set, inputs are stable-tag validated, and same-tag workflow runs are serialized. |
 | Unit tests | Green | Sixteen focused release-tooling tests cover lock peers, annotated-tag validation, run selection, stale-run exclusion, publication state, and static orchestration contracts. |
 | Performance & scalability (if applicable) | Green | One small target job and one bounded 100-run REST read per 20-second publication poll are insignificant beside native packaging. Same-tag concurrency is serialized. |
@@ -36,7 +36,7 @@ No renderer, server, database, updater runtime, or application package source ch
 ### Top 3 Risks
 
 1. `.github/workflows/build-desktop.yml` depends on GitHub's hosted expression and action behavior.
-   Local YAML and embedded-script tests cannot replace one real recovery dispatch.
+   Recovery run `33542734447` proved the current contract, but future action changes still require CI.
 2. `PEER_LOCK_REPAIR_TAGS` in `scripts/deploy.mjs` intentionally names only `v0.2.30`. A different
    historical malformed lock must fail loudly and receive its own reviewed repair rule.
 3. `releaseWorkflowRuns()` reads the newest 100 runs. An old failed tag can fall outside that window,
@@ -44,17 +44,18 @@ No renderer, server, database, updater runtime, or application package source ch
 
 ### Top Improvements
 
-1. Complete one real `v0.2.30` recovery dispatch and verify the Windows draft plus final stable assets.
-2. Keep dependency-update CI on strict `npm ci` so the project `.npmrc` and restored peer closure are
+1. Keep dependency-update CI on strict `npm ci` so the project `.npmrc` and restored peer closure are
    exercised before another merge.
-3. Remove the v0.2.30 repair exception only after historical recovery is no longer operationally
+2. Remove the v0.2.30 repair exception only after historical recovery is no longer operationally
    necessary; never rewrite the tag merely to simplify the code.
+3. Perform the outstanding real Windows application smoke checklist before changing the project's
+   experimental Windows support claim.
 
 ### Recommendation
 
-**Ship with Mitigations.** Commit and push the reviewed release-tooling fix, then use
-`npm run deploy -- --recover-only` as the end-to-end hosted verification. Stop and keep the release
-draft or pending if any target, build, asset, or signature check fails.
+**Ship.** The reviewed fix is on `main`, recover-only completed its end-to-end hosted verification,
+and v0.2.30 is the stable latest release. The original tag still resolves to release commit
+`b1c2acb`; no v0.2.31 was created.
 
 ---
 
@@ -99,9 +100,9 @@ application hot path changed.
 
 ### Test Gaps
 
-The unit suite cannot execute GitHub-hosted Windows packaging, create the draft through
-`softprops/action-gh-release`, or prove authenticated local publication. Those are integration gates,
-not unit-testable branches, and recover-only performs them before completion.
+The unit suite cannot replace GitHub-hosted packaging or authenticated publication. Run
+`33542734447` covered those integration gates for this incident. It does not replace the outstanding
+real Windows application smoke checklist in [[windows-compatibility]].
 
 **Are there adequate UNIT tests? Yes.** The pure selection and publication decisions, embedded target
 validator, lock invariants, workflow shape, tag checkout, recovery repair, stale-run boundary, and
@@ -116,6 +117,19 @@ recover-only wiring are covered. Remaining uncertainty belongs to the hosted int
   application source from `main`.
 - Same-tag recovery is serialized, retryable, and bounded by the existing draft-first publication
   contract from [[open-source-releases]] and [[desktop-updates]].
+
+### Hosted Verification
+
+- GitHub Actions run `33542734447` completed successfully from `main` with display title
+  `Build desktop apps for v0.2.30`.
+- Target validation completed in 6 seconds, hosted macOS packaging in 1 minute 5 seconds, hosted
+  Windows packaging in 2 minutes 2 seconds, and the draft release job in 33 seconds.
+- The stable release was published at `2026-09-01T18:21:19Z` with exactly ten required assets. Every
+  asset reports `state: uploaded` and a positive size.
+- GitHub's latest stable endpoint returns v0.2.30. The remote annotated tag peels to
+  `b1c2acbafecc663bf2360e7c6ed7abf6b0f303f9`, exactly matching the local tag.
+- The temporary release worktree was removed, no deploy, builder, or signing process remained, and
+  the primary worktree was clean after publication.
 
 Related: [[open-source-releases]], [[desktop-updates]], [[desktop-packaging-review]], [[source-release-readiness-review]]
 

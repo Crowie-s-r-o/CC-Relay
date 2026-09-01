@@ -16,6 +16,8 @@ type: hot
 > v0.2.30 receives a bounded isolated lock repair. `npm run deploy -- --recover-only` completes the
 > pending release without also creating a new version for the tooling fix. See
 > [[open-source-releases]] and [[desktop-updates]].
+> Hosted recovery run `33542734447` then passed all four jobs, and the final release published with
+> exactly ten uploaded desktop assets while the original tag stayed at `b1c2acb`.
 
 > [!important]
 > **September 1: the macOS Crowie title bar now shows today's all-provider token sum, and Claude
