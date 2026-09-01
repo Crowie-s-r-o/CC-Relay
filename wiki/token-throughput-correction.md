@@ -15,8 +15,10 @@ tags:
 ## Outcome
 
 Relay now reports cumulative native input and output totals for the current task attempt. Its visible
-rate is cumulative output tokens divided by elapsed task seconds. Input tokens, cached context,
+rate is cumulative output tokens divided by elapsed attempt seconds. Input tokens, cached context,
 reasoning detail, and the provider total remain usage evidence, but they are not generation speed.
+Conversation cards separately sum native input, output, and active duration across all attempts under
+one task ID. See [[conversation-card-metrics]].
 
 ## What went wrong
 
@@ -72,18 +74,20 @@ itself.
 
 > [!important]
 > `tasks.started_at` remains the lifecycle timestamp. Do not change manual sessions to overwrite it
-> on each message. Token accounting owns a separate attempt boundary because lifecycle duration and
-> provider-attempt duration answer different questions.
+> on each message. `task_attempts` owns exact provider boundaries. Cards sum those attempt durations
+> for conversation runtime while lifecycle dates continue to answer when the task started and ended.
 
 The UI calculation is:
 
 ```text
-average output tokens/s = cumulative output tokens / elapsed task seconds
+average output tokens/s = cumulative output tokens / elapsed attempt seconds
 ```
 
-Task Activity shows exact input and output counts beside that rate. Hover detail also names reasoning,
-cache-read, cache-write, and provider-total values. The compact global task monitor keeps only the rate
-to preserve its card density.
+Task Activity shows exact current-attempt input and output counts beside that rate. Hover detail also
+names reasoning, cache-read, cache-write, and provider-total values. The compact global task monitor
+shows that current-attempt rate alongside lifetime conversation provider-total and output counts.
+The separate macOS Crowie title-bar counter sums provider-total deltas observed on the current local
+calendar day. See [[daily-token-usage]].
 
 > [!note]
 > This is average task throughput, not instantaneous decoder speed. Tool execution and idle intervals

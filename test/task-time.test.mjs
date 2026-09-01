@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { formatElapsedDuration, taskDurationLabel, taskLifecycleDates } from '../public/task-time.js';
+import {
+  formatElapsedDuration,
+  taskDurationLabel,
+  taskLifecycleDates,
+  taskRuntimeMilliseconds,
+} from '../public/task-time.js';
 
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 
@@ -22,6 +27,32 @@ test('task duration labels distinguish running, finished, and waiting tasks', ()
     finished_at: '2026-07-16T10:01:30.000Z',
   }, now), 'Took 1m 30s');
   assert.equal(taskDurationLabel({ status: 'queued', started_at: null }, now), 'Waiting to start');
+});
+
+test('task runtime sums finished turns and the active follow-up without idle gaps', () => {
+  const now = new Date('2026-09-01T11:00:05.000Z').getTime();
+  const running = {
+    status: 'running',
+    started_at: '2026-09-01T11:00:00.000Z',
+    conversation_metrics: {
+      attempt_count: 2,
+      duration_ms: 10_000,
+      active_attempt_started_at: '2026-09-01T11:00:00.000Z',
+    },
+  };
+  assert.equal(taskRuntimeMilliseconds(running, now), 15_000);
+  assert.equal(taskDurationLabel(running, now), 'Running 15s');
+
+  const open = {
+    ...running,
+    status: 'open',
+    conversation_metrics: {
+      attempt_count: 2,
+      duration_ms: 30_000,
+      active_attempt_started_at: null,
+    },
+  };
+  assert.equal(taskDurationLabel(open, new Date('2026-09-02T11:00:00.000Z').getTime()), 'Open 30s');
 });
 
 test('task lifecycle dates always expose started and completed fields', () => {

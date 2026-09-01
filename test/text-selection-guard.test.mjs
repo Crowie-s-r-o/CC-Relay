@@ -181,6 +181,6 @@ test('every periodic renderer that can replace selected text uses the guard', ()
 test('drag-selecting text in a task card does not activate and rebuild the card', () => {
   assert.match(
     app,
-    /card\.addEventListener\('click', \(event\) => \{\s*\/\/[\s\S]*?if \(!textSelectionGuard\.isActive\(\) && !event\.target\.closest\('button, input, form'\)\)/,
+    /card\.addEventListener\('click', \(event\) => \{\s*\/\/[\s\S]*?if \(!textSelectionGuard\.isActive\(\) && !event\.target\.closest\('a, button, input, form'\)\)/,
   );
 });

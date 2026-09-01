@@ -28,7 +28,9 @@ Token telemetry keeps a separate run boundary even though the task and conversat
 same. Every `beginTask()` records `relay/task-attempt-started`, and later native usage snapshots carry
 its exact `attemptStartedAt`. This prevents input, output, and output-rate values from leaking across
 follow-ups, especially for manual terminal sessions whose lifecycle `started_at` intentionally
-remains the first workspace start. See [[token-throughput-correction]].
+remains the first workspace start. Persisted card metrics sum those independent attempts without
+including the idle gaps between turns. See [[token-throughput-correction]] and
+[[conversation-card-metrics]].
 
 > [!important]
 > A full provider pool rejects immediately with the finished task unchanged. Continuation is not delayed queue work, and configured instance limits are never bypassed.

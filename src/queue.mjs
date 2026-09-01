@@ -15,6 +15,22 @@ function providerName(provider) {
   return provider === 'claude' ? 'Claude' : 'Codex';
 }
 
+function taskAttemptFinishedPayload(task, attemptStartedAt, attemptFinishedAt, outcome) {
+  const startedMs = new Date(attemptStartedAt || 0).getTime();
+  const finishedMs = new Date(attemptFinishedAt || 0).getTime();
+  return {
+    type: 'relay/task-attempt-finished',
+    provider: task.provider,
+    attemptStartedAt,
+    attemptFinishedAt,
+    durationMs: Number.isFinite(startedMs) && startedMs > 0
+      && Number.isFinite(finishedMs) && finishedMs > 0
+      ? Math.max(0, finishedMs - startedMs)
+      : 0,
+    outcome,
+  };
+}
+
 export function isManualSessionTask(task) {
   return task?.manual_completion === true
     && task?.keep_terminal_open === true
@@ -1278,11 +1294,14 @@ export class TaskQueue extends EventEmitter {
     const startedAt = isManualSessionTask(persisted) && persisted.started_at
       ? persisted.started_at
       : attemptStartedAt;
-    this.database.updateTask(task.id, {
-      status: 'running',
-      started_at: startedAt,
-      finished_at: null,
-      error: null,
+    this.database.beginTaskAttempt(task.id, {
+      attemptStartedAt,
+      changes: {
+        status: 'running',
+        started_at: startedAt,
+        finished_at: null,
+        error: null,
+      },
     });
     const executionModel = this.isCapacityManagedTurbo(task)
       ? task.turbo?.workerModel
@@ -1595,7 +1614,14 @@ export class TaskQueue extends EventEmitter {
           throw Object.assign(new Error('Task cancelled before CC Relay chose a terminal.'), { cancelled: true });
         }
       }
-      const outcome = await this.runner.run(routed, {
+      // The lifecycle start stays historical for manual sessions. Runners receive the exact
+      // provider-attempt boundary separately so a resumed Claude sub-agent transcript cannot
+      // bring earlier turns back into this attempt's cumulative usage.
+      const executionTask = {
+        ...routed,
+        tokenUsageAttemptStartedAt: this.tokenUsageAttemptStarts.get(task.id) || null,
+      };
+      const outcome = await this.runner.run(executionTask, {
         onEvent: ({ event, message }) => {
           if (event?.type === 'opencode/session' && task.provider === 'opencode') {
             const nativeSessionId = String(event.sessionId || '').trim();
@@ -1640,18 +1666,24 @@ export class TaskQueue extends EventEmitter {
           : `${providerName(task.provider)} completed without a final text response.`);
       const latestTask = this.database.getTask(task.id) || routed;
       const manualSession = isManualSessionTask(latestTask);
-      const completedTask = this.database.updateTask(task.id, {
-        status: manualSession ? 'open' : 'complete',
-        finished_at: manualSession ? null : now(),
-        session_id: outcome.sessionId,
-        ...(task.provider === 'opencode' && outcome.sessionId ? {
-          thread_id: outcome.sessionId,
-          thread_name: latestTask.thread_name || 'OpenCode headless session',
-          thread_source: 'CC Relay managed headless runner',
-        } : {}),
-        result,
-        error: null,
-        exit_code: outcome.exitCode,
+      const attemptStartedAt = this.tokenUsageAttemptStarts.get(task.id);
+      const attemptFinishedAt = now();
+      const completedTask = this.database.completeTaskAttempt(task.id, {
+        attemptStartedAt,
+        attemptFinishedAt,
+        changes: {
+          status: manualSession ? 'open' : 'complete',
+          finished_at: manualSession ? null : attemptFinishedAt,
+          session_id: outcome.sessionId,
+          ...(task.provider === 'opencode' && outcome.sessionId ? {
+            thread_id: outcome.sessionId,
+            thread_name: latestTask.thread_name || 'OpenCode headless session',
+            thread_source: 'CC Relay managed headless runner',
+          } : {}),
+          result,
+          error: null,
+          exit_code: outcome.exitCode,
+        },
       });
       if (task.provider === 'opencode' && outcome.sessionId) {
         this.artifacts.updateTaskAssignment(completedTask);
@@ -1666,6 +1698,7 @@ export class TaskQueue extends EventEmitter {
         manualSession
           ? 'Turn completed. The terminal session remains open for another message or manual completion.'
           : sessionFollowUp ? 'Follow-up completed.' : 'Task completed.',
+        taskAttemptFinishedPayload(task, attemptStartedAt, attemptFinishedAt, 'complete'),
       );
       retainPreparedTerminal = latestTask.keep_terminal_open === true;
     } catch (error) {
@@ -1679,11 +1712,17 @@ export class TaskQueue extends EventEmitter {
       const latestTask = this.database.getTask(task.id) || routed;
       const manualSession = isManualSessionTask(latestTask);
       const status = manualSession ? 'open' : outcomeStatus;
-      this.database.updateTask(task.id, {
-        status,
-        finished_at: manualSession ? null : now(),
-        error: storedError,
-        exit_code: error.exitCode ?? null,
+      const attemptStartedAt = this.tokenUsageAttemptStarts.get(task.id);
+      const attemptFinishedAt = now();
+      this.database.completeTaskAttempt(task.id, {
+        attemptStartedAt,
+        attemptFinishedAt,
+        changes: {
+          status,
+          finished_at: manualSession ? null : attemptFinishedAt,
+          error: storedError,
+          exit_code: error.exitCode ?? null,
+        },
       });
       this.artifacts.writeError(task.id, storedError);
       const retryEligible = !manualSession
@@ -1715,6 +1754,7 @@ export class TaskQueue extends EventEmitter {
                   : retryEligible
                     ? `Task failed after ${this.maxAutomaticRetries} automatic retries and needs attention. Retry it manually when the cause is fixed.`
                   : 'Task failed and needs attention. Fix the session issue, then retry it manually.',
+        taskAttemptFinishedPayload(task, attemptStartedAt, attemptFinishedAt, outcomeStatus),
       );
       if (willRetry) {
         this.scheduleAutoRetry(task.id);

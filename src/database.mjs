@@ -48,9 +48,125 @@ const TASK_FIELDS = new Set([
 ]);
 
 const COMPLETION_REVIEW_MIGRATION_SETTING = 'completion-review-state-v1-migrated';
+const TOKEN_USAGE_DELTA_BACKFILL_SETTING = 'token-usage-deltas-v1-backfilled';
 
 function now() {
   return new Date().toISOString();
+}
+
+function timestampMilliseconds(value) {
+  const milliseconds = new Date(value || 0).getTime();
+  return Number.isFinite(milliseconds) ? milliseconds : 0;
+}
+
+function nonNegativeTokenCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.round(number) : 0;
+}
+
+function localDateKey(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function parseEventPayload(value) {
+  if (!value) return null;
+  if (typeof value === 'object') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function tokenStreamKey(payload) {
+  return JSON.stringify([
+    String(payload?.provider || ''),
+    String(payload?.phase || ''),
+    String(payload?.worker ?? ''),
+    String(payload?.graphTaskId || ''),
+    String(payload?.workerThreadId || ''),
+    String(payload?.threadId || ''),
+    String(payload?.sessionId || ''),
+  ]);
+}
+
+function tokenUsageSnapshot(payload) {
+  const usage = payload?.usage && typeof payload.usage === 'object' ? payload.usage : {};
+  const inputTokens = nonNegativeTokenCount(usage.inputTokens);
+  const outputTokens = nonNegativeTokenCount(usage.outputTokens);
+  const reportedTotal = Number(usage.totalTokens);
+  const measuredTotal = inputTokens
+    + outputTokens
+    + nonNegativeTokenCount(usage.reasoningTokens)
+    + nonNegativeTokenCount(usage.cacheReadTokens)
+    + nonNegativeTokenCount(usage.cacheWriteTokens);
+  return {
+    inputTokens,
+    outputTokens,
+    totalTokens: Number.isFinite(reportedTotal) && reportedTotal >= 0
+      ? Math.round(reportedTotal)
+      : measuredTotal,
+  };
+}
+
+function applyTokenUsageSnapshot(attempt, payload) {
+  if (
+    payload?.type !== 'provider/token-usage'
+    || payload.source !== 'native'
+    || payload.cumulative !== true
+  ) {
+    return {
+      updated: attempt,
+      delta: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    };
+  }
+
+  const current = tokenUsageSnapshot(payload);
+  const key = tokenStreamKey(payload);
+  const streams = attempt.streams && typeof attempt.streams === 'object' ? attempt.streams : {};
+  const previous = streams[key];
+  const monotonic = previous
+    && current.inputTokens >= nonNegativeTokenCount(previous.inputTokens)
+    && current.outputTokens >= nonNegativeTokenCount(previous.outputTokens)
+    && current.totalTokens >= nonNegativeTokenCount(previous.totalTokens);
+  const delta = {
+    inputTokens: monotonic
+      ? current.inputTokens - nonNegativeTokenCount(previous.inputTokens)
+      : current.inputTokens,
+    outputTokens: monotonic
+      ? current.outputTokens - nonNegativeTokenCount(previous.outputTokens)
+      : current.outputTokens,
+    totalTokens: monotonic
+      ? current.totalTokens - nonNegativeTokenCount(previous.totalTokens)
+      : current.totalTokens,
+  };
+  return {
+    delta,
+    updated: {
+      ...attempt,
+      inputTokens: nonNegativeTokenCount(attempt.inputTokens) + delta.inputTokens,
+      outputTokens: nonNegativeTokenCount(attempt.outputTokens) + delta.outputTokens,
+      totalTokens: nonNegativeTokenCount(attempt.totalTokens) + delta.totalTokens,
+      tokenObserved: true,
+      streams: {
+        ...streams,
+        [key]: current,
+      },
+    },
+  };
+}
+
+function attemptFinishedByEvent(event, payload) {
+  if (payload?.type === 'relay/task-attempt-finished') return true;
+  if (!['queue', 'system'].includes(event?.kind)) return false;
+  return /^(?:Task completed\.|Follow-up completed\.|Turn completed\.|Task interrupted|Task cancelled|Task failed|Follow-up cancelled|Follow-up failed|The current turn failed|The current turn was stopped|The current turn was interrupted|Plan council stopped|Same-session follow-up marked interrupted|Task marked interrupted)/u.test(
+    String(event?.message || ''),
+  );
 }
 
 function normalizeTask(row) {
@@ -239,6 +355,34 @@ export class RelayDatabase {
         FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS task_attempts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        duration_ms INTEGER NOT NULL DEFAULT 0,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        token_observed INTEGER NOT NULL DEFAULT 0,
+        token_streams_json TEXT NOT NULL DEFAULT '{}',
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+        UNIQUE(task_id, started_at)
+      );
+
+      CREATE TABLE IF NOT EXISTS task_token_usage_deltas (
+        event_id INTEGER PRIMARY KEY,
+        task_id INTEGER NOT NULL,
+        observed_at TEXT NOT NULL,
+        usage_date TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(event_id) REFERENCES events(id) ON DELETE CASCADE,
+        FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS settings (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -332,6 +476,10 @@ export class RelayDatabase {
         ON tasks(repo_path, status, position, id);
       CREATE INDEX IF NOT EXISTS idx_events_task_id
         ON events(task_id, id);
+      CREATE INDEX IF NOT EXISTS idx_task_attempts_task_id
+        ON task_attempts(task_id, id);
+      CREATE INDEX IF NOT EXISTS idx_task_token_usage_deltas_date
+        ON task_token_usage_deltas(usage_date, provider);
       CREATE INDEX IF NOT EXISTS idx_plans_repo
         ON plans(repo_path, id);
       CREATE INDEX IF NOT EXISTS idx_plan_breakdowns_plan
@@ -350,6 +498,7 @@ export class RelayDatabase {
 
     // Additive column for a plan_breakdowns table created before contract v2.
     this.ensureTableColumn('plan_breakdowns', 'notes_json', "TEXT NOT NULL DEFAULT '[]'");
+    this.ensureTableColumn('task_attempts', 'total_tokens', 'INTEGER NOT NULL DEFAULT 0');
 
     this.ensureColumn('thread_id', 'TEXT');
     this.ensureColumn('thread_name', 'TEXT');
@@ -409,6 +558,9 @@ export class RelayDatabase {
       INSERT OR IGNORE INTO settings (key, value) VALUES ('paused', '0')
     `).run();
 
+    this.backfillTaskAttempts();
+    this.backfillTokenUsageDeltas();
+
     this.projectConfig = projectConfigPath
       ? new ProjectConfigStore(projectConfigPath, { legacyDatabase: this.database })
       : new ProjectConfigStore(filePath, { database: this.database });
@@ -424,6 +576,462 @@ export class RelayDatabase {
     if (!columns.some((column) => column.name === name)) {
       this.database.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
     }
+  }
+
+  backfillTaskAttempts() {
+    const tasks = this.database.prepare(`
+      SELECT id, status, started_at, finished_at
+      FROM tasks
+      WHERE started_at IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM task_attempts WHERE task_attempts.task_id = tasks.id
+        )
+      ORDER BY id
+    `).all();
+    const insert = this.database.prepare(`
+      INSERT OR IGNORE INTO task_attempts (
+        task_id, started_at, finished_at, duration_ms,
+        input_tokens, output_tokens, total_tokens, token_observed, token_streams_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    for (const task of tasks) {
+      const events = this.database.prepare(`
+        SELECT id, kind, message, payload, created_at
+        FROM events
+        WHERE task_id = ?
+        ORDER BY id ASC
+      `).all(task.id);
+      const attempts = [];
+      const byStartedAt = new Map();
+      const ensureAttempt = (startedAt) => {
+        const normalized = timestampMilliseconds(startedAt) ? startedAt : task.started_at;
+        if (!normalized) return null;
+        if (byStartedAt.has(normalized)) return byStartedAt.get(normalized);
+        const attempt = {
+          startedAt: normalized,
+          finishedAt: null,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          tokenObserved: false,
+          streams: {},
+        };
+        attempts.push(attempt);
+        byStartedAt.set(normalized, attempt);
+        return attempt;
+      };
+      let activeAttempt = null;
+
+      for (const event of events) {
+        const payload = parseEventPayload(event.payload);
+        if (payload?.type === 'relay/task-attempt-started') {
+          const startedAt = timestampMilliseconds(payload.attemptStartedAt)
+            ? payload.attemptStartedAt
+            : event.created_at;
+          if (activeAttempt && !activeAttempt.finishedAt && activeAttempt.startedAt !== startedAt) {
+            activeAttempt.finishedAt = event.created_at;
+          }
+          activeAttempt = ensureAttempt(startedAt);
+        }
+
+        if (payload?.type === 'provider/token-usage') {
+          const tokenAttempt = timestampMilliseconds(payload.attemptStartedAt)
+            ? ensureAttempt(payload.attemptStartedAt)
+            : activeAttempt || ensureAttempt(task.started_at);
+          if (tokenAttempt) {
+            const { updated } = applyTokenUsageSnapshot(tokenAttempt, payload);
+            Object.assign(tokenAttempt, updated);
+          }
+        }
+
+        if (attemptFinishedByEvent(event, payload)) {
+          const finishedAttempt = timestampMilliseconds(payload?.attemptStartedAt)
+            ? ensureAttempt(payload.attemptStartedAt)
+            : activeAttempt;
+          if (finishedAttempt && !finishedAttempt.finishedAt) {
+            finishedAttempt.finishedAt = timestampMilliseconds(payload?.attemptFinishedAt)
+              ? payload.attemptFinishedAt
+              : event.created_at;
+          }
+          if (finishedAttempt === activeAttempt) activeAttempt = null;
+        }
+      }
+
+      if (attempts.length === 0) {
+        activeAttempt = ensureAttempt(task.started_at);
+      }
+      attempts.sort((left, right) => timestampMilliseconds(left.startedAt) - timestampMilliseconds(right.startedAt));
+      for (let index = 0; index < attempts.length - 1; index += 1) {
+        if (!attempts[index].finishedAt) attempts[index].finishedAt = attempts[index + 1].startedAt;
+      }
+      const latest = attempts.at(-1);
+      if (latest && !latest.finishedAt && task.status !== 'running') {
+        latest.finishedAt = task.finished_at
+          || events.at(-1)?.created_at
+          || latest.startedAt;
+      }
+
+      for (const attempt of attempts) {
+        const startedMs = timestampMilliseconds(attempt.startedAt);
+        const finishedMs = timestampMilliseconds(attempt.finishedAt);
+        const durationMs = finishedMs ? Math.max(0, finishedMs - startedMs) : 0;
+        insert.run(
+          task.id,
+          attempt.startedAt,
+          attempt.finishedAt,
+          durationMs,
+          nonNegativeTokenCount(attempt.inputTokens),
+          nonNegativeTokenCount(attempt.outputTokens),
+          nonNegativeTokenCount(attempt.totalTokens),
+          attempt.tokenObserved ? 1 : 0,
+          JSON.stringify(attempt.streams || {}),
+        );
+      }
+    }
+  }
+
+  backfillTokenUsageDeltas() {
+    const migration = this.database.prepare(
+      `SELECT value FROM settings WHERE key = ?`,
+    ).get(TOKEN_USAGE_DELTA_BACKFILL_SETTING);
+    // The rebuild and marker commit in one transaction. A crash leaves neither, while every
+    // post-migration token event writes its event and delta atomically in addEvent(). The marker
+    // is therefore sufficient and avoids reparsing the complete JSON event ledger at every start.
+    if (migration) return;
+
+    let transactionOpen = false;
+    try {
+      this.database.exec('BEGIN IMMEDIATE');
+      transactionOpen = true;
+      this.database.exec('DELETE FROM task_token_usage_deltas');
+      const events = this.database.prepare(`
+        SELECT events.id, events.task_id, events.payload, events.created_at,
+          tasks.provider AS task_provider
+        FROM events
+        JOIN tasks ON tasks.id = events.task_id
+        WHERE events.payload IS NOT NULL
+          AND json_valid(events.payload) = 1
+          AND (
+            json_extract(events.payload, '$.type') = 'relay/task-attempt-started'
+            OR (
+              json_extract(events.payload, '$.type') = 'provider/token-usage'
+              AND json_extract(events.payload, '$.source') = 'native'
+              AND json_extract(events.payload, '$.cumulative') = 1
+            )
+          )
+        ORDER BY events.id ASC
+      `).all();
+      const currentAttemptByTask = new Map();
+      const attemptStates = new Map();
+      const insert = this.database.prepare(`
+        INSERT INTO task_token_usage_deltas (
+          event_id, task_id, observed_at, usage_date, provider,
+          input_tokens, output_tokens, total_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+      for (const event of events) {
+        const payload = parseEventPayload(event.payload);
+        if (payload?.type === 'relay/task-attempt-started') {
+          const attemptStartedAt = timestampMilliseconds(payload.attemptStartedAt)
+            ? payload.attemptStartedAt
+            : event.created_at;
+          currentAttemptByTask.set(event.task_id, attemptStartedAt);
+          continue;
+        }
+        if (payload?.type !== 'provider/token-usage') continue;
+        const attemptStartedAt = timestampMilliseconds(payload.attemptStartedAt)
+          ? payload.attemptStartedAt
+          : currentAttemptByTask.get(event.task_id) || 'legacy';
+        const attemptKey = JSON.stringify([event.task_id, attemptStartedAt]);
+        const state = attemptStates.get(attemptKey) || {
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          tokenObserved: false,
+          streams: {},
+        };
+        const { updated, delta } = applyTokenUsageSnapshot(state, payload);
+        attemptStates.set(attemptKey, updated);
+        insert.run(
+          event.id,
+          event.task_id,
+          event.created_at,
+          localDateKey(event.created_at) || '',
+          String(payload.provider || event.task_provider || 'unknown'),
+          delta.inputTokens,
+          delta.outputTokens,
+          delta.totalTokens,
+        );
+      }
+      this.database.prepare(`
+        INSERT INTO settings (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(TOKEN_USAGE_DELTA_BACKFILL_SETTING, now());
+      this.database.exec('COMMIT');
+      transactionOpen = false;
+    } catch (error) {
+      if (transactionOpen) {
+        try { this.database.exec('ROLLBACK'); } catch {}
+      }
+      throw error;
+    }
+  }
+
+  conversationMetricsMap(taskId = null) {
+    const rows = this.database.prepare(`
+      SELECT
+        attempts.task_id,
+        COUNT(*) AS attempt_count,
+        COALESCE(SUM(attempts.duration_ms), 0) AS duration_ms,
+        COALESCE(MAX(usage.input_tokens), 0) AS input_tokens,
+        COALESCE(MAX(usage.output_tokens), 0) AS output_tokens,
+        COALESCE(MAX(usage.total_tokens), 0) AS total_tokens,
+        COALESCE(MAX(usage.token_observed), 0) AS token_observed,
+        MAX(CASE WHEN attempts.finished_at IS NULL THEN attempts.started_at END) AS active_attempt_started_at
+      FROM task_attempts AS attempts
+      LEFT JOIN (
+        SELECT
+          task_id,
+          COALESCE(SUM(input_tokens), 0) AS input_tokens,
+          COALESCE(SUM(output_tokens), 0) AS output_tokens,
+          COALESCE(SUM(total_tokens), 0) AS total_tokens,
+          CASE WHEN COUNT(*) > 0 THEN 1 ELSE 0 END AS token_observed
+        FROM task_token_usage_deltas
+        GROUP BY task_id
+      ) AS usage ON usage.task_id = attempts.task_id
+      ${taskId === null ? '' : 'WHERE attempts.task_id = ?'}
+      GROUP BY attempts.task_id
+    `).all(...(taskId === null ? [] : [taskId]));
+    return new Map(rows.map((row) => [Number(row.task_id), {
+      attempt_count: Number(row.attempt_count || 0),
+      duration_ms: Number(row.duration_ms || 0),
+      input_tokens: Number(row.input_tokens || 0),
+      output_tokens: Number(row.output_tokens || 0),
+      total_tokens: Number(row.total_tokens || 0),
+      token_observed: row.token_observed === 1 || row.token_observed === true,
+      active_attempt_started_at: row.active_attempt_started_at || null,
+    }]));
+  }
+
+  todayTokenUsage(referenceDate = new Date()) {
+    const usageDate = localDateKey(referenceDate);
+    if (!usageDate) {
+      return {
+        date: null,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        providers: {},
+      };
+    }
+    const rows = this.database.prepare(`
+      SELECT
+        provider,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(total_tokens), 0) AS total_tokens
+      FROM task_token_usage_deltas
+      WHERE usage_date = ?
+      GROUP BY provider
+      ORDER BY provider
+    `).all(usageDate);
+    const providers = {};
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let totalTokens = 0;
+    for (const row of rows) {
+      const providerInput = nonNegativeTokenCount(row.input_tokens);
+      const providerOutput = nonNegativeTokenCount(row.output_tokens);
+      const providerTotal = nonNegativeTokenCount(row.total_tokens);
+      providers[row.provider] = {
+        inputTokens: providerInput,
+        outputTokens: providerOutput,
+        totalTokens: providerTotal,
+      };
+      inputTokens += providerInput;
+      outputTokens += providerOutput;
+      totalTokens += providerTotal;
+    }
+    return { date: usageDate, inputTokens, outputTokens, totalTokens, providers };
+  }
+
+  taskWithConversationMetrics(task, metrics = null) {
+    if (!task) return null;
+    return {
+      ...task,
+      conversation_metrics: metrics || this.conversationMetricsMap(task.id).get(task.id) || {
+        attempt_count: 0,
+        duration_ms: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        total_tokens: 0,
+        token_observed: false,
+        active_attempt_started_at: null,
+      },
+    };
+  }
+
+  beginTaskAttempt(id, { attemptStartedAt, changes = {} } = {}) {
+    if (!timestampMilliseconds(attemptStartedAt)) {
+      throw new Error('A valid task-attempt start time is required.');
+    }
+    let transactionOpen = false;
+    try {
+      this.database.exec('BEGIN IMMEDIATE');
+      transactionOpen = true;
+      const active = this.database.prepare(`
+        SELECT id, started_at FROM task_attempts
+        WHERE task_id = ? AND finished_at IS NULL
+        LIMIT 1
+      `).get(id);
+      if (active) {
+        const task = this.database.prepare(`
+          SELECT status, finished_at FROM tasks WHERE id = ?
+        `).get(id);
+        if (task?.status === 'running') {
+          throw new Error(`Task ${id} already has an active attempt.`);
+        }
+        const activeStartedMs = timestampMilliseconds(active.started_at);
+        const persistedFinishedMs = timestampMilliseconds(task?.finished_at);
+        const nextStartedMs = timestampMilliseconds(attemptStartedAt);
+        const staleFinishedAt = persistedFinishedMs >= activeStartedMs
+          && persistedFinishedMs <= nextStartedMs
+          ? task.finished_at
+          : attemptStartedAt;
+        this.database.prepare(`
+          UPDATE task_attempts
+          SET finished_at = ?, duration_ms = ?
+          WHERE id = ? AND finished_at IS NULL
+        `).run(
+          staleFinishedAt,
+          Math.max(0, timestampMilliseconds(staleFinishedAt) - activeStartedMs),
+          active.id,
+        );
+      }
+      this.database.prepare(`
+        INSERT INTO task_attempts (task_id, started_at)
+        VALUES (?, ?)
+      `).run(id, attemptStartedAt);
+      this.updateTask(id, changes);
+      this.database.exec('COMMIT');
+      transactionOpen = false;
+      return this.getTask(id);
+    } catch (error) {
+      if (transactionOpen) {
+        try { this.database.exec('ROLLBACK'); } catch {}
+      }
+      throw error;
+    }
+  }
+
+  completeTaskAttempt(id, {
+    attemptStartedAt = null,
+    attemptFinishedAt = now(),
+    changes = {},
+  } = {}) {
+    if (!timestampMilliseconds(attemptFinishedAt)) {
+      throw new Error('A valid task-attempt finish time is required.');
+    }
+    let transactionOpen = false;
+    try {
+      this.database.exec('BEGIN IMMEDIATE');
+      transactionOpen = true;
+      const attempt = attemptStartedAt
+        ? this.database.prepare(`
+            SELECT * FROM task_attempts
+            WHERE task_id = ? AND started_at = ?
+            LIMIT 1
+          `).get(id, attemptStartedAt)
+        : this.database.prepare(`
+            SELECT * FROM task_attempts
+            WHERE task_id = ? AND finished_at IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+          `).get(id);
+      if (attempt && !attempt.finished_at) {
+        const durationMs = Math.max(
+          0,
+          timestampMilliseconds(attemptFinishedAt) - timestampMilliseconds(attempt.started_at),
+        );
+        this.database.prepare(`
+          UPDATE task_attempts
+          SET finished_at = ?, duration_ms = ?
+          WHERE id = ? AND finished_at IS NULL
+        `).run(attemptFinishedAt, durationMs, attempt.id);
+      }
+      this.updateTask(id, changes);
+      this.database.exec('COMMIT');
+      transactionOpen = false;
+      return this.getTask(id);
+    } catch (error) {
+      if (transactionOpen) {
+        try { this.database.exec('ROLLBACK'); } catch {}
+      }
+      throw error;
+    }
+  }
+
+  recordTaskAttemptTokenUsage(taskId, payload, { eventId = null, observedAt = now() } = {}) {
+    if (
+      payload?.type !== 'provider/token-usage'
+      || payload.source !== 'native'
+      || payload.cumulative !== true
+    ) return false;
+    const attempt = timestampMilliseconds(payload.attemptStartedAt)
+      ? this.database.prepare(`
+          SELECT * FROM task_attempts
+          WHERE task_id = ? AND started_at = ?
+          LIMIT 1
+        `).get(taskId, payload.attemptStartedAt)
+      : this.database.prepare(`
+          SELECT * FROM task_attempts
+          WHERE task_id = ? AND finished_at IS NULL
+          ORDER BY id DESC
+          LIMIT 1
+        `).get(taskId);
+    if (!attempt) return false;
+    let streams = {};
+    try { streams = JSON.parse(attempt.token_streams_json || '{}'); } catch {}
+    const { updated, delta } = applyTokenUsageSnapshot({
+      inputTokens: attempt.input_tokens,
+      outputTokens: attempt.output_tokens,
+      totalTokens: attempt.total_tokens,
+      tokenObserved: attempt.token_observed === 1,
+      streams,
+    }, payload);
+    this.database.prepare(`
+      UPDATE task_attempts
+      SET input_tokens = ?, output_tokens = ?, total_tokens = ?,
+        token_observed = ?, token_streams_json = ?
+      WHERE id = ?
+    `).run(
+      updated.inputTokens,
+      updated.outputTokens,
+      updated.totalTokens,
+      updated.tokenObserved ? 1 : 0,
+      JSON.stringify(updated.streams || {}),
+      attempt.id,
+    );
+    if (Number.isInteger(eventId) && eventId > 0) {
+      this.database.prepare(`
+        INSERT OR IGNORE INTO task_token_usage_deltas (
+          event_id, task_id, observed_at, usage_date, provider,
+          input_tokens, output_tokens, total_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        eventId,
+        taskId,
+        observedAt,
+        localDateKey(observedAt) || '',
+        String(payload.provider || 'unknown'),
+        delta.inputTokens,
+        delta.outputTokens,
+        delta.totalTokens,
+      );
+    }
+    return true;
   }
 
   recoverInterruptedTasks() {
@@ -457,13 +1065,21 @@ export class RelayDatabase {
         && task.terminal_lifecycle === 'disposable'
         && task.mode === 'execute'
         && ['codex', 'claude'].includes(task.provider);
-      this.database.prepare(`
-        UPDATE tasks
-        SET status = ?,
-            finished_at = ?,
-            error = ?
-        WHERE id = ?
-      `).run(manualSession ? 'open' : 'interrupted', manualSession ? null : timestamp, error, task.id);
+      const activeAttempt = this.database.prepare(`
+        SELECT started_at FROM task_attempts
+        WHERE task_id = ? AND finished_at IS NULL
+        ORDER BY id DESC
+        LIMIT 1
+      `).get(task.id);
+      this.completeTaskAttempt(task.id, {
+        attemptStartedAt: activeAttempt?.started_at || null,
+        attemptFinishedAt: timestamp,
+        changes: {
+          status: manualSession ? 'open' : 'interrupted',
+          finished_at: manualSession ? null : timestamp,
+          error,
+        },
+      });
       this.addEvent(
         task.id,
         'system',
@@ -472,6 +1088,13 @@ export class RelayDatabase {
           : followUpInterrupted
           ? 'Same-session follow-up marked interrupted after CC Relay restarted. It was not queued.'
           : 'Task marked interrupted after CC Relay restarted.',
+        activeAttempt ? {
+          type: 'relay/task-attempt-finished',
+          provider: task.provider,
+          attemptStartedAt: activeAttempt.started_at,
+          attemptFinishedAt: timestamp,
+          outcome: 'interrupted',
+        } : null,
       );
     }
 
@@ -578,7 +1201,9 @@ export class RelayDatabase {
   }
 
   getTask(id) {
-    return normalizeTask(this.database.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id));
+    return this.taskWithConversationMetrics(
+      normalizeTask(this.database.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id)),
+    );
   }
 
   // Last resort for binding a task to a workspace when live discovery cannot confirm the
@@ -586,12 +1211,12 @@ export class RelayDatabase {
   // does not change, so this keeps task-add working through a discovery outage.
   latestTaskForThread(threadId) {
     if (!threadId) return null;
-    const task = normalizeTask(this.database.prepare(
+    const task = this.taskWithConversationMetrics(normalizeTask(this.database.prepare(
       `SELECT * FROM tasks
        WHERE thread_id = ? OR author_thread_id = ?
        ORDER BY id DESC
        LIMIT 1`,
-    ).get(threadId, threadId));
+    ).get(threadId, threadId)));
     if (task?.author_thread_id === threadId && task.thread_id !== threadId) {
       return {
         ...task,
@@ -605,13 +1230,13 @@ export class RelayDatabase {
 
   getTaskBySubmissionId(submissionId) {
     if (!submissionId) return null;
-    return normalizeTask(this.database.prepare(
+    return this.taskWithConversationMetrics(normalizeTask(this.database.prepare(
       `SELECT * FROM tasks WHERE submission_id = ?`,
-    ).get(submissionId));
+    ).get(submissionId)));
   }
 
   listTasks() {
-    return this.database.prepare(`
+    const tasks = this.database.prepare(`
       SELECT * FROM tasks
       ORDER BY
         CASE status
@@ -624,15 +1249,17 @@ export class RelayDatabase {
         CASE WHEN status IN ('running', 'open', 'queued') THEN id END ASC,
         CASE WHEN status NOT IN ('running', 'open', 'queued') THEN id END DESC
     `).all().map(normalizeTask);
+    const metrics = this.conversationMetricsMap();
+    return tasks.map((task) => this.taskWithConversationMetrics(task, metrics.get(task.id)));
   }
 
   nextQueuedTask() {
-    return normalizeTask(this.database.prepare(`
+    return this.taskWithConversationMetrics(normalizeTask(this.database.prepare(`
       SELECT * FROM tasks
       WHERE status = 'queued'
       ORDER BY position ASC, id ASC
       LIMIT 1
-    `).get());
+    `).get()));
   }
 
   reorderQueuedTasks(taskIds, expectedTaskIds = null, repoPath = null) {
@@ -919,14 +1546,33 @@ export class RelayDatabase {
 
   addEvent(taskId, kind, message, payload = null) {
     const encodedPayload = payload === null ? null : JSON.stringify(payload);
-    const result = this.database.prepare(`
-      INSERT INTO events (task_id, kind, message, payload, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(taskId, kind, message, encodedPayload, now());
-
-    return this.database.prepare(`SELECT * FROM events WHERE id = ?`).get(
-      Number(result.lastInsertRowid),
-    );
+    const createdAt = now();
+    const tokenUsageEvent = payload?.type === 'provider/token-usage'
+      && payload.source === 'native'
+      && payload.cumulative === true;
+    let transactionOpen = false;
+    try {
+      if (tokenUsageEvent) {
+        this.database.exec('BEGIN IMMEDIATE');
+        transactionOpen = true;
+      }
+      const result = this.database.prepare(`
+        INSERT INTO events (task_id, kind, message, payload, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(taskId, kind, message, encodedPayload, createdAt);
+      const eventId = Number(result.lastInsertRowid);
+      if (tokenUsageEvent) {
+        this.recordTaskAttemptTokenUsage(taskId, payload, { eventId, observedAt: createdAt });
+        this.database.exec('COMMIT');
+        transactionOpen = false;
+      }
+      return this.database.prepare(`SELECT * FROM events WHERE id = ?`).get(eventId);
+    } catch (error) {
+      if (transactionOpen) {
+        try { this.database.exec('ROLLBACK'); } catch {}
+      }
+      throw error;
+    }
   }
 
   latestEventId(taskId) {

@@ -2293,6 +2293,8 @@ export class ClaudeTerminalExecutor {
       tools: new Map(),
       finalResponse: '',
       sessionId,
+      transcriptPath: source.path || null,
+      tokenUsageAttemptStartedAt: task.tokenUsageAttemptStartedAt || task.started_at || null,
       reportedSessionId: null,
       error: null,
       pendingBackgroundAgentCount: null,

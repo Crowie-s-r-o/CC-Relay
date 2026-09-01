@@ -30,3 +30,17 @@ test('both live token-speed surfaces refresh on the one-second duration tick', (
   assert.match(source, /querySelector\('\[data-task-token-speed\]'\)/);
   assert.match(source, /tokenThroughput\(state\.selectedTaskEvents, fresh\)/);
 });
+
+test('conversation cards show heat-colored lifetime provider and output totals', () => {
+  assert.match(app, /dailyTokenUsagePresentation,[\s\S]*?taskTokenPresentation,[\s\S]*?from '\.\/task-conversation-metrics\.js';/);
+  assert.match(app, /taskTokenMetricsMarkup\(tokenUsage\)/);
+  assert.match(app, /taskTokenMetricsMarkup\(tokenUsage, 'header-running-token-usage'\)/);
+  assert.match(app, /<small>Total<\/small>/);
+  assert.match(app, /<small>Out<\/small>/);
+  assert.match(app, /data-token-level=/);
+  assert.match(style, /\.task-token-metrics\[data-token-level="quiet"\]/);
+  assert.match(style, /\.task-token-metrics\[data-token-level="steady"\]/);
+  assert.match(style, /\.task-token-metrics\[data-token-level="heavy"\]/);
+  assert.match(style, /\.task-token-metrics\[data-token-level="intense"\]/);
+  assert.match(style, /html\[data-theme="dark"\] \.task-token-metrics/);
+});

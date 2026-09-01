@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { providerCommandInvocation, terminateChildProcess } from './claude-binary.mjs';
 import { ClaudeTerminalExecutor } from './claude-terminal-executor.mjs';
-import { injectionPromptIssue } from './claude-transcript-tail.mjs';
+import { injectionPromptIssue, resolveClaudeTranscriptPath } from './claude-transcript-tail.mjs';
 import { normalizeClaudeModel } from './model-catalog.mjs';
 import { withRelayNonInteractiveInstruction } from './relay-prompt.mjs';
 import {
@@ -118,6 +118,150 @@ const ASYNC_AGENT_ID = /agentid:\s*([A-Za-z0-9_-]+)/i;
 
 function trimmedString(value) {
   return typeof value === 'string' ? value.trim() : '';
+}
+
+const CLAUDE_TOKEN_USAGE_FIELDS = [
+  'inputTokens',
+  'input_tokens',
+  'outputTokens',
+  'output_tokens',
+  'reasoningTokens',
+  'reasoning_tokens',
+  'cacheReadTokens',
+  'cache_read_input_tokens',
+  'cacheWriteTokens',
+  'cache_creation_input_tokens',
+  'totalTokens',
+  'total_tokens',
+];
+
+function reportedClaudeTokenUsage(value) {
+  const reported = value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+  if (!reported) return null;
+  const usage = reported.usage && typeof reported.usage === 'object' && !Array.isArray(reported.usage)
+    ? reported.usage
+    : reported;
+  const total = Number(reported.totalTokens ?? reported.total_tokens);
+  const hasTotal = Number.isFinite(total) && total >= 0;
+  const hasUsage = CLAUDE_TOKEN_USAGE_FIELDS.some((field) => Object.hasOwn(usage, field));
+  if (!hasTotal && !hasUsage) return null;
+  return normalizeTokenUsage({
+    ...usage,
+    ...(hasTotal ? { totalTokens: total } : {}),
+  });
+}
+
+export function claudeTranscriptTokenUsage(transcript, { startedAt = null } = {}) {
+  const startedAtMs = new Date(startedAt || 0).getTime();
+  const usageByMessage = new Map();
+  for (const [index, line] of String(transcript || '').split(/\r?\n/u).entries()) {
+    if (!line.trim()) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const usage = record?.type === 'assistant' ? record.message?.usage : null;
+    if (!usage || typeof usage !== 'object') continue;
+    if (Number.isFinite(startedAtMs) && startedAtMs > 0) {
+      const recordTimestamp = new Date(record.timestamp || 0).getTime();
+      if (!Number.isFinite(recordTimestamp) || recordTimestamp < startedAtMs) continue;
+    }
+    const key = String(record.message?.id || record.uuid || `record-${index}`);
+    usageByMessage.set(key, normalizeTokenUsage(usage));
+  }
+  let cumulative = normalizeTokenUsage({});
+  for (const usage of usageByMessage.values()) {
+    cumulative = addTokenUsage(cumulative, usage);
+  }
+  return cumulative;
+}
+
+function maximumClaudeTokenUsage(...values) {
+  const normalized = values.filter(Boolean).map((value) => normalizeTokenUsage(value));
+  if (normalized.length === 0) return null;
+  const maximum = (field) => Math.max(...normalized.map((usage) => usage[field]));
+  const usage = {
+    inputTokens: maximum('inputTokens'),
+    outputTokens: maximum('outputTokens'),
+    reasoningTokens: maximum('reasoningTokens'),
+    cacheReadTokens: maximum('cacheReadTokens'),
+    cacheWriteTokens: maximum('cacheWriteTokens'),
+    totalTokens: maximum('totalTokens'),
+  };
+  const measuredTotal = usage.inputTokens
+    + usage.outputTokens
+    + usage.reasoningTokens
+    + usage.cacheReadTokens
+    + usage.cacheWriteTokens;
+  usage.totalTokens = Math.max(usage.totalTokens, measuredTotal);
+  return usage;
+}
+
+function readClaudeSubAgentTokenUsage(context, agentId) {
+  const normalizedAgentId = trimmedString(agentId);
+  if (!/^[A-Za-z0-9_-]+$/u.test(normalizedAgentId)) return null;
+  if (typeof context.readSubAgentTokenUsage === 'function') {
+    try {
+      return reportedClaudeTokenUsage(context.readSubAgentTokenUsage(normalizedAgentId));
+    } catch {
+      return null;
+    }
+  }
+  const mainTranscriptPath = trimmedString(context.transcriptPath)
+    || resolveClaudeTranscriptPath(context.cwd, context.sessionId);
+  if (!mainTranscriptPath.endsWith('.jsonl')) return null;
+  const subAgentPath = join(
+    mainTranscriptPath.slice(0, -'.jsonl'.length),
+    'subagents',
+    `agent-${normalizedAgentId}.jsonl`,
+  );
+  try {
+    const usage = claudeTranscriptTokenUsage(fsReadFileSync(subAgentPath, 'utf8'), {
+      startedAt: context.tokenUsageAttemptStartedAt,
+    });
+    return usage.totalTokens > 0 ? usage : null;
+  } catch {
+    return null;
+  }
+}
+
+function claudeTokenUsageMap(context, key) {
+  if (!(context[key] instanceof Map)) context[key] = new Map();
+  return context[key];
+}
+
+function cumulativeClaudeTokenUsage(context) {
+  let cumulative = normalizeTokenUsage({});
+  for (const usage of claudeTokenUsageMap(context, 'tokenUsageByMessage').values()) {
+    cumulative = addTokenUsage(cumulative, usage);
+  }
+  for (const usage of claudeTokenUsageMap(context, 'subAgentTokenUsageByObservation').values()) {
+    cumulative = addTokenUsage(cumulative, usage);
+  }
+  return cumulative;
+}
+
+function claudeTokenUsageEmission(context) {
+  const event = providerTokenUsageEvent('claude', cumulativeClaudeTokenUsage(context));
+  return { event, message: tokenUsageMessage('claude', event.usage) };
+}
+
+function recordClaudeSubAgentUsage(context, { agentId, toolUseId, reported }) {
+  const transcriptUsage = readClaudeSubAgentTokenUsage(context, agentId);
+  const usage = maximumClaudeTokenUsage(
+    transcriptUsage,
+    reportedClaudeTokenUsage(reported),
+  );
+  const key = transcriptUsage && agentId
+    ? `agent:${agentId}`
+    : `run:${toolUseId || agentId || ''}`;
+  if (!usage || key === 'run:') return null;
+  const usageByObservation = claudeTokenUsageMap(context, 'subAgentTokenUsageByObservation');
+  const previous = usageByObservation.get(key);
+  usageByObservation.set(key, maximumClaudeTokenUsage(previous, usage));
+  return claudeTokenUsageEmission(context);
 }
 
 function subAgentLaunchOutcome(record, block) {
@@ -834,11 +978,16 @@ export function parseAgentTaskNotification(content) {
     return null;
   }
   const summary = field('summary');
+  const reportedTokens = field('subagent_tokens') || field('total_tokens');
+  const numericTokens = Number(reportedTokens);
   return {
     toolUseId,
     agentId,
     status: field('status') || 'completed',
     summary,
+    totalTokens: reportedTokens && Number.isFinite(numericTokens) && numericTokens >= 0
+      ? Math.round(numericTokens)
+      : null,
     // Summaries read `Agent "<name>" finished`, so the name survives even when the
     // notification arrives before (or without) the launch record it belongs to.
     agentName: summary.match(/Agent\s+"([^"]*)"/)?.[1]?.trim() || '',
@@ -993,20 +1142,26 @@ export function consumeClaudeStreamMessage(message, context) {
         message: notification.summary
           || `Sub-agent ${notification.agentName || notification.agentId} finished.`,
       });
+      const tokenUsage = recordClaudeSubAgentUsage(
+        context,
+        {
+          agentId: notification.agentId,
+          toolUseId: notification.toolUseId,
+          reported: notification.totalTokens === null
+            ? null
+            : { totalTokens: notification.totalTokens },
+        },
+      );
+      if (tokenUsage) emitted.push(tokenUsage);
     }
   }
   if (message.type === 'assistant') {
     const usage = message.message?.usage;
     if (usage && typeof usage === 'object') {
-      if (!(context.tokenUsageByMessage instanceof Map)) context.tokenUsageByMessage = new Map();
-      const key = String(message.message?.id || message.uuid || `record-${context.tokenUsageByMessage.size}`);
-      context.tokenUsageByMessage.set(key, normalizeTokenUsage(usage));
-      let cumulative = normalizeTokenUsage({});
-      for (const recordUsage of context.tokenUsageByMessage.values()) {
-        cumulative = addTokenUsage(cumulative, recordUsage);
-      }
-      const event = providerTokenUsageEvent('claude', cumulative);
-      emitted.push({ event, message: tokenUsageMessage('claude', event.usage) });
+      const usageByMessage = claudeTokenUsageMap(context, 'tokenUsageByMessage');
+      const key = String(message.message?.id || message.uuid || `record-${usageByMessage.size}`);
+      usageByMessage.set(key, normalizeTokenUsage(usage));
+      emitted.push(claudeTokenUsageEmission(context));
     }
     for (const block of message.message?.content || []) {
       if (block.type === 'tool_use' && block.id) {
@@ -1061,6 +1216,17 @@ export function consumeClaudeStreamMessage(message, context) {
             ? `Command ${completedItem.status}: ${completedItem.command}`
             : `Claude ${completedItem.tool || 'file change'} ${completedItem.status}.`),
       });
+      if (completedItem.subAgent) {
+        const tokenUsage = recordClaudeSubAgentUsage(
+          context,
+          {
+            agentId: completedItem.agentId,
+            toolUseId: completedItem.toolUseId || completedItem.id,
+            reported: message.toolUseResult,
+          },
+        );
+        if (tokenUsage) emitted.push(tokenUsage);
+      }
       if (completedItem.planTool) {
         // Folded at the result, not the call: `TaskCreate` only learns its id here, and a
         // rejected `TaskUpdate` must leave the board alone. The plan follows its own row so
@@ -1258,6 +1424,8 @@ export class ClaudeExecutionRunner {
       tools: new Map(),
       finalResponse: '',
       sessionId: task.thread_id,
+      transcriptPath: resolveClaudeTranscriptPath(task.repo_path, task.thread_id),
+      tokenUsageAttemptStartedAt: task.tokenUsageAttemptStartedAt || task.started_at || null,
       // Only a fallback key for the folded plan, for the case where a turn never reports a
       // session id. The session id stays the identity everywhere else.
       taskId: task.id ?? null,

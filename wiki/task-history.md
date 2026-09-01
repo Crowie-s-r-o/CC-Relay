@@ -139,7 +139,7 @@ For keep-terminal-open tasks, Task Activity replaces the flat Prompts disclosure
 
 History supports day, Monday-to-Sunday week, and calendar-month periods with previous, next, and today navigation. Its statistics always describe every CC Relay in the selected project. The selected view and period are browser display preferences under `relay.taskView` and `relay.historyPeriod`; the selected date resets to the current period when the app loads.
 
-The summary reports tasks created in the selected period, successful completions, success rate across terminal outcomes, and recorded runtime from tasks that have both `started_at` and `finished_at`. An activity strip uses six four-hour buckets for a day, seven daily buckets for a week, and one bucket per calendar day for a month.
+The summary reports tasks created in the selected period, successful completions, success rate across terminal outcomes, and recorded active runtime from terminal tasks. Runtime sums every persisted provider attempt under the task ID, including follow-ups and retries, and excludes idle gaps between them. Legacy tasks without attempt accounting fall back to their persisted lifecycle timestamps. An activity strip uses six four-hour buckets for a day, seven daily buckets for a week, and one bucket per calendar day for a month. See [[conversation-card-metrics]].
 
 > [!important]
 > Period boundaries use the browser's local calendar rather than UTC. Weeks start on Monday. Use exclusive end boundaries so midnight tasks appear in exactly one period.

@@ -28,7 +28,7 @@
 - **One global task monitor.** Follow running work and open terminal sessions across every project from compact status cards, without leaving the repository you are working in.
 - **Terminal session workspaces.** Keep a direct task open across as many turns as needed, steer work while it runs, and finish it explicitly or by closing its terminal.
 - **Plans, goals, and workers in one view.** Task Activity shows runtime, current plan steps, Codex goals, sub-agent assignments, commands, file changes, messages, errors, and results as they happen.
-- **Live native token accounting.** Task Activity shows cumulative provider-reported input and output use, while it and the running-task monitor show average output tokens per task second throughout each run.
+- **Live native token accounting.** The macOS Crowie title bar shows today's all-provider token total. Task Activity shows cumulative provider-reported input and output use, while it and the running-task monitor show average output tokens per attempt second throughout each run.
 - **Searchable history and task-owned diffs.** Search task names, prompts, follow-ups, responses, results, and errors. Changes opens on exact patches reported by the task, with a separate Workspace window for every disk change observed while it ran.
 - **A queue built for real work.** Star any task to keep it at the top, rename titles inline at any stage, reorder waiting work, use Run now for urgent dispatch, and continue completed conversations.
 - **Reference images and local artifacts.** Attach screenshots and other visual context, then keep prompts, plans, events, results, errors, and attachments stored locally with the task.

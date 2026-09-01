@@ -34,6 +34,8 @@ type: index
 - [[opencode-token-throughput-review]]
 - [[opencode-thinking-visibility-review]]
 - [[token-throughput-correction]]
+- [[conversation-card-metrics]]
+- [[daily-token-usage]]
 - [[provider-usage-monitor]]
 - [[provider-usage-fable-correction-review]]
 - [[queued-provider-switching]]

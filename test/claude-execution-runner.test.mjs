@@ -9,6 +9,7 @@ import {
   ClaudeExecutionRunner,
   claudeApiErrorResponse,
   claudePrintEnv,
+  claudeTranscriptTokenUsage,
   consumeClaudeStreamMessage,
   liveSubAgents,
   parseAgentTaskNotification,
@@ -74,8 +75,15 @@ const TURN_DURATION_PENDING = JSON.parse(readFileSync(
   'utf8',
 ));
 
-function turnContext() {
-  return { cwd: '/tmp/repo', tools: new Map(), finalResponse: '', sessionId: 'one', error: null };
+function turnContext(overrides = {}) {
+  return {
+    cwd: '/tmp/repo',
+    tools: new Map(),
+    finalResponse: '',
+    sessionId: 'one',
+    error: null,
+    ...overrides,
+  };
 }
 
 test('Claude API error response detection is anchored to the effective final response', () => {
@@ -117,6 +125,56 @@ test('Claude assistant usage emits cumulative native token telemetry', () => {
   assert.equal(first.usage.totalTokens, 150);
   assert.equal(repeated.usage.totalTokens, 150);
   assert.equal(second.usage.totalTokens, 205);
+});
+
+test('Claude transcript usage sums cache-heavy messages once by message ID', () => {
+  const transcript = [
+    {
+      type: 'assistant',
+      timestamp: '2026-09-01T10:00:00.000Z',
+      message: {
+        id: 'message-one',
+        usage: { input_tokens: 1, output_tokens: 2, cache_read_input_tokens: 50 },
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-09-01T10:00:01.000Z',
+      message: {
+        id: 'message-one',
+        usage: {
+          input_tokens: 2,
+          output_tokens: 5,
+          cache_read_input_tokens: 100,
+          cache_creation_input_tokens: 10,
+        },
+      },
+    },
+    {
+      type: 'assistant',
+      timestamp: '2026-09-01T10:00:02.000Z',
+      message: {
+        id: 'message-two',
+        usage: { input_tokens: 1, output_tokens: 3, cache_read_input_tokens: 20 },
+      },
+    },
+  ].map((record) => JSON.stringify(record)).join('\n');
+  const usage = claudeTranscriptTokenUsage(`${transcript}\n{unfinished`);
+
+  assert.deepEqual(usage, {
+    inputTokens: 3,
+    outputTokens: 8,
+    reasoningTokens: 0,
+    cacheReadTokens: 120,
+    cacheWriteTokens: 10,
+    totalTokens: 141,
+  });
+  assert.equal(
+    claudeTranscriptTokenUsage(transcript, {
+      startedAt: '2026-09-01T10:00:02.000Z',
+    }).totalTokens,
+    24,
+  );
 });
 
 test('Claude sub-agent launches carry agent metadata on the mcpToolCall envelope', () => {
@@ -541,7 +599,7 @@ test('a task notification resolves the sub-agent that its tool use launched', ()
     content: TASK_NOTIFICATION,
   }, context);
 
-  assert.equal(emitted.length, 1);
+  assert.equal(emitted.length, 2);
   assert.deepEqual(emitted[0].event, {
     type: 'claude/agent-finished',
     provider: 'claude',
@@ -552,6 +610,11 @@ test('a task notification resolves the sub-agent that its tool use launched', ()
     agentName: 'dev-2: standby core developer',
   });
   assert.equal(emitted[0].message, 'Agent "dev-2: standby core developer" finished');
+  assert.equal(emitted[1].event.type, 'provider/token-usage');
+  assert.equal(emitted[1].event.provider, 'claude');
+  assert.equal(emitted[1].event.usage.totalTokens, 29_359);
+  assert.equal(emitted[1].event.usage.inputTokens, 0);
+  assert.equal(emitted[1].event.usage.outputTokens, 0);
 });
 
 test('the enqueue and remove copies of one notification report a single finish', () => {
@@ -563,15 +626,19 @@ test('the enqueue and remove copies of one notification report a single finish',
     type: 'queue-operation', operation: 'remove', content: TASK_NOTIFICATION,
   }, context);
 
-  assert.equal(enqueued.length, 1);
+  assert.equal(enqueued.length, 2);
   assert.equal(removed.length, 0);
 });
 
 test('a resumed sub-agent reports again through the tool use that woke it', () => {
-  const context = turnContext();
-  consumeClaudeStreamMessage({
+  let transcriptTokens = 40_000;
+  const context = turnContext({
+    readSubAgentTokenUsage: () => ({ cacheReadTokens: transcriptTokens }),
+  });
+  const first = consumeClaudeStreamMessage({
     type: 'queue-operation', operation: 'enqueue', content: TASK_NOTIFICATION,
   }, context);
+  transcriptTokens = 60_000;
   const resumed = consumeClaudeStreamMessage({
     type: 'queue-operation',
     operation: 'enqueue',
@@ -581,9 +648,103 @@ test('a resumed sub-agent reports again through the tool use that woke it', () =
     ),
   }, context);
 
-  assert.equal(resumed.length, 1);
+  assert.equal(first[1].event.usage.totalTokens, 40_000);
+  assert.equal(resumed.length, 2);
   assert.equal(resumed[0].event.toolUseId, 'toolu_01GL9D1R3PPMn2Vh2NHRERXA');
   assert.equal(resumed[0].event.agentId, 'a21d93d8cd05ec4fb');
+  assert.equal(resumed[1].event.usage.totalTokens, 60_000);
+});
+
+test('Claude sub-agent transcript usage takes precedence over a smaller completion snapshot', () => {
+  const context = turnContext({
+    readSubAgentTokenUsage: () => ({
+      inputTokens: 20,
+      outputTokens: 1_000,
+      cacheReadTokens: 48_980,
+    }),
+  });
+  const emitted = consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'enqueue', content: TASK_NOTIFICATION,
+  }, context);
+
+  assert.equal(emitted[1].event.usage.totalTokens, 50_000);
+  assert.equal(emitted[1].event.usage.outputTokens, 1_000);
+  assert.equal(emitted[1].event.usage.cacheReadTokens, 48_980);
+});
+
+test('inline Claude sub-agent usage joins the parent cumulative token total', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage({
+    type: 'assistant',
+    message: {
+      id: 'parent-message',
+      usage: { input_tokens: 2, output_tokens: 8, cache_read_input_tokens: 90 },
+      content: AGENT_LAUNCH.message.content,
+    },
+  }, context);
+  const emitted = consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: {
+      status: 'completed',
+      agentId: 'a21d93d8cd05ec4fb',
+      totalTokens: 1_200,
+      usage: {
+        input_tokens: 5,
+        output_tokens: 25,
+        cache_read_input_tokens: 1_000,
+        cache_creation_input_tokens: 170,
+      },
+    },
+    message: {
+      content: [{
+        tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+        type: 'tool_result',
+        content: 'Finished inline.',
+      }],
+    },
+  }, context);
+
+  const usage = emitted.find((entry) => entry.event.type === 'provider/token-usage')?.event.usage;
+  assert.ok(usage);
+  assert.equal(usage.totalTokens, 1_300);
+  assert.equal(usage.outputTokens, 33);
+  assert.equal(usage.cacheReadTokens, 1_090);
+});
+
+test('a later Claude sub-agent report cannot lower the cumulative token total', () => {
+  const context = turnContext();
+  consumeClaudeStreamMessage(AGENT_LAUNCH, context);
+  const inline = consumeClaudeStreamMessage({
+    type: 'user',
+    toolUseResult: {
+      status: 'completed',
+      totalTokens: 30_000,
+      usage: {
+        output_tokens: 2_000,
+        cache_read_input_tokens: 28_000,
+      },
+    },
+    message: {
+      content: [{
+        tool_use_id: 'toolu_012M2JjykSAMBUw7JewJMYeX',
+        type: 'tool_result',
+        content: 'Finished inline.',
+      }],
+    },
+  }, context);
+  const notification = consumeClaudeStreamMessage({
+    type: 'queue-operation',
+    operation: 'enqueue',
+    content: TASK_NOTIFICATION,
+  }, context);
+
+  assert.equal(
+    inline.find((entry) => entry.event.type === 'provider/token-usage').event.usage.totalTokens,
+    30_000,
+  );
+  assert.equal(notification[1].event.usage.totalTokens, 30_000);
+  assert.equal(notification[1].event.usage.outputTokens, 2_000);
+  assert.equal(notification[1].event.usage.cacheReadTokens, 28_000);
 });
 
 test('queue operations that are not task notifications stay invisible', () => {
@@ -609,6 +770,19 @@ test('a failed sub-agent notification keeps its reported status', () => {
   );
   assert.equal(notification.status, 'failed');
   assert.equal(notification.agentName, 'dev-2: standby core developer');
+  assert.equal(notification.totalTokens, 29_359);
+});
+
+test('a task notification without usage does not invent a zero-token snapshot', () => {
+  const content = TASK_NOTIFICATION.replace(/<usage>[\s\S]*?<\/usage>\n/u, '');
+  const notification = parseAgentTaskNotification(content);
+  const emitted = consumeClaudeStreamMessage({
+    type: 'queue-operation', operation: 'enqueue', content,
+  }, turnContext());
+
+  assert.equal(notification.totalTokens, null);
+  assert.equal(emitted.length, 1);
+  assert.equal(emitted[0].event.type, 'claude/agent-finished');
 });
 
 test('Claude stream events pair tool use with its result', () => {

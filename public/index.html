@@ -37,8 +37,11 @@
     <link rel="stylesheet" href="/style.css">
   </head>
   <body>
-    <div class="desktop-titlebar" aria-hidden="true">
-      <img class="desktop-titlebar-mark" src="/favicon.svg" alt="">
+    <div class="desktop-titlebar">
+      <div id="desktop-titlebar-token-usage" class="desktop-titlebar-token-usage" role="status" aria-label="Today's recorded token usage is unavailable">
+        <img class="desktop-titlebar-mark" src="/favicon.svg" alt="" aria-hidden="true">
+        <span id="desktop-titlebar-token-count">Today --</span>
+      </div>
     </div>
     <header class="app-header">
       <button id="about-button" class="brand-lockup" type="button" aria-haspopup="dialog" aria-controls="about-modal" title="About CC Relay">

@@ -7,6 +7,19 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **September 1: the macOS Crowie title bar now shows today's all-provider token sum, and Claude
+> totals include the categories it actually reports.** A persisted Claude conversation proved the
+> old input-plus-output display showed only 113,299 tokens while its native record contained
+> 15,687,282 after 14,684,136 cache-read and 889,847 cache-creation tokens were included. Relay now
+> stores the delta of every native cumulative snapshot on its local observation date, so duplicates
+> do not inflate the sum and a midnight-spanning run assigns only its new usage to the new day.
+> Completed Claude Agents now reconcile their own saved assistant usage by message ID, with inline
+> usage and background `subagent_tokens` as fallbacks when a detailed trace is unavailable. Resumed,
+> duplicate, or smaller later reports cannot inflate or regress the parent total. Task cards now pair
+> provider **Total** with generated **Out**. All 1,785 repository tests pass. See [[daily-token-usage]],
+> [[token-throughput-correction]], and [[brand-startup-and-about]].
+
+> [!important]
 > **August 31: Claude table tabs no longer strand a completed terminal reply.** Task 1152 supplied
 > the exact failure: its 39,907-character delivered prompt contained 30 tabs, and Claude persisted
 > both attempts with every tab expanded to four spaces. The resulting 90-character difference was

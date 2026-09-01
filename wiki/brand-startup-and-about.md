@@ -83,9 +83,10 @@ tagline, and also receives copyright, version, website, and author metadata.
 ## macOS main-window title bar
 
 The main macOS Electron window uses `titleBarStyle: 'hiddenInset'` so the standard traffic-light
-controls remain native while the renderer owns a 36px drag region. That region contains only the
-centered Crowie mark from `public/favicon.svg`. It deliberately omits the repeated product name.
-Light and dark themes give the title bar matching neutral surfaces and keep the mark legible.
+controls remain native while the renderer owns a 32px drag region. Its centered lockup contains the
+Crowie mark from `public/favicon.svg` and the current local-day provider token sum. It deliberately
+omits the repeated product name. Light and dark themes give the title bar matching neutral surfaces
+and keep both the mark and compact `Today N` label legible. See [[daily-token-usage]].
 
 The desktop-only renderer state is set in the early `public/index.html` bootstrap only when three
 facts agree: the user agent is Electron, the user agent is Macintosh, and the URL carries the
@@ -98,7 +99,7 @@ rendering an extra title-bar row.
 > BrowserWindow chrome is fixed when the window is created. Refreshing newer renderer files inside
 > an older default-title shell cannot retrofit `hiddenInset`. The versioned URL marker keeps that
 > split-version window from drawing a second title bar, but a rebuild and relaunch are still required
-> before the Crowie mark can replace the visible native product title.
+> before the Crowie token lockup can replace the visible native product title.
 
 > [!note]
 > Task 752 exposed this boundary with the installed v0.2.10 app while the repository was already at

@@ -49,11 +49,11 @@ Queue cards use an 8px list rhythm, 11px by 12px card padding, an optional two-l
 
 ## macOS desktop shell containment
 
-The macOS Electron shell adds a centered, logo-only Crowie title bar above the application layout.
-The renderer body becomes a four-row viewport grid containing the title bar, global monitor,
-Launchpad rail, and workspace. When the saved monitor position is Bottom, the same grid moves the
-monitor into its final row instead of relying on a fixed overlay and body padding. See
-[[brand-startup-and-about]] and [[header-position]].
+The macOS Electron shell adds a centered Crowie and local-day token-total lockup above the
+application layout. The renderer body becomes a four-row viewport grid containing the title bar,
+global monitor, Launchpad rail, and workspace. When the saved monitor position is Bottom, the same
+grid moves the monitor into its final row instead of relying on a fixed overlay and body padding.
+See [[brand-startup-and-about]], [[daily-token-usage]], and [[header-position]].
 
 The outer document is never the scroll owner in this desktop shell. At wide sizes, each existing
 panel keeps its own scrolling behavior. At 1344px and below, the responsive multi-row panel layout
@@ -161,7 +161,12 @@ The terminal defaults to the **All** filter so the complete task activity is vis
 
 Codex `thread/tokenUsage/updated` notifications and normalized OpenCode step statistics feed the console's explicit **thinking tokens** metric. This numeric usage telemetry is separate from visible reasoning text and does not expose private hidden reasoning. Relay preserves a provider-reported zero even when that provider exposes a reasoning block, because estimating tokens from text would be misleading. Older completed tasks recorded before normalized usage support show zero when their persisted events contain no usable token snapshot.
 
-Task reference images render as compact 64px square thumbnails, falling to 56px on narrow screens. Filenames and file sizes remain available through the image link and accessible image alternative, while only the sequence number overlays the thumbnail.
+Full task-record reference images render as compact 64px square thumbnails, falling to 56px on narrow screens. Filenames and file sizes remain available through the image link and accessible image alternative, while only the sequence number overlays the thumbnail.
+
+Queue cards expose the same attachments before **Full details** opens. The compact strip has six 34px square slots with 5px gaps. Tasks with six or fewer images show every thumbnail; larger sets show the first five plus a `+N` overflow tile, keeping the row inside the queue's 300px minimum width instead of rendering or wrapping all 99 possible images. Each shown image is a keyboard-focusable link to the original `/api/tasks/:id/attachments/:attachmentId` response and opens in a new tab. Its click, keyboard, and context-menu behavior stays independent from the parent card's selection and task-reference menu. Light and dark themes both own the preview and overflow surfaces. See [[compact-interface-density]].
+
+> [!important]
+> Keep the card strip bounded to six slots. The cap is a layout and request-volume boundary, while the full task record remains the complete attachment list.
 
 The composer accepts up to 99 reference images per task. The independent safety limits remain 5 MB per image and 20 MB total, so the higher count supports collections of small screenshots without increasing the maximum request payload.
 

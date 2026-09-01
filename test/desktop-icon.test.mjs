@@ -56,7 +56,7 @@ test('the in-app header uses the Crowie icon instead of a text monogram', () => 
   assert.doesNotMatch(markup, /class="brand-mark"[^>]*>R/);
 });
 
-test('the macOS desktop title bar carries the Crowie lockup', () => {
+test('the macOS desktop title bar carries Crowie with today\'s token sum', () => {
   const main = readFileSync(join(projectRoot, 'src', 'electron-main.mjs'), 'utf8');
   const markup = readFileSync(join(projectRoot, 'public', 'index.html'), 'utf8');
   const style = readFileSync(join(projectRoot, 'public', 'style.css'), 'utf8');
@@ -69,10 +69,13 @@ test('the macOS desktop title bar carries the Crowie lockup', () => {
   assert.match(markup, /desktopTitlebarMode === 'hidden-inset-v1'/);
   assert.match(markup, /dataset\.desktopTitlebar = 'true'/);
   assert.ok(titlebar);
+  assert.match(titlebar, /id="desktop-titlebar-token-usage"/);
   assert.match(titlebar, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);
+  assert.match(titlebar, /id="desktop-titlebar-token-count">Today --<\/span>/);
   assert.doesNotMatch(titlebar, /CC Relay/);
   assert.match(style, /html\[data-desktop-titlebar="true"\] \{\s*--desktop-titlebar-height: 32px;/);
   assert.match(style, /\.desktop-titlebar-mark \{[\s\S]*?width: 20px;[\s\S]*?height: 20px;[\s\S]*?flex: 0 0 20px;/);
+  assert.match(style, /\.desktop-titlebar-token-usage \{[\s\S]*?display: inline-flex;[\s\S]*?gap: 7px;[\s\S]*?pointer-events: auto;[\s\S]*?-webkit-app-region: no-drag;/);
   assert.match(style, /html\[data-desktop-titlebar="true"\] \.desktop-titlebar \{[\s\S]*?justify-content: center;[\s\S]*?-webkit-app-region: drag;/);
   assert.match(style, /height: calc\(100vh - var\(--desktop-titlebar-height\)/);
 });

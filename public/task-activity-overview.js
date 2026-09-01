@@ -8,7 +8,11 @@ import {
   subAgentEntryState,
 } from './event-stream.js';
 import { escapeHtml } from './escape-html.js';
-import { formatElapsedDuration } from './task-time.js';
+import {
+  formatDurationMilliseconds,
+  formatElapsedDuration,
+  formatTaskDuration,
+} from './task-time.js';
 
 const PLAN_STEP_LIMIT = 50;
 const AGENT_LIMIT = 50;
@@ -67,7 +71,16 @@ function runtimeMetricMarkup(task, now) {
   const status = String(task?.status || '');
   const running = status === 'running';
   const label = running ? 'running' : (task?.started_at ? 'duration' : 'not started');
-  return `<span class="has-runtime${running ? ' is-running' : ''}"><b>${durationMarkup(task?.started_at, task?.finished_at, now)}</b><small>${label}</small></span>`;
+  const value = formatTaskDuration(task, now) || '--';
+  const metrics = task?.conversation_metrics;
+  const recordedDuration = Number(metrics?.duration_ms);
+  const activeStartedAt = running ? metrics?.active_attempt_started_at : null;
+  const metricAttributes = metrics && Number(metrics.attempt_count) > 0
+    ? ` data-activity-task-duration data-recorded-duration-ms="${Number.isFinite(recordedDuration) ? recordedDuration : 0}" data-active-started-at="${escapeHtml(activeStartedAt || '')}"`
+    : task?.started_at
+      ? ` data-activity-duration data-started-at="${escapeHtml(task.started_at)}" data-finished-at="${escapeHtml(task.finished_at || '')}"`
+      : '';
+  return `<span class="has-runtime${running ? ' is-running' : ''}"><b><time${metricAttributes}>${escapeHtml(value)}</time></b><small>${label}</small></span>`;
 }
 
 function planMarkup(entries, task) {
@@ -244,6 +257,15 @@ export function taskActivityOverview(entries, task, now = Date.now()) {
 
 export function refreshActivityOverviewDurations(root, now = Date.now()) {
   if (!root?.querySelectorAll) return;
+  for (const element of root.querySelectorAll('[data-activity-task-duration]')) {
+    const recorded = Number(element.dataset.recordedDurationMs);
+    const activeStart = new Date(element.dataset.activeStartedAt || 0).getTime();
+    const active = Number.isFinite(activeStart) && activeStart > 0
+      ? Math.max(0, Number(now) - activeStart)
+      : 0;
+    const value = formatDurationMilliseconds(Math.max(0, recorded) + active);
+    if (value) element.textContent = value;
+  }
   for (const element of root.querySelectorAll('[data-activity-duration]')) {
     const value = formatElapsedDuration(
       element.dataset.startedAt,

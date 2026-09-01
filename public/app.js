@@ -20,7 +20,16 @@ import {
   subAgentEntryDetails,
   subAgentEntryState,
 } from './event-stream.js';
-import { taskDurationLabel, formatElapsedDuration, taskLifecycleDates } from './task-time.js';
+import {
+  formatElapsedDuration,
+  formatTaskDuration,
+  taskDurationLabel,
+  taskLifecycleDates,
+} from './task-time.js';
+import {
+  dailyTokenUsagePresentation,
+  taskTokenPresentation,
+} from './task-conversation-metrics.js';
 import { runningTaskRailGroups } from './running-task-layout.js';
 import {
   refreshActivityOverviewDurations,
@@ -224,6 +233,8 @@ const MAX_IMAGE_ATTACHMENTS = 99;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TOTAL_IMAGE_BYTES = 20 * 1024 * 1024;
 const ACCEPTED_IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+// Six compact preview slots fit the queue's 300px minimum width.
+const TASK_CARD_ATTACHMENT_SLOT_LIMIT = 6;
 
 /*
  * A project accepts at most MAX_PROJECT_INSTANCES per provider (validateInstanceLimit in
@@ -734,6 +745,8 @@ const elements = {
   voiceInputDeviceStatus: document.querySelector('#voice-input-device-status'),
   voiceInputSetup: document.querySelector('#voice-input-setup'),
   voiceInputStatus: document.querySelector('#voice-input-status'),
+  desktopTitlebarTokenUsage: document.querySelector('#desktop-titlebar-token-usage'),
+  desktopTitlebarTokenCount: document.querySelector('#desktop-titlebar-token-count'),
   providerUsage: document.querySelector('#provider-usage'),
   providerUsageMeters: [...document.querySelectorAll('[data-usage-key]')],
   themeToggle: document.querySelector('#theme-toggle'),
@@ -3146,7 +3159,7 @@ function highlightCommand(command) {
 
 // Compact elapsed label used by the terminal status bar duration segment.
 function terminalDurationLabel(task) {
-  const elapsed = formatElapsedDuration(task?.started_at, task?.finished_at);
+  const elapsed = formatTaskDuration(task);
   if (elapsed) {
     return elapsed;
   }
@@ -4684,6 +4697,21 @@ function turboFleetMarkup(task) {
 
 function taskCardDurationLabel(task) {
   return taskDurationLabel(task).replace(/^Took /, '');
+}
+
+function taskTokenMetricsMarkup(presentation, className = 'task-token-metrics') {
+  if (!presentation) return '';
+  return `
+    <span
+      class="${className}"
+      data-token-level="${escapeHtml(presentation.level)}"
+      title="${escapeHtml(presentation.title)}"
+      aria-label="${escapeHtml(presentation.title)}"
+    >
+      <span><small>Total</small><b>${escapeHtml(presentation.totalLabel)}</b></span>
+      <span><small>Out</small><b>${escapeHtml(presentation.outputLabel)}</b></span>
+    </span>
+  `;
 }
 
 function formatHistoryRuntime(milliseconds) {
@@ -6279,6 +6307,10 @@ function renderHeaderRunningTasks() {
       task.latestTokenUsage?.usage?.inputTokens,
       task.latestTokenUsage?.usage?.outputTokens,
       task.latestTokenUsage?.provider,
+      task.conversation_metrics?.input_tokens,
+      task.conversation_metrics?.output_tokens,
+      task.conversation_metrics?.total_tokens,
+      task.conversation_metrics?.token_observed,
       task.status,
       task.manual_completion,
       taskMonitorResponseHash(task),
@@ -6303,8 +6335,12 @@ function renderHeaderRunningTasks() {
     const monitor = taskMonitorPresentation(task);
     const response = taskMonitorResponse(task, monitor);
     const throughput = tokenThroughputFromSnapshot(task.latestTokenUsage, task);
+    const tokenUsage = taskTokenPresentation(task);
     const speedLabel = throughput ? `${throughput.rateLabel} average output tokens/s` : '';
-    const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}${task.starred ? ', starred' : ''}, ${project}, ${relay}${speedLabel ? `, ${speedLabel}` : ''}`;
+    const tokenLabel = tokenUsage
+      ? `, ${tokenUsage.totalTokens.toLocaleString('en-US')} provider-reported tokens, ${tokenUsage.outputTokens.toLocaleString('en-US')} output tokens`
+      : '';
+    const accessibleLabel = `Task ${task.id}, ${taskDisplayName(task)}, ${monitor.label}${task.starred ? ', starred' : ''}, ${project}, ${relay}${speedLabel ? `, ${speedLabel}` : ''}${tokenLabel}`;
     return `
       <button
         class="header-running-task ${projectIdentityColorClass(task.repo_path)}${monitor.terminalSession ? ' header-terminal-session' : ''}"
@@ -6322,6 +6358,7 @@ function renderHeaderRunningTasks() {
           ${monitor.terminalSession ? `<span class="header-running-state" data-state="${escapeHtml(monitor.state)}">${escapeHtml(monitor.label)}</span>` : ''}
           <span class="header-running-loc">${escapeHtml(relay)}</span>
           ${throughput ? `<span class="header-running-token-speed" data-header-token-speed="${task.id}" title="${tokenSpeedTitle(throughput)}">${throughput.rateLabel} tokens/s</span>` : ''}
+          ${taskTokenMetricsMarkup(tokenUsage, 'header-running-token-usage')}
           <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
         </span>
         <strong class="header-running-prompt" title="${escapeHtml(`${project} · ${taskDisplayName(task)}`)}">
@@ -6358,6 +6395,17 @@ function mostRecentlyStartedRunningTask(tasks) {
     .sort((left, right) => (
       new Date(right.started_at || 0) - new Date(left.started_at || 0) || right.id - left.id
   ))[0] || null;
+}
+
+function renderDailyTokenUsage() {
+  if (!elements.desktopTitlebarTokenUsage || !elements.desktopTitlebarTokenCount) return;
+  const presentation = dailyTokenUsagePresentation(state.status?.dailyTokenUsage, {
+    supported: state.status?.capabilities?.dailyTokenUsage === true,
+  });
+  elements.desktopTitlebarTokenCount.textContent = presentation.label;
+  elements.desktopTitlebarTokenUsage.dataset.state = presentation.state;
+  elements.desktopTitlebarTokenUsage.title = presentation.title;
+  elements.desktopTitlebarTokenUsage.setAttribute('aria-label', presentation.title);
 }
 
 function renderProviderUsage() {
@@ -6494,6 +6542,7 @@ function renderStatus() {
   elements.desktopUpdateRelease.href = update.href;
   elements.desktopUpdateRelease.textContent = update.releaseLabel;
   renderDesktopZoomControls();
+  renderDailyTokenUsage();
   renderProviderUsage();
 
   renderHeaderRunningTasks();
@@ -6522,6 +6571,42 @@ function renderStatus() {
           ? `${openSessionCount} terminal session${openSessionCount === 1 ? '' : 's'} open · ${queuedCount} waiting`
           : `${queuedCount} waiting · queue ready`;
   }
+}
+
+function taskCardAttachmentPreviewsMarkup(task) {
+  const attachments = Array.isArray(task.attachments) ? task.attachments : [];
+  if (attachments.length === 0) return '';
+  const hasOverflow = attachments.length > TASK_CARD_ATTACHMENT_SLOT_LIMIT;
+  const previewLimit = hasOverflow
+    ? TASK_CARD_ATTACHMENT_SLOT_LIMIT - 1
+    : TASK_CARD_ATTACHMENT_SLOT_LIMIT;
+  const previews = attachments.slice(0, previewLimit);
+  const remaining = attachments.length - previews.length;
+  const imageCountLabel = `${attachments.length} reference image${attachments.length === 1 ? '' : 's'}`;
+  return `
+    <div class="task-attachment-previews" role="group" aria-label="${imageCountLabel}">
+      ${previews.map((attachment, index) => {
+        const name = attachment.name || `Image ${index + 1}`;
+        const source = `/api/tasks/${task.id}/attachments/${encodeURIComponent(attachment.id)}`;
+        return `
+          <a
+            class="task-attachment-preview"
+            href="${source}"
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open image ${index + 1} of ${attachments.length}: ${escapeHtml(name)}"
+            title="Open ${escapeHtml(name)}"
+          ><img src="${source}" alt="" loading="lazy" draggable="false"></a>
+        `;
+      }).join('')}
+      ${remaining > 0 ? `
+        <span class="task-attachment-overflow" title="${remaining} more image${remaining === 1 ? '' : 's'} in Full details">
+          <span aria-hidden="true">+${remaining}</span>
+          <span class="sr-only">${remaining} more image${remaining === 1 ? '' : 's'} in Full details</span>
+        </span>
+      ` : ''}
+    </div>
+  `;
 }
 
 function renderTasks() {
@@ -6692,6 +6777,7 @@ function renderTasks() {
     const renameable = quickRenameable || legacyRenameable;
     const renameState = state.taskTitleRename?.taskId === task.id ? state.taskTitleRename : null;
     const starSaving = state.taskStarSavingIds.has(task.id);
+    const tokenUsage = taskTokenPresentation(task);
     const searchMatch = searchMatches.get(task.id);
     const searchMatchCard = searchMatch ? `
       <div class="task-search-match" data-source="${escapeHtml(searchMatch.source)}">
@@ -6718,7 +6804,7 @@ function renderTasks() {
         ${sessionCard ? `data-session="true" data-session-state="${escapeHtml(sessionState)}"` : ''}
         ${manualSessionCard ? 'data-manual-completion="true"' : ''}
         tabindex="0"
-        aria-label="Task ${task.id}, ${escapeHtml(displayName)}, ${escapeHtml(task.status)}${starred ? ', starred' : ''}${manualSessionCard ? ', terminal session with manual completion' : sessionCard ? ', retained session' : ''}${sessionCard ? `, terminal ${escapeHtml(sessionWord)}` : ''}${unread ? ', ready for review' : ''}${queued ? ', draggable queue item' : ''}"
+        aria-label="Task ${task.id}, ${escapeHtml(displayName)}, ${escapeHtml(task.status)}${starred ? ', starred' : ''}${manualSessionCard ? ', terminal session with manual completion' : sessionCard ? ', retained session' : ''}${sessionCard ? `, terminal ${escapeHtml(sessionWord)}` : ''}${tokenUsage ? `, ${tokenUsage.totalTokens.toLocaleString('en-US')} provider-reported tokens, ${tokenUsage.outputTokens.toLocaleString('en-US')} output tokens` : ''}${unread ? ', ready for review' : ''}${queued ? ', draggable queue item' : ''}"
       >
         ${manualSessionCard ? `
           <div class="task-session-modebar">
@@ -6784,6 +6870,7 @@ function renderTasks() {
         </div>
         ${searchMatchCard}
         ${taskHasCustomName(task) ? `<p class="task-prompt">${escapeHtml(task.prompt)}</p>` : ''}
+        ${taskCardAttachmentPreviewsMarkup(task)}
         ${turboFleetMarkup(task)}
         ${state.assigningTaskId === task.id ? `
           <div class="task-assignment-options" aria-label="Assign task ${task.id} to another CC Relay">
@@ -6792,7 +6879,10 @@ function renderTasks() {
         ` : ''}
         <div class="task-footer">
           <span class="task-footer-execution"><span class="task-relay-name ${turboOwner ? turboOwner.className : relayColorClass(task.thread_id)}">${escapeHtml(turboOwner ? `${turboOwner.role} ${turboOwner.label}` : taskRelayLabel(task))}</span><span aria-hidden="true"> · </span>${escapeHtml(taskCardExecutionLabel(task))}</span>
-          <span class="task-footer-timing"><span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</span></span>
+          <span class="task-footer-metrics">
+            ${taskTokenMetricsMarkup(tokenUsage)}
+            <span class="task-footer-timing"><span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</span></span>
+          </span>
           <span class="task-footer-dates">${taskLifecycleDatesMarkup(task)}</span>
         </div>
       </article>
@@ -6807,7 +6897,7 @@ function renderTasks() {
     card.addEventListener('contextmenu', (event) => {
       // Preserve the browser's native Copy menu when the operator right-clicks text they
       // selected inside a card. The custom task menu owns only an unselected card surface.
-      if (textSelectionGuard.isActive() || event.target.closest('input, select, textarea')) return;
+      if (textSelectionGuard.isActive() || event.target.closest('a, input, select, textarea')) return;
       event.preventDefault();
       const task = state.tasks.find((item) => item.id === Number(card.dataset.taskId));
       openTaskReferenceMenu(task, { x: event.clientX, y: event.clientY });
@@ -6815,12 +6905,12 @@ function renderTasks() {
     card.addEventListener('click', (event) => {
       // Mouseup after dragging across card text also emits a click. Do not turn that
       // completed text selection into task activation and an immediate card rebuild.
-      if (!textSelectionGuard.isActive() && !event.target.closest('button, input, form')) {
+      if (!textSelectionGuard.isActive() && !event.target.closest('a, button, input, form')) {
         select();
       }
     });
     card.addEventListener('keydown', (event) => {
-      if (event.target.closest('button, input, form')) {
+      if (event.target.closest('a, button, input, form')) {
         return;
       }
       if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {

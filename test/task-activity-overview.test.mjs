@@ -209,6 +209,23 @@ test('the one-second refresh updates live overview durations without rebuilding 
   assert.equal(frozen.textContent, '1m 05s');
 });
 
+test('the one-second refresh adds an active follow-up to completed attempt runtime', () => {
+  const cumulative = {
+    dataset: {
+      recordedDurationMs: '10000',
+      activeStartedAt: '2026-09-01T11:00:00.000Z',
+    },
+    textContent: '',
+  };
+  refreshActivityOverviewDurations({
+    querySelectorAll: (selector) => (
+      selector === '[data-activity-task-duration]' ? [cumulative] : []
+    ),
+  }, new Date('2026-09-01T11:00:05.000Z').getTime());
+
+  assert.equal(cumulative.textContent, '15s');
+});
+
 test('the manifest has bounded scrolling, state cues, and a compact container layout', () => {
   assert.match(style, /\.events-section \{[\s\S]*?container-type: size;/);
   assert.match(style, /\.event-overview-body \{[\s\S]*?max-height: min\(28vh, 240px\);[\s\S]*?overflow: auto;/);

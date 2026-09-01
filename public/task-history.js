@@ -1,3 +1,5 @@
+import { taskRuntimeMilliseconds } from './task-time.js';
+
 const PERIODS = new Set(['day', 'week', 'month']);
 const FINISHED_STATUSES = new Set(['complete', 'failed', 'interrupted', 'cancelled']);
 
@@ -99,10 +101,10 @@ export function taskHistoryStats(tasks) {
   for (const task of tasks) {
     if (FINISHED_STATUSES.has(task.status)) finished += 1;
     if (task.status === 'complete') successful += 1;
-    const started = new Date(task.started_at || 0).getTime();
-    const ended = new Date(task.finished_at || 0).getTime();
-    if (task.started_at && task.finished_at && Number.isFinite(started) && Number.isFinite(ended)) {
-      runtimeMs += Math.max(0, ended - started);
+    if (FINISHED_STATUSES.has(task.status)) {
+      runtimeMs += taskRuntimeMilliseconds(task, task.finished_at
+        ? new Date(task.finished_at).getTime()
+        : Date.now()) || 0;
     }
   }
   return {

@@ -21,7 +21,7 @@ CC Relay is designed to make AI development work easier to control:
 - Retry a failed direct task with a newly selected Codex, Claude, or OpenCode executor, model, and effort.
 - Attach screenshots and other reference images to tasks.
 - Follow commands, file changes, tools, messages, errors, and results in a live activity view.
-- See cumulative native input and output use plus average output tokens per task second during supported provider runs.
+- See today's all-provider token total beside Crowie, plus cumulative native input and output use and average output tokens per attempt second during supported provider runs.
 - Monitor Claude session, Claude weekly, Fable weekly, Codex five-hour, and Codex weekly subscription usage in the global header.
 - Persist prompts, events, results, plans, errors, and attachments locally.
 - Generate a date-selected daily changelog from saved prompts and AI responses.
@@ -151,14 +151,16 @@ OpenCode is a third direct Execute provider beside Codex and Claude. Relay disco
 Relay reads native OpenCode `step_finish` token statistics as the run progresses. It emits one cumulative usage record after each reported step and reconciles an incomplete final stream from the saved native session export when needed. Codex and Claude native usage events use the same normalized record. Task Activity shows the current attempt's exact native input and output totals. The visible speed is:
 
 ```text
-native cumulative output tokens / elapsed task seconds
+native cumulative output tokens / elapsed attempt seconds
 ```
 
 The rate is an average across the task lifecycle, not an instantaneous model sampling rate. Input and cached context are excluded from its numerator because large context windows describe prompt processing, not generated output. Running speeds refresh once per second. A finished task freezes the denominator at its finish time, while a manually open terminal session without a finish time freezes at its latest native usage event. Estimated or stale events from an earlier retry attempt are excluded.
 
 Codex reports a thread-wide `total` and the most recent upstream response as `last`. Relay infers the pre-attempt baseline as `total - last` on the first update, then subtracts that fixed baseline from later totals. This keeps continued conversations isolated and prevents a single growing context window from being mislabeled as cumulative task usage.
 
-The average output rate appears in Task Activity and in the global running-task monitor. Exact input, output, and provider-reported thinking-token counts appear in the Task Activity execution summary, with the full cache and usage breakdown in hover text. Reasoning text and numeric reasoning usage are separate native signals: a provider can expose a reasoning block while reporting zero reasoning tokens, and Relay does not fabricate an estimate. OpenCode aggregate `stats` output is not used for task speed because it spans broader CLI history rather than the current Relay attempt. See [OpenCode provider and token throughput](wiki/opencode-provider-and-token-throughput.md).
+The macOS Crowie title bar separately shows one compact total for the current local calendar day. Relay stores the increase between consecutive native cumulative snapshots, so repeated snapshots are not added twice and a run crossing midnight assigns only its post-midnight increase to the new day. This counter uses each provider's total, including cache and reasoning categories when reported. At Claude Agent completion, Relay sums the saved native sub-agent transcript by message ID and uses inline usage or a background `subagent_tokens` value only when that detailed trace is unavailable.
+
+The average output rate appears in Task Activity and in the global running-task monitor. Exact input, output, and provider-reported thinking-token counts appear in the Task Activity execution summary, with the full cache and usage breakdown in hover text. Reasoning text and numeric reasoning usage are separate native signals: a provider can expose a reasoning block while reporting zero reasoning tokens, and Relay does not fabricate an estimate. OpenCode aggregate `stats` output is not used for task speed because it spans broader CLI history rather than the current Relay attempt. See [OpenCode provider and token throughput](wiki/opencode-provider-and-token-throughput.md) and [Daily Token Usage Ledger](wiki/daily-token-usage.md).
 
 ### Task changes
 

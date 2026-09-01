@@ -373,7 +373,6 @@ test('a finished-task follow-up starts immediately in the same task row and sess
     assert.equal(received[0].thread_id, 'same-relay');
     assert.equal(received[0].prompt, 'Inspect the remaining edge case.');
     assert.equal(received[0].sessionFollowUp, true);
-    assert.equal(Object.hasOwn(received[0], 'tokenUsageAttemptStartedAt'), false);
     assert.equal(received[0].attachments.length, 1);
     assert.equal(received[0].attachments[0].id, 'image-2');
     assert.equal(readFileSync(received[0].attachments[0].path, 'utf8'), 'follow-up image');
@@ -385,6 +384,7 @@ test('a finished-task follow-up starts immediately in the same task row and sess
     const attempt = events.find((event) => event.payload?.type === 'relay/task-attempt-started');
     const usage = events.find((event) => event.payload?.type === 'provider/token-usage');
     assert.equal(attempt.payload.provider, 'codex');
+    assert.equal(received[0].tokenUsageAttemptStartedAt, attempt.payload.attemptStartedAt);
     assert.equal(usage.payload.attemptStartedAt, attempt.payload.attemptStartedAt);
 
     releaseFollowUp();
@@ -1385,7 +1385,10 @@ test('failed tasks automatically retry after the configured wait', async () => {
     assert.match(database.listEvents(task.id).at(-1).message, /Retrying automatically/);
     await waitFor(() => database.getTask(task.id).status === 'complete');
     assert.equal(attempts, 2);
-    assert.equal(database.getTask(task.id).result, 'Recovered');
+    const completed = database.getTask(task.id);
+    assert.equal(completed.result, 'Recovered');
+    assert.equal(completed.conversation_metrics.attempt_count, 2);
+    assert.equal(completed.conversation_metrics.active_attempt_started_at, null);
     assert.match(
       database.listEvents(task.id).map((event) => event.message).join('\n'),
       /Automatic retry started/,
@@ -1426,6 +1429,9 @@ test('automatic retries stop after the configured safety limit', async () => {
     ));
     await new Promise((resolve) => setTimeout(resolve, 40));
     assert.equal(attempts, 3);
+    const failed = database.getTask(task.id);
+    assert.equal(failed.conversation_metrics.attempt_count, 3);
+    assert.equal(failed.conversation_metrics.active_attempt_started_at, null);
     assert.match(database.listEvents(task.id).at(-1).message, /after 2 automatic retries/i);
   } finally {
     await queue.shutdown();

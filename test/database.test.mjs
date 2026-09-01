@@ -97,6 +97,242 @@ test('database persists one unique submission ID per task', () => {
   }
 });
 
+test('conversation metrics sum duration and native tokens across follow-up attempts', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-conversation-metrics-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  try {
+    const task = database.createTask({
+      title: 'Measured conversation',
+      prompt: 'First turn',
+      thread: { id: 'measured-thread', title: 'Measured', source: 'cli', cwd: '/repo' },
+    });
+    const firstStart = '2026-09-01T10:00:00.000Z';
+    database.beginTaskAttempt(task.id, {
+      attemptStartedAt: firstStart,
+      changes: { status: 'running', started_at: firstStart, finished_at: null },
+    });
+    database.addEvent(task.id, 'codex', 'First usage', {
+      type: 'provider/token-usage',
+      provider: 'codex',
+      source: 'native',
+      cumulative: true,
+      attemptStartedAt: firstStart,
+      usage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+    });
+    database.completeTaskAttempt(task.id, {
+      attemptStartedAt: firstStart,
+      attemptFinishedAt: '2026-09-01T10:00:10.000Z',
+      changes: {
+        status: 'complete',
+        finished_at: '2026-09-01T10:00:10.000Z',
+        result: 'First answer',
+      },
+    });
+
+    const followUpStart = '2026-09-01T11:00:00.000Z';
+    database.beginTaskAttempt(task.id, {
+      attemptStartedAt: followUpStart,
+      changes: { status: 'running', started_at: followUpStart, finished_at: null },
+    });
+    for (const usage of [
+      { inputTokens: 200, outputTokens: 30, totalTokens: 230 },
+      { inputTokens: 250, outputTokens: 50, totalTokens: 300 },
+      { inputTokens: 250, outputTokens: 50, totalTokens: 300 },
+    ]) {
+      database.addEvent(task.id, 'codex', 'Follow-up usage', {
+        type: 'provider/token-usage',
+        provider: 'codex',
+        source: 'native',
+        cumulative: true,
+        attemptStartedAt: followUpStart,
+        usage,
+      });
+    }
+    database.completeTaskAttempt(task.id, {
+      attemptStartedAt: followUpStart,
+      attemptFinishedAt: '2026-09-01T11:00:20.000Z',
+      changes: {
+        status: 'complete',
+        finished_at: '2026-09-01T11:00:20.000Z',
+        result: 'Follow-up answer',
+      },
+    });
+
+    assert.deepEqual(database.getTask(task.id).conversation_metrics, {
+      attempt_count: 2,
+      duration_ms: 30_000,
+      input_tokens: 350,
+      output_tokens: 70,
+      total_tokens: 420,
+      token_observed: true,
+      active_attempt_started_at: null,
+    });
+    const daily = database.todayTokenUsage(new Date());
+    assert.equal(daily.inputTokens, 350);
+    assert.equal(daily.outputTokens, 70);
+    assert.equal(daily.totalTokens, 420);
+    assert.deepEqual(daily.providers.codex, {
+      inputTokens: 350,
+      outputTokens: 70,
+      totalTokens: 420,
+    });
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('conversation metric backfill assigns legacy token snapshots to their active follow-up', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-conversation-backfill-'));
+  const filePath = join(directory, 'relay.sqlite');
+  let database = new RelayDatabase(filePath);
+  try {
+    const task = database.createTask({
+      title: 'Legacy measured conversation',
+      prompt: 'First turn',
+      thread: { id: 'legacy-measured-thread', title: 'Legacy measured', source: 'cli', cwd: '/repo' },
+    });
+    const firstStart = '2026-08-31T10:00:00.000Z';
+    const firstFinish = '2026-08-31T10:00:10.000Z';
+    const followUpStart = '2026-08-31T11:00:00.000Z';
+    const followUpFinish = '2026-08-31T11:00:20.000Z';
+    database.updateTask(task.id, {
+      status: 'complete',
+      started_at: followUpStart,
+      finished_at: followUpFinish,
+    });
+    database.addEvent(task.id, 'queue', 'Task started.', {
+      type: 'relay/task-attempt-started',
+      provider: 'codex',
+      attemptStartedAt: firstStart,
+    });
+    database.addEvent(task.id, 'codex', 'First usage', {
+      type: 'provider/token-usage',
+      provider: 'codex',
+      source: 'native',
+      cumulative: true,
+      usage: { inputTokens: 100, outputTokens: 10, totalTokens: 110 },
+    });
+    database.addEvent(task.id, 'queue', 'Task completed.', {
+      type: 'relay/task-attempt-finished',
+      provider: 'codex',
+      attemptStartedAt: firstStart,
+      attemptFinishedAt: firstFinish,
+      outcome: 'complete',
+    });
+    database.addEvent(task.id, 'queue', 'Follow-up started in the same task and conversation.', {
+      type: 'relay/task-attempt-started',
+      provider: 'codex',
+      attemptStartedAt: followUpStart,
+    });
+    database.addEvent(task.id, 'codex', 'Follow-up usage', {
+      type: 'provider/token-usage',
+      provider: 'codex',
+      source: 'native',
+      cumulative: true,
+      usage: { inputTokens: 200, outputTokens: 20, totalTokens: 220 },
+    });
+    database.addEvent(task.id, 'queue', 'Follow-up completed.', {
+      type: 'relay/task-attempt-finished',
+      provider: 'codex',
+      attemptStartedAt: followUpStart,
+      attemptFinishedAt: followUpFinish,
+      outcome: 'complete',
+    });
+    database.database.prepare(
+      'DELETE FROM settings WHERE key = ?',
+    ).run('token-usage-deltas-v1-backfilled');
+    database.close();
+
+    database = new RelayDatabase(filePath);
+    assert.deepEqual(database.getTask(task.id).conversation_metrics, {
+      attempt_count: 2,
+      duration_ms: 30_000,
+      input_tokens: 300,
+      output_tokens: 30,
+      total_tokens: 330,
+      token_observed: true,
+      active_attempt_started_at: null,
+    });
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('daily token usage assigns each cumulative delta to its local observation day', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-daily-token-boundary-'));
+  const filePath = join(directory, 'relay.sqlite');
+  let database = new RelayDatabase(filePath);
+  try {
+    const task = database.createTask({
+      title: 'Midnight token boundary',
+      prompt: 'Measure both days',
+      thread: { id: 'midnight-token-thread', title: 'Midnight tokens', source: 'cli', cwd: '/repo' },
+      provider: 'claude',
+    });
+    const beforeMidnight = new Date(2026, 8, 1, 23, 59, 0).toISOString();
+    const afterMidnight = new Date(2026, 8, 2, 0, 1, 0).toISOString();
+    const insert = database.database.prepare(`
+      INSERT INTO events (task_id, kind, message, payload, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    insert.run(task.id, 'queue', 'Task started.', JSON.stringify({
+      type: 'relay/task-attempt-started',
+      provider: 'claude',
+      attemptStartedAt: beforeMidnight,
+    }), beforeMidnight);
+    insert.run(task.id, 'claude', 'First cumulative usage', JSON.stringify({
+      type: 'provider/token-usage',
+      provider: 'claude',
+      source: 'native',
+      cumulative: true,
+      attemptStartedAt: beforeMidnight,
+      usage: { inputTokens: 1, outputTokens: 2, totalTokens: 100 },
+    }), beforeMidnight);
+    insert.run(task.id, 'claude', 'Second cumulative usage', JSON.stringify({
+      type: 'provider/token-usage',
+      provider: 'claude',
+      source: 'native',
+      cumulative: true,
+      attemptStartedAt: beforeMidnight,
+      usage: { inputTokens: 2, outputTokens: 3, totalTokens: 150 },
+    }), afterMidnight);
+    insert.run(task.id, 'claude', 'Non-native estimate', JSON.stringify({
+      type: 'provider/token-usage',
+      provider: 'claude',
+      source: 'estimated',
+      cumulative: true,
+      attemptStartedAt: beforeMidnight,
+      usage: { totalTokens: 999 },
+    }), afterMidnight);
+    database.database.prepare(
+      'DELETE FROM settings WHERE key = ?',
+    ).run('token-usage-deltas-v1-backfilled');
+    database.close();
+
+    database = new RelayDatabase(filePath);
+    assert.equal(database.todayTokenUsage(new Date(2026, 8, 1, 12)).totalTokens, 100);
+    assert.deepEqual(database.todayTokenUsage(new Date(2026, 8, 2, 12)).providers.claude, {
+      inputTokens: 1,
+      outputTokens: 1,
+      totalTokens: 50,
+    });
+    assert.equal(database.database.prepare(
+      'SELECT COUNT(*) AS count FROM task_token_usage_deltas',
+    ).get().count, 2);
+    database.close();
+
+    database = new RelayDatabase(filePath);
+    assert.equal(database.database.prepare(
+      'SELECT COUNT(*) AS count FROM task_token_usage_deltas',
+    ).get().count, 2);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('database returns every prompt even when the console event window is full', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-prompt-history-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));

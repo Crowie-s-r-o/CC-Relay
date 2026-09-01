@@ -25,7 +25,7 @@ test('the composer and task-card menu expose all task reference scopes', () => {
 test('right click and the keyboard context-menu gesture open the task reference menu', () => {
   assert.match(app, /card\.addEventListener\('contextmenu'/);
   assert.match(app, /event\.preventDefault\(\);[\s\S]{0,180}openTaskReferenceMenu/);
-  assert.match(app, /textSelectionGuard\.isActive\(\)[\s\S]{0,100}event\.target\.closest\('input, select, textarea'\)/);
+  assert.match(app, /textSelectionGuard\.isActive\(\)[\s\S]{0,100}event\.target\.closest\('a, input, select, textarea'\)/);
   assert.match(app, /event\.key === 'ContextMenu'/);
   assert.match(app, /event\.shiftKey && event\.key === 'F10'/);
   assert.match(app, /role="menuitem"/);
