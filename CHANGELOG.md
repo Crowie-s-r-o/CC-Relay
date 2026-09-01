@@ -2,6 +2,14 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.29] - 2026-09-01
+
+### Added
+
+- Daily token telemetry provides visibility into token usage.
+- Conversation metrics provide insight into relay activity.
+- Card previews provide richer at-a-glance context.
+
 ## [0.2.28] - 2026-08-31
 
 ### Added
