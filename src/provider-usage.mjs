@@ -39,6 +39,7 @@ expect {
       set timeout 22
       expect {
         -re {Current week \(Fable[^)]*\)} {}
+        -re {[\r\n][ \t]*Fable([ \t]+[0-9.]+)?([ \t]+only)?[ \t]*[\r\n]} {}
         -re {Usage credits} {}
         -re {Showing last-known usage|Could not refresh usage data|Per-model breakdown unavailable|Usage endpoint is rate limited|Failed to load usage data} {}
         timeout {}
@@ -118,11 +119,36 @@ function lastClaudeWindow(screen, label) {
 }
 
 function lastClaudeFableWindow(screen) {
-  return lastClaudeWindowMatching(
+  const legacy = lastClaudeWindowMatching(
     screen,
     'Current week \\([^\\r\\n)]+\\)',
     (label) => /^Current week \(Fable(?:\s+\d+(?:\.\d+)*)?(?:\s+only)?\)$/i.test(label),
   );
+  const legacyIndex = screen.toLowerCase().lastIndexOf('current week (fable');
+  const labelPattern = /(?:^|[\r\n])[ \t]*Fable(?:[ \t]+\d+(?:\.\d+)*)?(?:[ \t]+only)?[ \t]*(?=\r?(?:\n|$))/gi;
+  let standalone = null;
+  for (const match of screen.matchAll(labelPattern)) {
+    const followingLines = screen
+      .slice(match.index + match[0].length)
+      .split(/\r?\n/)
+      .slice(0, 8)
+      .join('\n');
+    const usedMatch = followingLines.match(
+      /(?:\d{1,3}(?:\.\d+)?%\s+)?(\d{1,3}(?:\.\d+)?)%\s+used/i,
+    );
+    const usedPercent = finitePercent(usedMatch?.[1]);
+    if (usedPercent === null) continue;
+    const resetMatch = followingLines.match(/Resets\s+([^\r\n]+)/i);
+    standalone = {
+      index: match.index,
+      window: {
+        usedPercent,
+        resetsAt: null,
+        resetLabel: resetMatch?.[1]?.replace(/\s+/g, ' ').trim().slice(0, 120) || null,
+      },
+    };
+  }
+  return standalone && standalone.index > legacyIndex ? standalone.window : legacy;
 }
 
 function latestClaudeUsageFrame(screen) {
@@ -146,10 +172,9 @@ export function parseClaudeUsageScreen(value) {
     fableWeeklyUnavailable,
     fiveHour: lastClaudeWindow(frame, 'Current session'),
     weekly,
-    // Newer Claude builds can omit a distinct Fable row even in a live Fable session. In that
-    // case the all-model weekly window is the only reported subscription limit that applies. An
-    // explicit refresh failure is different: it cannot prove that no separate allowance exists.
-    fableWeekly: fableWeekly || (!fableWeeklyUnavailable && weekly ? { ...weekly, shared: true } : null),
+    // Fable is a distinct allowance. A missing row is unknown, while the current standalone
+    // Fable section can explicitly report zero without a reset timestamp.
+    fableWeekly,
   };
 }
 
@@ -410,6 +435,21 @@ export class ProviderUsageMonitor extends EventEmitter {
             resetLabel: null,
             unavailable: true,
           };
+      }
+      // A CLI-declared stale frame is older than the last successful sample. Keep every value
+      // from that successful sample instead of allowing the provider's cache to move backward.
+      if (sourceStale && previous.checkedAt && hasUsage(previous)) {
+        this.state[provider] = {
+          ...previous,
+          ...(sample.fableWeeklyUnavailable === true
+            ? { fableWeeklyUnavailable: true }
+            : {}),
+          status: 'stale',
+        };
+        if (sample.fableWeeklyUnavailable === true && previous.fableWeekly?.shared === true) {
+          this.state[provider].fableWeekly = sample.fableWeekly;
+        }
+        return;
       }
       if (!hasUsage(sample)) {
         this.state[provider] = {

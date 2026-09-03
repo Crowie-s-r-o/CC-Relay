@@ -175,7 +175,7 @@ The task detail **Changes** action opens on **Exact task edits**, a per-file seq
 
 ### Provider subscription usage
 
-The global header shows four compact progress bars for Claude's current five-hour session window, Claude's all-model weekly window, Claude's Fable weekly window, and Codex's weekly window. The values refresh every five minutes, show reset details on hover, and retain their last-known values when a provider is temporarily unavailable. Amber begins at 70 percent used and red begins at 90 percent used.
+The global header shows five compact progress bars for Claude's current five-hour session window, Claude's all-model weekly window, Claude's distinct Fable weekly usage, Codex's five-hour window, and Codex's weekly window. The values refresh every 30 seconds, show provider-reported reset details on hover, and retain their last successful values when a provider returns stale data or is temporarily unavailable. Fable never borrows the all-model Claude percentage or reset. Green applies below 50 percent, yellow from 50 through 74, orange from 75 through 89, and red from 90.
 
 The monitor uses each installed, authenticated provider CLI. It does not add API keys or copy provider credentials into CC Relay. The former header **Pause queue** action is removed; the backend pause contract remains available to queue-management integrations.
 

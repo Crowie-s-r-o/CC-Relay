@@ -2988,15 +2988,32 @@ textarea::placeholder {
   color: var(--danger);
 }
 
+/*
+ * The strip holds as many quick actions as the operator configured, inside the half row it
+ * shares with push-to-talk. It scrolls sideways rather than wrapping: the saved-skill row is
+ * contracted to stay one control tall at the 400px minimum composer width and at 480px, and
+ * a wrap would grow the composer instead of the strip.
+ */
 .quick-skill-list {
-  display: grid;
+  display: flex;
   min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+
+/* With every quick action deleted, push-to-talk takes the whole row back. */
+.composer-quick-actions:has(.quick-skill-list[hidden]) {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .quick-skill-button {
   display: grid;
   grid-template-columns: 24px minmax(0, 1fr);
-  min-width: 0;
+  flex: 1 1 auto;
+  min-width: 92px;
+  max-width: 100%;
   min-height: 34px;
   align-items: center;
   gap: 7px;
@@ -3014,10 +3031,15 @@ textarea::placeholder {
   background: color-mix(in srgb, var(--composer-accent, var(--blue)) 9%, #f5f8f7);
 }
 
+/*
+ * The outline is inset. .quick-skill-list scrolls on x, which makes it a scroll container on
+ * both axes, so an outset ring on the first or last button is clipped at the scroll edge and
+ * the keyboard operator loses the focus indicator exactly where it matters.
+ */
 .quick-skill-button:focus-visible {
   border-color: var(--composer-accent, var(--blue));
   outline: 2px solid var(--composer-accent, var(--blue));
-  outline-offset: 1px;
+  outline-offset: -2px;
 }
 
 .quick-skill-button:disabled {
@@ -3062,6 +3084,143 @@ textarea::placeholder {
   font-family: var(--font-mono);
   font-size: 7.5px;
   font-weight: 650;
+}
+
+.quick-skill-heading-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.quick-skill-editor-list {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.quick-skill-row {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid #d7dfdc;
+  border-radius: 9px;
+  background: #f5f8f7;
+}
+
+.quick-skill-row[data-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.quick-skill-row-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.quick-skill-row-label {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 2px;
+}
+
+.quick-skill-row-prompt {
+  display: grid;
+  gap: 2px;
+}
+
+.quick-skill-row-label span,
+.quick-skill-row-prompt span {
+  color: #73817c;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.quick-skill-row-label input,
+.quick-skill-row-prompt textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 5px 7px;
+  border: 1px solid #d7dfdc;
+  border-radius: 7px;
+  color: #34463f;
+  background: #fff;
+  font: inherit;
+  font-size: 9px;
+}
+
+.quick-skill-row-prompt textarea {
+  resize: vertical;
+  font-family: var(--font-mono);
+}
+
+.quick-skill-row-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.quick-skill-row-action {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0 6px;
+  border: 1px solid #d7dfdc;
+  border-radius: 7px;
+  color: #34463f;
+  background: #fff;
+  font-size: 8.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.quick-skill-row-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--composer-accent, var(--blue)) 55%, #d7dfdc);
+}
+
+.quick-skill-row-action:disabled {
+  cursor: not-allowed;
+  /* Readable, not invisible: a disabled Move up still has to say which row is first. */
+  opacity: .48;
+}
+
+.quick-skill-row-remove:hover:not(:disabled) {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.quick-skill-row-label input:focus-visible,
+.quick-skill-row-prompt textarea:focus-visible,
+.quick-skill-row-action:focus-visible {
+  border-color: var(--composer-accent, var(--blue));
+  outline: 2px solid var(--composer-accent, var(--blue));
+  outline-offset: 1px;
+}
+
+.quick-skill-row-hint:empty {
+  display: none;
+}
+
+.quick-skill-row-hint {
+  color: var(--danger);
+  font-size: 8px;
+  font-weight: 700;
+}
+
+.quick-skill-editor-status {
+  color: #73817c;
+  font-size: 8px;
+  font-weight: 650;
+}
+
+/* A refused preferences save takes over the status line, so it must not read as a count. */
+.quick-skill-editor-status[data-kind="failure"] {
+  color: var(--danger);
+  font-weight: 700;
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -3919,6 +4078,35 @@ textarea::placeholder {
   padding: 40px;
   color: var(--slate);
   text-align: center;
+}
+
+/* Focus landmark. When the terminal window auto-closes because the task went away,
+   focusTaskDetailLandmark() stamps a programmatic tabindex: -1 on this heading (or on the
+   region behind it) and moves focus here, so the operator is never stranded on <body>. That
+   focus must be visible.
+
+   :focus is listed alongside :focus-visible on purpose, and the pair is the whole point.
+   Browsers only match :focus-visible on a programmatically focused non-input element when
+   the previously focused element already matched it, so after a mouse gesture the ring the
+   task asks for would draw nothing in exactly the case it exists for. tabindex: -1 is
+   unreachable by Tab, so :focus here can only ever mean this programmatic hand-off.
+
+   The ring is --signal, not the house #6daff4: on the panel's white surface #6daff4 measures
+   2.31:1, under the 3:1 floor for a focus indicator, while --signal reaches 4.88:1. */
+.empty-detail[tabindex]:focus-visible,
+.empty-detail h2[tabindex]:focus-visible,
+.empty-detail[tabindex]:focus,
+.empty-detail h2[tabindex]:focus {
+  outline: 3px solid var(--signal);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+
+html[data-theme="dark"] .empty-detail[tabindex]:focus-visible,
+html[data-theme="dark"] .empty-detail h2[tabindex]:focus-visible,
+html[data-theme="dark"] .empty-detail[tabindex]:focus,
+html[data-theme="dark"] .empty-detail h2[tabindex]:focus {
+  outline-color: var(--app-blue);
 }
 
 .empty-glyph {
@@ -15041,6 +15229,38 @@ html[data-theme="dark"] .quick-skill-copy small {
   color: var(--app-text-muted);
 }
 
+html[data-theme="dark"] .quick-skill-row {
+  border-color: var(--app-border);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .quick-skill-row[data-invalid="true"] {
+  border-color: var(--danger);
+}
+
+html[data-theme="dark"] .quick-skill-row-label input,
+html[data-theme="dark"] .quick-skill-row-prompt textarea,
+html[data-theme="dark"] .quick-skill-row-action {
+  border-color: var(--app-border);
+  color: var(--app-text-body);
+  background: var(--app-panel);
+}
+
+html[data-theme="dark"] .quick-skill-row-action:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--composer-accent, var(--app-blue)) 52%, var(--app-border));
+}
+
+html[data-theme="dark"] .quick-skill-row-label span,
+html[data-theme="dark"] .quick-skill-row-prompt span,
+html[data-theme="dark"] .quick-skill-editor-status {
+  color: var(--app-text-muted);
+}
+
+/* Outranks the muted rule above, which is more specific than the light failure rule. */
+html[data-theme="dark"] .quick-skill-editor-status[data-kind="failure"] {
+  color: var(--danger);
+}
+
 html[data-theme="dark"] .voice-input-control-row strong,
 html[data-theme="dark"] .voice-input-hold {
   color: var(--app-text-body);
@@ -18538,3 +18758,671 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   color: #ff9aad;
   background: color-mix(in srgb, var(--app-red) 15%, var(--app-control));
 }
+
+/* Terminal window dialog (full viewport terminal review surface).
+   ============================================================
+
+   Opened from the events toolbar. The live .events-section node is reparented into
+   #terminal-window-mount and carries data-terminal-window="open" while it is docked, so
+   there is exactly one render target and every existing Tokyo Night ledger rule keeps
+   applying unchanged. The window rail replaces the inline #event-filters rail.
+
+   The dialog frame follows the conventions already used by .terminal-settings-modal and
+   .task-detail-modal: a transparent dialog that owns width, height and shadow, a rounded
+   card that owns the surface and clips it, and a tinted ::backdrop. Light and dark are
+   declared together, with the dark half restated at the end of this block.
+
+   The mount repeats the ledger background value literally instead of extending the
+   .events-section selector, because test/plan-visibility.test.mjs slices the ledger palette
+   with indexOf('.events-section {') and a comma extension would empty that slice.
+
+   This block appends no reduce-mode motion query. Five suites anchor on the LAST such query
+   in this file with lastIndexOf, so neither a new one nor a comment quoting it may appear
+   below this point. The only motion here is one color transition, declared inside a
+   prefers-reduced-motion: no-preference guard.
+   ============================================================ */
+
+/* Toolbar open control. It sits inside .event-tools, so it inherits the shared terminal
+   button geometry from .event-filters button, .event-tools button and only adds its own
+   cyan identity, glyph, and explicit disabled treatment.
+
+   The identity rules are scoped under .event-tools for the same reason
+   .event-tools .thinking-visibility-button is: the shared color, border and background come
+   from .event-tools button, whose trailing element selector outranks a bare class. */
+.event-tools .terminal-window-open {
+  border-color: rgb(125 207 255 / 26%);
+  color: var(--term-tap-hover);
+  background: rgb(18 30 42 / 55%);
+}
+
+.terminal-window-open i {
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1;
+}
+
+.event-tools .terminal-window-open:hover:not(:disabled) {
+  border-color: rgb(125 207 255 / 48%);
+  color: #dff2ff;
+  background: rgb(125 207 255 / 12%);
+}
+
+.event-tools .terminal-window-open:disabled {
+  border-color: rgb(123 129 141 / 22%);
+  color: var(--term-muted);
+  cursor: not-allowed;
+  background: rgb(18 22 42 / 35%);
+  opacity: 0.45;
+}
+
+/* Dialog frame --------------------------------------------------- */
+.terminal-window-modal {
+  width: min(96vw, 1720px);
+  max-width: 96vw;
+  height: min(94vh, 1180px);
+  max-height: 94vh;
+  padding: 0;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  box-shadow: 0 40px 120px rgb(14 21 36 / 30%);
+}
+
+.terminal-window-modal::backdrop {
+  background: rgb(14 21 36 / 52%);
+}
+
+.terminal-window-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border-radius: 16px;
+  color: var(--ink);
+  background: var(--paper);
+}
+
+/* Header. A calm identity block on the left, the view rail as the primary control, the
+   docked tools cluster next to it, and a close affordance pinned to the far edge. Four
+   zones, so the column gap is tightened from 20px to 18px to keep the rail and the tools
+   from drifting apart on a narrow desktop. */
+.terminal-window-header {
+  display: grid;
+  grid-template-areas: "heading views tools close";
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  gap: 18px;
+  align-items: center;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.terminal-window-heading {
+  grid-area: heading;
+  min-width: 0;
+}
+
+.terminal-window-heading .eyebrow {
+  margin-bottom: 4px;
+  font-size: 8px;
+}
+
+.terminal-window-heading h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 19px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The subtitle renders at 12px on the --paper header, where the house --slate measures
+   3.98:1, under the 4.5:1 AA floor. --graphite is the light palette's high contrast small
+   text token and takes it to 10.36:1, the same token the rail already uses. */
+.terminal-window-heading p {
+  margin: 3px 0 0;
+  overflow: hidden;
+  color: var(--graphite);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* View rail. Same shape language as .event-filters (label plus count pill, pressed state
+   marked by tint and an inset underline) at a larger, more prominent size, in app colors
+   because the window chrome is an app surface rather than the terminal itself.
+
+   The container is id qualified because it is a singleton inside one dialog and the id keeps
+   it above the header grid rules; its buttons stay class scoped at ordinary specificity. Both
+   themes must therefore qualify the container the same way or light would outrank dark.
+
+   The unpressed label and its count pill use --graphite rather than the usual --slate. This
+   is the window's primary view switcher and it renders at 11px/600 with a 9px pill, and on
+   the light --mist rail --slate only reaches 3.67:1, below the 4.5:1 AA floor for text that
+   small. --graphite is the palette's high contrast small text token, already paired with
+   --mist by the planner chips, and it lifts the label to 9.55:1 and the pill to 8.22:1. The
+   dark rules below keep --app-text-muted, which already measures 7.52:1 on --app-well. */
+#terminal-window-views.terminal-window-views {
+  display: flex;
+  grid-area: views;
+  gap: 4px;
+  align-items: center;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--mist);
+}
+
+.terminal-window-views button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+  padding: 6px 14px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  color: var(--graphite);
+  cursor: pointer;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.terminal-window-views button b {
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  color: var(--graphite);
+  background: rgb(116 128 150 / 14%);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-align: center;
+}
+
+/* Hover is deliberately NEUTRAL and deliberately subordinate. Hover and pressed used to be
+   the same accent hue at 22% and 38% border alpha, so on this 42px rail a hovered unselected
+   button read as selected until the operator hunted for the inset underline. Hover now moves
+   the OPPOSITE way from pressed on the luminance axis: it washes the button with the neutral
+   --graphite at 10% (#dfe4eb, one step DARKER than the --mist rail) and carries no accent
+   hue, no underline and no elevation. It is scoped away from the pressed button, so hovering
+   the current view can never repaint any part of the pressed treatment. */
+.terminal-window-views button:hover:not([aria-pressed="true"]) {
+  border-color: rgb(52 64 90 / 20%);
+  color: var(--ink);
+  background: rgb(52 64 90 / 10%);
+}
+
+/* Pressed owns every strong signal at once, on five channels hover cannot borrow: the only
+   accent hue on the rail, the only surface LIGHTER than the rail (solid --paper), the only
+   3px inset underline, the only elevation shadow, and the only tinted count pill.
+
+   The accent is #2239c9, the light pressed indigo already used by .queue-view-switch and
+   .history-period-tabs, not --signal (#4f5ff6). --signal measured 4.88:1 for the label and
+   4.05:1 for the count pill, both under the 4.5:1 AA floor at 11px and 9px; #2239c9 takes
+   them to 8.41:1 and 6.98:1. Moving this one rail's selected accent off --signal is a
+   deliberate design decision, not a drift. The pill keeps the --signal tint because the
+   approved 6.98:1 is measured against it. */
+.terminal-window-views button[aria-pressed="true"] {
+  border-color: rgb(34 57 201 / 55%);
+  color: #2239c9;
+  background: var(--paper);
+  box-shadow: inset 0 -3px 0 #2239c9, 0 1px 3px rgb(24 34 56 / 14%);
+}
+
+.terminal-window-views button[aria-pressed="true"] b {
+  color: #2239c9;
+  background: rgb(79 95 246 / 14%);
+}
+
+/* The focus ring is drawn inside the control so the compact breakpoint's scrolling rail
+   cannot clip it, which is the one flaw the inline .event-filters rail still carries. */
+.terminal-window-views button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: -2px;
+}
+
+/* The close glyph takes --graphite for the same reason the rail and the subtitle do: on the
+   --paper header --slate measures 3.98:1 and --graphite 10.36:1. The multiplication sign is
+   a thin 21px stroke, so it needs the higher token even though its box is large. */
+.terminal-window-close {
+  display: inline-flex;
+  grid-area: close;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--graphite);
+  cursor: pointer;
+  background: var(--paper);
+  font-size: 21px;
+  line-height: 1;
+}
+
+.terminal-window-close:hover {
+  border-color: rgb(201 65 85 / 38%);
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+
+.terminal-window-close:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+/* Docked tools slot ---------------------------------------------
+   While the window is open the live .event-tools cluster (Thinking and Copy log) is moved
+   out of the now hidden .event-toolbar row and into this header slot, so the operator keeps
+   both controls and the window loses a full width strip of dead space under the header.
+
+   The cluster arrives wearing the ledger's chrome: a dark navy chip carrying --term-muted2.
+   On the window's own --paper header that is both illegible and unmistakably leftover
+   plumbing, so these rules restate it in the header's own language. The chips become the
+   same 34px, --line bordered, 10px radius --paper control the close button already is, so
+   the right end of the header reads as one family, and they take the rail's 11px mono label
+   so the two clusters are typographically the same voice.
+
+   The container is id qualified for the same reason the view rail is. .detail-panel
+   .event-tools button already carries docked geometry at (0,2,1) and this dialog is a
+   descendant of .detail-panel, so a bare class pair would win on source order alone.
+
+   None of these rules may declare display. The open control is hidden below at only
+   (0,2,0), and a display here would outrank it and bring a redundant Window button back
+   inside the already open window. */
+.terminal-window-tools {
+  display: flex;
+  grid-area: tools;
+  gap: 8px;
+  align-items: center;
+}
+
+/* Before the cluster is moved in the slot holds nothing, so it must not paint or reserve
+   anything of its own. */
+.terminal-window-tools:empty {
+  display: none;
+}
+
+/* The window already owns the terminal, so its own open control is redundant while docked.
+   That control travels into this slot with the cluster, which is why it is hidden through
+   its new parent and not through the section it no longer sits inside. */
+.terminal-window-tools .terminal-window-open {
+  display: none;
+}
+
+#terminal-window-tools.terminal-window-tools .event-tools {
+  gap: 8px;
+}
+
+#terminal-window-tools.terminal-window-tools .event-tools button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border-color: var(--line);
+  border-radius: 10px;
+  color: var(--graphite);
+  background: var(--paper);
+  font-size: 11px;
+}
+
+#terminal-window-tools.terminal-window-tools .event-tools button:hover:not(:disabled) {
+  border-color: rgb(52 64 90 / 26%);
+  color: var(--ink);
+  background: var(--mist);
+}
+
+/* Thinking ships aria-pressed="true", and the ledger paints that state as #eadfff on a
+   violet wash, which is invisible on white. The header uses the same pressed indigo the
+   view rail does, at 7.43:1 on --signal-soft. */
+#terminal-window-tools.terminal-window-tools .event-tools button[aria-pressed="true"] {
+  border-color: rgb(34 57 201 / 40%);
+  color: #2239c9;
+  background: var(--signal-soft);
+}
+
+#terminal-window-tools.terminal-window-tools .thinking-visibility-button i {
+  border-color: rgb(52 64 90 / 38%);
+  background: rgb(52 64 90 / 12%);
+}
+
+#terminal-window-tools.terminal-window-tools .thinking-visibility-button i::after {
+  background: var(--graphite);
+}
+
+#terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i {
+  border-color: rgb(34 57 201 / 52%);
+  background: rgb(34 57 201 / 16%);
+}
+
+#terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i::after {
+  background: #2239c9;
+}
+
+/* The ledger ring is --term-blue, which measures 2.31:1 on this white header, under the
+   3:1 floor for a focus indicator. The window's own --signal ring reaches 4.88:1 and
+   matches the rail standing beside it.
+
+   This rule is id qualified and sets the whole outline shorthand, so its dark companion in
+   the theme half below MUST carry the same id or the dark override silently never applies. */
+#terminal-window-tools.terminal-window-tools .event-tools button:focus-visible {
+  outline: 2px solid var(--signal);
+  outline-offset: 2px;
+}
+
+/* Body and mount. Both carry the ledger background value so a reparented terminal never
+   exposes a light seam while the section is moving in or out. */
+.terminal-window-body {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  overflow: hidden;
+  background: #08090d;
+}
+
+.terminal-window-mount {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #08090d;
+}
+
+/* Docked terminal. The section keeps its own palette, typography and every descendant rule;
+   only its frame, its fill, and the rail it no longer owns change.
+
+   FOUR rows, not five. The .event-toolbar row is display: none while docked, so it stops
+   being a grid item, and the remaining children are the overview details, the scrollback,
+   the continuation form and the status bar. A five row template would hand minmax(0, 1fr)
+   to the continuation form and collapse the scrollback to its own content height, which is
+   the whole reading surface. Count the visible children before touching this line. */
+#terminal-window-mount > .events-section[data-terminal-window="open"] {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+/* The window rail replaces the inline rail. */
+.events-section[data-terminal-window="open"] #event-filters {
+  display: none;
+}
+
+/* Every control this row carried now lives in the dialog header: #terminal-window-views
+   replaces the filter rail and #terminal-window-tools holds the moved cluster. What is left
+   is a full width 34px strip of nothing, so the row itself goes. Hiding it also hides the
+   Window button in the case where the cluster never made the move. */
+.events-section[data-terminal-window="open"] .event-toolbar {
+  display: none;
+}
+
+.events-section[data-terminal-window="open"] .event-metrics > span {
+  padding: 6px 14px;
+}
+
+/* Reading room. The scrollback is the hero: it takes all remaining height and gains a
+   generous gutter, while the type scale and colors stay exactly as the ledger defines them. */
+.events-section[data-terminal-window="open"] .event-list {
+  min-height: 0;
+  max-height: none;
+  padding: 20px 28px 28px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+/* Expanded command output is capped at 260px in the pinned inspector. A near full viewport
+   review window can afford much more before the reader loses the surrounding trace. */
+.events-section[data-terminal-window="open"] .event-output > pre.event-output-content {
+  max-height: min(60vh, 720px);
+}
+
+.events-section[data-terminal-window="open"] .events-empty {
+  min-height: 100%;
+  padding: 40px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .terminal-window-open,
+  .terminal-window-views button,
+  .terminal-window-tools .event-tools button,
+  .terminal-window-close {
+    transition: color 140ms ease, border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+  }
+}
+
+/* Compact: the header splits into an identity row and a full width rail row, and the rail
+   scrolls horizontally instead of compressing or dropping views. The tools cluster joins the
+   identity row rather than sharing row two, so the rail keeps the whole width it needs to
+   scroll and no zone is left alone in an oversized auto column. */
+@media (max-width: 1100px) {
+  .terminal-window-header {
+    grid-template-areas:
+      "heading tools close"
+      "views views views";
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    gap: 12px 14px;
+  }
+
+  #terminal-window-views.terminal-window-views {
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .terminal-window-views::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@media (max-width: 760px) {
+  .terminal-window-modal {
+    width: calc(100vw - .75em);
+    max-width: calc(100vw - .75em);
+    height: calc(100vh - .75em);
+    max-height: calc(100vh - .75em);
+    border-radius: 12px;
+  }
+
+  .terminal-window-card {
+    border-radius: 12px;
+  }
+
+  .terminal-window-header {
+    gap: 10px 12px;
+    padding: 10px 14px;
+  }
+
+  .terminal-window-heading h2 {
+    font-size: 16px;
+  }
+
+  .terminal-window-heading p {
+    font-size: 11px;
+  }
+
+  #terminal-window-views.terminal-window-views {
+    padding: 3px;
+    border-radius: 11px;
+  }
+
+  .terminal-window-views button {
+    gap: 6px;
+    min-height: 28px;
+    padding: 5px 10px;
+    font-size: 10px;
+  }
+
+  .terminal-window-close {
+    width: 30px;
+    height: 30px;
+    font-size: 19px;
+  }
+
+  /* The tools cluster shares the identity row with the heading here, so it gives back the
+     width the truncating title needs before the title has to truncate. */
+  #terminal-window-tools.terminal-window-tools .event-tools {
+    gap: 6px;
+  }
+
+  #terminal-window-tools.terminal-window-tools .event-tools button {
+    min-height: 30px;
+    padding: 5px 9px;
+    font-size: 10px;
+  }
+
+  .events-section[data-terminal-window="open"] .event-list {
+    padding: 12px 14px 20px;
+  }
+}
+
+/* Dark theme. The chrome follows the same surface steps as every other app dialog; the body
+   and mount stay theme invariant because the terminal itself is. */
+html[data-theme="dark"] .terminal-window-modal {
+  box-shadow: 0 40px 120px rgb(0 0 0 / 60%);
+}
+
+html[data-theme="dark"] .terminal-window-modal::backdrop {
+  background: rgb(4 5 7 / 74%);
+  backdrop-filter: blur(5px);
+}
+
+html[data-theme="dark"] .terminal-window-card {
+  color: var(--ink);
+  background: #17181d;
+}
+
+html[data-theme="dark"] .terminal-window-header {
+  border-color: #2f323a;
+  background: #17181c;
+}
+
+html[data-theme="dark"] .terminal-window-heading h2 {
+  color: var(--ink);
+}
+
+html[data-theme="dark"] .terminal-window-heading p {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] #terminal-window-views.terminal-window-views {
+  border-color: var(--app-border);
+  background: var(--app-well);
+}
+
+html[data-theme="dark"] .terminal-window-views button {
+  color: var(--app-text-muted);
+}
+
+html[data-theme="dark"] .terminal-window-views button b {
+  color: var(--app-text-muted);
+  background: rgb(156 162 173 / 16%);
+}
+
+/* Dark hover is the same neutral idea as light, expressed the way this theme expresses a
+   resting control everywhere else: the plain --app-control step up from the --app-well rail,
+   with the neutral --app-border-strong edge. No blue, no underline, no elevation. */
+html[data-theme="dark"] .terminal-window-views button:hover:not([aria-pressed="true"]) {
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
+  background: var(--app-control);
+}
+
+/* Dark pressed keeps the accent for itself. The surface is the app's own dark selected
+   segment (app-blue 16% over --app-control, #2a3244), which is both a step above the hover
+   surface and the only blue tinted surface on the rail, and it carries the 3px underline and
+   the elevation hover never gets. Both states clear AA: the label reads 14.13:1 hovered and
+   10.5:1 pressed, and the underline sits at 5.07:1 against its own surface. */
+html[data-theme="dark"] .terminal-window-views button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--app-blue) 62%, var(--app-border));
+  color: #dceaff;
+  background: color-mix(in srgb, var(--app-blue) 16%, var(--app-control));
+  box-shadow: inset 0 -3px 0 var(--app-blue), 0 1px 3px rgb(0 0 0 / 45%);
+}
+
+html[data-theme="dark"] .terminal-window-views button[aria-pressed="true"] b {
+  color: #dceaff;
+  background: rgb(122 162 247 / 22%);
+}
+
+/* The moved chips carry the SAME id qualification their light rule does. That light rule is
+   #terminal-window-tools.terminal-window-tools ... :focus-visible at one id, three classes and
+   one element, and it sets the whole outline shorthand, so a bare class companion here would
+   lose the cascade no matter where it sits in the file and the chips would keep the light ring
+   in dark theme. The rail and the close control need no id because their light halves carry
+   none. --app-blue reaches 7.04:1 against the dark header this ring paints on. */
+html[data-theme="dark"] .terminal-window-views button:focus-visible,
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .event-tools button:focus-visible,
+html[data-theme="dark"] .terminal-window-close:focus-visible {
+  outline-color: var(--app-blue);
+}
+
+/* Dark header tools. The ledger chrome is already dark, so this is a smaller correction
+   than the light half, but the chips still have to be the app's control surface rather than
+   the ledger's navy wash, and Thinking's violet pressed state still has to become the app's
+   own selected blue so it matches the rail beside it. */
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .event-tools button {
+  border-color: var(--app-border);
+  color: var(--app-text-body);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .event-tools button:hover:not(:disabled) {
+  border-color: var(--app-border-strong);
+  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-blue) 10%, var(--app-control));
+}
+
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .event-tools button[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--app-blue) 60%, var(--app-border));
+  color: var(--app-text);
+  background: color-mix(in srgb, var(--app-blue) 16%, var(--app-control));
+}
+
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button i {
+  border-color: var(--app-border-strong);
+  background: rgb(156 162 173 / 16%);
+}
+
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button i::after {
+  background: var(--app-text-muted);
+}
+
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i {
+  border-color: color-mix(in srgb, var(--app-blue) 62%, var(--app-border));
+  background: rgb(122 162 247 / 22%);
+}
+
+html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i::after {
+  background: var(--app-blue);
+}
+
+html[data-theme="dark"] .terminal-window-close {
+  border-color: var(--app-border);
+  color: var(--app-text-muted);
+  background: var(--app-control);
+}
+
+html[data-theme="dark"] .terminal-window-close:hover {
+  border-color: color-mix(in srgb, var(--app-red) 48%, var(--app-border));
+  color: var(--app-red);
+  background: color-mix(in srgb, var(--app-red) 12%, var(--app-control));
+}
+
+/* End terminal window dialog. */

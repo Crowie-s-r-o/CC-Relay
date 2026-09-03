@@ -29,6 +29,22 @@ The payloads were already large during the diagnosis: `/api/tasks` returned abou
 > [!done]
 > The normal list endpoint now returns compact task summaries, selected detail is revision-gated, unchanged card inputs preserve the existing DOM, and the two-second snapshot interval is replaced by a 15-second safety poll behind SSE. Conversation history and search filter canonical messages inside SQLite before JavaScript receives payloads. Task-card images load only near the viewport, and new activity rows keep bounded display output while exact raw provider events remain in task artifacts. See [[memory-efficiency]].
 
+## Task-card thumbnail flicker
+
+A full task-list rebuild must carry loaded-image state across the swap. `releaseTaskAttachmentPreviews()` originally stripped `src` from every preview node before `elements.taskList.innerHTML` was replaced, and `observeTaskAttachmentPreviews()` then relied on the intersection observer to reload. The observer callback is asynchronous, so at least one painted frame showed empty thumbnails. Because `taskListRenderSignature()` covers the full visible task objects, any ticking field on a running task changed the signature, and a 150 ms SSE debounce turned that into a constant blink on every card with reference images.
+
+> [!warning]
+> Do not repair this by trimming the render signature. Render-skip signatures must cover all derived data, or stale cards survive a real change. The repair belongs in the rebuild path, not in the change detector.
+
+`releaseTaskAttachmentPreviews()` now leaves the doomed nodes alone and returns the set of `data-preview-source` values that were actually painted. `observeTaskAttachmentPreviews(previouslyShowing)` sets `src` on each matching replacement node synchronously, before `observe()`. The observer's first callback still releases anything genuinely offscreen through its existing `else if (image.hasAttribute('src'))` branch, so viewport-bounded loading is unchanged while the visible thumbnails never blank.
+
+`GET /api/tasks/:id/attachments/image-N` is keyed by the stable attachment id, never by array position. The route answers with `Cache-Control: private, max-age=60`, a strong `ETag`, and a `304` for a matching `If-None-Match`, so a burst of rebuilds reuses the decoded image instead of refetching over loopback.
+
+> [!caution]
+> Attachment bytes are not immutable for a URL. Task ids are `INTEGER PRIMARY KEY AUTOINCREMENT` and restart at 1 after a `.data` wipe, so `/api/tasks/3/attachments/image-1` can later serve a different image. The 60-second freshness window bounds that mismatch: for at most a minute after a wipe a card or an open-in-new-tab link could show the previous workspace's thumbnail. Do not lengthen it, and do not add `immutable`.
+>
+> `no-cache` plus the `ETag` was rejected as the alternative. Every revalidation re-runs `readFileSync` and a full sha256 before it can compare, and task-list rebuilds fire on a 150 ms SSE debounce. The window is a request-rate bound, not the flicker fix: the blank frame is removed by the synchronous `src` restore in the renderer.
+
 The renderer still rebuilds a changed list as one subtree and rebuilds a changed selected event window. Those operations are now bounded by compact inputs, unchanged-state gates, the existing 500-event detail window, and viewport image loading. A future keyed patcher may reduce changed-state work further, but it is no longer required to stop idle refreshes from repeatedly reconstructing the same DOM.
 
 ## Secondary backend pause

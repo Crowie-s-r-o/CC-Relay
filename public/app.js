@@ -68,7 +68,15 @@ import {
   voiceShortcutMatches,
   voiceShortcutReleased,
 } from './voice-input.js';
-import { quickSkillById } from './quick-skills.js';
+import {
+  DEFAULT_QUICK_SKILLS,
+  MAX_QUICK_SKILLS,
+  MAX_QUICK_SKILL_LABEL_LENGTH,
+  MAX_QUICK_SKILL_PROMPT_LENGTH,
+  normalizeQuickSkills,
+  QUICK_SKILL_ID_PATTERN,
+  quickSkillById,
+} from './quick-skills.js';
 import { parallelClaudeRestartRequired, projectQueueRestartRequired } from './project-queue-state.js';
 import { terminalClosePresentation } from './terminal-close-state.js';
 import {
@@ -392,6 +400,20 @@ function cachedVoiceInputPreferences() {
   });
 }
 
+/*
+ * First paint only. The server record stays authoritative: restoreUiPreferences overwrites
+ * this the moment it answers, and a missing quickSkills member there means defaults, not
+ * whatever this cache happens to hold.
+ */
+function cachedQuickSkills() {
+  try {
+    const saved = localStorage.getItem('relay.quickSkills');
+    return normalizeQuickSkills(saved === null ? null : JSON.parse(saved));
+  } catch {
+    return normalizeQuickSkills(null);
+  }
+}
+
 function normalizeRunningTaskLayout(value) {
   const rows = Number(value?.rows);
   const width = Number(value?.width);
@@ -409,6 +431,19 @@ function cachedRunningTaskLayout() {
   }
 }
 
+/*
+ * The Terminal window remembers the view the operator last read, app wide and across
+ * restarts. The shared ui-layout-preferences record stays authoritative because the
+ * desktop app gets a new port, and therefore a new localStorage origin, on every launch.
+ * The cache below only speeds up first paint.
+ */
+const TERMINAL_WINDOW_VIEWS = ['all', 'conversation', 'mine', 'ai'];
+const TERMINAL_WINDOW_VIEW_DEFAULT = 'all';
+
+function normalizeTerminalWindowView(value) {
+  return TERMINAL_WINDOW_VIEWS.includes(value) ? value : TERMINAL_WINDOW_VIEW_DEFAULT;
+}
+
 const state = {
   tasks: [],
   runningTasks: [],
@@ -422,6 +457,7 @@ const state = {
   taskView: localStorage.getItem('relay.taskView') === 'history' ? 'history' : 'queue',
   historyPeriod: ['day', 'week', 'month'].includes(localStorage.getItem('relay.historyPeriod'))
     ? localStorage.getItem('relay.historyPeriod') : 'week',
+  terminalWindowView: normalizeTerminalWindowView(localStorage.getItem('relay.terminalWindowView')),
   historyAnchor: new Date(),
   taskSearchQuery: '',
   taskSearchResults: [],
@@ -479,6 +515,11 @@ const state = {
   completionAlerts: new CompletionAlerts(),
   completionAlertPreferences: cachedCompletionAlertPreferences(),
   voiceInputPreferences: cachedVoiceInputPreferences(),
+  quickSkills: cachedQuickSkills(),
+  // Last folded token of the strip markup inputs. null forces the first render to build.
+  quickSkillStripSignature: null,
+  // Set when a preferences PATCH was refused, so the editor can say the record is not saved.
+  uiPreferencesSaveError: '',
   voiceInputEngine: { state: 'checking', installed: false },
   voiceInputActivity: 'idle',
   voiceInputMessage: '',
@@ -529,6 +570,11 @@ const state = {
   taskReferenceMenuTaskId: null,
   taskReferenceLoadSequences: new Map(),
   eventFilter: 'all',
+  // The inline six button rail keeps its own selection while the Terminal window borrows
+  // state.eventFilter for the window view. terminalWindowDock is the exact DOM slot the
+  // reparented .events-section returns to, and its presence means the window is docked.
+  inlineEventFilter: 'all',
+  terminalWindowDock: null,
   showThinking: true,
   eventFollow: true,
   eventTaskId: null,
@@ -877,8 +923,17 @@ const elements = {
   termEffort: document.querySelector('#term-effort'),
   termDuration: document.querySelector('#term-duration'),
   eventFilters: [...document.querySelectorAll('[data-event-filter]')],
+  eventTools: document.querySelector('.event-tools'),
   thinkingVisibilityButton: document.querySelector('#thinking-visibility-button'),
   copyEventsButton: document.querySelector('#copy-events-button'),
+  terminalWindowOpenButton: document.querySelector('#terminal-window-open'),
+  terminalWindowModal: document.querySelector('#terminal-window-modal'),
+  terminalWindowMount: document.querySelector('#terminal-window-mount'),
+  terminalWindowTools: document.querySelector('#terminal-window-tools'),
+  terminalWindowTitle: document.querySelector('#terminal-window-title'),
+  terminalWindowSubtitle: document.querySelector('#terminal-window-subtitle'),
+  terminalWindowClose: document.querySelector('#terminal-window-close'),
+  terminalWindowViews: [...document.querySelectorAll('[data-terminal-window-view]')],
   continuationForm: document.querySelector('#task-continuation-form'),
   continuationLabel: document.querySelector('#task-continuation-label'),
   continuationContext: document.querySelector('#task-continuation-context'),
@@ -923,7 +978,11 @@ const elements = {
   taskName: document.querySelector('#task-name'),
   promptLabel: document.querySelector('#prompt-label'),
   composerQuickActions: document.querySelector('#composer-quick-actions'),
-  quickSkillButtons: [...document.querySelectorAll('[data-quick-skill]')],
+  quickSkillList: document.querySelector('#quick-skill-list'),
+  quickSkillEditorList: document.querySelector('#quick-skill-editor-list'),
+  quickSkillAdd: document.querySelector('#quick-skill-add'),
+  quickSkillRestore: document.querySelector('#quick-skill-restore'),
+  quickSkillEditorStatus: document.querySelector('#quick-skill-editor-status'),
   voiceInputComposer: document.querySelector('#voice-input-composer'),
   voiceInputHold: document.querySelector('#voice-input-hold'),
   voiceInputHoldLabel: document.querySelector('#voice-input-hold-label'),
@@ -1026,21 +1085,34 @@ const taskAttachmentPreviewObserver = typeof window.IntersectionObserver === 'fu
   }, { rootMargin: '240px 0px' })
   : null;
 
+// The rebuilt nodes are discarded whole, so clearing their `src` first only
+// costs a blank frame. Report which sources were actually painted instead, so
+// the replacement nodes can be restored synchronously.
 function releaseTaskAttachmentPreviews() {
-  if (!taskAttachmentPreviewObserver) return;
+  const showing = new Set();
   for (const image of elements.taskList.querySelectorAll('img[data-preview-source][src]')) {
-    image.removeAttribute('src');
+    if (image.dataset.previewSource) showing.add(image.dataset.previewSource);
   }
-  taskAttachmentPreviewObserver.disconnect();
+  if (taskAttachmentPreviewObserver) taskAttachmentPreviewObserver.disconnect();
+  return showing;
 }
 
-function observeTaskAttachmentPreviews() {
+function observeTaskAttachmentPreviews(previouslyShowing = new Set()) {
   const images = elements.taskList.querySelectorAll('img[data-preview-source]');
   for (const image of images) {
-    if (taskAttachmentPreviewObserver) taskAttachmentPreviewObserver.observe(image);
-    else image.setAttribute('src', image.dataset.previewSource);
+    const source = image.dataset.previewSource;
+    if (!taskAttachmentPreviewObserver) {
+      image.setAttribute('src', source);
+      continue;
+    }
+    // Restoring before `observe()` keeps a visible thumbnail painted across the
+    // rebuild. The observer's first callback still releases anything that is
+    // genuinely offscreen, so viewport-bounded loading is preserved.
+    if (source && previouslyShowing.has(source)) image.setAttribute('src', source);
+    taskAttachmentPreviewObserver.observe(image);
   }
 }
+// end task attachment previews
 
 let voiceRecorder = null;
 
@@ -1280,6 +1352,8 @@ function uiPreferencesPayload() {
     runningTaskLayout: state.runningTaskLayout,
     completionAlerts: state.completionAlertPreferences,
     voiceInput: state.voiceInputPreferences,
+    terminalWindowView: state.terminalWindowView,
+    quickSkills: state.quickSkills,
   };
 }
 
@@ -1291,6 +1365,21 @@ function cacheUiPreferences(preferences = uiPreferencesPayload()) {
   localStorage.setItem(
     'relay.runningTaskLayout',
     JSON.stringify(normalizeRunningTaskLayout(preferences.runningTaskLayout)),
+  );
+  // A record written before terminalWindowView shipped carries no member. Keeping the
+  // live value there stops an older server from erasing the operator's saved choice.
+  localStorage.setItem(
+    'relay.terminalWindowView',
+    normalizeTerminalWindowView(preferences.terminalWindowView ?? state.terminalWindowView),
+  );
+  /*
+   * Unlike terminalWindowView above, a record with no quickSkills member means the built-in
+   * catalog, not "keep whatever is local". An empty array is the operator deleting them all,
+   * so it has to survive the round trip untouched.
+   */
+  localStorage.setItem(
+    'relay.quickSkills',
+    JSON.stringify(normalizeQuickSkills(preferences.quickSkills)),
   );
   const completionAlerts = normalizeCompletionAlertPreferences(preferences.completionAlerts);
   localStorage.setItem('relay.completionSound', completionAlerts.sound);
@@ -1603,6 +1692,7 @@ function renderVoiceInput() {
 function openVoiceInputSettings() {
   resetTerminalLayoutStatus();
   renderCompletionAlertSettings();
+  renderQuickSkillEditor({ rebuild: true });
   renderVoiceInput();
   if (!elements.terminalSettingsModal.open) elements.terminalSettingsModal.showModal();
   void refreshVoiceInputDevices({ requestPermission: state.voiceInputPreferences.enabled });
@@ -1755,21 +1845,65 @@ function setRunningTaskLayout(value, { persist = true } = {}) {
   requestAnimationFrame(syncHeaderHeight);
 }
 
+// begin ui preferences save
+/*
+ * This must track the JSON body cap on PATCH /api/ui-preferences in src/server.mjs. Quick-skill
+ * prompts are the only member large enough to reach it, and a body over the cap is refused on
+ * the wire, so the size is measured here and explained in the editor rather than discovered as
+ * a silent failure. The margin covers request framing and members the payload gains later; move
+ * this number and the route cap together or neither.
+ */
+const MAX_UI_PREFERENCES_PAYLOAD_BYTES = 1024 * 1024 - 16 * 1024;
+
+function uiPreferencesPayloadIssue(serialized) {
+  // Byte length, not string length: one emoji or accented character in a prompt is several
+  // bytes on the wire, and the route cap counts bytes.
+  const bytes = new TextEncoder().encode(serialized).length;
+  if (bytes <= MAX_UI_PREFERENCES_PAYLOAD_BYTES) return '';
+  const used = Math.ceil(bytes / 1024);
+  const cap = Math.floor(MAX_UI_PREFERENCES_PAYLOAD_BYTES / 1024);
+  return `These settings are too large to save (${used} KB of ${cap} KB). Shorten a quick-action prompt, then the next edit saves.`;
+}
+
+/*
+ * A refused save used to be a console warning alone, so the editor kept showing text the server
+ * never accepted and the next reload replaced it with the stale record. The message goes to the
+ * editor status line while terminal settings is open and to the composer alert otherwise, which
+ * is the non-blocking notice every other failed composer action already uses.
+ */
+function reportUiPreferencesSaveIssue(message) {
+  if (state.uiPreferencesSaveError === message) return;
+  state.uiPreferencesSaveError = message;
+  renderQuickSkillEditor();
+  if (message && !elements.terminalSettingsModal?.open) setComposerAlert(message);
+}
+
 function queueUiPreferencesSave() {
   cacheUiPreferences();
   window.clearTimeout(state.uiPreferencesSaveTimer);
   state.uiPreferencesSaveTimer = window.setTimeout(async () => {
     state.uiPreferencesSaveTimer = null;
+    // The request is built first so the size check measures the exact bytes that go on the wire
+    // rather than a second serialization that could drift from it.
+    const request = {
+      method: 'PATCH',
+      body: JSON.stringify(uiPreferencesPayload()),
+    };
+    const oversized = uiPreferencesPayloadIssue(request.body);
+    if (oversized) {
+      reportUiPreferencesSaveIssue(oversized);
+      return;
+    }
     try {
-      await api('/api/ui-preferences', {
-        method: 'PATCH',
-        body: JSON.stringify(uiPreferencesPayload()),
-      });
+      await api('/api/ui-preferences', request);
+      reportUiPreferencesSaveIssue('');
     } catch (error) {
       console.warn('Could not persist UI layout preferences.', error);
+      reportUiPreferencesSaveIssue('Could not save these settings. The last change is only in this window until it succeeds.');
     }
   }, 100);
 }
+// end ui preferences save
 
 async function restoreUiPreferences() {
   try {
@@ -1789,6 +1923,17 @@ async function restoreUiPreferences() {
     setRunningTaskLayout(preferences.runningTaskLayout, { persist: false });
     setCompletionAlertPreferences(preferences.completionAlerts, { persist: false });
     setVoiceInputPreferences(preferences.voiceInput, { persist: false });
+    /*
+     * Deliberately unlike terminalWindowView below. A record from a server that predates the
+     * member carries no quick skills at all, and the contract for that is the built-in
+     * catalog, so the value is passed through even when it is missing.
+     */
+    setQuickSkills(preferences.quickSkills, { persist: false });
+    // An older server that predates the member returns nothing here. The localStorage
+    // seed already in state stays, so the window still opens on the remembered view.
+    if (preferences.terminalWindowView != null) {
+      setTerminalWindowView(preferences.terminalWindowView, { persist: false, render: false });
+    }
     cacheUiPreferences(preferences);
     applyPanelWidths();
     applyTerminalHeight();
@@ -2037,8 +2182,7 @@ function selectProject(path, { persist = true } = {}) {
     state.taskSearchError = '';
     scheduleTaskSearch(0);
   }
-  elements.taskDetail.hidden = true;
-  elements.emptyDetail.hidden = false;
+  hideTaskDetailPanel();
   selectMode(state.taskMode);
   renderProjects();
   renderTasks();
@@ -4074,16 +4218,269 @@ function updateThinkingVisibilityControl(reasoningCount = 0) {
 }
 
 function updateEventControls(filterCounts = {}, reasoningCount = 0) {
+  /*
+   * While the Terminal window is docked it borrows state.eventFilter for its own view.
+   * The inline rail must keep showing its own selection, so it reads the remembered
+   * inline filter instead. Opening or closing the window never moves that selection.
+   */
+  const inlineFilter = terminalWindowIsDocked() ? state.inlineEventFilter : state.eventFilter;
   for (const button of elements.eventFilters) {
     const filter = button.dataset.eventFilter;
     const count = Number(filterCounts[filter]) || 0;
     const label = button.querySelector('.event-filter-label')?.textContent?.trim() || filter;
-    button.setAttribute('aria-pressed', String(filter === state.eventFilter));
+    button.setAttribute('aria-pressed', String(filter === inlineFilter));
     button.setAttribute('aria-label', `${label}: ${count} signal${count === 1 ? '' : 's'}`);
     const counter = button.querySelector('[data-event-filter-count]');
     if (counter) counter.textContent = count.toLocaleString();
   }
+  updateTerminalWindowControls(filterCounts);
   updateThinkingVisibilityControl(reasoningCount);
+}
+
+/* ------------------------------------------------------------------
+ * Terminal window
+ *
+ * The one live .events-section is reparented into the dialog instead of cloned, so there
+ * is a single render target. Live SSE refresh, disclosure restore, follow-to-bottom, the
+ * continuation composer, and Copy log keep working through their existing references.
+ * ------------------------------------------------------------------ */
+
+const TERMINAL_WINDOW_VIEW_TITLES = {
+  all: 'Terminal',
+  conversation: 'Conversation',
+  mine: 'My messages',
+  ai: 'AI messages',
+};
+
+const TERMINAL_WINDOW_VIEW_SUMMARIES = {
+  all: 'Full session output.',
+  conversation: 'Your messages and AI responses in order.',
+  mine: 'Only the messages you sent.',
+  ai: 'Only the provider responses.',
+};
+
+function terminalWindowIsDocked() {
+  return state.terminalWindowDock !== null;
+}
+
+function terminalWindowAiLabel(task) {
+  // Never hardcode a provider name in markup or copy. The label follows the real task.
+  return task ? `${providerLabel(taskProvider(task))} messages` : TERMINAL_WINDOW_VIEW_TITLES.ai;
+}
+
+// The open control needs a task whose terminal is actually on screen. A deselect while
+// the window is open closes it rather than stranding a dialog over a cleared panel.
+function updateTerminalWindowAvailability() {
+  if (!elements.terminalWindowOpenButton) return;
+  const available = Boolean(state.selectedTaskId) && !elements.taskDetail.hidden;
+  elements.terminalWindowOpenButton.disabled = !available;
+  if (!available && terminalWindowIsDocked()) closeTerminalWindow();
+}
+
+function updateTerminalWindowControls(filterCounts = {}) {
+  updateTerminalWindowAvailability();
+  if (!elements.terminalWindowModal) return;
+  const task = state.selectedTaskId ? state.selectedTaskForEvents : null;
+  const aiLabel = terminalWindowAiLabel(task);
+  for (const button of elements.terminalWindowViews) {
+    const view = button.dataset.terminalWindowView;
+    const count = Number(filterCounts[view]) || 0;
+    const label = button.querySelector('.terminal-window-view-label');
+    if (view === 'ai' && label) label.textContent = aiLabel;
+    const text = label?.textContent?.trim() || view;
+    button.setAttribute('aria-pressed', String(view === state.terminalWindowView));
+    button.setAttribute('aria-label', `${text}: ${count} signal${count === 1 ? '' : 's'}`);
+    const counter = button.querySelector('[data-terminal-window-view-count]');
+    if (counter) counter.textContent = count.toLocaleString();
+  }
+  const view = state.terminalWindowView;
+  // textContent, never innerHTML: the task title and provider are task-controlled values.
+  elements.terminalWindowTitle.textContent = view === 'ai'
+    ? aiLabel
+    : TERMINAL_WINDOW_VIEW_TITLES[view] || TERMINAL_WINDOW_VIEW_TITLES.all;
+  const summary = TERMINAL_WINDOW_VIEW_SUMMARIES[view] || TERMINAL_WINDOW_VIEW_SUMMARIES.all;
+  elements.terminalWindowSubtitle.textContent = task
+    ? `${summary} Task ${String(task.id).padStart(3, '0')} · ${providerLabel(taskProvider(task))} · ${task.status}`
+    : summary;
+}
+
+function rerenderTerminalWindowStream({ forceBottom = false } = {}) {
+  if (!state.selectedTaskId || !state.selectedTaskForEvents) {
+    updateTerminalWindowControls();
+    return;
+  }
+  renderEventStream(state.selectedTaskEvents, state.selectedTaskForEvents, { forceBottom });
+}
+
+function setTerminalWindowView(view, { persist = true, render = true } = {}) {
+  state.terminalWindowView = normalizeTerminalWindowView(view);
+  if (terminalWindowIsDocked()) state.eventFilter = state.terminalWindowView;
+  // queueUiPreferencesSave writes the relay.terminalWindowView cache and PATCHes the
+  // authoritative shared record in one step.
+  if (persist) queueUiPreferencesSave();
+  if (render) rerenderTerminalWindowStream();
+}
+
+function openTerminalWindow() {
+  if (!elements.terminalWindowModal || terminalWindowIsDocked()) return;
+  if (!state.selectedTaskId || elements.taskDetail.hidden) return;
+  state.inlineEventFilter = state.eventFilter;
+  /*
+   * The dock records where the inline reading position was, not where the window one
+   * ends up. The two lists hold different entries at different heights, so closing must
+   * replay the inline offset the operator left rather than the window's scroll state.
+   *
+   * It records two slots, not one. The .event-tools cluster travels into the dialog
+   * header while the section is docked, so its own parent and sibling are captured in
+   * the same record, in the same place, BEFORE either move. One record means one
+   * re-entrancy guard and one dock-null-first clear covering both nodes.
+   */
+  state.terminalWindowDock = {
+    parent: elements.eventsSection.parentNode,
+    nextSibling: elements.eventsSection.nextSibling,
+    toolsParent: elements.eventTools.parentNode,
+    toolsNextSibling: elements.eventTools.nextSibling,
+    scrollTop: elements.detailEvents.scrollTop,
+    follow: state.eventFollow,
+  };
+  const follow = state.eventFollow;
+  const restoreScrollTop = state.terminalWindowDock.scrollTop;
+  // Reattaching a subtree zeroes every descendant scroll position, so the per-output
+  // offsets are captured before the move and replayed after it.
+  rememberEventDisclosures();
+  rememberEventOutputScroll();
+  elements.terminalWindowMount.append(elements.eventsSection);
+  elements.eventsSection.dataset.terminalWindow = 'open';
+  /*
+   * Thinking and Copy log follow the terminal into the window's own header. The docked
+   * .event-toolbar row is hidden by CSS, so leaving them behind would strand a 34px
+   * strip holding nothing but those two controls. This runs after the section is docked
+   * and before showModal(), so the dialog never paints with an empty tools slot.
+   */
+  elements.terminalWindowTools.append(elements.eventTools);
+  state.eventFilter = state.terminalWindowView;
+  elements.terminalWindowModal.showModal();
+  restoreEventOutputScroll();
+  rerenderTerminalWindowStream({ forceBottom: follow });
+  if (!follow) elements.detailEvents.scrollTop = restoreScrollTop;
+  const pressed = elements.terminalWindowViews.find(
+    (button) => button.dataset.terminalWindowView === state.terminalWindowView,
+  ) || elements.terminalWindowViews[0];
+  pressed?.focus();
+}
+
+/*
+ * Undocking runs BEFORE dialog.close(). A closed dialog is display:none, so a scroll
+ * position read from a close event handler is always zero, and every restore below has
+ * to work from the offsets the dock recorded at open time instead.
+ */
+function undockTerminalWindow() {
+  const dock = state.terminalWindowDock;
+  if (!dock) return;
+  state.terminalWindowDock = null;
+  rememberEventDisclosures();
+  rememberEventOutputScroll();
+  /*
+   * The tools cluster goes home FIRST, so the section is never reinserted into the
+   * detail grid in a half restored state: anything that measures or focuses it after
+   * the move sees the complete toolbar, never one missing its controls. Both recorded
+   * siblings are revalidated the same way, because a remembered sibling can be gone by
+   * close time and insertBefore against a detached reference throws.
+   */
+  const toolsReturnBefore = dock.toolsNextSibling
+    && dock.toolsNextSibling.parentNode === dock.toolsParent
+    ? dock.toolsNextSibling
+    : null;
+  dock.toolsParent.insertBefore(elements.eventTools, toolsReturnBefore);
+  const returnsBefore = dock.nextSibling && dock.nextSibling.parentNode === dock.parent
+    ? dock.nextSibling
+    : null;
+  dock.parent.insertBefore(elements.eventsSection, returnsBefore);
+  /*
+   * Both CSS rules that hide the Window button while docked are cleared right here, and
+   * this all runs before any close route reaches focusTerminalWindowOpenButton(). The
+   * button left .terminal-window-tools with the cluster above, and dropping the section
+   * flag un-hides the .event-toolbar row it landed back in, so the existing isConnected
+   * and taskDetail.hidden guard is still a true proxy for "visible and focusable".
+   */
+  delete elements.eventsSection.dataset.terminalWindow;
+  state.eventFilter = state.inlineEventFilter;
+  // Scrolling inside the taller window recomputes follow from its own distance to the
+  // bottom. The inline list gets back the follow state it had, not the window's.
+  state.eventFollow = dock.follow;
+  restoreEventOutputScroll();
+  rerenderTerminalWindowStream({ forceBottom: dock.follow });
+  if (!dock.follow) elements.detailEvents.scrollTop = dock.scrollTop;
+  // The section is back inside the detail grid, so the resize handle can describe it again.
+  applyTerminalHeight();
+}
+
+/*
+ * Focus returns only once the dialog has actually closed. Everything outside an open
+ * modal dialog is inert, so a focus call from the cancel handler would be dropped and
+ * the operator would land on the document body after Escape. A disabled or hidden button
+ * means the task went away underneath the window, and the operator is handed the
+ * empty-detail landmark instead of the document body. A live refresh still never steals
+ * focus, because nothing calls this without a close.
+ */
+function focusTerminalWindowOpenButton() {
+  const button = elements.terminalWindowOpenButton;
+  if (button && button.isConnected && !button.disabled && !elements.taskDetail.hidden) {
+    button.focus();
+    return;
+  }
+  focusTaskDetailLandmark();
+}
+
+function closeTerminalWindow() {
+  // Idempotent on purpose: the hide routes below call this defensively, and a close that
+  // has nothing to close must never pull focus off whatever the operator is using.
+  if (!terminalWindowIsDocked() && !elements.terminalWindowModal?.open) return;
+  undockTerminalWindow();
+  if (elements.terminalWindowModal?.open) elements.terminalWindowModal.close();
+  else focusTerminalWindowOpenButton();
+}
+
+/*
+ * The empty-detail region is what replaces everything the operator was reading when the
+ * detail panel closes, so it is where focus lands when the Window button is gone. It is
+ * a region rather than a control, so it takes a programmatic only tabindex: -1 keeps it
+ * out of the tab order while leaving its focus ring visible. A hidden candidate is never
+ * focused, because focus would silently fall to the document body instead.
+ */
+function focusTaskDetailLandmark() {
+  const emptyDetail = elements.emptyDetail && !elements.emptyDetail.hidden
+    ? elements.emptyDetail
+    : null;
+  const candidates = [emptyDetail?.querySelector('h2'), emptyDetail, elements.taskList];
+  for (const node of candidates) {
+    if (!node || !node.isConnected || node.hidden) continue;
+    if (!node.hasAttribute('tabindex')) node.setAttribute('tabindex', '-1');
+    node.focus();
+    return;
+  }
+}
+
+/*
+ * Both #terminal-window-modal and #task-detail-modal are children of #task-detail. An
+ * open dialog inside a display:none ancestor is still modal: it is invisible while every
+ * control outside it stays inert, which wedges the app with no way back. Every route that
+ * hides the detail panel therefore closes its dialogs first, topmost dialog first, and
+ * this is the only place allowed to set elements.taskDetail.hidden = true.
+ */
+function hideTaskDetailPanel() {
+  const dialogHadFocus = terminalWindowIsDocked() || elements.terminalWindowModal?.open === true
+    || elements.taskDetailModal?.open === true;
+  closeTerminalWindow();
+  closeTaskDetailModal();
+  elements.taskDetail.hidden = true;
+  elements.emptyDetail.hidden = false;
+  /*
+   * A real dialog fires close on a queued task, so its own handler already lands on the
+   * landmark once the panel is hidden. This covers the synchronous ordering too, where
+   * focus would otherwise sit on the button that just disappeared.
+   */
+  if (dialogHadFocus) focusTaskDetailLandmark();
 }
 
 // Fills the tmux-style terminal status bar from real task state. Every segment is
@@ -6279,15 +6676,75 @@ function setComposerAlert(message, kind = 'failure') {
   elements.composerAlert.dataset.kind = message ? kind : '';
 }
 
+// begin quick skills
+/*
+ * The strip is drawn from state.quickSkills, which the operator edits in Terminal settings.
+ * renderQuickSkills runs from updateSubmitState, so it is on the two-second snapshot refresh
+ * and every composer keystroke path. A full innerHTML rewrite there would blow away focus and
+ * the text selection inside the strip, so the rewrite is gated on a folded signature and only
+ * the disabled state, the context line, and the accessible label are written on every tick.
+ *
+ * Everything the markup reads has to be in the signature or the strip goes stale forever:
+ * position, id, and label. The prompt text is deliberately absent because nothing in the button
+ * renders it; it reaches the dispatch path from state.quickSkills at click time instead. Whether
+ * a prompt exists at all is a different question: an empty one takes the entry off the strip, and
+ * quickSkillStripEntries filters before the fold so that presence change reaches the signature.
+ */
+
+const QUICK_SKILL_DRAFT_HINT = 'Add a prompt. This quick action stays off the strip and is not saved until you do.';
+
+/*
+ * A row whose prompt is still empty is a draft. normalizeQuickSkills drops it on both the client
+ * and the server, so the strip drops it too: a button rendered from a draft would dispatch a real
+ * provider run of text the operator never wrote, and would vanish on the next reload anyway.
+ */
+function quickSkillStripEntries(skills) {
+  return skills.filter((skill) => Boolean(String(skill?.prompt ?? '').trimEnd()));
+}
+
+function quickSkillStripSignature(skills) {
+  /*
+   * JSON is the field separator. Labels are free operator text and carry spaces, so a plain
+   * concatenation would let "Deploy check" plus "" collide with "Deploy" plus "check".
+   */
+  const fields = JSON.stringify(skills.map((skill, index) => [index, skill.id, skill.label]));
+  let hash = 5381;
+  for (let index = 0; index < fields.length; index += 1) {
+    // Shift form, not hash * 33: the multiply loses precision past 2^53 before the xor coerces.
+    hash = ((hash << 5) + hash) ^ fields.charCodeAt(index);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function quickSkillStripMarkup(skills) {
+  return skills.map((skill) => `
+    <button class="quick-skill-button" type="button" data-quick-skill="${escapeHtml(skill.id)}">
+      <span class="quick-skill-glyph" aria-hidden="true">&gt;_</span>
+      <span class="quick-skill-copy">
+        <strong>${escapeHtml(skill.label)}</strong>
+        <small data-quick-skill-context>Run now with selected settings</small>
+      </span>
+    </button>`).join('');
+}
+
 function renderQuickSkills() {
+  // Fail soft: a renamed or removed strip container must not throw out of the refresh tick.
+  if (!elements.quickSkillList) return;
+  const skills = quickSkillStripEntries(state.quickSkills);
+  const signature = quickSkillStripSignature(skills);
+  if (signature !== state.quickSkillStripSignature) {
+    state.quickSkillStripSignature = signature;
+    elements.quickSkillList.innerHTML = quickSkillStripMarkup(skills);
+  }
+  elements.quickSkillList.hidden = skills.length === 0;
   const execution = selectedExecution();
   const effort = execution.effort || 'default';
   const selectedThread = state.threads.find((thread) => thread.id === state.selectedThreadId);
   const target = usesDisposableTerminalPools()
     ? providerLabel(state.selectedProvider)
     : selectedThread ? threadDisplayName(selectedThread) : providerLabel(state.selectedProvider);
-  for (const button of elements.quickSkillButtons) {
-    const skill = quickSkillById(button.dataset.quickSkill);
+  for (const button of elements.quickSkillList.querySelectorAll('[data-quick-skill]')) {
+    const skill = quickSkillById(button.dataset.quickSkill, state.quickSkills);
     const issue = quickSkillValidationIssue(skill);
     const context = button.querySelector('[data-quick-skill-context]');
     button.disabled = state.submitting || Boolean(issue);
@@ -6303,6 +6760,300 @@ function renderQuickSkills() {
     button.title = label;
   }
 }
+
+/*
+ * One delegated listener instead of one per button: the strip is rebuilt whenever the operator
+ * edits it, and per-button listeners would be lost on the first rebuild.
+ */
+function handleQuickSkillListClick(event) {
+  const button = event.target.closest('[data-quick-skill]');
+  if (!button || state.submitting) return;
+  const skill = quickSkillById(button.dataset.quickSkill, state.quickSkills);
+  /*
+   * Fail closed. A button whose id vanished from the catalog between paint and click has no
+   * prompt to send, and inventing one would dispatch work the operator never saved.
+   */
+  if (!skill) return;
+  const issue = quickSkillValidationIssue(skill);
+  if (issue) {
+    setComposerAlert(issue, 'validation');
+    return;
+  }
+  void submitComposerTask(null, { quickSkill: skill });
+}
+
+/*
+ * Ids are stable handles: the strip markup, the click resolution, and the editor rows all key
+ * on them, so a generated id is slugged from the label once and then never follows a rename.
+ */
+function uniqueQuickSkillId(label, takenIds = []) {
+  const slug = String(label || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '')
+    .slice(0, 48)
+    .replace(/-+$/u, '');
+  const seed = QUICK_SKILL_ID_PATTERN.test(slug) ? slug : 'quick-action';
+  const taken = new Set(takenIds);
+  if (!taken.has(seed)) return seed;
+  for (let suffix = 2; suffix <= 999; suffix += 1) {
+    const candidate = `${seed}-${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+  return `${seed}-${Date.now().toString(36)}`;
+}
+
+function movedQuickSkills(skills, index, delta) {
+  const target = index + delta;
+  if (index < 0 || index >= skills.length || target < 0 || target >= skills.length) return skills;
+  const next = [...skills];
+  const [moved] = next.splice(index, 1);
+  next.splice(target, 0, moved);
+  return next;
+}
+
+function quickSkillEditorRowMarkup(skill, index, total) {
+  const name = escapeHtml(skill.label);
+  const id = escapeHtml(skill.id);
+  // A draft row is marked incomplete from the first paint, not only after a keystroke, so an
+  // operator who added a row and looked away can see why it never reached the strip.
+  const draft = !String(skill.prompt ?? '').trimEnd();
+  return `
+    <li class="quick-skill-row" data-quick-skill-row="${id}" data-invalid="${draft ? 'true' : 'false'}">
+      <div class="quick-skill-row-head">
+        <label class="quick-skill-row-label">
+          <span>Label</span>
+          <input type="text" data-quick-skill-field="label" maxlength="${MAX_QUICK_SKILL_LABEL_LENGTH}" autocomplete="off" value="${name}" aria-label="Label for quick action ${index + 1}">
+        </label>
+        <div class="quick-skill-row-actions" role="group" aria-label="Reorder or remove ${name}">
+          <button class="quick-skill-row-action" type="button" data-quick-skill-action="up" ${index === 0 ? 'disabled' : ''} aria-label="Move ${name} up" title="Move up">↑</button>
+          <button class="quick-skill-row-action" type="button" data-quick-skill-action="down" ${index >= total - 1 ? 'disabled' : ''} aria-label="Move ${name} down" title="Move down">↓</button>
+          <button class="quick-skill-row-action quick-skill-row-remove" type="button" data-quick-skill-action="remove" aria-label="Remove ${name}" title="Remove">Remove</button>
+        </div>
+      </div>
+      <label class="quick-skill-row-prompt">
+        <span>Prompt</span>
+        <textarea data-quick-skill-field="prompt" rows="3" maxlength="${MAX_QUICK_SKILL_PROMPT_LENGTH}" aria-label="Prompt for quick action ${index + 1}">${escapeHtml(skill.prompt)}</textarea>
+      </label>
+      <small class="quick-skill-row-hint" data-quick-skill-hint>${draft ? escapeHtml(QUICK_SKILL_DRAFT_HINT) : ''}</small>
+    </li>`;
+}
+
+function quickSkillEditorRows() {
+  return [...elements.quickSkillEditorList.querySelectorAll('[data-quick-skill-row]')];
+}
+
+/*
+ * A rebuild replaces the inputs the operator may be typing into, so it happens only when the
+ * row set itself changed: open, add, remove, reorder. Any other refresh syncs values in place
+ * and never writes to the field that currently holds the caret.
+ */
+function renderQuickSkillEditor({ rebuild = false } = {}) {
+  if (!elements.quickSkillEditorList) return;
+  const rows = quickSkillEditorRows();
+  const rowsMatch = rows.length === state.quickSkills.length
+    && rows.every((row, index) => row.dataset.quickSkillRow === state.quickSkills[index].id);
+  if (rebuild || !rowsMatch) {
+    elements.quickSkillEditorList.innerHTML = state.quickSkills
+      .map((skill, index) => quickSkillEditorRowMarkup(skill, index, state.quickSkills.length))
+      .join('');
+  } else {
+    for (const [index, row] of rows.entries()) {
+      const skill = state.quickSkills[index];
+      for (const field of row.querySelectorAll('[data-quick-skill-field]')) {
+        const value = String(skill[field.dataset.quickSkillField] ?? '');
+        if (field === document.activeElement || field.value === value) continue;
+        field.value = value;
+      }
+    }
+  }
+  const full = state.quickSkills.length >= MAX_QUICK_SKILLS;
+  if (elements.quickSkillAdd) {
+    elements.quickSkillAdd.disabled = full;
+    elements.quickSkillAdd.title = full
+      ? `The strip holds at most ${MAX_QUICK_SKILLS} quick actions.`
+      : 'Add another quick action';
+  }
+  if (!elements.quickSkillEditorStatus) return;
+  const drafts = state.quickSkills.length - quickSkillStripEntries(state.quickSkills).length;
+  const summary = state.quickSkills.length === 0
+    ? 'No quick actions. The composer strip stays hidden until you add one.'
+    : `${state.quickSkills.length} of ${MAX_QUICK_SKILLS}. Each one runs now with the composer provider, model, and effort.${
+      drafts ? ` ${drafts} without a prompt ${drafts === 1 ? 'is' : 'are'} not saved.` : ''}`;
+  /*
+   * A rejected preferences save outranks the count: the operator is looking at text the server
+   * has not accepted, and the count would read as confirmation that it had.
+   */
+  elements.quickSkillEditorStatus.textContent = state.uiPreferencesSaveError || summary;
+  elements.quickSkillEditorStatus.dataset.kind = state.uiPreferencesSaveError ? 'failure' : '';
+}
+
+/*
+ * External input only: the server record and Restore default. normalizeQuickSkills drops any
+ * entry with an empty prompt, which is right for a record arriving from outside and wrong for
+ * the editor list, where an empty prompt is a row the operator has not finished writing.
+ */
+function setQuickSkills(value, { persist = true, rebuildEditor = true } = {}) {
+  state.quickSkills = normalizeQuickSkills(value);
+  renderQuickSkills();
+  renderQuickSkillEditor({ rebuild: rebuildEditor });
+  if (persist) queueUiPreferencesSave();
+}
+
+/*
+ * Add, remove, and reorder assign the list as given instead of normalizing it. Normalizing here
+ * would delete every unfinished row as a side effect of touching an unrelated one. The draft is
+ * still never persisted: normalizeQuickSkills drops it in the localStorage cache and again in
+ * the server route, so the strip, the cache, and the saved record all agree.
+ */
+function commitQuickSkillEdit(skills, { persist = true } = {}) {
+  state.quickSkills = skills;
+  renderQuickSkills();
+  renderQuickSkillEditor({ rebuild: true });
+  if (persist) queueUiPreferencesSave();
+}
+
+function refreshQuickSkillRowValidity(row, skill = quickSkillById(row?.dataset.quickSkillRow, state.quickSkills)) {
+  const label = row.querySelector('[data-quick-skill-field="label"]');
+  const prompt = row.querySelector('[data-quick-skill-field="prompt"]');
+  const labelBlank = !String(label?.value || '').trim();
+  const promptBlank = !String(prompt?.value || '').trim();
+  row.dataset.invalid = String(labelBlank || promptBlank);
+  const hint = row.querySelector('[data-quick-skill-hint]');
+  if (hint) {
+    // A draft has no saved prompt to fall back on, so it gets the wording that says so.
+    const draft = !String(skill?.prompt ?? '').trimEnd();
+    hint.textContent = labelBlank
+      ? 'Add a label. The saved label is kept until you do.'
+      : promptBlank ? (draft ? QUICK_SKILL_DRAFT_HINT : 'Add a prompt. The saved prompt is kept until you do.') : '';
+  }
+  return { labelBlank, promptBlank };
+}
+
+/*
+ * Clearing a box is a keystroke on the way somewhere, not a delete. Writing the empty value
+ * through normalizeQuickSkills would drop the entry, take its button off the strip, and
+ * persist the deletion, so state keeps the last valid text and the row shows a hint instead.
+ */
+function handleQuickSkillEditorInput(event) {
+  const field = event.target.closest('[data-quick-skill-field]');
+  if (!field) return;
+  const row = field.closest('[data-quick-skill-row]');
+  const skill = quickSkillById(row?.dataset.quickSkillRow, state.quickSkills);
+  if (!skill) return;
+  const kind = field.dataset.quickSkillField;
+  const { labelBlank, promptBlank } = refreshQuickSkillRowValidity(row, skill);
+  if (kind === 'label' ? labelBlank : promptBlank) return;
+  skill[kind] = field.value;
+  // The strip prints the label, so a rename lands there as it is typed, and the first prompt
+  // written into a draft is what puts its button on the strip at all. The editor rows are
+  // untouched either way: renderQuickSkills only writes inside #quick-skill-list.
+  renderQuickSkills();
+  queueUiPreferencesSave();
+}
+
+/*
+ * Terminal settings lives inside <form id="task-form">, so the label input's form owner is the
+ * composer. Enter there would implicitly submit the composer and queue a real task out of a
+ * rename keystroke. The prompt textarea is untouched: Enter is a newline inside it.
+ */
+function handleQuickSkillEditorKeydown(event) {
+  if (event.key !== 'Enter') return;
+  if (!event.target.closest('[data-quick-skill-field="label"]')) return;
+  event.preventDefault();
+}
+
+/*
+ * A rebuild leaves focus on document.body, which strands a keyboard operator who just pressed
+ * Move down. Focus follows the control to its new row, or to the nearest control that survived.
+ */
+function focusQuickSkillControl(index, action) {
+  const rows = quickSkillEditorRows();
+  const row = rows[index];
+  if (!row) {
+    if (elements.quickSkillAdd && !elements.quickSkillAdd.disabled) elements.quickSkillAdd.focus();
+    else elements.quickSkillRestore?.focus();
+    return;
+  }
+  const preferred = row.querySelector(`[data-quick-skill-action="${action}"]`);
+  if (preferred && !preferred.disabled) {
+    preferred.focus();
+    return;
+  }
+  const fallback = [...row.querySelectorAll('[data-quick-skill-action]')].find((button) => !button.disabled);
+  (fallback || row.querySelector('[data-quick-skill-field="label"]'))?.focus();
+}
+
+function handleQuickSkillEditorClick(event) {
+  const action = event.target.closest('[data-quick-skill-action]');
+  if (!action || action.disabled) return;
+  const row = action.closest('[data-quick-skill-row]');
+  const index = state.quickSkills.findIndex((skill) => skill.id === row?.dataset.quickSkillRow);
+  if (index < 0) return;
+  const kind = action.dataset.quickSkillAction;
+  if (kind === 'remove') {
+    const removed = state.quickSkills[index];
+    /*
+     * Removing a written quick action destroys up to twenty thousand characters the operator
+     * typed, with no undo, from a button that sits one row away from Move down. A draft holds
+     * nothing to lose, so only a finished quick action asks.
+     */
+    const draft = !String(removed?.prompt ?? '').trimEnd();
+    if (!draft && !window.confirm(`Remove quick action "${removed.label}"? This cannot be undone.`)) return;
+    commitQuickSkillEdit(state.quickSkills.filter((unused, position) => position !== index));
+    focusQuickSkillControl(Math.min(index, state.quickSkills.length - 1), 'remove');
+    return;
+  }
+  const delta = kind === 'up' ? -1 : 1;
+  const moved = movedQuickSkills(state.quickSkills, index, delta);
+  if (moved === state.quickSkills) return;
+  commitQuickSkillEdit(moved);
+  focusQuickSkillControl(index + delta, kind);
+}
+
+function addQuickSkill() {
+  if (state.quickSkills.length >= MAX_QUICK_SKILLS) return;
+  const label = 'New quick action';
+  const id = uniqueQuickSkillId(label, state.quickSkills.map((skill) => skill.id));
+  /*
+   * The prompt starts empty on purpose. A placeholder would be a live strip button that queues
+   * a real provider run of text nobody wrote, for anyone who adds a row and then closes the
+   * modal. Nothing is persisted either: an unfinished row is not a saved quick action.
+   */
+  commitQuickSkillEdit([...state.quickSkills, { id, label, prompt: '' }], { persist: false });
+  const input = quickSkillEditorRows().at(-1)?.querySelector('[data-quick-skill-field="label"]');
+  input?.focus();
+  input?.select();
+}
+
+function restoreDefaultQuickSkills() {
+  /*
+   * One unconfirmed click here would wipe every hand-authored prompt out of state, the
+   * localStorage cache, and the server record at once, and the button sits beside Add.
+   */
+  if (!window.confirm('Replace every saved quick action with the built-in Deploy check? This cannot be undone.')) return;
+  setQuickSkills(DEFAULT_QUICK_SKILLS);
+  elements.quickSkillRestore?.focus();
+}
+
+/*
+ * Boot wiring lives here so a renamed or removed element is a quick-skill strip that never
+ * appears rather than a TypeError at module load that takes the whole renderer down. Each
+ * control is wired on its own: missing Add must not cost the strip its click handler.
+ */
+function bindQuickSkillEvents() {
+  if (elements.quickSkillList) {
+    elements.quickSkillList.addEventListener('click', handleQuickSkillListClick);
+  }
+  if (elements.quickSkillEditorList) {
+    elements.quickSkillEditorList.addEventListener('click', handleQuickSkillEditorClick);
+    elements.quickSkillEditorList.addEventListener('input', handleQuickSkillEditorInput);
+    elements.quickSkillEditorList.addEventListener('keydown', handleQuickSkillEditorKeydown);
+  }
+  if (elements.quickSkillAdd) elements.quickSkillAdd.addEventListener('click', addQuickSkill);
+  if (elements.quickSkillRestore) elements.quickSkillRestore.addEventListener('click', restoreDefaultQuickSkills);
+}
+// end quick skills
 
 function setComposerPending(pending) {
   state.submitting = pending;
@@ -6688,8 +7439,7 @@ function renderProviderUsage() {
     } else {
       track.style.setProperty('--provider-usage-value', `${presentation.usedPercent}%`);
       track.setAttribute('aria-valuenow', String(presentation.usedPercent));
-      if (presentation.shared) track.setAttribute('aria-valuetext', presentation.title);
-      else track.removeAttribute('aria-valuetext');
+      track.removeAttribute('aria-valuetext');
     }
   }
   elements.providerUsage.setAttribute('aria-busy', String(checking));
@@ -6883,6 +7633,9 @@ function taskListRenderSignature(visibleTasks, searching) {
 
 function renderTasks() {
   renderTaskSearch();
+  // Deselecting a task never runs renderEventStream, so the Terminal window control is
+  // refreshed here as well as from the stream render.
+  updateTerminalWindowAvailability();
   const standupSupported = standupGenerationSupported();
   elements.standupButton.disabled = !state.activeProjectPath || !standupSupported;
   elements.standupButton.title = !state.activeProjectPath
@@ -6948,7 +7701,7 @@ function renderTasks() {
         : state.activeProjectPath
           ? `No tasks in ${escapeHtml(workspaceName(state.activeProjectPath))} yet.`
           : 'Choose a terminal and add the first prompt.';
-    releaseTaskAttachmentPreviews();
+    const showingPreviews = releaseTaskAttachmentPreviews();
     elements.taskList.innerHTML = `
       <div class="queue-empty">
         <span aria-hidden="true">00</span>
@@ -6956,6 +7709,9 @@ function renderTasks() {
         <p>${emptyMessage}</p>
       </div>
     `;
+    // The empty view has no thumbnails, but the observer stays coherent with the
+    // released set so a later rebuild restores from a single contract.
+    observeTaskAttachmentPreviews(showingPreviews);
     renderedTaskListSignature = listSignature;
     return;
   }
@@ -6982,7 +7738,7 @@ function renderTasks() {
   let previousHistoryDate = '';
   let previousQueueSection = '';
   let searchStarredHeadingShown = false;
-  releaseTaskAttachmentPreviews();
+  const showingPreviews = releaseTaskAttachmentPreviews();
   elements.taskList.innerHTML = visibleTasks.map((task) => {
     const unread = state.projectCompletionNotifications.includes(task.repo_path, task.id);
     const starred = task.starred === true;
@@ -7166,7 +7922,7 @@ function renderTasks() {
     `;
   }).join('');
   renderedTaskListSignature = listSignature;
-  observeTaskAttachmentPreviews();
+  observeTaskAttachmentPreviews(showingPreviews);
 
   for (const card of elements.taskList.querySelectorAll('.task-card')) {
     const select = () => {
@@ -8922,9 +9678,7 @@ async function loadSnapshot() {
   }
 
   if (!state.selectedTaskId) {
-    closeTaskDetailModal();
-    elements.taskDetail.hidden = true;
-    elements.emptyDetail.hidden = false;
+    hideTaskDetailPanel();
   }
 
   renderStatus();
@@ -8989,8 +9743,7 @@ function applyThreadSelection(threadId) {
   renderExecutionControls();
   if (state.selectedTaskId && !projectTasks().some((task) => task.id === state.selectedTaskId)) {
     state.selectedTaskId = null;
-    elements.taskDetail.hidden = true;
-    elements.emptyDetail.hidden = false;
+    hideTaskDetailPanel();
   }
   elements.threadInput.value = threadId || '';
   for (const option of elements.terminalList.querySelectorAll('.terminal-option')) {
@@ -9844,8 +10597,7 @@ async function deleteTask(taskId) {
   try {
     await api(`/api/tasks/${taskId}`, { method: 'DELETE' });
     state.selectedTaskId = null;
-    elements.taskDetail.hidden = true;
-    elements.emptyDetail.hidden = false;
+    hideTaskDetailPanel();
     await load();
   } catch (error) {
     window.alert(error.message);
@@ -12059,8 +12811,12 @@ function applyTerminalHeight({ persist = false } = {}) {
   const maximum = Math.max(180, elements.taskDetail.clientHeight - 150);
   if (!state.terminalHeight) {
     elements.taskDetail.style.removeProperty('--event-terminal-height');
-    const renderedHeight = elements.eventsSection.getBoundingClientRect().height;
-    updateTerminalHeightAccessibility(renderedHeight, maximum);
+    // Docked in the Terminal window the section sits outside the detail grid, so its
+    // rendered height is the dialog's and says nothing about the resizer's range.
+    if (!terminalWindowIsDocked()) {
+      const renderedHeight = elements.eventsSection.getBoundingClientRect().height;
+      updateTerminalHeightAccessibility(renderedHeight, maximum);
+    }
     return;
   }
   state.terminalHeight = Math.min(maximum, Math.max(180, state.terminalHeight));
@@ -12541,18 +13297,7 @@ elements.prompt.addEventListener('keydown', (event) => {
   state.prioritySubmit = event.ctrlKey;
   elements.form.requestSubmit();
 });
-for (const button of elements.quickSkillButtons) {
-  button.addEventListener('click', () => {
-    if (state.submitting) return;
-    const skill = quickSkillById(button.dataset.quickSkill);
-    const issue = quickSkillValidationIssue(skill);
-    if (issue) {
-      setComposerAlert(issue, 'validation');
-      return;
-    }
-    void submitComposerTask(null, { quickSkill: skill });
-  });
-}
+bindQuickSkillEvents();
 elements.taskReferenceMenu.addEventListener('click', (event) => {
   const button = event.target.closest('[data-task-reference-scope]');
   if (!button || state.taskReferenceMenuTaskId === null) return;
@@ -12643,6 +13388,7 @@ for (const tab of elements.modeTabs) {
 elements.terminalSettingsButton.addEventListener('click', () => {
   resetTerminalLayoutStatus();
   renderCompletionAlertSettings();
+  renderQuickSkillEditor({ rebuild: true });
   renderVoiceInput();
   elements.terminalSettingsModal.showModal();
   void refreshVoiceInputDevices({ requestPermission: state.voiceInputPreferences.enabled });
@@ -13049,10 +13795,37 @@ elements.terminalLayoutApplyAll.addEventListener('click', applyTerminalLayoutToA
 
 for (const button of elements.eventFilters) {
   button.addEventListener('click', () => {
-    state.eventFilter = button.dataset.eventFilter;
+    // The inline rail owns state.inlineEventFilter so a later window close restores it.
+    // While the window is docked the stream belongs to the window view, so the rail
+    // records the selection it will return to and leaves state.eventFilter alone.
+    state.inlineEventFilter = button.dataset.eventFilter;
+    if (!terminalWindowIsDocked()) state.eventFilter = state.inlineEventFilter;
     renderEventStream(state.selectedTaskEvents, state.selectedTaskForEvents);
   });
 }
+
+elements.terminalWindowOpenButton.addEventListener('click', openTerminalWindow);
+elements.terminalWindowClose.addEventListener('click', closeTerminalWindow);
+for (const button of elements.terminalWindowViews) {
+  button.addEventListener('click', () => {
+    setTerminalWindowView(button.dataset.terminalWindowView);
+  });
+}
+elements.terminalWindowModal.addEventListener('click', (event) => {
+  if (event.target === elements.terminalWindowModal) closeTerminalWindow();
+});
+/*
+ * Escape reaches only the topmost dialog, so the surrounding task detail modal stays
+ * open. The section is undocked here, synchronously, before the browser hides the
+ * dialog; the close listener is the fallback for any programmatic close.
+ */
+elements.terminalWindowModal.addEventListener('cancel', () => {
+  undockTerminalWindow();
+});
+elements.terminalWindowModal.addEventListener('close', () => {
+  undockTerminalWindow();
+  focusTerminalWindowOpenButton();
+});
 
 elements.thinkingVisibilityButton.addEventListener('click', () => {
   state.showThinking = !state.showThinking;
@@ -13141,6 +13914,8 @@ elements.detailEvents.addEventListener('toggle', (event) => {
 }, true);
 
 renderCompletionAlertSettings();
+renderQuickSkills();
+renderQuickSkillEditor({ rebuild: true });
 renderVoiceInput();
 const uiPreferencesReady = restoreUiPreferences();
 const completionReviewsReady = migrateCompletionReviews();

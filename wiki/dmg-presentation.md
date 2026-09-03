@@ -20,7 +20,7 @@ This produces a quiet branded install surface while keeping CC Relay and Applica
 > Do not replace `backgroundColor` with `background` unless a visible helper file is acceptable. `dmg-builder` copies raster artwork to the volume root as `.background.tiff`. Finder reveals that file when the user enables hidden-file display.
 
 > [!important]
-> Keep `dmg.icon: null` if the volume root must stay clean. Allowing the default DMG icon creates `.VolumeIcon.icns`, which Finder also reveals when hidden-file display is enabled. The application itself still uses `build/icon.png` through the separate `mac.icon` setting described in [[desktop-updates]].
+> Keep `dmg.icon: null` if the volume root must stay clean. Allowing the default DMG icon creates `.VolumeIcon.icns`, which Finder also reveals when hidden-file display is enabled. The application itself uses the tracked `build/icon.icns` through the separate `mac.icon` setting described in [[macos-app-icon]] and [[desktop-updates]].
 
 ## Validation
 

@@ -21,7 +21,7 @@
 4. **Queue the next prompts now.** Add, reorder, or edit queued work while tasks run; Relay dispatches on capacity.
 5. **Make important plans survive a challenge.** Plan council has one provider author a plan and the other review it critically.
 6. **Plan smart, execute economically.** Turbo gives every prompt a fresh high-effort planning session, then hands the complete graph to one fresh execution session that may coordinate internal sub-agents.
-7. **Keep provider runway visible.** The compact status bar shows Claude's five-hour and weekly usage, Fable weekly usage, and Codex five-hour and weekly usage, including the percentage used and time left until each window resets.
+7. **Keep provider runway visible.** The compact status bar shows Claude's five-hour and weekly usage, distinct Fable weekly usage, and Codex five-hour and weekly usage, including the percentage used and provider-reported reset countdowns.
 
 ## Highlights
 

@@ -24,6 +24,7 @@
     "desktop": "electron .",
     "desktop:build:mac": "electron-builder --mac --publish never",
     "desktop:build:win": "electron-builder --win --publish never",
+    "icon:mac": "node scripts/generate-mac-icon.mjs",
     "test": "node --test",
     "deploy": "node scripts/deploy.mjs",
     "release:check": "node scripts/release-check.mjs",

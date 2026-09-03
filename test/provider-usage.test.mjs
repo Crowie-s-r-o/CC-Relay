@@ -77,7 +77,7 @@ test('Claude usage parsing removes terminal controls and keeps the latest painte
   });
 });
 
-test('Claude usage parsing uses the all-model week when Claude omits a separate Fable allowance', () => {
+test('Claude usage parsing leaves Fable unavailable when its distinct allowance is absent', () => {
   const usage = parseClaudeUsageScreen(`
 Current session
 4% used
@@ -90,11 +90,27 @@ Resets Friday
   assert.equal(usage.fableWeeklyUnavailable, false);
   assert.equal(usage.fiveHour.usedPercent, 4);
   assert.equal(usage.weekly.usedPercent, 51);
+  assert.equal(usage.fableWeekly, null);
+});
+
+test('Claude usage parsing reads standalone zero-percent Fable usage without inventing a reset', () => {
+  const usage = parseClaudeUsageScreen(`
+Current session
+47% 47% used
+Resets 4:50pm (Europe/Bratislava)
+Current week (all models)
+3% 3% used
+Resets Sep 10 at 2pm (Europe/Bratislava)
+Fable
+You haven't used Fable yet
+0% 0% used
+  `);
+
+  assert.equal(usage.sourceStale, false);
   assert.deepEqual(usage.fableWeekly, {
-    usedPercent: 51,
+    usedPercent: 0,
     resetsAt: null,
-    resetLabel: 'Friday',
-    shared: true,
+    resetLabel: null,
   });
 });
 
@@ -145,12 +161,7 @@ Resets Aug 20 at 2pm (Europe/Bratislava)
 
   assert.equal(usage.fiveHour.usedPercent, 23);
   assert.equal(usage.weekly.usedPercent, 48);
-  assert.deepEqual(usage.fableWeekly, {
-    usedPercent: 48,
-    resetsAt: null,
-    resetLabel: 'Aug 20 at 2pm (Europe/Bratislava)',
-    shared: true,
-  });
+  assert.equal(usage.fableWeekly, null);
 });
 
 test('Claude usage parsing identifies an explicitly last-known CLI snapshot', () => {
@@ -217,6 +228,7 @@ test('Claude usage probe runs the authenticated CLI in a private Expect terminal
   assert.match(scripts[0], /\/usage/);
   assert.match(scripts[0], /set refreshing 0[\s\S]*-re \{Refreshing\}[\s\S]*set timeout 22/);
   assert.ok(scripts[0].includes('-re {Current week \\(Fable[^)]*\\)}'));
+  assert.match(scripts[0], /Fable\(\[ \\t\]\+\[0-9\.\]\+\)/);
   assert.match(scripts[0], /stty rows 60 columns 120[\s\S]*stty rows 61 columns 121/);
 });
 
@@ -324,7 +336,7 @@ test('provider usage monitor deduplicates refreshes and preserves last-known val
   assert.equal(monitor.current().claude.weekly.usedPercent, 77);
 });
 
-test('provider usage monitor marks CLI-retained values stale without advancing their checked time', async () => {
+test('provider usage monitor marks CLI-retained values stale without replacing a newer sample', async () => {
   let sourceStale = false;
   let now = Date.parse('2026-08-17T13:45:00Z');
   const monitor = new ProviderUsageMonitor({
@@ -346,7 +358,7 @@ test('provider usage monitor marks CLI-retained values stale without advancing t
   const stale = await monitor.refresh();
   assert.equal(stale.claude.status, 'stale');
   assert.equal(stale.claude.checkedAt, '2026-08-17T13:45:00.000Z');
-  assert.equal(stale.claude.fiveHour.usedPercent, 22);
+  assert.equal(stale.claude.fiveHour.usedPercent, 21);
 });
 
 test('provider usage monitor preserves only a real Fable value when its breakdown cannot refresh', async () => {
@@ -378,10 +390,41 @@ test('provider usage monitor preserves only a real Fable value when its breakdow
   now += 30_000;
   const stale = await monitor.refresh();
   assert.equal(stale.claude.status, 'stale');
-  assert.equal(stale.claude.weekly.usedPercent, 80);
+  assert.equal(stale.claude.weekly.usedPercent, 81);
   assert.equal(stale.claude.fableWeekly.usedPercent, 71);
   assert.equal(stale.claude.fableWeeklyUnavailable, true);
   assert.equal(stale.claude.checkedAt, '2026-08-18T01:00:00.000Z');
+});
+
+test('provider usage monitor cannot regress fresh weekly and Fable values with an older stale frame', async () => {
+  let staleFrame = false;
+  const monitor = new ProviderUsageMonitor({
+    readClaude: async () => staleFrame
+      ? {
+        sourceStale: true,
+        fableWeeklyUnavailable: true,
+        fiveHour: { usedPercent: 47, resetLabel: '4:50pm' },
+        weekly: { usedPercent: 2, resetLabel: 'Sep 10 at 2pm' },
+        fableWeekly: null,
+      }
+      : {
+        sourceStale: false,
+        fableWeeklyUnavailable: false,
+        fiveHour: { usedPercent: 47, resetLabel: '4:50pm' },
+        weekly: { usedPercent: 3, resetLabel: 'Sep 10 at 2pm' },
+        fableWeekly: { usedPercent: 0, resetLabel: null },
+      },
+  });
+
+  const ready = await monitor.refresh();
+  assert.equal(ready.claude.weekly.usedPercent, 3);
+  assert.equal(ready.claude.fableWeekly.usedPercent, 0);
+
+  staleFrame = true;
+  const stale = await monitor.refresh();
+  assert.equal(stale.claude.status, 'stale');
+  assert.equal(stale.claude.weekly.usedPercent, 3);
+  assert.equal(stale.claude.fableWeekly.usedPercent, 0);
 });
 
 test('provider usage monitor emits a mixed-version-safe unavailable Fable window without a real value', async () => {

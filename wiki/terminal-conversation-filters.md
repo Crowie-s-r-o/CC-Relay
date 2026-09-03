@@ -14,6 +14,11 @@ tags:
 
 Task Activity exposes six counted views: **All**, **Highlights**, **Commands**, **Conversation**, **My messages**, and **AI messages**. All remains the default. The conversation views use exact message roles, not broad provider-event categories.
 
+The same filters back the four-view rail in the [[terminal-window]], where `all`, `conversation`, `mine`, and `ai` are relabelled **Terminal**, **Conversation**, **My messages**, and **`<Provider>` messages**. That window reuses these filters and their computed counts rather than defining its own.
+
+> [!important]
+> The window and the inline rail are two independent selections over one `state.eventFilter`. Opening the window saves the inline selection in `state.inlineEventFilter` and restores it on close, and the inline rail's `aria-pressed` reads the saved value while docked. Only the window's view is persisted; the inline rail always defaults to **All**.
+
 ## Role contract
 
 - **Conversation** is the chronological union of My messages and AI messages. It excludes commands, provider lifecycle notices, input requests, plans, and other broad message-category events.
@@ -46,6 +51,7 @@ The original event array and database rows are never rewritten. Matching prompt 
 - Filtering preserves each entry's original signal number instead of renumbering the result set.
 - Conversation reports the sum of the two strict role counts and copies only those visible message rows.
 - The filter rail scrolls horizontally inside narrow task inspectors, while **Copy log** stays fixed and reachable.
+- The inline rail is hidden while the terminal is docked in the Terminal window. That window carries its own four-view rail, which replaces the inline six. See [[terminal-window]].
 - The metrics strip reports sent messages and AI messages separately.
 
 ## Assistant finality contract
@@ -88,6 +94,6 @@ runtime, so responsive behavior remains source-contract tested rather than scree
 - `test/database.test.mjs` and `test/relay-prompt.test.mjs`: delivery-notice stripping without rewriting stored events.
 - `test/terminal-conversation-filters.test.mjs`: renderer wiring, responsive rail, role styling, and stable signal numbering.
 
-See [[terminal-conversation-filters-review]], [[task-activity-overview]], [[claude-terminal-live-output]], [[session-tasks]], and [[interface-layout]].
+See [[terminal-conversation-filters-review]], [[terminal-window]], [[task-activity-overview]], [[claude-terminal-live-output]], [[session-tasks]], and [[interface-layout]].
 
 #relay #terminal #messages #filters #renderer

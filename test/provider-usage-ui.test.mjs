@@ -36,7 +36,6 @@ test('header places five accessible usage meters before the rightmost display co
   assert.ok(html.indexOf('id="header-position-toggle"') < html.indexOf('id="theme-toggle"'));
   assert.match(html, /role="progressbar"/);
   assert.match(app, /renderProviderUsage\(\)/);
-  assert.match(app, /presentation\.shared[\s\S]*aria-valuetext/);
   assert.match(server, /providerUsage: providerUsage\.current\(\)/);
   assert.match(server, /providerUsage: true/);
   assert.match(server, /providerUsage\.start\(\)/);
@@ -163,7 +162,7 @@ test('Codex epoch reset times are formatted for both meter tooltips', () => {
   assert.match(codexWeekly.title, /Resets Aug 19, 2:00 PM/);
 });
 
-test('an absent model-specific window uses Claude weekly runway instead of implying Fable is unavailable', () => {
+test('an absent model-specific window cannot borrow the Claude weekly percentage', () => {
   const [,, fable] = providerUsagePresentation({
     claude: {
       status: 'ready',
@@ -173,11 +172,39 @@ test('an absent model-specific window uses Claude weekly runway instead of imply
     },
     codex: { status: 'checking' },
   });
-  assert.equal(fable.level, 'warning');
-  assert.equal(fable.value, '51%');
-  assert.equal(fable.shared, true);
-  assert.match(fable.title, /shared Claude weekly window/);
-  assert.match(fable.title, /no separate Fable allowance/);
+  assert.equal(fable.level, 'unavailable');
+  assert.equal(fable.value, '--');
+  assert.equal(fable.shared, false);
+  assert.match(fable.title, /usage is unavailable/);
+});
+
+test('a shared Fable fallback from an older backend is rejected', () => {
+  const [,, fable] = providerUsagePresentation({
+    claude: {
+      status: 'ready',
+      weekly: { usedPercent: 51, resetLabel: 'Friday' },
+      fableWeekly: { usedPercent: 51, resetLabel: 'Friday', shared: true },
+    },
+    codex: { status: 'checking' },
+  });
+
+  assert.equal(fable.level, 'unavailable');
+  assert.equal(fable.value, '--');
+});
+
+test('zero-percent Fable usage has no borrowed weekly reset countdown', () => {
+  const [,, fable] = providerUsagePresentation({
+    claude: {
+      status: 'ready',
+      weekly: { usedPercent: 3, resetLabel: 'Sep 10 at 2pm (Europe/Bratislava)' },
+      fableWeekly: { usedPercent: 0, resetLabel: null },
+    },
+    codex: { status: 'checking' },
+  });
+
+  assert.equal(fable.value, '0%');
+  assert.equal(fable.countdown, '');
+  assert.doesNotMatch(fable.title, /Resets/);
 });
 
 test('an explicitly unavailable model breakdown does not masquerade as shared Fable usage', () => {

@@ -18,13 +18,13 @@ The background monitor refreshes both providers every 30 seconds. Status request
 
 ## Claude source
 
-Claude Code exposes its five-hour and all-model weekly windows in status-line JSON, but it does not expose the Fable-specific weekly window there or through `claude auth status --json`. The authenticated `/usage` screen is the single installed-CLI surface that can contain all three requested values. Newer Claude builds can omit the distinct Fable row while Fable itself remains active.
+Claude Code exposes its five-hour and all-model weekly windows in status-line JSON, but it does not expose the Fable-specific weekly window there or through `claude auth status --json`. The authenticated `/usage` screen is the single installed-CLI surface that can contain all three requested values. Claude Code 2.1.236 can render Fable as a standalone section instead of the older `Current week (Fable)` row. Its zero state has no reset row.
 
 `ClaudeUsageProbe` runs the already resolved Claude binary with `--safe-mode`, `--ax-screen-reader`, and `--no-chrome` inside a private macOS Expect pseudo-terminal. It answers the folder-trust prompt only for CC Relay's controlled data directory, opens `/usage`, captures the accessible text, and closes the session. One random Claude session ID is reused for every refresh during the CC Relay process lifetime, so periodic sampling does not create a new conversation each time. Claude can first paint a persisted snapshot and then replace it after the live request. The probe therefore allows the live repaint to settle, and the parser reads every row from only the final complete usage frame. It never combines a Fable row from one frame with five-hour and weekly rows from another.
 
-When the final frame contains no distinct Fable allowance but does contain the all-model weekly window, Relay publishes that weekly window as `fableWeekly` with `shared: true`. The Fable meter shows the shared percentage and reset countdown, and its tooltip says that Claude reported no separate Fable allowance. This is subscription-runway fallback, not a model-availability claim. A real model-specific Fable row always takes precedence.
+Relay accepts both the older `Current week (Fable)` form and the standalone `Fable` section. A standalone `0% used` is a real numeric value even when no reset follows it, so the meter shows `0%` with a blank countdown. A missing Fable section remains unavailable. It must not borrow the all-model weekly percentage or reset because Claude now proves that the two values are independent.
 
-An explicit per-model refresh failure is not treated as an absent allowance. When Claude says the model breakdown is rate limited or unavailable, Relay retains a prior real Fable value as stale. Without a prior real value, the Fable meter is unavailable rather than copying the all-model percentage. `fableWeeklyUnavailable` distinguishes that failure from a successful response with no separate row. The backend also publishes a nonnumeric `fableWeekly` unavailable sentinel so an older renderer cannot ignore the new flag and restore the incorrect shared fallback.
+An explicit per-model refresh failure is not treated as a fresh sample. When Claude says the model breakdown is rate limited or unavailable, Relay retains every value from its last successful Claude sample and marks the provider stale. This prevents a cached all-model value such as `2%` from replacing a newer successful `3%`, and it also retains a real Fable value such as `0%`. Without a prior real sample, the available cached values may be shown as last known while Fable remains unavailable. `fableWeeklyUnavailable` and a nonnumeric `fableWeekly` sentinel keep mixed backend and renderer versions fail closed.
 
 The pseudo-terminal output is held only in a bounded in-memory buffer. It is not returned by the status endpoint or written to diagnostics. OAuth credentials remain inside Claude Code. The current bridge is macOS-only because it depends on `/usr/bin/expect`; other platforms report Claude usage as unavailable instead of attempting a weaker credential path.
 
@@ -63,13 +63,13 @@ The cached response has this shape:
 }
 ```
 
-Provider status is `checking`, `ready`, `stale`, or `unavailable`. Claude's own **Showing last-known usage** response is also mapped to `stale` and does not advance `checkedAt`. A missing non-Fable window after its provider has responded renders as unavailable, not as a perpetual loading state. A missing Fable-specific window uses the shared Claude week described above. Old backends without the capability render all five bars as unavailable.
+Provider status is `checking`, `ready`, `stale`, or `unavailable`. Claude's own **Showing last-known usage** response is also mapped to `stale` and does not advance `checkedAt`. When a successful sample already exists, no window from a later stale frame replaces it. A missing window after its provider has responded renders as unavailable, not as a perpetual loading state. Old backends without the capability render all five bars as unavailable.
 
 ## Header behavior
 
 `public/provider-usage.js` owns the pure presentation mapping. Values below 50 percent are green, values from 50 through 74 percent are yellow, values from 75 through 89 percent are orange, and values from 90 through 100 percent are red. The text percentage remains visible beside every bar, reset details live in its title, and stale values say **Last known value**.
 
-The visible compact labels are **Cla 5h**, **Cla Week**, **Fable**, **Cod 5h**, and **Cod Week**. Their full provider and window names remain on the accessible progress bars and in reset tooltips. A shared Fable fallback keeps its numeric progress semantics and exposes the fallback explanation through accessible value text. Reset countdowns use 9px monospace text so the remaining time stays readable within the fixed header instrument.
+The visible compact labels are **Cla 5h**, **Cla Week**, **Fable**, **Cod 5h**, and **Cod Week**. Their full provider and window names remain on the accessible progress bars and in reset tooltips. Fable gets a numeric progress value only from a direct Fable section. Reset countdowns use 9px monospace text so the remaining time stays readable within the fixed header instrument.
 
 Each meter also shows a live reset countdown below its bar. The Claude and Codex five-hour windows use hours and minutes, such as `2h 20m`; the three weekly windows use days and hours, such as `3d 14h`. Codex supplies epoch timestamps directly. Claude supplies localized English reset copy, so the pure presentation helper parses the known time-only and `Mon DD at time` forms with their IANA timezone suffix. If a future Claude version returns an unknown label shape, the exact reset remains in the tooltip and the countdown stays blank rather than guessing. The normal two-second visible-page status render keeps the countdown current without adding a timer or another provider request.
 
@@ -94,7 +94,7 @@ On August 14, the header showed an old Claude session sample of `98%` and `23h 5
 
 On August 17, Claude Code 2.1.233 exposed the remaining monitor defect in a live desktop run. Consecutive API snapshots moved the five-hour value from `22%` backward to `21%`, then forward to `23%`. The same resumed monitor session alternated between no Fable row and an older `34%` Fable row, while a fresh eight-second `/usage` capture showed `23%`, `48%`, and no distinct Fable allowance. The active Claude header still identified the model as Fable 5.
 
-The cause was row-by-row history parsing. The pseudo-terminal byte stream held both persisted and refreshed paints, and an optional row that disappeared had no later match to replace it. The 500ms close delay could also end the dialog before a slower live repaint. Relay now waits for the repaint, selects the last complete frame first, accepts current Fable label variants such as `Fable 5 only`, and derives the shared weekly fallback only after that selection. A CLI response that explicitly says it could not refresh remains stale rather than receiving a fresh timestamp.
+The cause was row-by-row history parsing. The pseudo-terminal byte stream held both persisted and refreshed paints, and an optional row that disappeared had no later match to replace it. The 500ms close delay could also end the dialog before a slower live repaint. Relay now waits for the repaint, selects the last complete frame first, and accepts current Fable label variants such as `Fable 5 only`. A CLI response that explicitly says it could not refresh remains stale rather than receiving a fresh timestamp.
 
 > [!important]
 > Never select the newest Claude usage row independently by label. Optional model-scoped rows can disappear between frames, so the frame boundary must be selected before any individual window is parsed.
@@ -106,12 +106,21 @@ Claude Code 2.1.234 can show a persisted `80%` all-model frame with no Fable row
 The probe now waits up to 22 seconds after observing **Refreshing**, inside a 40-second process ceiling that leaves room for clean dialog and CLI shutdown. A direct Fable row, the live Usage credits section, or an explicit refresh outcome ends that wait. Before closing the dialog, the probe changes the private pseudo-terminal dimensions twice so Ink emits one complete final frame instead of leaving an incremental repaint in the byte history. The parser still selects one final frame before reading any row.
 
 > [!important]
-> **Per-model breakdown unavailable** and a genuinely absent Fable allowance are different states. Only a successful final frame may use the shared Claude-week fallback.
+> **Per-model breakdown unavailable** and a standalone `0% used` Fable section are different states. Neither one may use the all-model Claude week as a substitute.
+
+## Standalone Fable zero and stale-frame correction
+
+Claude Code 2.1.236 exposed two related defects on September 3. A live usage dialog showed all-model weekly usage at `3%` and a standalone Fable section at `0%` with the message that Fable had not been used. Relay could not parse the Fable section because its old row parser required `Resets`, so the renderer copied the all-model `3%` and its seven-day countdown into Fable. A later safe-mode probe returned a cached `2%` all-model frame plus **Per-model breakdown unavailable**, and the monitor replaced the newer `3%` with that older value.
+
+The parser now recognizes an exact standalone Fable heading, accepts its percentage without a reset, and asks the Expect bridge to finish on that new heading after a live repaint. The renderer no longer synthesizes Fable from the all-model week. The monitor treats every provider-declared stale frame as status-only once a successful sample exists, preserving the complete successful value set and its `checkedAt` timestamp.
+
+> [!important]
+> A stale response may establish an initial last-known display when Relay has no successful sample. Once a successful sample exists, stale provider data can change only the status and Fable availability marker, never the stored percentages or reset labels.
 
 ## Verification
 
-- `test/provider-usage.test.mjs` covers ANSI parsing, final-frame selection, optional-row removal, delayed complete redraws, current Fable label variants, shared fallback, explicit per-model unavailability, live-repaint settling, session reuse, platform gating, exact Codex 300-minute selection, weekly selection, cross-limit isolation, the 30-second default, refresh deduplication, and stale preservation.
-- `test/provider-usage-ui.test.mjs` covers the five-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units for both five-hour meters, timezone-aware Claude labels, expired five-hour rollover, shared Fable presentation, explicit model-breakdown failures, accessible fallback text, absent windows, dark mode, and the mobile layout.
+- `test/provider-usage.test.mjs` covers ANSI parsing, final-frame selection, optional-row removal, delayed complete redraws, legacy and standalone Fable label variants, standalone zero without a reset, explicit per-model unavailability, live-repaint settling, session reuse, platform gating, exact Codex 300-minute selection, weekly selection, cross-limit isolation, the 30-second default, refresh deduplication, and stale non-regression.
+- `test/provider-usage-ui.test.mjs` covers the five-meter contract, online-pill and pause-button removal, exact control order, threshold boundaries, reset copy and countdown units for both five-hour meters, timezone-aware Claude labels, expired five-hour rollover, direct Fable zero presentation, explicit model-breakdown failures, absent windows, dark mode, and the mobile layout.
 - `test/codex-app-server.test.mjs` protects the authenticated rate-limit method and proves its null parameters pass through the actual request serializer.
 
 ## Combined weekly bottom fill

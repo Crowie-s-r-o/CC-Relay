@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { dirname, extname, join, resolve } from 'node:path';
@@ -1066,7 +1066,15 @@ function serveStatic(pathname, response) {
   response.end(body);
 }
 
-function serveTaskAttachment(task, attachment, response) {
+// Task-list rebuilds fire on a 150 ms SSE debounce, so an uncached thumbnail is
+// refetched constantly. A short freshness window collapses that burst without
+// pinning bytes to a URL: task ids are AUTOINCREMENT and restart at 1 after a
+// `.data` wipe, so the same attachment URL can later serve different bytes.
+// `no-cache` plus ETag is not the alternative, because every revalidation would
+// re-read the file and hash it before it could compare.
+const TASK_ATTACHMENT_CACHE_CONTROL = 'private, max-age=60';
+
+function serveTaskAttachment(task, attachment, response, request) {
   const attachmentRoot = resolve(artifacts.taskDirectory(task.id), 'attachments');
   const filePath = resolve(attachmentRoot, attachment.fileName);
   if (
@@ -1078,10 +1086,28 @@ function serveTaskAttachment(task, attachment, response) {
     return;
   }
   const body = readFileSync(filePath);
+  const etag = `"${createHash('sha256').update(body).digest('hex')}"`;
+  const conditional = request?.headers?.['if-none-match'];
+  // Strong comparison only, deliberately. RFC 9110 weak comparison for
+  // `If-None-Match` is knowingly not implemented: this route always issues a
+  // strong tag over the exact served bytes, so a `W/` validator can only arrive
+  // from a proxy that rewrote it, and answering 304 to one would be a guess. A
+  // weak-tag request therefore resends the image, and a test pins that. Do not
+  // "fix" this to spec without changing that test on purpose.
+  if (typeof conditional === 'string' && conditional.split(',').some((tag) => tag.trim() === etag)) {
+    response.writeHead(304, {
+      ETag: etag,
+      'Cache-Control': TASK_ATTACHMENT_CACHE_CONTROL,
+      'X-Content-Type-Options': 'nosniff',
+    });
+    response.end();
+    return;
+  }
   response.writeHead(200, {
     'Content-Type': attachment.mimeType,
     'Content-Length': body.length,
-    'Cache-Control': 'private, no-store',
+    'Cache-Control': TASK_ATTACHMENT_CACHE_CONTROL,
+    ETag: etag,
     'X-Content-Type-Options': 'nosniff',
     'Content-Disposition': 'inline',
   });
@@ -1672,7 +1698,15 @@ export const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'PATCH' && pathname === '/api/ui-preferences') {
-      const body = await readJson(request, 16 * 1024);
+      /*
+       * The route replaces the whole preferences record, and that record now carries the saved
+       * quick skills: up to twelve prompts of twenty thousand characters each. The former 16 KB
+       * cap rejected a full strip and took every unrelated layout preference in the same save
+       * down with it. The cap is readJson's own module default rather than a tighter local
+       * number: a full strip of CJK prompts serializes to roughly 705 KB, which a 512 KB cap
+       * rejected. An over-limit body still fails closed as a 4xx, never a crash.
+       */
+      const body = await readJson(request, 1024 * 1024);
       const preferences = normalizeUiPreferences(body);
       if (!preferences) throw new Error('Valid panel widths are required.');
       sendJson(response, 200, { preferences: database.setUiPreferences(preferences) });
@@ -2797,7 +2831,7 @@ export const server = createServer(async (request, response) => {
         sendError(response, 404, 'Image attachment not found.');
         return;
       }
-      serveTaskAttachment(task, attachment, response);
+      serveTaskAttachment(task, attachment, response, request);
       return;
     }
 

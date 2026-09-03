@@ -29,6 +29,9 @@ Conversation extraction filters canonical user and assistant event shapes in SQL
 
 Queue-card attachment images use an intersection observer. Only images near the viewport receive a `src`, and an image leaving that region releases it. Cards also use `content-visibility: auto` with an intrinsic size so offscreen card layout is skipped.
 
+> [!important]
+> Viewport gating must survive a list rebuild without a blank frame. The release step reports which sources were painted and leaves the discarded nodes untouched; the observe step restores those sources on the replacement nodes synchronously, before `observe()`. Stripping `src` from the doomed nodes does release their decoded bitmaps a little sooner, but it costs a visible flicker on every refresh, and the replacement node reclaims the same bitmap immediately. The deliberate trade is a briefly higher decoded-image peak during a rebuild in exchange for a stable card. The bound that matters is unchanged: the observer's first callback still releases every primed image that is genuinely offscreen. A short attachment cache keeps the restore from refetching over loopback. See [[renderer-performance]].
+
 New provider activity rows use a bounded display copy:
 
 - Command output keeps a 16,000-character head and tail with an explicit omission marker.
@@ -43,9 +46,9 @@ Historical activity windows are read with a SQLite iterator and compacted one ro
 
 ## Verification
 
-`test/event-storage.test.mjs` covers immutable command compaction, exact completed patches, media omission, small limits, and nested provider values. `test/database.test.mjs` proves list summaries retain full selected detail and that `addEvent()` stores the bounded copy. `test/renderer-memory.test.mjs` covers the summary endpoint, revision gate, canonical SQL filtering, and slow fallback poll. `test/task-card-attachments.test.mjs` covers viewport-bound image loading and offscreen card containment.
+`test/event-storage.test.mjs` covers immutable command compaction, exact completed patches, media omission, small limits, and nested provider values. `test/database.test.mjs` proves list summaries retain full selected detail and that `addEvent()` stores the bounded copy. `test/renderer-memory.test.mjs` covers the summary endpoint, revision gate, canonical SQL filtering, and slow fallback poll. `test/task-card-attachments.test.mjs` covers viewport-bound image loading, offscreen card containment, synchronous thumbnail restore across a list rebuild, and the 60-second revalidated attachment cache with its strong-`ETag` conditional responses.
 
-The complete Node suite passes 1,812 tests, `release:check` passes for v0.2.30, JavaScript syntax checks pass, and `git diff --check` is clean.
+The complete Node suite passes 1,814 tests, `release:check` passes for v0.2.31, JavaScript syntax checks pass, and `git diff --check` is clean.
 
 See [[renderer-performance]], [[task-search]], [[task-history]], and [[diagnostics]].
 

@@ -32,7 +32,13 @@ test('Electron development and packaged builds use the native Crowie icon', () =
   assert.match(main, /nativeImage\.createFromPath\(APP_ICON_PATH\)/);
   assert.match(main, /app\.dock\.setIcon\(icon\)/);
   assert.match(main, /\.\.\.\(appIcon \? \{ icon: appIcon \} : \{\}\)/);
-  assert.equal(builder.match(/^ {2}icon: icon\.png$/gm)?.length, 2);
+  // macOS ships the repository's own tracked specification-conforming icns instead of an
+  // electron-builder derivation of the PNG. Windows keeps the PNG. electron-builder applies no
+  // validation to a supplied icns, so test/mac-icon-geometry.test.mjs is that file's only gate.
+  assert.match(builder, /^mac:\n(?: {2}[^\n]*\n)*? {2}icon: icon\.icns$/m);
+  assert.match(builder, /^win:\n(?: {2}[^\n]*\n)*? {2}icon: icon\.png$/m);
+  assert.equal(builder.match(/^ {2}icon: icon\.icns$/gm)?.length, 1);
+  assert.equal(builder.match(/^ {2}icon: icon\.png$/gm)?.length, 1);
 });
 
 test('macOS DMG uses a branded Finder background without visible helper artwork', () => {
