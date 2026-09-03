@@ -6,6 +6,32 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!note]
+> **September 4: the desktop splash is now a left-aligned 376 by 376 tile with segmented progress.**
+> The Crowie mark sits at the top left in a 112 box, a flexible spacer pushes the `CC Relay`
+> wordmark, the `AI work, one task at a time` tagline, a six-segment CSS progress bar, the status
+> row, and the left-aligned company credit to the bottom. Graphite moved from `#0d0e11` to
+> `#10151b`, so the Electron `backgroundColor` and every `public/splash.css` background must change
+> together or the launch flashes. The tile stays square in CSS because the frameless window is
+> opaque; any rounding is the OS's. The splash CSP forbids remote webfonts, so the design's Space
+> Grotesk and IBM Plex Mono became the bundled Source Serif 4 and JetBrains Mono, and the right
+> status label reads the always-true `Starting local server` rather than a live claim the
+> JavaScript-free document cannot make. Reduced motion stops both animations and leaves the segments
+> at a visible resting fill. An exact 376 Electron capture confirmed the layout mid-animation. The
+> 10 focused brand and icon checks and all 1,945 repository tests pass, `release:check` is green for
+> v0.2.32, and `git diff --check` is clean. See [[brand-startup-and-about]].
+
+> [!important]
+> **September 4: Terminal now means the task's original Terminal.app screen, not Relay's event
+> ledger.** The default view in `#terminal-window-modal` polls a task-scoped endpoint that resolves
+> the exact owned Terminal.app window id and TTY, verifies both inside one JXA read, and checks
+> ownership again after the read. It never falls back to the selected Terminal window or a
+> project-level guess. The real tab contents are bounded, assigned through `textContent`, and retain
+> manual selection and scroll; a temporary read failure keeps the last proven screen marked stale.
+> Conversation, My messages, and provider-derived AI messages still use the structured event ledger.
+> Terminal.app remains the PTY owner, so the existing continuation composer is the supported input
+> path. See [[terminal-window]].
+
 > [!important]
 > **September 3: Fable zero stays independent and stale Claude usage cannot roll values backward.**
 > Claude Code 2.1.236 renders unused Fable as a standalone `0% used` section with no reset. Relay
@@ -19,9 +45,9 @@ type: hot
 > **September 3: the task terminal opens in a full-viewport Terminal window with a persisted view.**
 > The events toolbar gained a **Window** control that opens `#terminal-window-modal` and offers
 > Terminal, Conversation, My messages, and a provider-derived `<Provider> messages` rail. The window
-> MOVES the live `.events-section` node into its mount instead of rendering a second copy, so there is
-> exactly one render target and live refresh, disclosures, follow-to-bottom, the composer, and Copy
-> log keep working. `state.terminalWindowDock` records TWO DOM slots, the scroll offset, and
+> MOVES the live `.events-section` node into its mount instead of cloning it, so the three structured
+> conversation views keep one event-ledger render target. The Terminal view now uses the native
+> screen contract recorded above. `state.terminalWindowDock` records TWO DOM slots, the scroll offset, and
 > follow state at open time; close replays those recorded values, never a live read, because a closed
 > `<dialog>` is `display: none`. The dialog is a child of `#task-detail`, so `hideTaskDetailPanel()` is
 > now the ONLY place allowed to set `taskDetail.hidden = true`, and it closes the dialogs first;
@@ -393,7 +419,8 @@ type: hot
 > `release:check` is green for v0.2.14. See [[non-interactive-relay-prompts]].
 
 > [!note]
-> **August 17: the startup square now includes the Crowie logo in its visual center.** The splash
+> **August 17 historical note, superseded September 4: the startup square included the Crowie logo
+> in its visual center.** The splash
 > reuses the bundled `public/favicon.svg` in a 64 by 64 box between **Starting** and the company
 > credit, with the established dark-surface filter making the near-black bird white. The 320 by 320
 > window, static pre-server lifecycle, graphite background, typography, and clean main-window
@@ -426,7 +453,8 @@ type: hot
 > **August 14: provider runway now resamples once per minute and handles a five-hour rollover honestly.** The previous five-minute cache could retain `98%` after Claude had reset to `1%`, while the expired time-only reset label rolled into tomorrow and displayed `23h 58m`. A five-hour reset now advances overnight only when the resulting timestamp is within five hours; an expired cached label clamps at `0h 0m` until the next sample. Focused usage checks pass 58 of 58, the complete suite passes 1,553 tests, `release:check` is green for v0.2.12, and `git diff --check` is clean. See [[provider-usage-monitor]].
 
 > [!note]
-> **August 14: desktop startup is now one minimal square.** The frameless splash is 320 by 320 and
+> **August 14 historical note, superseded September 4: desktop startup was one minimal square.** The
+> frameless splash was 320 by 320 and
 > contains `CC Relay`, `Starting`, and the restrained two-line attribution `Created by software
 > development company Crowie s.r.o.` on the existing graphite surface. The Crowie artwork, tagline,
 > extra typeface, rounded treatment, progress UI, and motion are absent. The pre-server visibility

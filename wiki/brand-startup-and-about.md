@@ -1,6 +1,6 @@
 ---
 name: Brand Startup and About Experience
-description: Minimal square startup lifecycle, branded About dialog, and desktop company identity contract.
+description: Left-aligned startup tile with segmented progress, branded About dialog, and desktop company identity contract.
 type: design
 tags:
   - relay
@@ -12,7 +12,7 @@ tags:
 
 # Brand Startup and About Experience
 
-CC Relay presents a dedicated minimal startup window before the embedded server is ready. Electron
+CC Relay presents a dedicated compact startup window before the embedded server is ready. Electron
 shows the window's solid graphite background immediately after creating it, before awaiting the
 local splash document. The main desktop window stays hidden until its loopback renderer finishes
 the first load, then appears before the splash closes.
@@ -21,7 +21,7 @@ the first load, then appears before the splash closes.
 
 `src/electron-main.mjs` owns two windows during desktop startup:
 
-1. A 320 by 320 frameless splash is created with `show: true` and background `#0d0e11` immediately
+1. A 376 by 376 frameless splash is created with `show: true` and background `#10151b` immediately
    after Electron is ready.
 2. `public/splash.html` loads into the already visible window.
 3. The embedded server starts and selects its loopback ports.
@@ -38,30 +38,69 @@ the splash forward during startup and the main application forward after handoff
 
 > [!note]
 > The splash is a packaged local file, not part of the loopback renderer. It loads only bundled
-> fonts and the bundled Crowie SVG, requires no renderer JavaScript, and has no animation,
-> transition, progress track, gradient, or decorative background effect. The Electron
-> `backgroundColor` and CSS background are identical so the first frame and loaded document match.
+> fonts and the bundled Crowie SVG and requires no renderer JavaScript or IPC. It now carries a
+> six-segment progress indicator and a shimmering status dot, both pure CSS and both disabled under
+> `prefers-reduced-motion: reduce`. It still has no gradient, no decorative background effect, and no
+> live process state.
+
+> [!important]
+> The Electron `backgroundColor` in `src/electron-main.mjs` and every background declaration in
+> `public/splash.css` (`:root`, `html, body`, `.splash`) must be the same `#10151b`. Electron paints
+> `backgroundColor` before the document loads, so changing one place alone ships a visible color
+> flash on every launch while the focused test still passes. `test/brand-experience.test.mjs` pins
+> both sides and forbids the previous `#0d0e11` anywhere in the stylesheet.
+
+> [!important]
+> The splash window is frameless and opaque, so `public/splash.css` must not round the tile. A CSS
+> `border-radius` on `.splash` would paint the square opaque window corners behind the rounded tile.
+> Any visible corner rounding is the operating system's own; macOS rounds frameless windows itself.
+> Making the window transparent to allow a CSS radius would break the invariant that a solid
+> background is visible immediately.
+
+> [!important]
+> `public/splash.html` declares `default-src 'self'; style-src 'self'`, so remote webfonts are
+> unavailable by contract. The 3B source design called for Space Grotesk and IBM Plex Mono; the
+> shipped splash substitutes the already bundled brand faces instead of loosening the policy or
+> adding font files. `instrument-sans-latin.woff2` exists in `public/fonts` but is only
+> `@font-face`'d by the main renderer's `public/style.css`, not by the splash.
+
+> [!note]
+> The right-hand status label reads `Starting local server`, not the design's `Opening terminals`.
+> The splash carries no renderer JavaScript and no IPC channel, so it cannot report live progress.
+> The label states the one thing that is always true at that moment. For the same reason the splash
+> shows no version string, which would require injection.
 
 ## Visual identity
 
 The brand surfaces extend the neutral graphite language from [[dark-mode]] and the font system from
 [[interface-layout]]:
 
-- Source Serif 4 carries the CC Relay display name.
-- JetBrains Mono carries the small operational label.
-- Graphite `#0d0e11` is the only background color. White, muted gray, and one inset hairline provide
-  the complete hierarchy.
-- The frameless window and its content are one 320 by 320 square. The centered product name and
-  `Starting` sit above the Crowie bird mark, and the quiet two-line attribution `Created by software
-  development company Crowie s.r.o.` sits below it.
-- The splash reuses `public/favicon.svg` in a 64 by 64 CSS box at the visual center. The same
+- Source Serif 4 carries the 32px `CC Relay` wordmark.
+- JetBrains Mono carries every small label: the tagline, the status row, and the credit line.
+- Graphite `#10151b` is the only background color. `#e9eff5`, the muted grays `#6d7b8a`, `#48535f`,
+  and `#3f4a56`, the single accent green `#4ec98a`, and one `rgba(255,255,255,.07)` inset hairline
+  provide the complete hierarchy.
+- The frameless window and its content are one 376 by 376 left-aligned tile with 30px padding.
+  Reading top to bottom: the Crowie bird mark, a flexible spacer, the `CC Relay` wordmark, the
+  tagline `AI work, one task at a time`, the six-segment progress bar, the status row, and the
+  credit line `Created by software development company Crowie s.r.o.`, which is now left aligned
+  rather than centered.
+- The splash reuses `public/favicon.svg` in a 112 by 112 CSS box at the top left. The same
   dark-surface filter used by the main renderer turns the near-black source artwork white without
-  creating another asset. The splash still omits the tagline, progress indicator, rounded corners,
-  and motion. The attribution uses an accessible 4.61:1 muted-gray contrast without competing with
-  the startup state. The fuller company identity remains available in About.
+  creating another asset.
+- The progress bar is six equal `flex: 1` segments, 3px tall with 2px radii and 4px gaps. Each runs
+  the `ccSeg` keyframe for 4.4s `ease-out infinite`, staggered by `0s`, `.45s`, `.9s`, `1.35s`,
+  `1.8s`, and `2.25s`, so a green pulse travels left to right. The status dot is a 5px `#4ec98a`
+  circle running the `ccDot` opacity shimmer.
+- The mark, the progress bar, its segments, and the dot are `aria-hidden`. The `<main>` keeps
+  `role="status"`, `aria-live="polite"`, and the `CC Relay is starting` accessible label, so the
+  announced content is the wordmark, tagline, status text, and credit.
+- `@media (prefers-reduced-motion: reduce)` removes both animations and settles the segments at a
+  legible `rgba(255,255,255,.22)` resting fill, matching the pattern the main renderer already uses
+  for `.standup-loading-line`.
 
 The About dialog retains its own rotating signal orbit, which stops when reduced motion is
-requested. The loading screen does not share that motion.
+requested. The splash now carries its own quiet motion, which stops under the same query.
 
 The header brand lockup is now an accessible button that opens the in-app About dialog. The dialog
 explicitly presents:
@@ -130,6 +169,15 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 
 ## Verification
 
+- Left-aligned 3B tile revision: an isolated Electron capture at the exact production 376 by 376
+  frameless dimensions, taken two seconds in so the segment stagger was mid-cycle, showed the white
+  Crowie mark at the top left, the Source Serif 4 `CC Relay` wordmark and JetBrains Mono tagline
+  above the six-segment bar with a green pulse partway across it, the `Starting` dot beside the
+  muted `Starting local server` label, and the single-line company credit. Nothing clipped,
+  overflowed, or collided, and the left edge aligned across all five text rows. The focused
+  `node --test test/brand-experience.test.mjs test/desktop-icon.test.mjs` passed 10 of 10, the
+  complete suite passed 1,945 of 1,945, `release:check` was green for v0.2.32,
+  `node --check src/electron-main.mjs` passed, and `git diff --check` was clean.
 - Centered Crowie mark revision: an exact Electron 43.4 capture at the production 320 by 320
   dimensions showed the white bird centered between the startup label and company credit, with no
   clipping or overflow. The focused startup and icon checks passed 10 of 10, the complete suite

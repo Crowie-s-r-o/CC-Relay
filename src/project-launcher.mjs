@@ -4,6 +4,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { basename, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import { TerminalRuntimeResolver, normalizeTerminalTty } from './terminal-runtime-resolver.mjs';
+import { NativeTerminalScreenReader } from './native-terminal-screen.mjs';
 import {
   CLAUDE_TRUST_DIALOG_KEYS,
   isClaudeTrustDialogScreen,
@@ -402,6 +403,7 @@ export class ProjectLauncher {
     reserveCodexLaunch = () => null,
     codexClientForThread = () => null,
     runtimeResolver = null,
+    terminalScreenReader = null,
     createId = randomUUID,
     now = Date.now,
     delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -437,6 +439,10 @@ export class ProjectLauncher {
       platform,
       codexClientForThread,
       diagnostic,
+    });
+    this.terminalScreenReader = terminalScreenReader || new NativeTerminalScreenReader({
+      run,
+      platform,
     });
     this.gridSlots = new Map();
     this.launchQueue = Promise.resolve();
@@ -876,6 +882,109 @@ export class ProjectLauncher {
       threadId: terminal.threadId,
       provider: terminal.provider,
       path: terminal.path,
+    };
+  }
+
+  async readTerminalScreen(threadId, thread = null) {
+    if (this.platform !== 'darwin') {
+      return { state: 'unsupported', reason: 'unsupported-platform', text: '', busy: false };
+    }
+    const terminal = this.ownedTerminalForThread(threadId);
+    if (!terminal) {
+      return { state: 'unavailable', reason: 'terminal-unowned', text: '', busy: false };
+    }
+    let expectedThreadMatches = thread === null;
+    if (thread?.id === threadId && thread.provider === terminal.provider) {
+      try {
+        expectedThreadMatches = validateProjectPath(thread.cwd).path === terminal.path;
+      } catch {
+        expectedThreadMatches = false;
+      }
+    }
+    if (!expectedThreadMatches) {
+      return { state: 'unavailable', reason: 'task-mismatch', text: '', busy: false };
+    }
+    if (terminal.ownershipSource === 'runtime') {
+      const foreignOwner = await this.foreignOwnerOfAdoption(terminal);
+      if (foreignOwner) {
+        this.forgetTrackedTerminal(terminal.launchId);
+        this.diagnosticForeignOwner('terminal.screen.skipped_foreign_owner', {
+          launchId: terminal.launchId,
+          threadId: terminal.threadId,
+          provider: terminal.provider,
+          path: terminal.path,
+        }, foreignOwner);
+        return { state: 'unavailable', reason: 'foreign-owner', text: '', busy: false };
+      }
+    }
+    if (terminal.terminalWindowId && !terminal.terminalTty && thread) {
+      let resolved = [];
+      try {
+        resolved = await this.runtimeResolver.resolve([thread]);
+      } catch (error) {
+        this.diagnostic('terminal.screen.identity_resolution_failed', {
+          launchId: terminal.launchId,
+          threadId,
+          provider: terminal.provider,
+          error: error.message,
+        });
+      }
+      const currentIdentity = resolved.find((item) => (
+        item.threadId === threadId
+        && item.terminalWindowId === terminal.terminalWindowId
+      ));
+      if (
+        currentIdentity
+        && currentIdentity.terminalTty
+        && this.ownedTerminals.get(terminal.launchId) === terminal
+        && this.refreshTerminalRuntimeIdentity(threadId, currentIdentity)
+      ) {
+        this.diagnostic('terminal.screen.identity_resolved', {
+          launchId: terminal.launchId,
+          threadId,
+          provider: terminal.provider,
+          terminalWindowId: terminal.terminalWindowId,
+          terminalTty: terminal.terminalTty,
+        });
+      }
+    }
+    if (!terminal.terminalWindowId || !terminal.terminalTty) {
+      return { state: 'unavailable', reason: 'identity-unverified', text: '', busy: false };
+    }
+
+    const snapshot = await this.terminalScreenReader.read({
+      terminalWindowId: terminal.terminalWindowId,
+      terminalTty: terminal.terminalTty,
+    });
+    const current = this.ownedTerminals.get(terminal.launchId);
+    if (
+      current !== terminal
+      || current.threadId !== threadId
+      || current.terminalWindowId !== terminal.terminalWindowId
+      || current.terminalTty !== terminal.terminalTty
+    ) {
+      return { state: 'unavailable', reason: 'ownership-changed', text: '', busy: false };
+    }
+    if (terminal.ownershipSource === 'runtime') {
+      const foreignOwner = await this.foreignOwnerOfAdoption(terminal);
+      if (foreignOwner) {
+        this.forgetTrackedTerminal(terminal.launchId);
+        return { state: 'unavailable', reason: 'foreign-owner', text: '', busy: false };
+      }
+    }
+    const final = this.ownedTerminals.get(terminal.launchId);
+    if (
+      final !== terminal
+      || final.threadId !== threadId
+      || final.terminalWindowId !== terminal.terminalWindowId
+      || final.terminalTty !== terminal.terminalTty
+    ) {
+      return { state: 'unavailable', reason: 'ownership-changed', text: '', busy: false };
+    }
+    return {
+      ...snapshot,
+      provider: terminal.provider,
+      source: 'Terminal.app',
     };
   }
 

@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const markup = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8');
 
 const eventToolbar = markup.slice(
   markup.indexOf('<div class="event-tools">'),
@@ -40,7 +41,7 @@ test('the terminal window dialog is a sibling of the events section and owns a m
   assert.match(app, /terminalWindowMount: document\.querySelector\('#terminal-window-mount'\)/);
 });
 
-test('the window rail exposes exactly the four contract views with counted labels', () => {
+test('the window rail exposes the native terminal plus three counted conversation views', () => {
   const views = [...terminalWindowDialog.matchAll(/data-terminal-window-view="([a-z]+)"/g)]
     .map((match) => match[1]);
   assert.deepEqual(views, ['all', 'conversation', 'mine', 'ai']);
@@ -48,7 +49,12 @@ test('the window rail exposes exactly the four contract views with counted label
   assert.match(terminalWindowDialog, /data-terminal-window-view="conversation"[\s\S]*?>Conversation</);
   assert.match(terminalWindowDialog, /data-terminal-window-view="mine"[\s\S]*?>My messages</);
   assert.match(terminalWindowDialog, /data-terminal-window-view="ai"[\s\S]*?>AI messages</);
-  for (const view of views) {
+  assert.match(terminalWindowDialog, /data-terminal-window-view="all"[\s\S]*?class="terminal-window-live-badge"[\s\S]*?>Live</);
+  assert.doesNotMatch(
+    terminalWindowDialog.match(/data-terminal-window-view="all"[\s\S]*?<\/button>/)?.[0] || '',
+    /data-terminal-window-view-count/,
+  );
+  for (const view of views.filter((item) => item !== 'all')) {
     assert.match(
       terminalWindowDialog,
       new RegExp(`data-terminal-window-view="${view}"[\\s\\S]*?data-terminal-window-view-count`),
@@ -56,6 +62,35 @@ test('the window rail exposes exactly the four contract views with counted label
     );
   }
   assert.match(terminalWindowDialog, /role="group" aria-label="Terminal window view"/);
+});
+
+test('the default Terminal view owns a real Terminal.app screen surface', () => {
+  const eventsSection = markup.slice(
+    markup.indexOf('<section class="detail-section events-section"'),
+    markup.indexOf('<dialog id="terminal-window-modal"'),
+  );
+  assert.match(eventsSection, /id="native-terminal-screen"[\s\S]*?data-state="loading"[\s\S]*?hidden/);
+  assert.match(eventsSection, /id="native-terminal-screen-title">Terminal\.app</);
+  assert.match(eventsSection, /id="native-terminal-screen-state"[\s\S]*?role="status"/);
+  assert.match(eventsSection, /id="native-terminal-screen-output"[\s\S]*?aria-label="Live native terminal screen"/);
+  assert.match(app, /api\(`\/api\/tasks\/\$\{taskId\}\/terminal-screen`/);
+  assert.match(app, /if \(output\.textContent !== next\.text\) output\.textContent = next\.text/);
+  assert.match(app, /view === 'all' \? 'Terminal: live native screen'/);
+});
+
+test('the terminal screen API is task scoped and delegates to owned native identity', () => {
+  assert.match(server, /nativeTerminalScreen: process\.platform === 'darwin'/);
+  const routeStart = server.indexOf("/^\\/api\\/tasks\\/\\d+\\/terminal-screen$/");
+  const routeEnd = server.indexOf("/^\\/api\\/tasks\\/\\d+\\/plan$/", routeStart);
+  assert.ok(routeStart >= 0 && routeEnd > routeStart, 'the task terminal screen route exists');
+  const route = server.slice(routeStart, routeEnd);
+  assert.match(route, /const task = database\.getTask\(taskId\)/);
+  assert.match(route, /if \(!task\.thread_id\)/);
+  assert.match(route, /\.\.\.\(knownTerminalThread \|\| \{\}\),\s*id: task\.thread_id,\s*provider: task\.provider,\s*cwd: task\.repo_path,/);
+  assert.match(route, /await projectLauncher\.readTerminalScreen\(task\.thread_id, terminalThread\)/);
+  assert.match(route, /provider: terminal\.provider \|\| task\.provider/);
+  assert.match(route, /source: terminal\.source \|\| 'Terminal\.app'/);
+  assert.doesNotMatch(route, /terminalWindowId|terminalTty/, 'the browser cannot select native identity');
 });
 
 test('the dialog header owns an empty slot the docked tools cluster moves into', () => {
@@ -392,6 +427,7 @@ class FakeNode {
     this.attributes = {};
     this.listeners = new Map();
     this.scrollTop = 0;
+    this.scrollLeft = 0;
     this.scrollHeight = 1000;
     this.clientHeight = 400;
     this.hidden = false;
@@ -499,7 +535,19 @@ function childNames(node) {
   return node.childNodes.map((child) => child.nodeName).join(',');
 }
 
-function buildWorld() {
+function buildWorld({
+  nativeScreen = false,
+  terminalResponse = {
+    terminal: {
+      state: 'live',
+      reason: 'read',
+      text: 'real terminal output',
+      busy: true,
+      provider: 'claude',
+      capturedAt: '2026-09-04T12:00:00.000Z',
+    },
+  },
+} = {}) {
   focusLog = [];
   const document = new FakeNode('#document');
   const taskList = new FakeNode('#task-list');
@@ -521,6 +569,15 @@ function buildWorld() {
   // so the recorded nextSibling is a real reference rather than the null shortcut.
   const toolbarText = new FakeNode('#toolbar-text');
   const detailEvents = new FakeNode('#detail-events');
+  const eventSummary = new FakeNode('#event-summary');
+  const eventOverview = new FakeNode('#event-overview');
+  const nativeTerminalScreen = new FakeNode('#native-terminal-screen');
+  const nativeTerminalScreenTitle = new FakeNode('#native-terminal-screen-title');
+  const nativeTerminalScreenState = new FakeNode('#native-terminal-screen-state');
+  const nativeTerminalScreenOutput = new FakeNode('#native-terminal-screen-output');
+  const nativeTerminalScreenNotice = new FakeNode('#native-terminal-screen-notice');
+  const nativeTerminalNoticeTitle = new FakeNode('#native-terminal-screen-notice-title');
+  const nativeTerminalNoticeDetail = new FakeNode('#native-terminal-screen-notice-detail');
   const openButton = new FakeNode('#terminal-window-open');
   const thinkingButton = new FakeNode('#thinking-visibility-button');
   const copyButton = new FakeNode('#copy-events-button');
@@ -546,7 +603,20 @@ function buildWorld() {
   terminalWindowModal.append(terminalWindowTools);
   terminalWindowModal.append(terminalWindowMount);
   eventsSection.append(eventToolbar);
+  eventsSection.append(eventOverview);
+  eventsSection.append(nativeTerminalScreen);
   eventsSection.append(detailEvents);
+  nativeTerminalScreen.append(nativeTerminalScreenTitle);
+  nativeTerminalScreen.append(nativeTerminalScreenState);
+  nativeTerminalScreen.append(nativeTerminalScreenOutput);
+  nativeTerminalScreen.append(nativeTerminalScreenNotice);
+  nativeTerminalScreenNotice.append(nativeTerminalNoticeTitle);
+  nativeTerminalScreenNotice.append(nativeTerminalNoticeDetail);
+  nativeTerminalScreenNotice.querySelector = (selector) => {
+    if (selector === 'strong') return nativeTerminalNoticeTitle;
+    if (selector === 'span') return nativeTerminalNoticeDetail;
+    return null;
+  };
   eventToolbar.append(eventFiltersRail);
   eventToolbar.append(eventTools);
   eventToolbar.append(toolbarText);
@@ -581,6 +651,8 @@ function buildWorld() {
     taskDetailModal,
     eventsSection,
     detailEvents,
+    eventSummary,
+    eventOverview,
     eventFilters: filterButtons,
     eventTools,
     terminalWindowOpenButton: openButton,
@@ -591,6 +663,13 @@ function buildWorld() {
     terminalWindowSubtitle: subtitle,
     terminalWindowClose: closeButton,
     terminalWindowViews: viewButtons,
+    nativeTerminalScreen,
+    nativeTerminalScreenTitle,
+    nativeTerminalScreenState,
+    nativeTerminalScreenOutput,
+    nativeTerminalScreenNotice,
+    thinkingVisibilityButton: thinkingButton,
+    copyEventsButton: copyButton,
   };
 
   const state = {
@@ -602,10 +681,42 @@ function buildWorld() {
     terminalWindowDock: null,
     terminalWindowView: 'all',
     eventFollow: true,
+    status: { capabilities: { nativeTerminalScreen: nativeScreen } },
+    nativeTerminalScreen: {
+      taskId: null,
+      state: 'idle',
+      reason: '',
+      text: '',
+      busy: false,
+      provider: null,
+      capturedAt: null,
+    },
+    nativeTerminalScreenTimer: null,
+    nativeTerminalScreenPending: false,
+    nativeTerminalScreenSequence: 0,
+    visibleEventEntries: [],
   };
 
   const calls = {
-    renders: [], preferenceSaves: 0, terminalHeights: 0, toolsParentAtShowModal: null,
+    renders: [],
+    preferenceSaves: 0,
+    terminalHeights: 0,
+    toolsParentAtShowModal: null,
+    screenRequests: [],
+    selectionWaits: 0,
+  };
+  let nextTimerId = 1;
+  const timers = new Map();
+  const fakeWindow = {
+    setTimeout(callback) {
+      const id = nextTimerId;
+      nextTimerId += 1;
+      timers.set(id, callback);
+      return id;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
   };
 
   // Where the cluster was standing when the dialog first painted.
@@ -646,12 +757,19 @@ function buildWorld() {
     'taskProvider',
     'updateThinkingVisibilityControl',
     'closeTaskDetailModal',
+    'window',
+    'api',
+    'textSelectionGuard',
+    'formatTime',
+    'NATIVE_TERMINAL_SCREEN_POLL_MS',
+    'NATIVE_TERMINAL_SCREEN_RETRY_MS',
+    'NATIVE_TERMINAL_SCREEN_MAX_CHARS',
     `${viewConstantsSource}\n${terminalWindowSource}\n${terminalWindowListenerSource}\n`
       + 'return { openTerminalWindow, closeTerminalWindow, undockTerminalWindow,'
       + ' updateTerminalWindowAvailability, updateTerminalWindowControls, updateEventControls,'
       + ' setTerminalWindowView, terminalWindowIsDocked, normalizeTerminalWindowView,'
       + ' rerenderTerminalWindowStream, focusTerminalWindowOpenButton, focusTaskDetailLandmark,'
-      + ' hideTaskDetailPanel };',
+      + ' hideTaskDetailPanel, refreshNativeTerminalScreen, syncTerminalWindowSurface };',
   );
 
   let api;
@@ -674,6 +792,18 @@ function buildWorld() {
     function closeTaskDetailModal() {
       if (elements.taskDetailModal.open) elements.taskDetailModal.close();
     },
+    fakeWindow,
+    async (path, options) => {
+      calls.screenRequests.push({ path, options });
+      return terminalResponse;
+    },
+    {
+      waitForClear: async () => { calls.selectionWaits += 1; },
+    },
+    () => '12:00:00',
+    700,
+    2500,
+    250_000,
   );
 
   // The fixture above is ~20 appends. Clearing here keeps the move log describing only
@@ -693,6 +823,7 @@ function buildWorld() {
     moves: () => moveLog,
     clearMoves: () => { moveLog = []; },
     openButtonFocusContext: () => openButtonFocusContext,
+    timers,
   };
 }
 
@@ -936,6 +1067,38 @@ test('a reopen uses the persisted window view while the inline rail keeps its ow
       .map((button) => button.dataset.eventFilter),
     ['commands'],
   );
+});
+
+test('the default view renders the native screen and stops polling on a conversation view', async () => {
+  const world = buildWorld({ nativeScreen: true });
+  world.api.openTerminalWindow();
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.deepEqual(world.calls.screenRequests, [{
+    path: '/api/tasks/7/terminal-screen',
+    options: { timeoutMs: 8_000 },
+  }]);
+  assert.equal(world.calls.selectionWaits, 1, 'new terminal text waits for active selection to clear');
+  assert.equal(world.state.nativeTerminalScreen.state, 'live');
+  assert.equal(world.state.nativeTerminalScreen.text, 'real terminal output');
+  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'real terminal output');
+  assert.equal(world.elements.nativeTerminalScreen.hidden, false);
+  assert.equal(world.elements.detailEvents.hidden, true);
+  assert.equal(world.elements.eventOverview.hidden, true);
+  assert.equal(world.elements.thinkingVisibilityButton.hidden, true);
+  assert.equal(world.elements.copyEventsButton.disabled, false);
+  assert.equal(world.elements.copyEventsButton.textContent, 'Copy terminal');
+  assert.equal(world.elements.eventsSection.dataset.terminalSurface, 'native');
+  assert.equal(world.timers.size, 1, 'a live screen schedules its next bounded poll');
+
+  world.api.setTerminalWindowView('conversation');
+  assert.equal(world.elements.nativeTerminalScreen.hidden, true);
+  assert.equal(world.elements.detailEvents.hidden, false);
+  assert.equal(world.elements.eventOverview.hidden, false);
+  assert.equal(world.elements.thinkingVisibilityButton.hidden, false);
+  assert.equal(world.elements.copyEventsButton.textContent, 'Copy log');
+  assert.equal(world.elements.eventsSection.dataset.terminalSurface, undefined);
+  assert.equal(world.timers.size, 0, 'leaving Terminal cancels its next poll');
 });
 
 test('a live render while docked keeps the dock and the window view', () => {

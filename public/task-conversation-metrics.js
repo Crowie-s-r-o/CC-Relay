@@ -66,6 +66,7 @@ export function dailyTokenUsagePresentation(usage, { supported = true } = {}) {
       title: 'Restart CC Relay to show today\'s recorded token usage.',
       state: 'unavailable',
       totalTokens: null,
+      projects: [],
     };
   }
   const totalTokens = nonNegativeInteger(usage?.totalTokens);
@@ -75,11 +76,25 @@ export function dailyTokenUsagePresentation(usage, { supported = true } = {}) {
       title: 'No provider-reported token usage has been recorded today.',
       state: 'empty',
       totalTokens,
+      inputTokens: 0,
+      outputTokens: 0,
+      projects: [],
     };
   }
   const providers = usage?.providers && typeof usage.providers === 'object'
     ? usage.providers
     : {};
+  const inputTokens = nonNegativeInteger(usage?.inputTokens);
+  const outputTokens = nonNegativeInteger(usage?.outputTokens);
+  const projects = Array.isArray(usage?.projects)
+    ? usage.projects.map((project) => ({
+      name: String(project?.name || project?.path || 'Unknown project'),
+      path: String(project?.path || ''),
+      inputTokens: nonNegativeInteger(project?.inputTokens),
+      outputTokens: nonNegativeInteger(project?.outputTokens),
+      totalTokens: nonNegativeInteger(project?.totalTokens),
+    })).filter((project) => project.totalTokens > 0)
+    : [];
   const providerOrder = Object.keys(PROVIDER_LABELS);
   const providerTotals = Object.entries(providers)
     .map(([provider, value]) => ({
@@ -101,9 +116,12 @@ export function dailyTokenUsagePresentation(usage, { supported = true } = {}) {
     )).join(' | ')}.`
     : '';
   return {
-    label: `Today ${compactTokenCount(totalTokens)}`,
-    title: `Today's recorded usage: ${totalTokens.toLocaleString('en-US')} provider-reported tokens.${breakdown} Totals include cache, reasoning, and completed Claude sub-agent usage when reported.`,
+    label: `Today In ${compactTokenCount(inputTokens)} Out ${compactTokenCount(outputTokens)}`,
+    title: `Today's recorded usage: ${inputTokens.toLocaleString('en-US')} input and ${outputTokens.toLocaleString('en-US')} output tokens; ${totalTokens.toLocaleString('en-US')} provider-reported tokens.${breakdown} Provider totals include cache, reasoning, and completed Claude sub-agent usage when reported.`,
     state: 'ready',
     totalTokens,
+    inputTokens,
+    outputTokens,
+    projects,
   };
 }

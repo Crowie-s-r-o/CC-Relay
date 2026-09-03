@@ -171,15 +171,15 @@ function applyDevelopmentAppIcon() {
 
 async function createSplashWindow(appIcon) {
   splashWindow = new BrowserWindow({
-    width: 320,
-    height: 320,
+    width: 376,
+    height: 376,
     frame: false,
     resizable: false,
     minimizable: false,
     maximizable: false,
     fullscreenable: false,
     show: true,
-    backgroundColor: '#0d0e11',
+    backgroundColor: '#10151b',
     title: `${PRODUCT_NAME} is starting`,
     ...(appIcon ? { icon: appIcon } : {}),
     webPreferences: {

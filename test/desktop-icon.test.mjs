@@ -77,7 +77,7 @@ test('the macOS desktop title bar carries Crowie with today\'s token sum', () =>
   assert.ok(titlebar);
   assert.match(titlebar, /id="desktop-titlebar-token-usage"/);
   assert.match(titlebar, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);
-  assert.match(titlebar, /id="desktop-titlebar-token-count">Today --<\/span>/);
+  assert.match(titlebar, /id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --<\/span>/);
   assert.doesNotMatch(titlebar, /CC Relay/);
   assert.match(style, /html\[data-desktop-titlebar="true"\] \{\s*--desktop-titlebar-height: 32px;/);
   assert.match(style, /\.desktop-titlebar-mark \{[\s\S]*?width: 20px;[\s\S]*?height: 20px;[\s\S]*?flex: 0 0 20px;/);

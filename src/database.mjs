@@ -900,6 +900,7 @@ export class RelayDatabase {
         outputTokens: 0,
         totalTokens: 0,
         providers: {},
+        projects: [],
       };
     }
     const rows = this.database.prepare(`
@@ -930,7 +931,28 @@ export class RelayDatabase {
       outputTokens += providerOutput;
       totalTokens += providerTotal;
     }
-    return { date: usageDate, inputTokens, outputTokens, totalTokens, providers };
+    const projectRows = this.database.prepare(`
+      SELECT
+        tasks.repo_path,
+        COALESCE(projects.name, tasks.repo_path) AS project_name,
+        COALESCE(SUM(deltas.input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(deltas.output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(deltas.total_tokens), 0) AS total_tokens
+      FROM task_token_usage_deltas AS deltas
+      JOIN tasks ON tasks.id = deltas.task_id
+      LEFT JOIN projects ON projects.path = tasks.repo_path
+      WHERE deltas.usage_date = ?
+      GROUP BY tasks.repo_path
+      ORDER BY total_tokens DESC, project_name COLLATE NOCASE, tasks.repo_path
+    `).all(usageDate);
+    const projects = projectRows.map((row) => ({
+      path: row.repo_path,
+      name: row.project_name,
+      inputTokens: nonNegativeTokenCount(row.input_tokens),
+      outputTokens: nonNegativeTokenCount(row.output_tokens),
+      totalTokens: nonNegativeTokenCount(row.total_tokens),
+    }));
+    return { date: usageDate, inputTokens, outputTokens, totalTokens, providers, projects };
   }
 
   taskWithConversationMetrics(task, metrics = null) {

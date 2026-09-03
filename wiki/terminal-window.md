@@ -1,6 +1,6 @@
 ---
 name: Terminal Window
-description: Full-viewport terminal review surface built by reparenting the live events section and its tools cluster, with the two-slot dock record, six ordering invariants, the docked grid-row and specificity traps, filter separation, and the app-wide view preference.
+description: Full-viewport task window whose default view mirrors the exact owned Terminal.app tab, with separate event-ledger conversation views and safe dock restoration.
 type: implementation
 tags:
   - relay
@@ -17,17 +17,17 @@ in the events toolbar (`.event-tools`, beside **Thinking** and **Copy log**) and
 `<dialog id="terminal-window-modal">`. The control is disabled while no task is selected, or while the
 detail panel is hidden, because the window has nothing to show without a live terminal underneath it.
 
-The window shows the original terminal by default and offers a four-view rail
-(`#terminal-window-views`) so the operator can read the conversation without leaving the terminal
-surface. The view the operator selects becomes the default the window opens on next time, for any
-task, across restarts. See [[terminal-conversation-filters]] for the underlying role contract and
-[[interface-layout]] for the surrounding execution ledger.
+The window shows the task's original Terminal.app screen by default and offers a four-view rail
+(`#terminal-window-views`) so the operator can switch to Relay's structured conversation without
+leaving the window. The view the operator selects becomes the default the window opens on next time,
+for any task, across restarts. See [[terminal-conversation-filters]] for the event-ledger role
+contract and [[interface-layout]] for the surrounding execution ledger.
 
 ## Views and labels
 
 | View id | Rail label | Meaning |
 | --- | --- | --- |
-| `all` | **Terminal** | the original terminal output, identical to the inline `all` filter |
+| `all` | **Terminal** | the live visible text from the task's exact owned Terminal.app tab |
 | `conversation` | **Conversation** | the inline `conversation` filter |
 | `mine` | **My messages** | the inline `mine` filter |
 | `ai` | **`<Provider>` messages** | the inline `ai` filter, relabelled at render time; falls back to the literal **AI messages** when no task is selected |
@@ -43,22 +43,51 @@ The `ai` label, the dialog title, and the subtitle are written with `textContent
 > task-controlled values, so the heading, subtitle, and rail labels must stay on `textContent` and
 > never reach `innerHTML`.
 
+## Native terminal screen contract
+
+The **Terminal** view is not `renderEventStream()` under another label. The renderer polls
+`GET /api/tasks/:id/terminal-screen`, and the backend resolves the task's conversation to the exact
+terminal already owned by `ProjectLauncher`. The read is allowed only when both of these identities
+are known:
+
+- the positive Terminal.app window id captured for that launch
+- the `/dev/...` TTY resolved for the same provider process
+
+One JXA call then checks that the window still exists, still has exactly one tab, and that the tab's
+TTY still equals the expected TTY before reading its `contents`. `ProjectLauncher` checks the tracked
+ownership again after the asynchronous read, closing the window-reuse race. Runtime-adopted launches
+also pass the existing cross-process foreign-owner check. Relay never falls back to another window,
+the selected Terminal.app tab, or a project-level guess.
+
+The terminal text is normalized, bounded to the latest 250,000 characters before it leaves JXA, and
+assigned through `textContent`. The browser polls every 700 ms while the native view is visible,
+preserves selection and manual scroll position, and follows the bottom only when the operator was
+already there. If the terminal closes or temporarily becomes unreadable, the last proven screen stays
+visible as stale evidence. The polling stops as soon as the operator changes view or closes the
+window.
+
+> [!note]
+> Terminal.app remains the PTY owner. macOS does not expose a supported way to reparent another
+> process's terminal window into Electron, and attaching a second emulator to the same PTY would take
+> control away from the original session. Relay therefore mirrors the original tab's real screen
+> text. The existing continuation composer remains the supported input path. This is intentionally
+> different from fabricating output from Relay events.
+
 ## Reparenting contract
 
-The window does not duplicate the terminal. **Two** live nodes are moved on open and moved back on
-close:
+The window does not duplicate the event ledger. **Two** live nodes are moved on open and moved back
+on close:
 
 1. `.events-section` into `#terminal-window-mount`.
 2. `.event-tools` (the **Thinking**, **Copy log**, and **Window** cluster) into the dialog header slot
    `#terminal-window-tools`.
 
 > [!important]
-> There is exactly ONE render target. `renderEventStream()` is unchanged and keeps working through
-> its existing element references, so live SSE refresh, disclosure restore, follow-to-bottom, the
-> continuation composer, and **Copy log** all keep working inside the window with no parallel code
-> path. Do not add a second render target, a cloned subtree, or a window-only renderer. A second
-> target would immediately split live refresh, copy payloads, and follow state into two states that
-> have to be reconciled, which is the failure this design exists to avoid.
+> There is exactly ONE event-ledger render target. `renderEventStream()` is unchanged and keeps
+> working through its existing element references for Conversation, My messages, and AI messages,
+> so live SSE refresh, disclosure restore, follow-to-bottom, the continuation composer, and
+> **Copy log** keep working with no cloned ledger. The native screen is a separate source and surface
+> used only by the Terminal view. Do not render provider events into that surface.
 >
 > The tools fold does not weaken that. The cluster is the same live nodes moved, never a copy, so
 > **Thinking** and **Copy log** keep their existing listeners and their existing `aria-pressed` state.
@@ -183,7 +212,8 @@ pull focus off whatever the operator is using.
 
 ## Filter separation
 
-The window view and the inline six-button rail are two independent selections over one filter state.
+The window view and the inline six-button rail are independent selections. The three conversation
+views reuse the event filter state; the Terminal view hides that ledger and reads the native screen.
 
 - On open, `state.eventFilter` is saved into `state.inlineEventFilter` and replaced with the persisted
   `state.terminalWindowView`.
@@ -197,16 +227,19 @@ The window view and the inline six-button rail are two independent selections ov
 > The persisted default belongs to the window only. The inline rail still defaults to **All** and is
 > not persisted. Opening or closing the window must not change the inline rail's selection.
 
-The window rail reuses the `filterCounts` object already computed inside `renderEventStream()` and
-passed to `updateEventControls()`. Do not recompute filter counts for the window.
+The three conversation buttons reuse the `filterCounts` object already computed inside
+`renderEventStream()` and passed to `updateEventControls()`. Do not recompute those counts for the
+window. Terminal carries a **Live** badge instead of the misleading count formerly taken from the
+inline `all` filter.
 
 ## Styling contract
 
 `.events-section` carries `data-terminal-window="open"` while docked. The attribute is removed on
 close. CSS uses it to let the section fill the dialog, to hide the inline `#event-filters` rail that
-the window rail replaces, and to hide the whole `.event-toolbar` row the cluster has left. The Tokyo
-Night `--term-*` ledger palette and typography are untouched, so the docked terminal is the same
-terminal.
+the window rail replaces, and to hide the whole `.event-toolbar` row the cluster has left.
+`data-terminal-surface="native"` additionally removes the overview and event list from layout and
+gives `#native-terminal-screen` the flexible row. Conversation views remove that attribute and keep
+the existing Tokyo Night event-ledger palette and typography.
 
 The dialog frame follows the conventions already used by `.terminal-settings-modal` and
 `.task-detail-modal`: a transparent `<dialog>` that owns width, height, and shadow, a rounded card
@@ -510,19 +543,24 @@ Recorded honestly rather than resolved.
 
 ## Files and coverage
 
-- `public/index.html`: the toolbar open control, the dialog, the four-view rail, the empty
-  `#terminal-window-tools` header slot, and the mount point.
+- `public/index.html`: the toolbar open control, native terminal screen, dialog, four-view rail, empty
+  `#terminal-window-tools` header slot, and mount point.
 - `public/app.js`: `openTerminalWindow`, `undockTerminalWindow`, `closeTerminalWindow`,
   `setTerminalWindowView`, `updateTerminalWindowControls`, `updateTerminalWindowAvailability`,
-  `terminalWindowIsDocked`, the two-slot dock record and the tools fold, the inline-rail separation,
-  and the `uiPreferencesPayload()` member.
+  `terminalWindowIsDocked`, native screen polling and rendering, the two-slot dock record and tools
+  fold, the inline-rail separation, and the `uiPreferencesPayload()` member.
 - `public/style.css`: the dialog frame, the four-zone header, the segmented rail with its separated
-  hover and pressed states, the docked tools slot, the docked `data-terminal-window="open"` rules
-  including the four-row grid, the empty-detail focus ring, the compact breakpoints, and the light and
+  hover and pressed states, native terminal viewport, docked tools slot, the docked
+  `data-terminal-window="open"` rules, the empty-detail focus ring, compact breakpoints, and light and
   dark pairs.
-- `src/ui-preferences.mjs` and `src/server.mjs`: the `terminalWindowView` whitelist, its fallback, and
-  the full-record `GET` and `PATCH` routes.
-- `test/terminal-window.test.mjs`: markup contract, the four views, reparenting, inline-filter
+- `src/native-terminal-screen.mjs`: the identity-checked, bounded Terminal.app contents reader.
+- `src/project-launcher.mjs`: owned-terminal lookup, cross-process ownership check, and post-read
+  identity check.
+- `src/ui-preferences.mjs` and `src/server.mjs`: the view whitelist and persistence plus the
+  task-scoped native terminal endpoint and status capability.
+- `test/native-terminal-screen.test.mjs`: platform, identity, JXA, normalization, and size bounds.
+- `test/project-launcher.test.mjs`: exact owned identity, unowned rejection, and ownership race.
+- `test/terminal-window.test.mjs`: native markup and polling contract, the four views, reparenting, inline-filter
   restoration, the dock-recorded reading position, resize-handle isolation while docked, focus return
   after close, Escape and backdrop scope, reused filter counts, provider-derived `ai` label, inline
   rail independence, the empty header tools slot in the markup, and the disabled open control closing
@@ -550,9 +588,27 @@ Recorded honestly rather than resolved.
 - `test/ui-preferences.test.mjs`: view normalization to the four supported ids and app-wide
   persistence including legacy records.
 
-## Verification
+## Current native-screen verification
 
-Re-observed directly when the second live browser pass was recorded, on **v0.2.31**.
+Verified on **September 4, 2026**, on v0.2.32:
+
+- `NativeTerminalScreenReader` returned `state: live` against both active owned Terminal.app window
+  and TTY pairs. The checks reported nonempty 48-line screens without printing their contents into
+  the test log.
+- The focused native reader, ProjectLauncher, Terminal window behavior, and Terminal window style
+  suites pass **131 of 131 tests**.
+- The complete repository suite passes **1,950 of 1,950 tests**.
+- `npm run release:check` reports consistent metadata for v0.2.32.
+- An actual Electron renderer capture at 1600 by 1000 measured the 1536 by 910 dialog, a 797px native
+  screen row, and a 765px scrollable output viewport. The structured event list computed to
+  `display: none` and Terminal remained the pressed view. The first capture exposed the global
+  `pre { max-height: 250px }` cap and border leaking into the new screen; the native id rule now
+  explicitly clears both, and the repeated capture proved the fix.
+
+## Historical window-shell verification
+
+Re-observed directly when the second live browser pass was recorded, on **v0.2.31**, before the
+native Terminal.app screen replaced the `all` event view.
 
 - The focused set (`terminal-window`, `terminal-window-styles`, `ui-preferences`,
   `terminal-conversation-filters`, and `plan-visibility`) passes **129 of 129 checks**, 0 failed.

@@ -27,6 +27,7 @@ import {
   taskLifecycleDates,
 } from './task-time.js';
 import {
+  compactTokenCount,
   dailyTokenUsagePresentation,
   taskTokenPresentation,
 } from './task-conversation-metrics.js';
@@ -261,6 +262,9 @@ const MAX_STANDUP_FOLLOW_UP_LENGTH = 4_000;
 
 const API_TIMEOUT_MS = 20_000;
 const SNAPSHOT_FALLBACK_POLL_MS = 15_000;
+const NATIVE_TERMINAL_SCREEN_POLL_MS = 700;
+const NATIVE_TERMINAL_SCREEN_RETRY_MS = 2_500;
+const NATIVE_TERMINAL_SCREEN_MAX_CHARS = 250_000;
 const RUNNING_TASK_LAYOUT_DEFAULTS = Object.freeze({ rows: 1, width: 286 });
 const RUNNING_TASK_ROW_OPTIONS = new Set([1, 2, 3]);
 const RUNNING_TASK_WIDTH_OPTIONS = new Set([230, 286, 360]);
@@ -575,6 +579,18 @@ const state = {
   // reparented .events-section returns to, and its presence means the window is docked.
   inlineEventFilter: 'all',
   terminalWindowDock: null,
+  nativeTerminalScreen: {
+    taskId: null,
+    state: 'idle',
+    reason: '',
+    text: '',
+    busy: false,
+    provider: null,
+    capturedAt: null,
+  },
+  nativeTerminalScreenTimer: null,
+  nativeTerminalScreenPending: false,
+  nativeTerminalScreenSequence: 0,
   showThinking: true,
   eventFollow: true,
   eventTaskId: null,
@@ -803,6 +819,7 @@ const elements = {
   voiceInputStatus: document.querySelector('#voice-input-status'),
   desktopTitlebarTokenUsage: document.querySelector('#desktop-titlebar-token-usage'),
   desktopTitlebarTokenCount: document.querySelector('#desktop-titlebar-token-count'),
+  desktopTitlebarTokenPanel: document.querySelector('#desktop-titlebar-token-panel'),
   providerUsage: document.querySelector('#provider-usage'),
   providerUsageMeters: [...document.querySelectorAll('[data-usage-key]')],
   themeToggle: document.querySelector('#theme-toggle'),
@@ -934,6 +951,11 @@ const elements = {
   terminalWindowSubtitle: document.querySelector('#terminal-window-subtitle'),
   terminalWindowClose: document.querySelector('#terminal-window-close'),
   terminalWindowViews: [...document.querySelectorAll('[data-terminal-window-view]')],
+  nativeTerminalScreen: document.querySelector('#native-terminal-screen'),
+  nativeTerminalScreenTitle: document.querySelector('#native-terminal-screen-title'),
+  nativeTerminalScreenState: document.querySelector('#native-terminal-screen-state'),
+  nativeTerminalScreenOutput: document.querySelector('#native-terminal-screen-output'),
+  nativeTerminalScreenNotice: document.querySelector('#native-terminal-screen-notice'),
   continuationForm: document.querySelector('#task-continuation-form'),
   continuationLabel: document.querySelector('#task-continuation-label'),
   continuationContext: document.querySelector('#task-continuation-context'),
@@ -4253,7 +4275,7 @@ const TERMINAL_WINDOW_VIEW_TITLES = {
 };
 
 const TERMINAL_WINDOW_VIEW_SUMMARIES = {
-  all: 'Full session output.',
+  all: 'Live screen from the task\'s original Terminal.app window.',
   conversation: 'Your messages and AI responses in order.',
   mine: 'Only the messages you sent.',
   ai: 'Only the provider responses.',
@@ -4266,6 +4288,203 @@ function terminalWindowIsDocked() {
 function terminalWindowAiLabel(task) {
   // Never hardcode a provider name in markup or copy. The label follows the real task.
   return task ? `${providerLabel(taskProvider(task))} messages` : TERMINAL_WINDOW_VIEW_TITLES.ai;
+}
+
+function nativeTerminalViewIsActive() {
+  return terminalWindowIsDocked() && state.terminalWindowView === 'all';
+}
+
+function nativeTerminalCopyLabel() {
+  return nativeTerminalViewIsActive() ? 'Copy terminal' : 'Copy log';
+}
+
+function stopNativeTerminalScreenPolling() {
+  if (state.nativeTerminalScreenTimer !== null) {
+    window.clearTimeout(state.nativeTerminalScreenTimer);
+    state.nativeTerminalScreenTimer = null;
+  }
+  if (state.nativeTerminalScreenPending) {
+    state.nativeTerminalScreenSequence += 1;
+    state.nativeTerminalScreenPending = false;
+  }
+}
+
+function resetNativeTerminalScreen(taskId) {
+  state.nativeTerminalScreen = {
+    taskId,
+    state: 'loading',
+    reason: '',
+    text: '',
+    busy: false,
+    provider: state.selectedTaskForEvents
+      ? taskProvider(state.selectedTaskForEvents)
+      : null,
+    capturedAt: null,
+  };
+}
+
+function normalizeNativeTerminalScreen(value, taskId) {
+  const states = new Set(['live', 'connecting', 'unavailable', 'unsupported']);
+  const incomingState = states.has(value?.state) ? value.state : 'unavailable';
+  const incomingText = typeof value?.text === 'string'
+    ? value.text.slice(-NATIVE_TERMINAL_SCREEN_MAX_CHARS)
+    : '';
+  const previous = state.nativeTerminalScreen.taskId === taskId
+    ? state.nativeTerminalScreen
+    : null;
+  const keepLastScreen = incomingState !== 'live' && !incomingText && Boolean(previous?.text);
+  return {
+    taskId,
+    state: keepLastScreen ? 'stale' : incomingState,
+    reason: String(value?.reason || ''),
+    text: keepLastScreen ? previous.text : incomingText,
+    busy: incomingState === 'live' && value?.busy === true,
+    provider: value?.provider || previous?.provider || taskProvider(state.selectedTaskForEvents || {}),
+    capturedAt: value?.capturedAt || previous?.capturedAt || null,
+  };
+}
+
+function nativeTerminalScreenCopy(screen) {
+  if (screen.state === 'live') {
+    return screen.busy ? 'Live Terminal.app screen · process active' : 'Live Terminal.app screen';
+  }
+  if (screen.state === 'stale') return 'Terminal closed · last captured screen';
+  if (screen.state === 'connecting' || screen.state === 'loading') return 'Connecting to Terminal.app';
+  if (screen.state === 'unsupported') return 'Native terminal unavailable on this platform';
+  return 'Native terminal unavailable';
+}
+
+function nativeTerminalNoticeCopy(screen) {
+  if (screen.state === 'unsupported') {
+    return ['Terminal.app is available on macOS', 'Conversation views remain available for this task.'];
+  }
+  if (screen.state === 'connecting' || screen.state === 'loading') {
+    return ['Connecting to Terminal.app', 'Waiting for this task\'s exact terminal window.'];
+  }
+  if (screen.state === 'live') {
+    return ['Terminal screen is blank', 'The native terminal has not painted any text yet.'];
+  }
+  return [
+    'Original terminal unavailable',
+    'The Terminal.app window is closed, still starting, or no longer belongs to this task.',
+  ];
+}
+
+function renderNativeTerminalScreen() {
+  if (!elements.nativeTerminalScreen) return;
+  const screen = state.nativeTerminalScreen;
+  const provider = providerLabel(screen.provider || taskProvider(state.selectedTaskForEvents || {}));
+  elements.nativeTerminalScreen.dataset.state = screen.state;
+  elements.nativeTerminalScreen.setAttribute(
+    'aria-busy',
+    String(screen.state === 'loading' || screen.state === 'connecting'),
+  );
+  elements.nativeTerminalScreenTitle.textContent = `${provider} · Terminal.app`;
+  elements.nativeTerminalScreenState.textContent = nativeTerminalScreenCopy(screen);
+  elements.nativeTerminalScreenOutput.hidden = !screen.text;
+  elements.nativeTerminalScreenNotice.hidden = Boolean(screen.text);
+  const [title, detail] = nativeTerminalNoticeCopy(screen);
+  elements.nativeTerminalScreenNotice.querySelector('strong').textContent = title;
+  elements.nativeTerminalScreenNotice.querySelector('span').textContent = detail;
+  elements.copyEventsButton.disabled = !screen.text;
+  elements.eventSummary.textContent = nativeTerminalScreenCopy(screen);
+  elements.eventSummary.title = screen.capturedAt
+    ? `Native terminal screen captured ${formatTime(screen.capturedAt)}.`
+    : nativeTerminalScreenCopy(screen);
+}
+
+function scheduleNativeTerminalScreenPoll(delay = NATIVE_TERMINAL_SCREEN_POLL_MS) {
+  if (!nativeTerminalViewIsActive() || state.nativeTerminalScreenTimer !== null) return;
+  state.nativeTerminalScreenTimer = window.setTimeout(() => {
+    state.nativeTerminalScreenTimer = null;
+    void refreshNativeTerminalScreen();
+  }, delay);
+}
+
+async function refreshNativeTerminalScreen() {
+  if (!nativeTerminalViewIsActive() || state.nativeTerminalScreenPending) return;
+  const taskId = state.selectedTaskId;
+  if (!taskId) return;
+  if (state.nativeTerminalScreenTimer !== null) {
+    window.clearTimeout(state.nativeTerminalScreenTimer);
+    state.nativeTerminalScreenTimer = null;
+  }
+  if (state.nativeTerminalScreen.taskId !== taskId) {
+    resetNativeTerminalScreen(taskId);
+    renderNativeTerminalScreen();
+  }
+  if (state.status?.capabilities?.nativeTerminalScreen !== true) {
+    state.nativeTerminalScreen = normalizeNativeTerminalScreen({
+      state: 'unsupported',
+      reason: 'unsupported-platform',
+      provider: taskProvider(state.selectedTaskForEvents || {}),
+    }, taskId);
+    renderNativeTerminalScreen();
+    return;
+  }
+
+  const sequence = ++state.nativeTerminalScreenSequence;
+  state.nativeTerminalScreenPending = true;
+  let retryDelay = NATIVE_TERMINAL_SCREEN_POLL_MS;
+  try {
+    const body = await api(`/api/tasks/${taskId}/terminal-screen`, { timeoutMs: 8_000 });
+    if (sequence !== state.nativeTerminalScreenSequence || !nativeTerminalViewIsActive()) return;
+    const next = normalizeNativeTerminalScreen(body.terminal, taskId);
+    if (next.text !== state.nativeTerminalScreen.text) {
+      await textSelectionGuard.waitForClear();
+    }
+    if (sequence !== state.nativeTerminalScreenSequence || !nativeTerminalViewIsActive()) return;
+    const output = elements.nativeTerminalScreenOutput;
+    const remaining = output.scrollHeight - output.clientHeight - output.scrollTop;
+    const follow = remaining < 24;
+    const previousTop = output.scrollTop;
+    const previousLeft = output.scrollLeft;
+    state.nativeTerminalScreen = next;
+    if (output.textContent !== next.text) output.textContent = next.text;
+    renderNativeTerminalScreen();
+    output.scrollTop = follow ? output.scrollHeight : previousTop;
+    output.scrollLeft = previousLeft;
+    retryDelay = next.state === 'live'
+      ? NATIVE_TERMINAL_SCREEN_POLL_MS
+      : NATIVE_TERMINAL_SCREEN_RETRY_MS;
+  } catch (error) {
+    if (sequence !== state.nativeTerminalScreenSequence || !nativeTerminalViewIsActive()) return;
+    state.nativeTerminalScreen = normalizeNativeTerminalScreen({
+      state: 'unavailable',
+      reason: error.status === 404 ? 'task-missing' : 'request-failed',
+      provider: taskProvider(state.selectedTaskForEvents || {}),
+    }, taskId);
+    renderNativeTerminalScreen();
+    retryDelay = NATIVE_TERMINAL_SCREEN_RETRY_MS;
+  } finally {
+    if (sequence === state.nativeTerminalScreenSequence) {
+      state.nativeTerminalScreenPending = false;
+      scheduleNativeTerminalScreenPoll(retryDelay);
+    }
+  }
+}
+
+function syncTerminalWindowSurface() {
+  const native = nativeTerminalViewIsActive();
+  if (native) elements.eventsSection.dataset.terminalSurface = 'native';
+  else delete elements.eventsSection.dataset.terminalSurface;
+  elements.nativeTerminalScreen.hidden = !native;
+  elements.detailEvents.hidden = native;
+  elements.eventOverview.hidden = native;
+  elements.thinkingVisibilityButton.hidden = native;
+  elements.copyEventsButton.textContent = nativeTerminalCopyLabel();
+  if (native) {
+    if (state.nativeTerminalScreen.taskId !== state.selectedTaskId) {
+      resetNativeTerminalScreen(state.selectedTaskId);
+    }
+    renderNativeTerminalScreen();
+    if (!state.nativeTerminalScreenPending && state.nativeTerminalScreenTimer === null) {
+      void refreshNativeTerminalScreen();
+    }
+  } else {
+    stopNativeTerminalScreenPolling();
+    elements.copyEventsButton.disabled = state.visibleEventEntries.length === 0;
+  }
 }
 
 // The open control needs a task whose terminal is actually on screen. A deselect while
@@ -4289,7 +4508,10 @@ function updateTerminalWindowControls(filterCounts = {}) {
     if (view === 'ai' && label) label.textContent = aiLabel;
     const text = label?.textContent?.trim() || view;
     button.setAttribute('aria-pressed', String(view === state.terminalWindowView));
-    button.setAttribute('aria-label', `${text}: ${count} signal${count === 1 ? '' : 's'}`);
+    button.setAttribute(
+      'aria-label',
+      view === 'all' ? 'Terminal: live native screen' : `${text}: ${count} signal${count === 1 ? '' : 's'}`,
+    );
     const counter = button.querySelector('[data-terminal-window-view-count]');
     if (counter) counter.textContent = count.toLocaleString();
   }
@@ -4302,6 +4524,7 @@ function updateTerminalWindowControls(filterCounts = {}) {
   elements.terminalWindowSubtitle.textContent = task
     ? `${summary} Task ${String(task.id).padStart(3, '0')} · ${providerLabel(taskProvider(task))} · ${task.status}`
     : summary;
+  syncTerminalWindowSurface();
 }
 
 function rerenderTerminalWindowStream({ forceBottom = false } = {}) {
@@ -7402,6 +7625,36 @@ function renderDailyTokenUsage() {
   elements.desktopTitlebarTokenUsage.dataset.state = presentation.state;
   elements.desktopTitlebarTokenUsage.title = presentation.title;
   elements.desktopTitlebarTokenUsage.setAttribute('aria-label', presentation.title);
+  if (!elements.desktopTitlebarTokenPanel) return;
+  if (presentation.state !== 'ready') {
+    elements.desktopTitlebarTokenPanel.innerHTML = '<p>No token usage recorded today.</p>';
+    return;
+  }
+  const projectRows = presentation.projects.length > 0
+    ? presentation.projects.map((project) => `
+      <div class="desktop-titlebar-token-project" title="${escapeHtml(project.path)}">
+        <strong>${escapeHtml(project.name)}</strong>
+        <span>In ${compactTokenCount(project.inputTokens)}</span>
+        <span>Out ${compactTokenCount(project.outputTokens)}</span>
+        <span>Total ${compactTokenCount(project.totalTokens)}</span>
+      </div>
+    `).join('')
+    : '<p>No project breakdown is available.</p>';
+  elements.desktopTitlebarTokenPanel.innerHTML = `
+    <div class="desktop-titlebar-token-summary">
+      <strong>Today</strong>
+      <span>In ${compactTokenCount(presentation.inputTokens)}</span>
+      <span>Out ${compactTokenCount(presentation.outputTokens)}</span>
+      <span>Total ${compactTokenCount(presentation.totalTokens)}</span>
+    </div>
+    ${projectRows}
+  `;
+}
+
+function setDailyTokenUsagePanel(open) {
+  if (!elements.desktopTitlebarTokenUsage || !elements.desktopTitlebarTokenPanel) return;
+  elements.desktopTitlebarTokenPanel.hidden = !open;
+  elements.desktopTitlebarTokenUsage.setAttribute('aria-expanded', String(open));
 }
 
 function renderProviderUsage() {
@@ -13238,6 +13491,22 @@ for (const button of elements.turboCouncilOrderButtons) {
     renderThreads();
   });
 }
+elements.desktopTitlebarTokenUsage?.addEventListener('click', () => {
+  setDailyTokenUsagePanel(elements.desktopTitlebarTokenPanel?.hidden === true);
+});
+document.addEventListener('pointerdown', (event) => {
+  if (!elements.desktopTitlebarTokenPanel?.hidden
+      && !event.target?.closest?.('.desktop-titlebar-token-usage')
+      && !elements.desktopTitlebarTokenPanel.contains(event.target)) {
+    setDailyTokenUsagePanel(false);
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !elements.desktopTitlebarTokenPanel?.hidden) {
+    setDailyTokenUsagePanel(false);
+    elements.desktopTitlebarTokenUsage?.focus();
+  }
+});
 elements.turboCouncilReviewerModel.addEventListener('input', () => {
   state.turboSettings.councilClaudeModel = elements.turboCouncilReviewerModel.value;
   state.turboSettings.councilClaudeEffort = 'high';
@@ -13871,9 +14140,11 @@ elements.continuationInput.addEventListener('keydown', (event) => {
 });
 
 elements.copyEventsButton.addEventListener('click', async () => {
-  const text = state.visibleEventEntries
-    .map((entry) => eventCopyText(entry, state.selectedTaskForEvents))
-    .join('\n\n');
+  const text = nativeTerminalViewIsActive()
+    ? state.nativeTerminalScreen.text
+    : state.visibleEventEntries
+      .map((entry) => eventCopyText(entry, state.selectedTaskForEvents))
+      .join('\n\n');
   try {
     await navigator.clipboard.writeText(text);
     elements.copyEventsButton.textContent = 'Copied';
@@ -13881,7 +14152,7 @@ elements.copyEventsButton.addEventListener('click', async () => {
     elements.copyEventsButton.textContent = 'Copy failed';
   }
   setTimeout(() => {
-    elements.copyEventsButton.textContent = 'Copy log';
+    elements.copyEventsButton.textContent = nativeTerminalCopyLabel();
   }, 1200);
 });
 

@@ -12,15 +12,20 @@ test('status publishes the local daily provider-token total', () => {
   assert.match(server, /dailyTokenUsage: true,/);
 });
 
-test('the desktop Crowie title bar renders and refreshes today\'s token total', () => {
-  assert.match(markup, /id="desktop-titlebar-token-usage"[\s\S]*?role="status"/);
-  assert.match(markup, /id="desktop-titlebar-token-count">Today --<\/span>/);
+test('the desktop Crowie title bar renders daily input, output, and a project panel', () => {
+  assert.match(markup, /id="desktop-titlebar-token-usage"[\s\S]*?aria-expanded="false"/);
+  assert.match(markup, /id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --<\/span>/);
+  assert.match(markup, /id="desktop-titlebar-token-panel"[\s\S]*?aria-label="Today\'s token usage by project"/);
   assert.match(app, /dailyTokenUsagePresentation/);
   assert.match(app, /state\.status\?\.dailyTokenUsage/);
   assert.match(app, /state\.status\?\.capabilities\?\.dailyTokenUsage === true/);
   assert.match(app, /desktopTitlebarTokenCount\.textContent = presentation\.label/);
   assert.match(app, /desktopTitlebarTokenUsage\.dataset\.state = presentation\.state/);
+  assert.match(app, /presentation\.projects\.map/);
+  assert.match(app, /setDailyTokenUsagePanel/);
   assert.match(app, /function renderStatus\(\)[\s\S]*?renderDailyTokenUsage\(\);/);
   assert.match(style, /\.desktop-titlebar-token-usage \{/);
   assert.match(style, /\.desktop-titlebar-token-usage\[data-state="ready"\] span/);
+  assert.match(style, /\.desktop-titlebar-token-panel \{/);
+  assert.match(style, /\.desktop-titlebar-token-project \{/);
 });

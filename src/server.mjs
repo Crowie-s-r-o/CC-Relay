@@ -1301,6 +1301,7 @@ export const server = createServer(async (request, response) => {
           projectQueueIsolation: true,
           queueReorder: true,
           projectLauncher: true,
+          nativeTerminalScreen: process.platform === 'darwin',
           terminalControl: true,
           parallelCodexBatch: true,
           taskContinuation: true,
@@ -2832,6 +2833,51 @@ export const server = createServer(async (request, response) => {
         return;
       }
       serveTaskAttachment(task, attachment, response, request);
+      return;
+    }
+
+    if (request.method === 'GET' && /^\/api\/tasks\/\d+\/terminal-screen$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      const task = database.getTask(taskId);
+      if (!task) {
+        sendError(response, 404, 'Task not found.');
+        return;
+      }
+      if (!task.thread_id) {
+        sendJson(response, 200, {
+          terminal: {
+            state: ['queued', 'running'].includes(task.status) ? 'connecting' : 'unavailable',
+            reason: 'session-not-established',
+            text: '',
+            busy: false,
+            taskId,
+            provider: task.provider,
+            source: 'Terminal.app',
+          },
+        });
+        return;
+      }
+      const knownTerminalThread = task.provider === 'claude'
+        ? claudeSessions.knownSession(task.thread_id)
+        : task.provider === 'codex'
+          ? codexAppServer.knownThread(task.thread_id)
+          : null;
+      const terminalThread = {
+        ...(knownTerminalThread || {}),
+        id: task.thread_id,
+        provider: task.provider,
+        cwd: task.repo_path,
+      };
+      const terminal = await projectLauncher.readTerminalScreen(task.thread_id, terminalThread);
+      sendJson(response, 200, {
+        terminal: {
+          ...terminal,
+          taskId,
+          provider: terminal.provider || task.provider,
+          source: terminal.source || 'Terminal.app',
+          capturedAt: new Date().toISOString(),
+        },
+      });
       return;
     }
 

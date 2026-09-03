@@ -52,15 +52,27 @@ test('cards hide token capsules until native usage has been observed', () => {
 
 test('daily title-bar usage presents one all-provider sum with provider detail', () => {
   const presentation = dailyTokenUsagePresentation({
+    inputTokens: 5_700_000,
+    outputTokens: 300_000,
     totalTokens: 6_000_000,
     providers: {
       claude: { totalTokens: 5_500_000 },
       codex: { totalTokens: 500_000 },
     },
+    projects: [{
+      name: 'Relay', path: '/work/relay', inputTokens: 5_700_000,
+      outputTokens: 300_000, totalTokens: 6_000_000,
+    }],
   });
 
-  assert.equal(presentation.label, 'Today 6.0m');
+  assert.equal(presentation.label, 'Today In 5.7m Out 300k');
   assert.equal(presentation.state, 'ready');
+  assert.equal(presentation.inputTokens, 5_700_000);
+  assert.equal(presentation.outputTokens, 300_000);
+  assert.deepEqual(presentation.projects, [{
+    name: 'Relay', path: '/work/relay', inputTokens: 5_700_000,
+    outputTokens: 300_000, totalTokens: 6_000_000,
+  }]);
   assert.match(presentation.title, /6,000,000 provider-reported tokens/);
   assert.match(presentation.title, /Claude: 5,500,000 \| Codex: 500,000/);
   assert.match(presentation.title, /cache, reasoning, and completed Claude sub-agent usage/);
@@ -72,6 +84,9 @@ test('daily title-bar usage distinguishes no activity from an older backend', ()
     title: 'No provider-reported token usage has been recorded today.',
     state: 'empty',
     totalTokens: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    projects: [],
   });
   assert.equal(
     dailyTokenUsagePresentation(null, { supported: false }).label,

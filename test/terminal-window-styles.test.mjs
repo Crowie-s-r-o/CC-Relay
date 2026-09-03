@@ -61,6 +61,28 @@ test('the card is a fixed header over a mount that owns all remaining height', (
   assert.match(rules, /\.terminal-window-close \{[^}]*cursor: pointer;/s);
 });
 
+test('the native Terminal.app screen replaces the fabricated ledger in the default view', () => {
+  const rules = windowRules();
+  assert.match(
+    rules,
+    /\.native-terminal-screen \{[^}]*display: grid;[^}]*grid-template-rows: auto minmax\(0, 1fr\);[^}]*overflow: hidden;/s,
+  );
+  assert.match(
+    rules,
+    /#native-terminal-screen-output \{[^}]*max-height: none;[^}]*border: 0;[^}]*overflow: auto;[^}]*font: 500 13px\/1\.42 var\(--font-mono\);[^}]*white-space: pre;[^}]*word-break: normal;[^}]*user-select: text;/s,
+  );
+  assert.match(
+    rules,
+    /#terminal-window-mount > \.events-section\[data-terminal-window="open"\]\[data-terminal-surface="native"\] \{\s*grid-template-rows: minmax\(0, 1fr\) auto auto;\s*\}/,
+  );
+  assert.match(
+    rules,
+    /\.events-section\[data-terminal-window="open"\]\[data-terminal-surface="native"\] \.event-overview,[\s\S]*?\.event-list \{\s*display: none;\s*\}/,
+  );
+  assert.match(rules, /#native-terminal-screen-output\[hidden\],[\s\S]*?display: none;/);
+  assert.doesNotMatch(rules, /html\[data-theme="dark"\] \.native-terminal-screen/);
+});
+
 test('the view rail is a segmented switcher with a pressed state, counts, hover, and focus', () => {
   const rules = windowRules();
   // The contract's container is #terminal-window-views.terminal-window-views. Both themes

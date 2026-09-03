@@ -156,6 +156,200 @@ test('project launcher validates folders and builds fixed provider commands', ()
   }
 });
 
+test('project launcher reads only the exact tracked terminal identity', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-terminal-screen-'));
+  const reads = [];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    terminalScreenReader: {
+      read: async (identity) => {
+        reads.push(identity);
+        return { state: 'live', reason: 'read', text: 'native screen', busy: true };
+      },
+    },
+  });
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'screen-launch',
+      provider: 'codex',
+      path: validateProjectPath(directory).path,
+      terminalWindowId: 702,
+      terminalTty: '/dev/ttys031',
+    });
+    launcher.bindOwnedTerminal('screen-launch', {
+      id: 'screen-thread',
+      provider: 'codex',
+      cwd: directory,
+    });
+
+    assert.deepEqual(await launcher.readTerminalScreen('screen-thread'), {
+      state: 'live',
+      reason: 'read',
+      text: 'native screen',
+      busy: true,
+      provider: 'codex',
+      source: 'Terminal.app',
+    });
+    assert.deepEqual(reads, [{
+      terminalWindowId: 702,
+      terminalTty: '/dev/ttys031',
+    }]);
+    assert.equal((await launcher.readTerminalScreen('screen-thread', {
+      id: 'screen-thread',
+      provider: 'claude',
+      cwd: directory,
+    })).reason, 'task-mismatch');
+    assert.equal((await launcher.readTerminalScreen('another-thread')).reason, 'terminal-unowned');
+    assert.equal(reads.length, 1);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher resolves a late terminal tty before its first screen read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-terminal-screen-late-tty-'));
+  const canonicalPath = validateProjectPath(directory).path;
+  const reads = [];
+  const resolutions = [];
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    runtimeResolver: {
+      resolve: async (threads) => {
+        resolutions.push(threads);
+        return [{
+          threadId: 'late-tty-thread',
+          provider: 'codex',
+          path: canonicalPath,
+          runtimeProcessId: 9912,
+          terminalWindowId: 704,
+          terminalTty: '/dev/ttys044',
+        }];
+      },
+    },
+    terminalScreenReader: {
+      read: async (identity) => {
+        reads.push(identity);
+        return { state: 'live', reason: 'read', text: 'late tty screen', busy: false };
+      },
+    },
+  });
+  const thread = {
+    id: 'late-tty-thread',
+    provider: 'codex',
+    cwd: directory,
+  };
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'late-tty-launch',
+      provider: 'codex',
+      path: canonicalPath,
+      terminalWindowId: 704,
+    });
+    launcher.bindOwnedTerminal('late-tty-launch', thread);
+
+    assert.deepEqual(await launcher.readTerminalScreen(thread.id, thread), {
+      state: 'live',
+      reason: 'read',
+      text: 'late tty screen',
+      busy: false,
+      provider: 'codex',
+      source: 'Terminal.app',
+    });
+    assert.deepEqual(resolutions, [[thread]]);
+    assert.deepEqual(reads, [{
+      terminalWindowId: 704,
+      terminalTty: '/dev/ttys044',
+    }]);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher rejects a late tty resolved in another terminal window', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-terminal-screen-wrong-window-'));
+  let reads = 0;
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    runtimeResolver: {
+      resolve: async () => [{
+        threadId: 'wrong-window-thread',
+        provider: 'codex',
+        path: validateProjectPath(directory).path,
+        runtimeProcessId: 9913,
+        terminalWindowId: 999,
+        terminalTty: '/dev/ttys045',
+      }],
+    },
+    terminalScreenReader: {
+      read: async () => {
+        reads += 1;
+        return { state: 'live', reason: 'read', text: 'wrong screen', busy: false };
+      },
+    },
+  });
+  const thread = { id: 'wrong-window-thread', provider: 'codex', cwd: directory };
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'wrong-window-launch',
+      provider: 'codex',
+      path: validateProjectPath(directory).path,
+      terminalWindowId: 705,
+    });
+    launcher.bindOwnedTerminal('wrong-window-launch', thread);
+
+    assert.deepEqual(await launcher.readTerminalScreen(thread.id, thread), {
+      state: 'unavailable',
+      reason: 'identity-unverified',
+      text: '',
+      busy: false,
+    });
+    assert.equal(reads, 0);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('project launcher discards a terminal screen if ownership changes during the read', async () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-terminal-screen-race-'));
+  let finishRead;
+  const waiting = new Promise((resolve) => { finishRead = resolve; });
+  const launcher = new ProjectLauncher({
+    platform: 'darwin',
+    terminalScreenReader: {
+      read: async () => {
+        await waiting;
+        return { state: 'live', reason: 'read', text: 'must not escape', busy: false };
+      },
+    },
+  });
+  try {
+    launcher.trackOwnedTerminal({
+      launchId: 'racing-screen-launch',
+      provider: 'claude',
+      path: validateProjectPath(directory).path,
+      terminalWindowId: 703,
+      terminalTty: '/dev/ttys032',
+    });
+    launcher.bindOwnedTerminal('racing-screen-launch', {
+      id: 'racing-screen-thread',
+      provider: 'claude',
+      cwd: directory,
+    });
+
+    const read = launcher.readTerminalScreen('racing-screen-thread');
+    launcher.forgetTrackedTerminal('racing-screen-launch');
+    finishRead();
+    assert.deepEqual(await read, {
+      state: 'unavailable',
+      reason: 'ownership-changed',
+      text: '',
+      busy: false,
+    });
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('project launcher can initialize a saved Claude UUID without resuming it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-initialize-claude-'));
   const launcher = new ProjectLauncher({

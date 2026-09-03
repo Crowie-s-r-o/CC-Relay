@@ -16738,6 +16738,11 @@ html[data-desktop-titlebar="true"] .workspace {
   gap: 7px;
   pointer-events: auto;
   -webkit-app-region: no-drag;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
 }
 
 .desktop-titlebar-token-usage span {
@@ -16768,6 +16773,62 @@ html[data-theme="dark"] .desktop-titlebar-mark {
 html[data-theme="dark"] .desktop-titlebar-token-usage[data-state="ready"] span {
   color: #b8d1d3;
 }
+
+.desktop-titlebar-token-panel {
+  position: absolute;
+  top: 28px;
+  left: 50%;
+  z-index: 220;
+  width: min(440px, calc(100vw - 24px));
+  max-height: min(480px, calc(100vh - 48px));
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid #cbd1d5;
+  border-radius: 10px;
+  color: #30363a;
+  background: #fff;
+  box-shadow: 0 12px 32px rgb(23 31 36 / 22%);
+  transform: translateX(-50%);
+  user-select: text;
+  -webkit-app-region: no-drag;
+}
+
+.desktop-titlebar-token-panel[hidden] { display: none; }
+
+.desktop-titlebar-token-summary,
+.desktop-titlebar-token-project {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) repeat(3, auto);
+  gap: 14px;
+  align-items: baseline;
+  padding: 7px 8px;
+  font: 700 11px/1.25 var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.desktop-titlebar-token-summary {
+  border-bottom: 1px solid #e2e5e7;
+}
+
+.desktop-titlebar-token-project strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-titlebar-token-project span,
+.desktop-titlebar-token-summary span { color: #667078; }
+
+html[data-theme="dark"] .desktop-titlebar-token-panel {
+  border-color: #3d474d;
+  color: #e2e7e9;
+  background: #20272b;
+  box-shadow: 0 12px 32px rgb(0 0 0 / 45%);
+}
+
+html[data-theme="dark"] .desktop-titlebar-token-summary { border-bottom-color: #3d474d; }
+html[data-theme="dark"] .desktop-titlebar-token-project span,
+html[data-theme="dark"] .desktop-titlebar-token-summary span { color: #aeb8bd; }
 
 html[data-desktop-titlebar="true"][data-header-position="bottom"] body {
   grid-template-areas:
@@ -19139,6 +19200,140 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   background: #08090d;
 }
 
+/* The Terminal view is the exact visible text read from the task's owned Terminal.app tab.
+   It is deliberately a plain terminal viewport, not a second execution-ledger renderer. */
+.native-terminal-screen {
+  position: relative;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  color: #c8d3f5;
+  background: #0c0e17;
+}
+
+.native-terminal-screen[hidden],
+#native-terminal-screen-output[hidden],
+.native-terminal-screen-notice[hidden] {
+  display: none;
+}
+
+.native-terminal-screen-bar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-height: 32px;
+  padding: 5px 12px;
+  border-bottom: 1px solid #24283b;
+  color: #9aa5ce;
+  background: #161821;
+  font: 600 10px/1.2 var(--font-mono);
+  letter-spacing: .02em;
+}
+
+.native-terminal-screen-bar strong {
+  overflow: hidden;
+  color: #c8d3f5;
+  font: inherit;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.native-terminal-screen-bar > span:last-child {
+  overflow: hidden;
+  color: #7aa2f7;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.native-terminal-screen[data-state="stale"] .native-terminal-screen-bar > span:last-child,
+.native-terminal-screen[data-state="unavailable"] .native-terminal-screen-bar > span:last-child,
+.native-terminal-screen[data-state="unsupported"] .native-terminal-screen-bar > span:last-child {
+  color: #e0af68;
+}
+
+.native-terminal-screen-lights {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.native-terminal-screen-lights i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #ff5f57;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 20%);
+}
+
+.native-terminal-screen-lights i:nth-child(2) { background: #febc2e; }
+.native-terminal-screen-lights i:nth-child(3) { background: #28c840; }
+
+#native-terminal-screen-output {
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 18px 20px 28px;
+  border: 0;
+  border-radius: 0;
+  overflow: auto;
+  color: #c8d3f5;
+  background: #0c0e17;
+  font: 500 13px/1.42 var(--font-mono);
+  tab-size: 4;
+  white-space: pre;
+  word-break: normal;
+  scrollbar-color: #3b4261 #0c0e17;
+  scrollbar-width: thin;
+  user-select: text;
+}
+
+#native-terminal-screen-output:focus-visible {
+  outline: 2px solid #7aa2f7;
+  outline-offset: -2px;
+}
+
+.native-terminal-screen-notice {
+  display: grid;
+  grid-row: 2;
+  place-content: center;
+  justify-items: center;
+  min-height: 0;
+  padding: 32px;
+  color: #737aa2;
+  text-align: center;
+}
+
+.native-terminal-screen-notice i {
+  width: 9px;
+  height: 9px;
+  margin-bottom: 14px;
+  border-radius: 50%;
+  background: #7aa2f7;
+  box-shadow: 0 0 0 5px rgb(122 162 247 / 12%);
+}
+
+.native-terminal-screen[data-state="unavailable"] .native-terminal-screen-notice i,
+.native-terminal-screen[data-state="unsupported"] .native-terminal-screen-notice i {
+  background: #e0af68;
+  box-shadow: 0 0 0 5px rgb(224 175 104 / 12%);
+}
+
+.native-terminal-screen-notice strong {
+  color: #c8d3f5;
+  font: 700 13px/1.4 var(--font-mono);
+}
+
+.native-terminal-screen-notice span {
+  max-width: 560px;
+  margin-top: 7px;
+  font: 500 11px/1.5 var(--font-mono);
+}
+
 /* Docked terminal. The section keeps its own palette, typography and every descendant rule;
    only its frame, its fill, and the rail it no longer owns change.
 
@@ -19158,6 +19353,17 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   border: 0;
   border-radius: 0;
   box-shadow: none;
+}
+
+/* In the native view the overview and event list leave the grid. The live Terminal.app
+   screen takes their place while the continuation composer and task status stay usable. */
+#terminal-window-mount > .events-section[data-terminal-window="open"][data-terminal-surface="native"] {
+  grid-template-rows: minmax(0, 1fr) auto auto;
+}
+
+.events-section[data-terminal-window="open"][data-terminal-surface="native"] .event-overview,
+.events-section[data-terminal-window="open"][data-terminal-surface="native"] .event-list {
+  display: none;
 }
 
 /* The window rail replaces the inline rail. */
@@ -19289,6 +19495,17 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
 
   .events-section[data-terminal-window="open"] .event-list {
     padding: 12px 14px 20px;
+  }
+
+  .native-terminal-screen-bar {
+    gap: 8px;
+    padding-inline: 10px;
+    font-size: 9px;
+  }
+
+  #native-terminal-screen-output {
+    padding: 12px 14px 20px;
+    font-size: 11px;
   }
 }
 

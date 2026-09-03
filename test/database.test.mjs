@@ -181,6 +181,7 @@ test('conversation metrics sum duration and native tokens across follow-up attem
   const directory = mkdtempSync(join(tmpdir(), 'relay-conversation-metrics-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
   try {
+    database.addProject({ path: '/repo', name: 'Relay' });
     const task = database.createTask({
       title: 'Measured conversation',
       prompt: 'First turn',
@@ -282,6 +283,13 @@ test('conversation metrics sum duration and native tokens across follow-up attem
       outputTokens: 70,
       totalTokens: 420,
     });
+    assert.deepEqual(daily.projects, [{
+      path: '/repo',
+      name: 'Relay',
+      inputTokens: 350,
+      outputTokens: 70,
+      totalTokens: 420,
+    }]);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

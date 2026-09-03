@@ -38,10 +38,11 @@
   </head>
   <body>
     <div class="desktop-titlebar">
-      <div id="desktop-titlebar-token-usage" class="desktop-titlebar-token-usage" role="status" aria-label="Today's recorded token usage is unavailable">
+      <button id="desktop-titlebar-token-usage" class="desktop-titlebar-token-usage" type="button" aria-expanded="false" aria-controls="desktop-titlebar-token-panel" aria-label="Today's recorded token usage is unavailable">
         <img class="desktop-titlebar-mark" src="/favicon.svg" alt="" aria-hidden="true">
-        <span id="desktop-titlebar-token-count">Today --</span>
-      </div>
+        <span id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --</span>
+      </button>
+      <div id="desktop-titlebar-token-panel" class="desktop-titlebar-token-panel" role="region" aria-label="Today's token usage by project" hidden></div>
     </div>
     <header class="app-header">
       <button id="about-button" class="brand-lockup" type="button" aria-haspopup="dialog" aria-controls="about-modal" title="About CC Relay">
@@ -946,6 +947,19 @@
                 </button>
               </div>
             </div>
+            <div id="native-terminal-screen" class="native-terminal-screen" data-state="loading" aria-busy="true" hidden>
+              <div class="native-terminal-screen-bar">
+                <span class="native-terminal-screen-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+                <strong id="native-terminal-screen-title">Terminal.app</strong>
+                <span id="native-terminal-screen-state" role="status" aria-live="polite">Connecting to the native terminal</span>
+              </div>
+              <pre id="native-terminal-screen-output" tabindex="0" aria-label="Live native terminal screen"></pre>
+              <div id="native-terminal-screen-notice" class="native-terminal-screen-notice">
+                <i aria-hidden="true"></i>
+                <strong>Connecting to Terminal.app</strong>
+                <span>Waiting for this task's exact terminal window.</span>
+              </div>
+            </div>
             <div id="detail-events" class="event-list" role="log" aria-live="polite" aria-relevant="additions"></div>
             <form id="task-continuation-form" class="task-continuation" aria-busy="false" hidden>
               <div class="task-continuation-context">
@@ -992,7 +1006,7 @@
                   <p id="terminal-window-subtitle">Full session output.</p>
                 </div>
                 <div id="terminal-window-views" class="terminal-window-views" role="group" aria-label="Terminal window view">
-                  <button type="button" data-terminal-window-view="all" aria-pressed="true"><span class="terminal-window-view-label">Terminal</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
+                  <button type="button" data-terminal-window-view="all" aria-pressed="true"><span class="terminal-window-view-label">Terminal</span><b class="terminal-window-live-badge" aria-hidden="true">Live</b></button>
                   <button type="button" data-terminal-window-view="conversation" aria-pressed="false"><span class="terminal-window-view-label">Conversation</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
                   <button type="button" data-terminal-window-view="mine" aria-pressed="false"><span class="terminal-window-view-label">My messages</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
                   <button type="button" data-terminal-window-view="ai" aria-pressed="false"><span class="terminal-window-view-label">AI messages</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>

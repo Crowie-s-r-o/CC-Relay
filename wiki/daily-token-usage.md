@@ -15,9 +15,10 @@ tags:
 
 ## Outcome
 
-The macOS desktop title bar places a compact `Today N` counter beside Crowie. The value is the sum
-of provider-reported native token totals observed during the current local calendar day across
-Claude, Codex, and OpenCode. Hover detail gives the exact all-provider count and provider split.
+The macOS desktop title bar places compact `Today In N Out N` counters beside Crowie. They show the
+native input and output tokens observed during the current local calendar day across Claude, Codex,
+and OpenCode. Clicking the counter opens a per-project breakdown with input, output, and the complete
+provider-reported total. Hover detail gives the exact all-provider counts and provider split.
 
 This is consumption telemetry, not subscription allowance or generation speed:
 
@@ -46,9 +47,14 @@ Each delta keeps the event observation timestamp and a server-local `YYYY-MM-DD`
 crosses midnight, only the increase first observed after midnight belongs to the new day. The earlier
 cumulative amount stays on the preceding day.
 
-The title bar uses `usage.totalTokens`, not `inputTokens + outputTokens`. A provider total can also
-contain cache reads, cache creation, reasoning, or another provider-classified token category. Task
-cards use the same provider total for their `Total` capsule and keep generated output in `Out`.
+The visible title uses the separate `inputTokens` and `outputTokens` fields. The breakdown also keeps
+`usage.totalTokens`, which is not necessarily their sum: a provider total can contain cache reads,
+cache creation, reasoning, or another provider-classified token category. Task cards use the same
+provider total for their `Total` capsule and keep generated output in `Out`.
+
+Project grouping joins each daily delta through its task's exact `repo_path`. A matching saved project
+supplies the display name; an unpinned or historical path falls back to the path itself. Groups are
+ordered by descending provider total, then name and path for a stable tie break.
 
 ## Claude correction
 
@@ -92,11 +98,18 @@ the normalized event history; new completions are counted from the first run on 
 
 `GET /api/status` returns `dailyTokenUsage` and advertises
 `capabilities.dailyTokenUsage`. The response contains the local date, exact input, output, and total
-sums, plus a provider map. `public/task-conversation-metrics.js` owns compact labels and tooltip copy,
-while `public/app.js` updates the title-bar status node on the normal status refresh.
+sums, plus provider and project breakdowns. `public/task-conversation-metrics.js` owns compact labels
+and tooltip copy, while `public/app.js` updates the title-bar button and its project panel on the normal
+status refresh. The panel closes on Escape or an outside pointer action and returns keyboard focus to
+the title-bar button after Escape.
 
 `Today 0` means the current backend has recorded no native usage on this local day. `Today --` means
 the renderer is connected to an older backend without the capability and needs a CC Relay restart.
+
+> [!important]
+> Keep provider total separate from the visible input and output counts. Cache-heavy Claude work can
+> make total much larger than input plus output, and collapsing these categories would hide the exact
+> distinction this control is designed to expose.
 
 ## Verification
 
@@ -105,7 +118,7 @@ the renderer is connected to an older backend without the capability and needs a
 - `test/claude-execution-runner.test.mjs` covers cache categories, message deduplication, detailed
   sub-agent transcript totals, inline and background fallbacks, resumed agents, duplicate
   notifications, and non-regressing sub-agent data.
-- `test/task-conversation-metrics.test.mjs` covers compact daily labels, provider detail, empty and
-  unavailable states, cache-heavy Claude totals, and task-card heat levels.
+- `test/task-conversation-metrics.test.mjs` covers compact daily input and output labels, provider and
+  project detail, empty and unavailable states, cache-heavy Claude totals, and task-card heat levels.
 - `test/daily-token-usage-ui.test.mjs` and `test/desktop-icon.test.mjs` protect the status capability,
   renderer refresh, accessible title-bar markup, Crowie lockup, and desktop styling.
