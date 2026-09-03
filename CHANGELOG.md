@@ -2,6 +2,15 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.32] - 2026-09-03
+
+### Added
+
+- Added a dockable terminal.
+- Added quick actions.
+- Added usage safeguards.
+- Added application icons.
+
 ## [0.2.31] - 2026-09-03
 
 ### Added
