@@ -525,14 +525,14 @@ test('repeat Enter during submission does not report a missing terminal', () => 
 });
 
 test('submit ignores the live process list but blocks a confirmed missing CLI', () => {
-  const gateStart = composerApp.indexOf('function composerValidationIssue()');
+  const gateStart = composerApp.indexOf('function composerValidationIssue({');
   const gateEnd = composerApp.indexOf('function setComposerAlert', gateStart);
   const gateSource = composerApp.slice(gateStart, gateEnd);
 
   assert.ok(gateStart >= 0 && gateEnd > gateStart);
   assert.match(gateSource, /Write a prompt before adding the task\./);
   assert.match(gateSource, /Choose a connected CC Relay before adding the task\./);
-  assert.match(gateSource, /return providerInstallationIssue\(\) \|\| attachmentLimitIssue\(\)/);
+  assert.match(gateSource, /return providerInstallationIssue\(\) \|\| attachmentLimitIssue\(attachments\)/);
   assert.match(gateSource, /elements\.submitButton\.disabled = state\.submitting \|\| Boolean\(issue\)/);
   assert.match(composerApp, /providerIsMissing\(provider\)/);
   assert.match(composerApp, /CC Relay will enable/);

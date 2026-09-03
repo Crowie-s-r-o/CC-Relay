@@ -7,6 +7,44 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **September 3: the 5.98 GB CC Relay memory spike is fixed at its five amplification points.**
+> The installed v0.2.27 database had reached 1.84 GB across 490,680 events, and history extraction
+> could materialize tool and command payloads that search never used. The list API now sends compact
+> historical summaries, conversation extraction filters canonical messages in SQLite, unchanged
+> cards and selected detail keep their DOM, SSE uses a 15-second safety poll, and card images load
+> only near the viewport. New activity rows keep bounded display output while exact provider events
+> remain in task artifacts; old rows are compacted one at a time when read and are not rewritten.
+> All 1,812 tests pass and `release:check` is green. Rebuild and restart the desktop app. See
+> [[memory-efficiency]] and [[renderer-performance]].
+
+> [!important]
+> **September 2: Deploy check is now a one-click saved skill below the task prompt.** The compact
+> action shares the old push-to-talk row equally, displays the selected direct provider and effort,
+> and submits its exact cataloged prompt at Run now priority. It does not append or clear the task
+> name, prompt draft, references, or images already being composed. Plan council and Turbo keep
+> their separate workflow contracts. See [[saved-quick-skills]].
+
+> [!important]
+> **September 2: Standup now follows completed execution attempts and answers dated follow-up
+> questions.** A reused conversation can appear on each day when a successful follow-up actually
+> ran, while failed and interrupted attempts remain context only. The new in-modal dated Q&A ledger
+> accepts one-click or typed questions about what ran, whether work came from a follow-up, and when
+> execution started or completed. Every answer reloads the authoritative SQLite evidence and uses a
+> fresh isolated provider process; generated Standups and Q&A remain unpersisted. See
+> [[daily-standup]].
+
+> [!important]
+> **September 1: live Claude follow-ups no longer fail on the 2.1.257 composer chrome.** Task 1180
+> (`namiru-ai-fc`) refused a follow-up at the initial screen gate with `submitAttempts: 0`, because
+> Claude Code 2.1.257 right-aligns the `/rc` hint on the working-directory row ABOVE the status row
+> and truncates a large agent roster with a `↓ N more` row. Relay now anchors the roster on its
+> `⏺ main` header, accepts both hint placements in either order, and accepts one trailing overflow
+> row, while the six-line chrome bound and the twelve-member cap stay unchanged. The failed-read
+> message now carries a sanitized screen excerpt so the next drift explains itself. The packaged app
+> must be REBUILT and reinstalled, not merely relaunched. See
+> [[claude-composer-read-failure-namiru]].
+
+> [!important]
 > **September 1: v0.2.30 release recovery now survives a lockfile failure after the tag is pushed.**
 > A local `legacy-peer-deps=true` preference removed 13 required Windows builder peer packages while
 > a feature commit was finalized. Hosted npm 11.16 rejected `npm ci`, the matrix canceled Windows,

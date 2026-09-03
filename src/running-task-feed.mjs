@@ -83,7 +83,7 @@ export function runningTaskFeed(tasks, eventsForTask) {
     });
 }
 
-// GET /api/status is polled every two seconds and used to rebuild this feed by re-reading and
+// GET /api/status is refreshed after server events and by a safety poll. Rebuilding this feed by
 // re-parsing a large event window for every monitored task. That was affordable when exactly
 // one task ran at a time; with per-session parallel execution and durable terminal sessions it
 // multiplies by the number of cards and reintroduces the main-thread stall this work avoids.

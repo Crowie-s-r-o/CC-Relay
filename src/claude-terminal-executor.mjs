@@ -458,12 +458,24 @@ export const CLAUDE_COMPOSER_MAX_CHROME_LINES = 6;
 // Claude Code 2.1.238 expands its agent switcher below the ordinary composer chrome while
 // background agents are active. Task 1003 exposed four live member rows after `⏺ main`, which
 // pushed a real empty composer eight non-empty lines above the bottom and past the ordinary bound.
-// Keep the general bound unchanged. Only the exact `/rc`, main, and measured member-row sequence
-// receives this separate allowance, and cap it so arbitrary transcript output still fails closed.
+// Keep the general bound unchanged. Only the exact hint, main header, measured member-row sequence,
+// and optional single overflow row receive this separate allowance, and cap the members so
+// arbitrary transcript output still fails closed.
 export const CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS = 12;
-export const CLAUDE_AGENT_PANEL_HINT_PATTERN = /^\/rc$/;
+// The `/rc` hint. Claude Code 2.1.257 renders it RIGHT-ALIGNED on the working-directory row when
+// that row is short enough for the terminal width, and wraps it onto its own line only when the row
+// is long. Task 1180 (2026-09-01, 119 columns) drew
+// `dev@host:~/workspace/project-a  main  Fable 5.1  ctx:14%       /rc`, which the own-line-only
+// pattern never matched. Both placements are accepted. The trailing form demands at least two
+// spaces before the token so ordinary prose such as `run /rc` can never satisfy it.
+export const CLAUDE_AGENT_PANEL_HINT_PATTERN = /(?:^|\s{2,})\/rc$/;
 export const CLAUDE_AGENT_PANEL_MAIN_PATTERN = /^⏺\s+main(?:\s|$)/;
 export const CLAUDE_AGENT_PANEL_MEMBER_PATTERN = /^◯\s+\S.*\b\d+(?:h|m|s)(?:\s+\d+(?:h|m|s))*\s+·\s+↓\s+\d+(?:\.\d+)?[kKmM]?\s+tokens?$/;
+// The roster truncates itself once more agents are running than it will draw, and closes with a
+// single counted overflow row. Task 1180 showed five member rows and then `↓ 2 more` for thirteen
+// live agents. Exactly one such row is accepted, only as the LAST chrome line, and it never counts
+// toward the member cap because it is a summary rather than a member.
+export const CLAUDE_AGENT_PANEL_OVERFLOW_PATTERN = /^↓\s+\d+\s+more$/;
 // How many trailing non-empty lines the COMPOSER scan considers. Dialog classification keeps the
 // tighter CLAUDE_SCREEN_TAIL_LINES window so quoted option rows deep in a transcript still cannot
 // match; only composer extraction needs to reach past a tall literal paste. Forty covers a
@@ -539,25 +551,36 @@ export function isClaudeResumePickerScreen(lines) {
   return matchesDialog(lines, CLAUDE_RESUME_PICKER_OPTION_PATTERN);
 }
 
+// The agent roster is the ONLY chrome shape allowed past the ordinary six-line bound. It is
+// recognized from the `⏺ main` panel header, never from the hint's position, because Claude Code
+// moves the hint with the terminal width: 2.1.238 drew `/rc` on its own line between the status row
+// and the header, and 2.1.257 right-aligns it on the working-directory row ABOVE the status row
+// whenever that row is short enough. Anchoring on the header keeps both orders readable while the
+// header's own index still has to fit inside the ordinary bound, so a `⏺ main` line buried deep in
+// transcript output below a composer-shaped block can never become eligible.
 function isBoundedClaudeComposerChrome(chromeLines) {
   if (chromeLines.length <= CLAUDE_COMPOSER_MAX_CHROME_LINES) return true;
 
-  const hintIndex = chromeLines.findIndex((line) => CLAUDE_AGENT_PANEL_HINT_PATTERN.test(line));
-  const mainIndex = hintIndex + 1;
-  if (
-    hintIndex < 0
-    || !CLAUDE_AGENT_PANEL_MAIN_PATTERN.test(chromeLines[mainIndex] || '')
-    || mainIndex + 1 > CLAUDE_COMPOSER_MAX_CHROME_LINES
-  ) {
-    return false;
-  }
+  const mainIndex = chromeLines.findIndex((line) => CLAUDE_AGENT_PANEL_MAIN_PATTERN.test(line));
+  // The fixed chrome through the panel header must still fit inside the ordinary bound. This is
+  // the guard the previous `mainIndex = hintIndex + 1` arithmetic supplied implicitly.
+  if (mainIndex < 0 || mainIndex + 1 > CLAUDE_COMPOSER_MAX_CHROME_LINES) return false;
 
-  const statusIndex = chromeLines.findIndex((line) => (
+  // Both corroborating rows live in the fixed chrome above the header, in either order.
+  const fixedChrome = chromeLines.slice(0, mainIndex);
+  const hinted = fixedChrome.some((line) => CLAUDE_AGENT_PANEL_HINT_PATTERN.test(line));
+  const statused = fixedChrome.some((line) => (
     CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(line))
   ));
-  if (statusIndex < 0 || statusIndex >= hintIndex) return false;
+  if (!hinted || !statused) return false;
 
-  const members = chromeLines.slice(mainIndex + 1);
+  const rosterRows = chromeLines.slice(mainIndex + 1);
+  // At most one overflow row, and only as the very last line. Two of them, an overflow row with
+  // anything after it, or a malformed count all leave a non-member row in the set below.
+  const last = rosterRows[rosterRows.length - 1];
+  const members = typeof last === 'string' && CLAUDE_AGENT_PANEL_OVERFLOW_PATTERN.test(last)
+    ? rosterRows.slice(0, -1)
+    : rosterRows;
   return members.length > 0
     && members.length <= CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS
     && members.every((line) => CLAUDE_AGENT_PANEL_MEMBER_PATTERN.test(line));
@@ -1976,7 +1999,13 @@ export class ClaudeTerminalExecutor {
     }
     const composer = claudeComposerContent(screen.text);
     if (!composer.found) {
-      throw fail(`CC Relay could not read the ${sessionName} Claude composer. Your live update was not sent.`);
+      // Carry the same sanitized tail excerpt the classification branch above already reports.
+      // Task 1180 (2026-09-01) spent an incident reconstructing this exact screen by hand, because
+      // the recorded failure named only the session. The excerpt is bounded and already normalized
+      // by claudeScreenExcerpt, and it is what makes the next chrome drift self-diagnosing.
+      throw fail(
+        `CC Relay could not read the ${sessionName} Claude composer, so it did not type the live update. The screen shows: ${screen.excerpt || 'an unrecognized prompt'}`,
+      );
     }
     if (composer.text.trim()) {
       if (!request.flushComposer) {

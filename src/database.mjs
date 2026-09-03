@@ -2,6 +2,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { ProjectConfigStore } from './project-config-store.mjs';
+import { compactEventForStorage } from './event-storage.mjs';
 import { normalizeDiffState } from './task-diff.mjs';
 import { withoutRelayNonInteractiveInstruction } from './relay-prompt.mjs';
 import { titleFromPrompt } from './task-title.mjs';
@@ -49,6 +50,7 @@ const TASK_FIELDS = new Set([
 
 const COMPLETION_REVIEW_MIGRATION_SETTING = 'completion-review-state-v1-migrated';
 const TOKEN_USAGE_DELTA_BACKFILL_SETTING = 'token-usage-deltas-v1-backfilled';
+const TASK_ATTEMPT_OUTCOMES = new Set(['complete', 'failed', 'cancelled', 'interrupted', 'unknown']);
 
 function now() {
   return new Date().toISOString();
@@ -167,6 +169,16 @@ function attemptFinishedByEvent(event, payload) {
   return /^(?:Task completed\.|Follow-up completed\.|Turn completed\.|Task interrupted|Task cancelled|Task failed|Follow-up cancelled|Follow-up failed|The current turn failed|The current turn was stopped|The current turn was interrupted|Plan council stopped|Same-session follow-up marked interrupted|Task marked interrupted)/u.test(
     String(event?.message || ''),
   );
+}
+
+function taskAttemptOutcome(event, payload) {
+  const reported = String(payload?.outcome || '').trim().toLowerCase();
+  if (TASK_ATTEMPT_OUTCOMES.has(reported)) return reported;
+  const message = String(event?.message || '');
+  if (/^(?:Task completed\.|Follow-up completed\.|Turn completed\.)/u.test(message)) return 'complete';
+  if (/cancelled|was stopped/iu.test(message)) return 'cancelled';
+  if (/interrupted/iu.test(message)) return 'interrupted';
+  return 'failed';
 }
 
 function normalizeTask(row) {
@@ -360,6 +372,7 @@ export class RelayDatabase {
         task_id INTEGER NOT NULL,
         started_at TEXT NOT NULL,
         finished_at TEXT,
+        outcome TEXT,
         duration_ms INTEGER NOT NULL DEFAULT 0,
         input_tokens INTEGER NOT NULL DEFAULT 0,
         output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -499,6 +512,7 @@ export class RelayDatabase {
     // Additive column for a plan_breakdowns table created before contract v2.
     this.ensureTableColumn('plan_breakdowns', 'notes_json', "TEXT NOT NULL DEFAULT '[]'");
     this.ensureTableColumn('task_attempts', 'total_tokens', 'INTEGER NOT NULL DEFAULT 0');
+    this.ensureTableColumn('task_attempts', 'outcome', 'TEXT');
 
     this.ensureColumn('thread_id', 'TEXT');
     this.ensureColumn('thread_name', 'TEXT');
@@ -559,6 +573,7 @@ export class RelayDatabase {
     `).run();
 
     this.backfillTaskAttempts();
+    this.backfillTaskAttemptOutcomes();
     this.backfillTokenUsageDeltas();
 
     this.projectConfig = projectConfigPath
@@ -590,9 +605,9 @@ export class RelayDatabase {
     `).all();
     const insert = this.database.prepare(`
       INSERT OR IGNORE INTO task_attempts (
-        task_id, started_at, finished_at, duration_ms,
+        task_id, started_at, finished_at, outcome, duration_ms,
         input_tokens, output_tokens, total_tokens, token_observed, token_streams_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     for (const task of tasks) {
@@ -611,6 +626,7 @@ export class RelayDatabase {
         const attempt = {
           startedAt: normalized,
           finishedAt: null,
+          outcome: null,
           inputTokens: 0,
           outputTokens: 0,
           totalTokens: 0,
@@ -631,6 +647,7 @@ export class RelayDatabase {
             : event.created_at;
           if (activeAttempt && !activeAttempt.finishedAt && activeAttempt.startedAt !== startedAt) {
             activeAttempt.finishedAt = event.created_at;
+            activeAttempt.outcome = 'unknown';
           }
           activeAttempt = ensureAttempt(startedAt);
         }
@@ -654,6 +671,7 @@ export class RelayDatabase {
               ? payload.attemptFinishedAt
               : event.created_at;
           }
+          if (finishedAttempt) finishedAttempt.outcome = taskAttemptOutcome(event, payload);
           if (finishedAttempt === activeAttempt) activeAttempt = null;
         }
       }
@@ -671,6 +689,9 @@ export class RelayDatabase {
           || events.at(-1)?.created_at
           || latest.startedAt;
       }
+      if (latest && latest.finishedAt && !latest.outcome && task.status !== 'running') {
+        latest.outcome = TASK_ATTEMPT_OUTCOMES.has(task.status) ? task.status : 'unknown';
+      }
 
       for (const attempt of attempts) {
         const startedMs = timestampMilliseconds(attempt.startedAt);
@@ -680,6 +701,7 @@ export class RelayDatabase {
           task.id,
           attempt.startedAt,
           attempt.finishedAt,
+          attempt.outcome || (attempt.finishedAt ? 'unknown' : null),
           durationMs,
           nonNegativeTokenCount(attempt.inputTokens),
           nonNegativeTokenCount(attempt.outputTokens),
@@ -688,6 +710,60 @@ export class RelayDatabase {
           JSON.stringify(attempt.streams || {}),
         );
       }
+    }
+  }
+
+  backfillTaskAttemptOutcomes() {
+    const taskIds = this.database.prepare(`
+      SELECT DISTINCT task_id
+      FROM task_attempts
+      WHERE finished_at IS NOT NULL AND outcome IS NULL
+      ORDER BY task_id
+    `).all().map((row) => Number(row.task_id));
+    const update = this.database.prepare(`
+      UPDATE task_attempts SET outcome = ?
+      WHERE task_id = ? AND started_at = ? AND outcome IS NULL
+    `);
+
+    for (const taskId of taskIds) {
+      const attempts = this.database.prepare(`
+        SELECT started_at, finished_at
+        FROM task_attempts
+        WHERE task_id = ?
+        ORDER BY started_at ASC, id ASC
+      `).all(taskId);
+      const attemptsByStart = new Map(attempts.map((attempt) => [attempt.started_at, attempt]));
+      let activeAttempt = null;
+      const events = this.database.prepare(`
+        SELECT kind, message, payload, created_at
+        FROM events
+        WHERE task_id = ?
+        ORDER BY id ASC
+      `).all(taskId);
+      for (const event of events) {
+        const payload = parseEventPayload(event.payload);
+        if (payload?.type === 'relay/task-attempt-started') {
+          activeAttempt = attemptsByStart.get(payload.attemptStartedAt) || null;
+        }
+        if (!attemptFinishedByEvent(event, payload)) continue;
+        const finishedAttempt = attemptsByStart.get(payload?.attemptStartedAt) || activeAttempt;
+        if (finishedAttempt) {
+          update.run(taskAttemptOutcome(event, payload), taskId, finishedAttempt.started_at);
+        }
+        if (finishedAttempt === activeAttempt) activeAttempt = null;
+      }
+
+      const task = this.database.prepare(`
+        SELECT status, started_at FROM tasks WHERE id = ?
+      `).get(taskId);
+      const latest = attempts.at(-1);
+      if (latest && latest.started_at === task?.started_at && TASK_ATTEMPT_OUTCOMES.has(task.status)) {
+        update.run(task.status, taskId, latest.started_at);
+      }
+      this.database.prepare(`
+        UPDATE task_attempts SET outcome = 'unknown'
+        WHERE task_id = ? AND finished_at IS NOT NULL AND outcome IS NULL
+      `).run(taskId);
     }
   }
 
@@ -873,6 +949,28 @@ export class RelayDatabase {
     };
   }
 
+  taskAttemptsMap(taskId = null) {
+    const rows = this.database.prepare(`
+      SELECT attempts.task_id, attempts.started_at, attempts.finished_at,
+        attempts.duration_ms, attempts.outcome
+      FROM task_attempts AS attempts
+      ${taskId === null ? '' : 'WHERE attempts.task_id = ?'}
+      ORDER BY attempts.task_id ASC, attempts.started_at ASC, attempts.id ASC
+    `).all(...(taskId === null ? [] : [taskId]));
+    const attempts = new Map();
+    for (const row of rows) {
+      const id = Number(row.task_id);
+      if (!attempts.has(id)) attempts.set(id, []);
+      attempts.get(id).push({
+        started_at: row.started_at,
+        finished_at: row.finished_at || null,
+        duration_ms: Number(row.duration_ms || 0),
+        outcome: row.outcome || null,
+      });
+    }
+    return attempts;
+  }
+
   beginTaskAttempt(id, { attemptStartedAt, changes = {} } = {}) {
     if (!timestampMilliseconds(attemptStartedAt)) {
       throw new Error('A valid task-attempt start time is required.');
@@ -900,13 +998,17 @@ export class RelayDatabase {
           && persistedFinishedMs <= nextStartedMs
           ? task.finished_at
           : attemptStartedAt;
+        const staleOutcome = TASK_ATTEMPT_OUTCOMES.has(task?.status)
+          ? task.status
+          : 'unknown';
         this.database.prepare(`
           UPDATE task_attempts
-          SET finished_at = ?, duration_ms = ?
+          SET finished_at = ?, duration_ms = ?, outcome = COALESCE(outcome, ?)
           WHERE id = ? AND finished_at IS NULL
         `).run(
           staleFinishedAt,
           Math.max(0, timestampMilliseconds(staleFinishedAt) - activeStartedMs),
+          staleOutcome,
           active.id,
         );
       }
@@ -930,10 +1032,16 @@ export class RelayDatabase {
     attemptStartedAt = null,
     attemptFinishedAt = now(),
     changes = {},
+    outcome = null,
   } = {}) {
     if (!timestampMilliseconds(attemptFinishedAt)) {
       throw new Error('A valid task-attempt finish time is required.');
     }
+    const normalizedOutcome = TASK_ATTEMPT_OUTCOMES.has(outcome)
+      ? outcome
+      : TASK_ATTEMPT_OUTCOMES.has(changes.status)
+        ? changes.status
+        : 'unknown';
     let transactionOpen = false;
     try {
       this.database.exec('BEGIN IMMEDIATE');
@@ -957,9 +1065,15 @@ export class RelayDatabase {
         );
         this.database.prepare(`
           UPDATE task_attempts
-          SET finished_at = ?, duration_ms = ?
+          SET finished_at = ?, duration_ms = ?, outcome = ?
           WHERE id = ? AND finished_at IS NULL
-        `).run(attemptFinishedAt, durationMs, attempt.id);
+        `).run(attemptFinishedAt, durationMs, normalizedOutcome, attempt.id);
+      } else if (attempt && !attempt.outcome) {
+        this.database.prepare(`
+          UPDATE task_attempts
+          SET outcome = ?
+          WHERE id = ? AND outcome IS NULL
+        `).run(normalizedOutcome, attempt.id);
       }
       this.updateTask(id, changes);
       this.database.exec('COMMIT');
@@ -1074,6 +1188,7 @@ export class RelayDatabase {
       this.completeTaskAttempt(task.id, {
         attemptStartedAt: activeAttempt?.started_at || null,
         attemptFinishedAt: timestamp,
+        outcome: 'interrupted',
         changes: {
           status: manualSession ? 'open' : 'interrupted',
           finished_at: manualSession ? null : timestamp,
@@ -1238,6 +1353,57 @@ export class RelayDatabase {
   listTasks() {
     const tasks = this.database.prepare(`
       SELECT * FROM tasks
+      ORDER BY
+        CASE status
+          WHEN 'running' THEN 0
+          WHEN 'open' THEN 1
+          WHEN 'queued' THEN 2
+          ELSE 3
+        END,
+        CASE WHEN status = 'queued' THEN position END ASC,
+        CASE WHEN status IN ('running', 'open', 'queued') THEN id END ASC,
+        CASE WHEN status NOT IN ('running', 'open', 'queued') THEN id END DESC
+    `).all().map(normalizeTask);
+    const metrics = this.conversationMetricsMap();
+    return tasks.map((task) => this.taskWithConversationMetrics(task, metrics.get(task.id)));
+  }
+
+  taskSummaryProjection() {
+    if (this._taskSummaryProjection) return this._taskSummaryProjection;
+    const active = "tasks.status IN ('running', 'open', 'queued')";
+    const columns = this.database.prepare('PRAGMA table_info(tasks)').all().map(({ name }) => {
+      const identifier = `tasks."${String(name).replaceAll('"', '""')}"`;
+      if (name === 'prompt') {
+        return `CASE WHEN ${active} THEN ${identifier} ELSE substr(${identifier}, 1, 512) END AS prompt`;
+      }
+      if (name === 'result') {
+        return `CASE WHEN ${active} THEN ${identifier} ELSE NULL END AS result`;
+      }
+      return identifier;
+    });
+    this._taskSummaryProjection = columns.join(',\n        ');
+    return this._taskSummaryProjection;
+  }
+
+  // Queue cards need routing and compact display metadata, not every finished response or
+  // arbitrarily long historical prompt. The selected-task endpoint remains the lossless view.
+  listTaskSummaries() {
+    const tasks = this.database.prepare(`
+      SELECT
+        ${this.taskSummaryProjection()},
+        CASE
+          WHEN tasks.status IN ('running', 'open', 'queued') OR length(tasks.prompt) <= 512 THEN 0
+          ELSE 1
+        END AS prompt_truncated,
+        CASE WHEN tasks.status IN ('running', 'open', 'queued') THEN 0 ELSE 1 END AS detail_trimmed,
+        COALESCE((
+          SELECT events.id
+          FROM events
+          WHERE events.task_id = tasks.id
+          ORDER BY events.id DESC
+          LIMIT 1
+        ), 0) AS latest_event_id
+      FROM tasks
       ORDER BY
         CASE status
           WHEN 'running' THEN 0
@@ -1545,7 +1711,8 @@ export class RelayDatabase {
   }
 
   addEvent(taskId, kind, message, payload = null) {
-    const encodedPayload = payload === null ? null : JSON.stringify(payload);
+    const storedPayload = payload === null ? null : compactEventForStorage(payload);
+    const encodedPayload = storedPayload === null ? null : JSON.stringify(storedPayload);
     const createdAt = now();
     const tokenUsageEvent = payload?.type === 'provider/token-usage'
       && payload.source === 'native'
@@ -1583,36 +1750,44 @@ export class RelayDatabase {
   }
 
   // Incremental read used by the global task monitor. Re-reading and re-parsing a full event
-  // window for every running task or open manual session on every two-second poll does not
+  // window for every running task or open manual session on every snapshot poll does not
   // scale, so callers only ask for what they have not already seen.
   listEventsSince(taskId, sinceId = 0, limit = 500) {
-    return this.database.prepare(`
-      SELECT * FROM (
-        SELECT * FROM events
-        WHERE task_id = ? AND id > ?
-        ORDER BY id DESC
-        LIMIT ?
-      )
-      ORDER BY id ASC
-    `).all(taskId, sinceId, limit).map((event) => ({
-      ...event,
-      payload: event.payload ? JSON.parse(event.payload) : null,
-    }));
+    const events = [];
+    const rows = this.database.prepare(`
+      SELECT * FROM events
+      WHERE task_id = ? AND id > ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).iterate(taskId, sinceId, limit);
+    for (const event of rows) {
+      const payload = event.payload ? JSON.parse(event.payload) : null;
+      events.push({
+        ...event,
+        // Old databases can contain unbounded activity rows. Compact one row at a time so
+        // the returned window never retains all of those raw payload strings together.
+        payload: payload === null ? null : compactEventForStorage(payload),
+      });
+    }
+    return events.reverse();
   }
 
   listEvents(taskId, limit = 500) {
-    return this.database.prepare(`
-      SELECT * FROM (
-        SELECT * FROM events
-        WHERE task_id = ?
-        ORDER BY id DESC
-        LIMIT ?
-      )
-      ORDER BY id ASC
-    `).all(taskId, limit).map((event) => ({
-      ...event,
-      payload: event.payload ? JSON.parse(event.payload) : null,
-    }));
+    const events = [];
+    const rows = this.database.prepare(`
+      SELECT * FROM events
+      WHERE task_id = ?
+      ORDER BY id DESC
+      LIMIT ?
+    `).iterate(taskId, limit);
+    for (const event of rows) {
+      const payload = event.payload ? JSON.parse(event.payload) : null;
+      events.push({
+        ...event,
+        payload: payload === null ? null : compactEventForStorage(payload),
+      });
+    }
+    return events.reverse();
   }
 
   // Exact task diffs need only successful provider file-change records, not the complete
@@ -1649,7 +1824,16 @@ export class RelayDatabase {
     const events = this.database.prepare(`
       SELECT id, payload, created_at
       FROM events
-      WHERE task_id = ? AND payload IS NOT NULL
+      WHERE task_id = ?
+        AND payload IS NOT NULL
+        AND json_valid(payload) = 1
+        AND json_extract(payload, '$.item.type') = 'userMessage'
+        AND (
+          json_extract(payload, '$.item.clientId') GLOB 'relay-follow-up-*'
+          OR json_extract(payload, '$.item.clientId') GLOB 'relay-steer-*'
+          OR json_extract(payload, '$.item.id') GLOB 'relay-follow-up-*'
+          OR json_extract(payload, '$.item.id') GLOB 'relay-steer-*'
+        )
       ORDER BY id ASC
     `).all(taskId);
     for (const event of events) {
@@ -1682,7 +1866,16 @@ export class RelayDatabase {
     const events = this.database.prepare(`
       SELECT id, payload, created_at
       FROM events
-      WHERE task_id = ? AND payload IS NOT NULL
+      WHERE task_id = ?
+        AND payload IS NOT NULL
+        AND json_valid(payload) = 1
+        AND (
+          (
+            json_extract(payload, '$.type') = 'item/completed'
+            AND json_extract(payload, '$.item.type') IN ('agentMessage', 'agent_message')
+          )
+          OR json_extract(payload, '$.type') IN ('claude/message', 'opencode/message')
+        )
       ORDER BY id ASC
     `).all(taskId);
     for (const event of events) {
@@ -1744,7 +1937,25 @@ export class RelayDatabase {
       const events = this.database.prepare(`
         SELECT task_id, payload
         FROM events
-        WHERE payload IS NOT NULL AND task_id IN (${placeholders})
+        WHERE payload IS NOT NULL
+          AND task_id IN (${placeholders})
+          AND json_valid(payload) = 1
+          AND (
+            (
+              json_extract(payload, '$.item.type') = 'userMessage'
+              AND (
+                json_extract(payload, '$.item.clientId') GLOB 'relay-follow-up-*'
+                OR json_extract(payload, '$.item.clientId') GLOB 'relay-steer-*'
+                OR json_extract(payload, '$.item.id') GLOB 'relay-follow-up-*'
+                OR json_extract(payload, '$.item.id') GLOB 'relay-steer-*'
+              )
+            )
+            OR (
+              json_extract(payload, '$.type') = 'item/completed'
+              AND json_extract(payload, '$.item.type') IN ('agentMessage', 'agent_message')
+            )
+            OR json_extract(payload, '$.type') IN ('claude/message', 'opencode/message')
+          )
         ORDER BY task_id ASC, id ASC
       `).all(...chunk);
       for (const event of events) {

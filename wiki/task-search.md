@@ -26,7 +26,7 @@ The canonical search corpus contains:
 Results rank exact task numbers first, then exact or complete task-name matches, command evidence, and response evidence. The strongest matching entry supplies a bounded excerpt and exact highlight ranges. The API returns at most 200 ranked rows plus the total match count so the renderer remains bounded. The renderer then creates a stable starred-first partition, preserving this exact backend relevance order inside both groups. See [[task-starring]].
 
 > [!note]
-> The search is evaluated on request from one project-scoped document set. It does not add an FTS virtual table, duplicate prompts into browser storage, or enlarge the normal `/api/tasks` snapshot. This keeps SQLite as the source of truth and avoids making every two-second task refresh carry complete response history.
+> The search is evaluated on request from one project-scoped document set. It does not add an FTS virtual table, duplicate prompts into browser storage, or enlarge the normal `/api/tasks` snapshot. Canonical user and assistant shapes are filtered in SQLite, so tool payloads and command output never enter the JavaScript search heap. This keeps SQLite as the source of truth and keeps periodic task snapshots compact. See [[memory-efficiency]].
 
 ## UI contract
 
@@ -50,7 +50,7 @@ While a query is active:
 
 ## Verification
 
-`test/task-search.test.mjs` covers normalization, phrases, cross-field matching, relevance, task-number lookup, canonical database extraction, project isolation, rank preservation, and escaped highlights. `test/task-search-ui.test.mjs` covers route and capability wiring, all-date behavior, read-only filtered cards, responsive styling, dark mode, and reduced motion. The complete Node suite passes 1,442 tests.
+`test/task-search.test.mjs` covers normalization, phrases, cross-field matching, relevance, task-number lookup, canonical database extraction, project isolation, rank preservation, and escaped highlights. `test/task-search-ui.test.mjs` covers route and capability wiring, all-date behavior, read-only filtered cards, responsive styling, dark mode, and reduced motion. The complete Node suite passes 1,812 tests.
 
 See [[task-history]], [[stable-text-selection]], and [[renderer-performance]].
 

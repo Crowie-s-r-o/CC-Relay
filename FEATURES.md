@@ -14,6 +14,7 @@ CC Relay is designed to make AI development work easier to control:
 - Search every saved task command and provider response inside the selected project.
 - Attach earlier task messages, AI responses, or both as context for new work.
 - Choose the provider, model, and reasoning effort without keeping a target terminal open.
+- Run a saved Deploy check skill immediately with the selected direct-execution settings.
 - Launch a fresh Codex or Claude terminal, or a headless OpenCode process, only when a queued task receives capacity.
 - Optionally keep final Codex and Claude task terminal sessions open, with an independent saved choice for every project.
 - Run independent tasks concurrently up to each project's provider limits.
@@ -124,6 +125,12 @@ Retrying a failed, cancelled, or interrupted automatic Execute task opens its ex
 
 Run now places an urgent task ahead of other waiting tasks. It does not interrupt work that is already running or bypass provider instance limits.
 
+### Saved quick skills
+
+The compact row below the task prompt shares its width equally between push-to-talk and saved skills. **Deploy check** is the first preset. One click creates a direct Execute task at Run now priority with the active project and the currently selected provider, model, and reasoning effort. Codex and Claude use the selected terminal lifecycle and layout settings. OpenCode uses its selected headless execution settings.
+
+Saved skills carry their own exact prompt and task name. They do not include or clear the task name, prompt draft, task references, or images already in the composer. They are unavailable in Plan council and Forward-planning Turbo because those workflows have different execution contracts. The button also stays unavailable while another composer submission owns the form, no project is selected, or the selected provider CLI is confirmed missing.
+
 ### Push-to-talk voice input
 
 The task composer supports optional local dictation. Enable it in **Terminal settings**, select the system default or a named microphone, set up the local engine once, then hold the configured activation keys while the CC Relay window is active. Releasing the main key or any required modifier immediately stops the microphone, runs faster-whisper on the CPU, and inserts the transcript at the current prompt selection. The on-screen microphone control follows the same hold and release behavior. A saved named input is resolved again after desktop origin changes, and an empty low-bitrate clip identifies the microphone that captured silence so a virtual or disconnected source is not mistaken for a speech-model failure.
@@ -174,9 +181,9 @@ The monitor uses each installed, authenticated provider CLI. It does not add API
 
 ### AI daily standup
 
-The Task queue includes a **Standup** action. Opening it does not run AI. Each Launchpad can save an optional default custom prompt for its Standups, such as preferred terminology, emphasis, or exclusions. Choose a one-day or two-day range, then select its local-calendar start date to begin generation. A two-day range includes the selected date and the following date, and its latest allowed start keeps the whole range at or before today. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved project prompt plus the prompts, assistant responses, and final results from completed work in that project. It never uses a task terminal.
+The Task queue includes a **Standup** action. Opening it does not run AI. Each Launchpad can save an optional default custom prompt for its Standups, such as preferred terminology, emphasis, or exclusions. Choose a one-day or two-day range, then select its local-calendar start date to begin generation. A two-day range includes the selected date and the following date, and its latest allowed start keeps the whole range at or before today. Selection follows completed execution attempts, so a saved task that was continued on a later day appears on every day when one of its successful attempts actually ran. Failed and interrupted attempts remain context only. CC Relay gives a fresh isolated, non-persistent Codex or Claude CLI process the saved project prompt plus exact attempt starts and completions, prompts, assistant responses, and final results from completed work in that project. It never uses a task terminal.
 
-Standup has one output type: the same concise changelog structure used by deploy. Related work is synthesized into short Added, Changed, Fixed, and Security sentences. Empty categories are omitted, facts are deduplicated, and the result copies as ready-to-paste Markdown headings and bullet points. Standup generation does not create a queue task, resume an existing task conversation, or add itself to history.
+Standup has one output type: the same concise changelog structure used by deploy. Related work is synthesized into short Added, Changed, Fixed, and Security sentences. Empty categories are omitted, facts are deduplicated, and the result copies as ready-to-paste Markdown headings and bullet points. After generation, a dated question ledger accepts typed questions or one-click prompts about what ran each day, which work came from follow-up executions, and when changes started or completed. Each answer uses another fresh isolated process with bounded prior Q&A for reference resolution. Neither generation nor Q&A creates a queue task, resumes an existing task conversation, persists a provider session, or adds itself to history.
 
 ### Local persistence
 

@@ -33,8 +33,9 @@
 - **A queue built for real work.** Star any task to keep it at the top, rename titles inline at any stage, reorder waiting work, use Run now for urgent dispatch, and continue completed conversations.
 - **Reference images and local artifacts.** Attach screenshots and other visual context, then keep prompts, plans, events, results, errors, and attachments stored locally with the task.
 - **Local push-to-talk prompting.** Hold a configurable key combination, speak, and release to insert a faster-whisper CPU transcription directly into the task prompt.
+- **One-click saved skills.** Run the built-in Deploy check command with the selected provider, model, and effort without replacing the prompt already being written.
 - **Completion you will not miss.** Choose a sound or spoken announcement, collect finished tasks in a durable Ready for review stack, and mark them reviewed individually or together.
-- **AI changelogs on demand.** Standup turns completed work from a selected one-day or two-day range into concise Added, Changed, Fixed, and Security notes using a fresh isolated provider session, with an optional default prompt saved for each project.
+- **AI changelogs on demand.** Standup turns completed execution attempts from a selected one-day or two-day range into concise Added, Changed, Fixed, and Security notes, then answers dated follow-up questions from the same saved evidence.
 - **A desktop that adapts.** Move and resize the task monitor, switch themes, zoom the whole app, retain terminals when useful, and receive automatic updates on supported desktop installs.
 - **Local by design.** Relay binds to loopback, keeps authentication inside the installed provider CLIs, and stores its task database and artifacts on your machine.
 

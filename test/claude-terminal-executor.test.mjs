@@ -4,7 +4,9 @@ import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { ClaudeExecutionRunner, taskPrompt } from '../src/claude-execution-runner.mjs';
 import {
+  CLAUDE_AGENT_PANEL_HINT_PATTERN,
   CLAUDE_AGENT_PANEL_MEMBER_PATTERN,
+  CLAUDE_AGENT_PANEL_OVERFLOW_PATTERN,
   CLAUDE_COMPOSER_ANCHOR_CHARS,
   CLAUDE_COMPOSER_CLEAR_KEYS,
   CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS,
@@ -964,6 +966,145 @@ test('expanded composer chrome accepts only a bounded exact agent roster', () =>
     ...Array.from({ length: CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS + 1 }, () => extraMember),
   ].join('\n');
   assert.equal(claudeComposerContent(oversized).found, false);
+});
+
+// Read from task 1180's exact live Claude Code 2.1.257 Terminal.app viewport at 119 columns, on
+// 2026-09-01, after `CC Relay could not read the ... Claude composer` refused the live update at
+// the initial screen gate. Names, paths, and work descriptions are neutralized; every column
+// position, the non-breaking space after the caret, and the roster geometry are preserved.
+//
+// Two chrome changes since the 2.1.238 capture above break the old exact roster pattern:
+// the `/rc` hint is right-aligned on the working-directory row ABOVE the status row instead of
+// sitting on its own line below it, and the roster truncates itself with a `↓ 2 more` overflow row.
+const TRUNCATED_AGENT_PANEL_RULE = '─'.repeat(119);
+const LIVE_TRUNCATED_AGENT_PANEL_CAPTURE = [
+  '✻ Waiting for 13 background agents to finish',
+  '                                                                                                        137878 tokens',
+  TRUNCATED_AGENT_PANEL_RULE,
+  '❯ ',
+  TRUNCATED_AGENT_PANEL_RULE,
+  '  dev@host:~/workspace/project-a  main  Fable 5.1  ctx:14%                       /rc',
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+  '',
+  '  ⏺ main',
+  '  ◯ lead-fullstack-engineer (+3)  Grepping email_fallback flow in index.ts                  35m 16s · ↓ 190.4k tokens',
+  '  ◯ lead-fullstack-engineer (+1)  Reading isBookingLabel in site-profile.service.ts         34m 49s · ↓ 189.2k tokens',
+  '  ◯ lead-fullstack-engineer       Grepping project-a CSS rules in styles.ts                 34m 21s · ↓ 135.2k tokens',
+  '  ◯ lead-fullstack-engineer (+3)  Comparing indexable hero text in test_home.html           33m 51s · ↓ 155.2k tokens',
+  '  ◯ backend-api-security:backen…  Locating the firecrawl network-policy.yaml                33m 21s · ↓ 179.4k tokens',
+  '  ↓ 2 more',
+  '',
+].join('\n');
+
+const TRUNCATED_PANEL_MEMBER_ROW = '  ◯ synthetic-worker  Reading a bounded fixture  1m 2s · ↓ 1.0k tokens';
+
+// Rebuilds the captured frame with an exact member count and an optional trailing chrome row, so
+// the roster cap and the overflow rules are exercised on the real geometry rather than a sketch.
+function truncatedAgentPanelCapture(memberCount, tail = ['  ↓ 2 more']) {
+  const lines = LIVE_TRUNCATED_AGENT_PANEL_CAPTURE.split('\n');
+  const mainIndex = lines.findIndex((line) => line.trim().startsWith('⏺ main'));
+  return [
+    ...lines.slice(0, mainIndex + 1),
+    ...Array.from({ length: memberCount }, () => TRUNCATED_PANEL_MEMBER_ROW),
+    ...tail,
+    '',
+  ].join('\n');
+}
+
+test('the composer is recognized above a right-aligned hint and a truncated agent panel', () => {
+  const tail = claudeScreenTailLines(
+    LIVE_TRUNCATED_AGENT_PANEL_CAPTURE,
+    CLAUDE_COMPOSER_TAIL_LINES,
+  );
+  const closing = tail.findLastIndex((line) => CLAUDE_SCREEN_RULE_PATTERN.test(line));
+  assert.ok(closing > 0);
+  assert.ok(
+    tail.length - 1 - closing > CLAUDE_COMPOSER_MAX_CHROME_LINES,
+    'the captured truncated agent panel must exceed the ordinary composer chrome bound',
+  );
+
+  // The exact drift: the hint is a right-aligned trailing token of the working-directory row, and
+  // that row is drawn ABOVE the status row rather than below it.
+  const hintRow = tail.find((line) => CLAUDE_AGENT_PANEL_HINT_PATTERN.test(line));
+  assert.ok(hintRow.startsWith('dev@host:'));
+  assert.ok(tail.indexOf(hintRow) < tail.findIndex(
+    (line) => CLAUDE_COMPOSER_STATUS_ROW_PATTERNS.some((pattern) => pattern.test(line)),
+  ));
+  assert.ok(tail.some((line) => CLAUDE_AGENT_PANEL_OVERFLOW_PATTERN.test(line)));
+
+  assert.equal(classifyClaudeScreen(LIVE_TRUNCATED_AGENT_PANEL_CAPTURE), 'composer');
+  assert.deepEqual(claudeComposerContent(LIVE_TRUNCATED_AGENT_PANEL_CAPTURE), {
+    found: true,
+    text: '',
+  });
+  assert.equal(
+    claudeComposerState(LIVE_TRUNCATED_AGENT_PANEL_CAPTURE, 'create the summary document'),
+    'empty',
+  );
+
+  const memberRows = tail.filter((line) => line.startsWith('◯'));
+  assert.equal(memberRows.length, 5);
+  assert.ok(memberRows.every((line) => CLAUDE_AGENT_PANEL_MEMBER_PATTERN.test(line)));
+});
+
+test('a full roster plus its overflow row still reads, one row past the cap does not', () => {
+  const full = truncatedAgentPanelCapture(CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS);
+  assert.equal(classifyClaudeScreen(full), 'composer');
+  assert.deepEqual(claudeComposerContent(full), { found: true, text: '' });
+
+  // The overflow row is a summary, not a member, so it never buys an extra member slot.
+  const oversized = truncatedAgentPanelCapture(CLAUDE_COMPOSER_MAX_AGENT_PANEL_ROWS + 1);
+  assert.equal(claudeComposerContent(oversized).found, false);
+});
+
+test('the truncated agent panel fails closed on anything but its exact shape', () => {
+  // Ordinary transcript output where the overflow row belongs.
+  assert.equal(
+    claudeComposerContent(truncatedAgentPanelCapture(3, ['  the rest of an unrelated answer'])).found,
+    false,
+  );
+  // Text after the overflow row: the overflow row is only ever the last line.
+  assert.equal(
+    claudeComposerContent(truncatedAgentPanelCapture(3, ['  ↓ 2 more', '  and one more thought'])).found,
+    false,
+  );
+  // Two overflow rows.
+  assert.equal(
+    claudeComposerContent(truncatedAgentPanelCapture(3, ['  ↓ 2 more', '  ↓ 4 more'])).found,
+    false,
+  );
+  // A malformed count.
+  assert.equal(
+    claudeComposerContent(truncatedAgentPanelCapture(3, ['  ↓ two more'])).found,
+    false,
+  );
+  // Overflow rows are summaries, never members, so a panel made only of them has no roster.
+  assert.equal(
+    claudeComposerContent(
+      truncatedAgentPanelCapture(0, ['  ↓ 2 more', '  ↓ 3 more', '  ↓ 4 more', '  ↓ 5 more']),
+    ).found,
+    false,
+  );
+
+  // The hint has to be its own line or a right-aligned trailing token. Prose that merely mentions
+  // the command is not the hint, so the deeper chrome allowance is refused.
+  const prose = LIVE_TRUNCATED_AGENT_PANEL_CAPTURE.replace(
+    '  dev@host:~/workspace/project-a  main  Fable 5.1  ctx:14%                       /rc',
+    '  then run /rc',
+  );
+  assert.equal(claudeComposerContent(prose).found, false);
+  assert.equal(CLAUDE_AGENT_PANEL_HINT_PATTERN.test('then run /rc'), false);
+  assert.equal(CLAUDE_AGENT_PANEL_HINT_PATTERN.test('/rc'), true);
+
+  // The panel header still has to sit inside the ordinary fixed-chrome bound. A `⏺ main` line
+  // pushed below it is transcript output, not the roster header.
+  const deepHeader = LIVE_TRUNCATED_AGENT_PANEL_CAPTURE.replace(
+    '  ⏺ main',
+    Array.from({ length: CLAUDE_COMPOSER_MAX_CHROME_LINES }, (_, index) => `  note ${index}`)
+      .concat('  ⏺ main')
+      .join('\n'),
+  );
+  assert.equal(claudeComposerContent(deepHeader).found, false);
 });
 
 test('the composer is recognized in a captured live Claude Code 2.1.220 frame', () => {

@@ -102,6 +102,7 @@ import {
   relayServerEndpoint,
 } from './server-options.mjs';
 import {
+  buildStandupFollowUpPrompt,
   buildStandupPrompt,
   MAX_STANDUP_SOURCE_TASKS,
   selectStandupTasks,
@@ -892,6 +893,13 @@ async function standupProviderAvailability(preferredProvider) {
 }
 
 function standupRecord(task) {
+  const executions = Array.isArray(task.executions) && task.executions.length > 0
+    ? task.executions
+    : [{
+        started_at: task.started_at || task.created_at,
+        finished_at: task.finished_at || null,
+        outcome: task.status,
+      }];
   return {
     id: task.id,
     title: task.title,
@@ -899,11 +907,138 @@ function standupRecord(task) {
     provider: task.provider,
     mode: task.mode,
     startedAt: task.started_at || task.created_at,
+    completedAt: task.finished_at || null,
+    executions: executions.map((execution, index) => ({
+      sequence: index + 1,
+      startedAt: execution.started_at,
+      startedLocal: standupLocalTimestamp(execution.started_at),
+      completedAt: execution.finished_at || null,
+      completedLocal: standupLocalTimestamp(execution.finished_at),
+      outcome: execution.outcome || null,
+      selectedForRange: execution.selectedForRange === true,
+    })),
     prompts: database.listTaskPrompts(task.id),
     responses: database.listTaskResponses(task.id),
     outcome: task.status === 'failed'
       ? task.error || task.result || 'No failure details were recorded.'
       : task.result || task.error || 'No final outcome was recorded.',
+  };
+}
+
+const standupLocalTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  weekday: 'long',
+  year: 'numeric',
+  month: 'long',
+  day: 'numeric',
+  hour: 'numeric',
+  minute: '2-digit',
+  second: '2-digit',
+  timeZoneName: 'short',
+});
+
+function standupLocalTimestamp(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isFinite(parsed.getTime()) ? standupLocalTimeFormatter.format(parsed) : null;
+}
+
+function localCalendarDate(milliseconds) {
+  const value = new Date(milliseconds);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function standupSourceFromRequest(body) {
+  const requestedPath = typeof body.projectPath === 'string' ? body.projectPath.trim() : '';
+  if (!requestedPath) {
+    throw new StandupGenerationError('Select a Launchpad project before generating a standup.');
+  }
+  const projectPath = resolve(requestedPath);
+  const project = database.getProjectByPath(projectPath);
+  if (!project) {
+    throw new StandupGenerationError(
+      'The selected project is no longer pinned in CC Relay.',
+      { statusCode: 404 },
+    );
+  }
+  const preferredProvider = body.provider === 'claude' ? 'claude' : 'codex';
+  if (body.provider && !['codex', 'claude'].includes(body.provider)) {
+    throw new StandupGenerationError('Choose Codex or Claude for standup generation.');
+  }
+  const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : null;
+  if (threadId && threadId.length > 512) {
+    throw new StandupGenerationError('The selected CC Relay identifier is invalid.');
+  }
+  const window = validateStandupWindow({ start: body.start, end: body.end });
+  const date = localCalendarDate(window.startMs);
+  const dateEnd = localCalendarDate(window.endMs - 1);
+  if (body.date !== undefined && body.date !== date) {
+    throw new StandupGenerationError('The selected Standup date does not match its local-day boundary.');
+  }
+  if (body.dateEnd !== undefined && body.dateEnd !== dateEnd) {
+    throw new StandupGenerationError('The selected Standup end date does not match its local-day boundary.');
+  }
+  const dateLabel = window.dayCount === 2 ? `${date} to ${dateEnd}` : date;
+  const attemptsByTask = database.taskAttemptsMap();
+  const candidates = database.listTasks().map((task) => ({
+    ...task,
+    executions: attemptsByTask.get(task.id) || [{
+      started_at: task.started_at || task.created_at,
+      finished_at: task.finished_at || null,
+      outcome: task.status,
+    }],
+  }));
+  const tasks = selectStandupTasks(candidates, {
+    projectPath: project.path,
+    threadId,
+    start: window.start,
+    end: window.end,
+  });
+  if (tasks.length === 0) {
+    throw new StandupGenerationError('No completed task execution started in the selected date range.');
+  }
+  const executionCount = tasks.reduce((total, task) => total + task.executions.filter((execution) => {
+    const startedAt = new Date(execution.started_at).getTime();
+    return execution.outcome === 'complete'
+      && Number.isFinite(startedAt)
+      && startedAt >= window.startMs
+      && startedAt < window.endMs;
+  }).length, 0);
+  const includedTasks = tasks.slice(-MAX_STANDUP_SOURCE_TASKS).map((task) => ({
+    ...task,
+    executions: task.executions.map((execution) => {
+      const startedAt = new Date(execution.started_at).getTime();
+      return {
+        ...execution,
+        selectedForRange: execution.outcome === 'complete'
+          && Number.isFinite(startedAt)
+          && startedAt >= window.startMs
+          && startedAt < window.endMs,
+      };
+    }),
+  }));
+  const omittedTaskCount = tasks.length - includedTasks.length;
+  const records = includedTasks.map(standupRecord);
+  const promptCount = records.reduce((total, record) => total + record.prompts.length, 0);
+  const responseCount = records.reduce((total, record) => total + record.responses.length, 0);
+  return {
+    project,
+    preferredProvider,
+    threadId,
+    window,
+    date,
+    dateEnd,
+    dateLabel,
+    timeZone: standupLocalTimeFormatter.resolvedOptions().timeZone || 'System local time',
+    tasks,
+    executionCount,
+    includedTasks,
+    omittedTaskCount,
+    records,
+    promptCount,
+    responseCount,
   };
 }
 
@@ -1109,7 +1244,7 @@ export const server = createServer(async (request, response) => {
 
     if (request.method === 'GET' && pathname === '/api/status') {
       const projectPath = url.searchParams.get('projectPath')?.trim() || null;
-      const tasks = database.listTasks();
+      const tasks = database.listTaskSummaries();
       const monitoredTasks = agentUpdates.feed(tasks);
       const claudeRuntimeStatus = currentClaudeStatus();
       const openCodeRuntimeStatus = currentOpenCodeStatus();
@@ -1180,6 +1315,7 @@ export const server = createServer(async (request, response) => {
           aiStandupChangelog: true,
           aiStandupStartDate: true,
           aiStandupTwoDayRange: true,
+          aiStandupFollowUp: true,
           projectStandupPrompt: true,
           crossProcessLaunchOwnership: true,
           desktopUpdates: IS_DESKTOP,
@@ -1416,8 +1552,15 @@ export const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && pathname === '/api/tasks') {
-      const tasks = database.listTasks().map((task) => {
-        if (task.mode !== 'turbo') return task;
+      const attemptsByTask = database.taskAttemptsMap();
+      const tasks = database.listTaskSummaries().map((task) => {
+        const taskWithExecutionDates = {
+          ...task,
+          execution_starts: (attemptsByTask.get(task.id) || [])
+            .filter((attempt) => attempt.outcome === 'complete')
+            .map((attempt) => attempt.started_at),
+        };
+        if (task.mode !== 'turbo') return taskWithExecutionDates;
         let plan = null;
         try {
           plan = artifacts.readTurboPlan(task.id);
@@ -1425,7 +1568,7 @@ export const server = createServer(async (request, response) => {
           plan = null;
         }
         return {
-          ...task,
+          ...taskWithExecutionDates,
           turboPlanSummary: {
             status: plan?.status || null,
             summary: plan?.summary || '',
@@ -1439,77 +1582,73 @@ export const server = createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/standup/generate') {
       const body = await readJson(request, 64 * 1024);
-      const requestedPath = typeof body.projectPath === 'string' ? body.projectPath.trim() : '';
-      if (!requestedPath) {
-        throw new StandupGenerationError('Select a Launchpad project before generating a standup.');
-      }
-      const projectPath = resolve(requestedPath);
-      const project = database.getProjectByPath(projectPath);
-      if (!project) {
-        throw new StandupGenerationError(
-          'The selected project is no longer pinned in CC Relay.',
-          { statusCode: 404 },
-        );
-      }
-      const preferredProvider = body.provider === 'claude' ? 'claude' : 'codex';
-      if (body.provider && !['codex', 'claude'].includes(body.provider)) {
-        throw new StandupGenerationError('Choose Codex or Claude for standup generation.');
-      }
-      const threadId = typeof body.threadId === 'string' ? body.threadId.trim() : null;
-      if (threadId && threadId.length > 512) {
-        throw new StandupGenerationError('The selected CC Relay identifier is invalid.');
-      }
-      const window = validateStandupWindow({ start: body.start, end: body.end });
-      const date = typeof body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.date)
-        ? body.date
-        : window.start.slice(0, 10);
-      const dateEnd = typeof body.dateEnd === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(body.dateEnd)
-        ? body.dateEnd
-        : date;
-      const dateLabel = window.dayCount === 2 && dateEnd !== date
-        ? `${date} to ${dateEnd}`
-        : date;
-      const tasks = selectStandupTasks(database.listTasks(), {
-        projectPath: project.path,
-        threadId,
-        start: window.start,
-        end: window.end,
-      });
-      if (tasks.length === 0) {
-        throw new StandupGenerationError('No completed task started in the selected date range.');
-      }
-      const includedTasks = tasks.slice(-MAX_STANDUP_SOURCE_TASKS);
-      const omittedTaskCount = tasks.length - includedTasks.length;
-      const records = includedTasks.map(standupRecord);
-      const promptCount = records.reduce((total, record) => total + record.prompts.length, 0);
-      const responseCount = records.reduce((total, record) => total + record.responses.length, 0);
-      const availability = await standupProviderAvailability(preferredProvider);
-      const generated = await standupGenerator.generate(buildStandupPrompt(records, {
-        date: dateLabel,
-        projectName: project.name,
-        scopeLabel: threadId ? 'This CC Relay' : 'All Relays',
-        customPrompt: project.standup_custom_prompt,
-        omittedTaskCount,
+      const source = standupSourceFromRequest(body);
+      const availability = await standupProviderAvailability(source.preferredProvider);
+      const generated = await standupGenerator.generate(buildStandupPrompt(source.records, {
+        date: source.dateLabel,
+        projectName: source.project.name,
+        scopeLabel: source.threadId ? 'This CC Relay' : 'All Relays',
+        timeZone: source.timeZone,
+        customPrompt: source.project.standup_custom_prompt,
+        omittedTaskCount: source.omittedTaskCount,
       }), {
-        preferredProvider,
+        preferredProvider: source.preferredProvider,
         availability,
         metadata: {
-          projectPath: project.path,
-          taskCount: tasks.length,
-          promptCount,
-          responseCount,
+          projectPath: source.project.path,
+          taskCount: source.tasks.length,
+          executionCount: source.executionCount,
+          promptCount: source.promptCount,
+          responseCount: source.responseCount,
         },
       });
       sendJson(response, 200, {
         ...generated,
-        date,
-        dateEnd,
-        dayCount: window.dayCount,
-        customPromptApplied: Boolean(project.standup_custom_prompt),
-        taskCount: tasks.length,
-        includedTaskCount: includedTasks.length,
-        promptCount,
-        responseCount,
+        date: source.date,
+        dateEnd: source.dateEnd,
+        dayCount: source.window.dayCount,
+        customPromptApplied: Boolean(source.project.standup_custom_prompt),
+        taskCount: source.tasks.length,
+        executionCount: source.executionCount,
+        includedTaskCount: source.includedTasks.length,
+        promptCount: source.promptCount,
+        responseCount: source.responseCount,
+      });
+      return;
+    }
+
+    if (request.method === 'POST' && pathname === '/api/standup/follow-up') {
+      const body = await readJson(request, 64 * 1024);
+      const source = standupSourceFromRequest(body);
+      const availability = await standupProviderAvailability(source.preferredProvider);
+      const generated = await standupGenerator.answer(buildStandupFollowUpPrompt(source.records, {
+        date: source.dateLabel,
+        projectName: source.project.name,
+        scopeLabel: source.threadId ? 'This CC Relay' : 'All Relays',
+        timeZone: source.timeZone,
+        customPrompt: source.project.standup_custom_prompt,
+        omittedTaskCount: source.omittedTaskCount,
+        question: body.question,
+        conversation: body.conversation,
+      }), {
+        preferredProvider: source.preferredProvider,
+        availability,
+        metadata: {
+          projectPath: source.project.path,
+          taskCount: source.tasks.length,
+          executionCount: source.executionCount,
+          promptCount: source.promptCount,
+          responseCount: source.responseCount,
+        },
+      });
+      sendJson(response, 200, {
+        ...generated,
+        date: source.date,
+        dateEnd: source.dateEnd,
+        dayCount: source.window.dayCount,
+        taskCount: source.tasks.length,
+        executionCount: source.executionCount,
+        includedTaskCount: source.includedTasks.length,
       });
       return;
     }
@@ -2721,6 +2860,7 @@ export const server = createServer(async (request, response) => {
         events: database.listEvents(taskId),
         prompts: database.listTaskPrompts(taskId),
         responses: database.listTaskResponses(taskId),
+        eventRevision: database.latestEventId(taskId),
         plan: task.mode === 'plan' ? readPlanRecord(task) : null,
         turboPlan: task.mode === 'turbo' ? artifacts.readTurboPlan(taskId) : null,
       });

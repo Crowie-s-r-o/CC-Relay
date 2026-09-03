@@ -68,6 +68,7 @@ import {
   voiceShortcutMatches,
   voiceShortcutReleased,
 } from './voice-input.js';
+import { quickSkillById } from './quick-skills.js';
 import { parallelClaudeRestartRequired, projectQueueRestartRequired } from './project-queue-state.js';
 import { terminalClosePresentation } from './terminal-close-state.js';
 import {
@@ -248,8 +249,10 @@ const MAX_PROJECT_INSTANCES = 8;
 const MAX_TURBO_WORKERS = 8;
 const MAX_POOL_TURBO_WORKERS = MAX_PROJECT_INSTANCES - 1;
 const MAX_STANDUP_CUSTOM_PROMPT_LENGTH = 4_000;
+const MAX_STANDUP_FOLLOW_UP_LENGTH = 4_000;
 
 const API_TIMEOUT_MS = 20_000;
+const SNAPSHOT_FALLBACK_POLL_MS = 15_000;
 const RUNNING_TASK_LAYOUT_DEFAULTS = Object.freeze({ rows: 1, width: 286 });
 const RUNNING_TASK_ROW_OPTIONS = new Set([1, 2, 3]);
 const RUNNING_TASK_WIDTH_OPTIONS = new Set([230, 286, 360]);
@@ -432,6 +435,7 @@ const state = {
   standupChanges: emptyStandupSections(),
   standupClipboardText: '',
   standupTaskCount: 0,
+  standupExecutionCount: 0,
   standupIncludedTaskCount: 0,
   standupProvider: null,
   standupCustomPromptApplied: false,
@@ -442,6 +446,10 @@ const state = {
   standupPromptSaving: false,
   standupPromptEdited: false,
   standupPromptStatus: '',
+  standupFollowUps: [],
+  standupFollowUpPending: false,
+  standupFollowUpError: '',
+  standupFollowUpRequestSequence: 0,
   panelWidths: (() => {
     try {
       const saved = JSON.parse(localStorage.getItem('relay.panelWidths') || '{}');
@@ -508,7 +516,7 @@ const state = {
   terminalRetentionSavingTaskIds: new Set(),
   terminalRetentionFeedback: new Map(),
   // `${taskId}:${turnId}:prompt|response|earlier` to the disclosure state the user chose.
-  // A Map, not a Set: an explicit collapse has to survive the two-second refresh as
+  // A Map, not a Set: an explicit collapse has to survive the periodic refresh as
   // firmly as an explicit expansion, and only a recorded false can outrank the
   // default-open newest turn.
   expandedSessionTurns: new Map(),
@@ -524,6 +532,8 @@ const state = {
   showThinking: true,
   eventFollow: true,
   eventTaskId: null,
+  selectedTaskEventRevision: null,
+  selectedTaskSnapshotSignature: '',
   selectedTaskEvents: [],
   selectedTaskPrompts: [],
   selectedTaskForEvents: null,
@@ -550,7 +560,7 @@ const state = {
   detailCopyTimers: new Map(),
   /*
    * Everything the Changes dialog owns. It is keyed on its own taskId rather than the
-   * selected task because the two-second detail refresh rebuilds the trigger button on
+   * selected task because the periodic detail refresh can rebuild the trigger button on
    * every pass: the dialog cannot hold state on a node that keeps being replaced.
    * `collapsed` records folders the reader closed by hand so a live refresh cannot
    * reopen them, and both signatures are the server's, never one this client invents.
@@ -797,6 +807,14 @@ const elements = {
   standupEmpty: document.querySelector('#standup-empty'),
   standupEmptyTitle: document.querySelector('#standup-empty-title'),
   standupEmptyMessage: document.querySelector('#standup-empty-message'),
+  standupFollowUp: document.querySelector('#standup-follow-up'),
+  standupFollowUpRange: document.querySelector('#standup-follow-up-range'),
+  standupFollowUpSuggestions: document.querySelector('#standup-follow-up-suggestions'),
+  standupFollowUpLedger: document.querySelector('#standup-follow-up-ledger'),
+  standupFollowUpForm: document.querySelector('#standup-follow-up-form'),
+  standupFollowUpInput: document.querySelector('#standup-follow-up-input'),
+  standupFollowUpSend: document.querySelector('#standup-follow-up-send'),
+  standupFollowUpStatus: document.querySelector('#standup-follow-up-status'),
   standupCopyStatus: document.querySelector('#standup-copy-status'),
   standupGenerate: document.querySelector('#standup-generate'),
   standupCopy: document.querySelector('#standup-copy'),
@@ -904,6 +922,8 @@ const elements = {
   prompt: document.querySelector('#task-prompt'),
   taskName: document.querySelector('#task-name'),
   promptLabel: document.querySelector('#prompt-label'),
+  composerQuickActions: document.querySelector('#composer-quick-actions'),
+  quickSkillButtons: [...document.querySelectorAll('[data-quick-skill]')],
   voiceInputComposer: document.querySelector('#voice-input-composer'),
   voiceInputHold: document.querySelector('#voice-input-hold'),
   voiceInputHoldLabel: document.querySelector('#voice-input-hold-label'),
@@ -989,6 +1009,38 @@ const elements = {
   queueDetailResizer: document.querySelector('#queue-detail-resizer'),
   terminalHeightResizer: document.querySelector('#terminal-height-resizer'),
 };
+
+let renderedTaskListSignature = '';
+const taskAttachmentPreviewObserver = typeof window.IntersectionObserver === 'function'
+  ? new window.IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      const image = entry.target;
+      if (!(image instanceof HTMLImageElement)) continue;
+      const source = image.dataset.previewSource;
+      if (entry.isIntersecting && source) {
+        if (image.getAttribute('src') !== source) image.setAttribute('src', source);
+      } else if (image.hasAttribute('src')) {
+        image.removeAttribute('src');
+      }
+    }
+  }, { rootMargin: '240px 0px' })
+  : null;
+
+function releaseTaskAttachmentPreviews() {
+  if (!taskAttachmentPreviewObserver) return;
+  for (const image of elements.taskList.querySelectorAll('img[data-preview-source][src]')) {
+    image.removeAttribute('src');
+  }
+  taskAttachmentPreviewObserver.disconnect();
+}
+
+function observeTaskAttachmentPreviews() {
+  const images = elements.taskList.querySelectorAll('img[data-preview-source]');
+  for (const image of images) {
+    if (taskAttachmentPreviewObserver) taskAttachmentPreviewObserver.observe(image);
+    else image.setAttribute('src', image.dataset.previewSource);
+  }
+}
 
 let voiceRecorder = null;
 
@@ -1462,6 +1514,7 @@ function renderVoiceInput() {
 
   elements.voiceInputSettings.hidden = !supported;
   elements.voiceInputComposer.hidden = !supported;
+  elements.composerQuickActions.dataset.voiceAvailable = String(supported);
   elements.voiceInputEnabled.checked = enabled;
   elements.voiceInputEnabled.disabled = !supported || installing;
   elements.voiceInputControls.dataset.enabled = String(enabled);
@@ -4322,7 +4375,7 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   elements.continuationSend.title = submitting
     ? 'Sending this message. Wait for confirmation before sending another.'
     : '';
-  // A dispatch outcome outlives the two-second refresh. Without warning in this list the
+  // A dispatch outcome outlives the periodic refresh. Without warning in this list the
   // next render would replace an unconfirmed-delivery notice with a generic hint.
   if (!['error', 'success', 'warning'].includes(elements.continuationMessage.dataset.kind)) {
     elements.continuationMessage.textContent = presentation.hint;
@@ -4935,10 +4988,14 @@ function resetStandupOutput() {
   state.standupChanges = emptyStandupSections();
   state.standupClipboardText = '';
   state.standupTaskCount = 0;
+  state.standupExecutionCount = 0;
   state.standupIncludedTaskCount = 0;
   state.standupProvider = null;
   state.standupCustomPromptApplied = false;
   state.standupError = '';
+  state.standupFollowUps = [];
+  state.standupFollowUpError = '';
+  elements.standupFollowUpInput.value = '';
 }
 
 function standupGenerationSupported() {
@@ -4949,6 +5006,14 @@ function standupGenerationSupported() {
 
 function standupCustomPromptSupported() {
   return state.status?.capabilities?.projectStandupPrompt === true;
+}
+
+function standupFollowUpSupported() {
+  return state.status?.capabilities?.aiStandupFollowUp === true;
+}
+
+function standupBusy() {
+  return state.standupGenerating || state.standupPromptSaving || state.standupFollowUpPending;
 }
 
 function standupTwoDayRangeSupported() {
@@ -4993,10 +5058,9 @@ function renderStandupCustomPrompt() {
   elements.standupCustomPromptField.hidden = !supported;
   if (!supported) return;
 
-  elements.standupCustomPrompt.disabled = state.standupGenerating || state.standupPromptSaving || !project;
+  elements.standupCustomPrompt.disabled = standupBusy() || !project;
   elements.standupCustomPromptSave.disabled = (
-    state.standupGenerating
-    || state.standupPromptSaving
+    standupBusy()
     || !project
     || !dirty
   );
@@ -5109,6 +5173,55 @@ function standupResultsMarkup(sections) {
     `).join('');
 }
 
+function standupFollowUpMarkup(anchor, dayCount) {
+  const dateLabel = standupDateLabel(anchor, dayCount);
+  return state.standupFollowUps.map((turn, index) => `
+    <article class="standup-follow-up-turn">
+      <header>
+        <small>Question ${String(index + 1).padStart(2, '0')}</small>
+        <time>${escapeHtml(dateLabel)}</time>
+      </header>
+      <p class="standup-follow-up-question">${escapeHtml(turn.question)}</p>
+      <div class="standup-follow-up-answer">
+        <span aria-hidden="true">AI</span>
+        <p>${escapeHtml(turn.answer)}</p>
+      </div>
+    </article>
+  `).join('');
+}
+
+function renderStandupFollowUp(anchor, dayCount, itemCount) {
+  const visible = standupFollowUpSupported() && Boolean(anchor) && itemCount > 0;
+  elements.standupFollowUp.hidden = !visible;
+  if (!visible) return;
+
+  const dateLabel = standupDateLabel(anchor, dayCount);
+  elements.standupFollowUpRange.textContent = `Grounded in executions from ${dateLabel}`;
+  const signature = JSON.stringify(state.standupFollowUps);
+  if (elements.standupFollowUpLedger.dataset.signature !== signature) {
+    elements.standupFollowUpLedger.innerHTML = standupFollowUpMarkup(anchor, dayCount);
+    elements.standupFollowUpLedger.dataset.signature = signature;
+  }
+  elements.standupFollowUpLedger.hidden = state.standupFollowUps.length === 0;
+  elements.standupFollowUpInput.disabled = state.standupFollowUpPending;
+  elements.standupFollowUpSend.disabled = state.standupFollowUpPending
+    || !elements.standupFollowUpInput.value.trim();
+  elements.standupFollowUpSend.textContent = state.standupFollowUpPending ? 'Checking...' : 'Ask';
+  for (const suggestion of elements.standupFollowUpSuggestions.querySelectorAll('button')) {
+    suggestion.disabled = state.standupFollowUpPending;
+  }
+  if (state.standupFollowUpPending) {
+    elements.standupFollowUpStatus.textContent = 'Checking the saved execution dates and conversation history...';
+  } else if (state.standupFollowUpError) {
+    elements.standupFollowUpStatus.textContent = state.standupFollowUpError;
+  } else if (state.standupFollowUps.length > 0) {
+    const latest = state.standupFollowUps.at(-1);
+    elements.standupFollowUpStatus.textContent = `${providerLabel(latest.provider)} answered from the selected dated evidence.`;
+  } else {
+    elements.standupFollowUpStatus.textContent = 'Questions use exact execution starts, completion times, prompts, and responses.';
+  }
+}
+
 function renderStandup() {
   const anchor = dateFromLocalInput(elements.standupDate.value);
   const dayCount = selectedStandupDays();
@@ -5121,11 +5234,12 @@ function renderStandup() {
   const customPromptApplied = state.standupProvider
     ? state.standupCustomPromptApplied
     : customPromptPresent;
+  const busy = standupBusy();
 
   renderStandupCustomPrompt();
   elements.standupDaysField.hidden = !standupTwoDayRangeSupported();
-  elements.standupDays.disabled = state.standupGenerating || state.standupPromptSaving;
-  elements.standupSubtitle.textContent = `Select one or two days when tasks started to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
+  elements.standupDays.disabled = busy;
+  elements.standupSubtitle.textContent = `Select one or two days when work executed to generate a CHANGELOG-style standup from saved prompts and responses in ${projectName}.`;
   elements.standupScopeLabel.textContent = `${projectName} · ${standupScopeLabel()}`;
   elements.standupDateLabel.textContent = anchor ? standupDateLabel(anchor, dayCount) : 'Select a workday';
   elements.standupGeneratorProvider.textContent = state.standupProvider
@@ -5135,10 +5249,9 @@ function renderStandup() {
     ? `A fresh isolated ${activeGenerator} CLI process generated this result. No task terminal was used.${customPromptApplied ? ' The project prompt was applied.' : ''}`
     : `Generation uses a fresh isolated CLI process, with the other signed-in provider as fallback. It never uses a task terminal.${customPromptApplied ? ' The saved project prompt will be applied.' : ''}`;
   elements.standupSheet.setAttribute('aria-busy', String(state.standupGenerating));
-  elements.standupDate.disabled = state.standupGenerating || state.standupPromptSaving;
+  elements.standupDate.disabled = busy;
   elements.standupGenerate.disabled = (
-    state.standupGenerating
-    || state.standupPromptSaving
+    busy
     || !supported
     || !anchor
     || sourceTasks.length === 0
@@ -5147,6 +5260,7 @@ function renderStandup() {
   elements.standupResults.hidden = true;
   elements.standupLoadingList.hidden = true;
   elements.standupEmpty.hidden = true;
+  renderStandupFollowUp(anchor, dayCount, itemCount);
 
   if (!anchor) {
     elements.standupEmpty.hidden = false;
@@ -5161,7 +5275,7 @@ function renderStandup() {
 
   if (state.standupGenerating) {
     elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
-    elements.standupSourceNote.textContent = 'AI is categorizing confirmed changes from the saved conversation history';
+    elements.standupSourceNote.textContent = 'AI is categorizing confirmed changes from the dated execution history';
     elements.standupLoadingList.innerHTML = Array.from({ length: 3 }, () => `
       <li class="standup-loading-item" aria-hidden="true">
         <span class="standup-item-marker"></span>
@@ -5180,7 +5294,8 @@ function renderStandup() {
       : `${state.standupTaskCount} task${state.standupTaskCount === 1 ? '' : 's'}`;
     const categoryCount = STANDUP_CHANGELOG_SECTIONS.filter(({ key }) => state.standupChanges[key].length > 0).length;
     elements.standupCount.textContent = `${itemCount} change${itemCount === 1 ? '' : 's'} · ${categoryCount} categor${categoryCount === 1 ? 'y' : 'ies'}`;
-    elements.standupSourceNote.textContent = `Categorized result from saved prompts and responses across ${taskCoverage}`;
+    const executionCoverage = `${state.standupExecutionCount} execution${state.standupExecutionCount === 1 ? '' : 's'}`;
+    elements.standupSourceNote.textContent = `Categorized result from ${executionCoverage} in ${taskCoverage}, with dated prompts and responses`;
     elements.standupResults.innerHTML = standupResultsMarkup(state.standupChanges);
     elements.standupResults.hidden = false;
     elements.standupGenerate.textContent = 'Regenerate changelog';
@@ -5198,22 +5313,22 @@ function renderStandup() {
   } else if (sourceTasks.length === 0) {
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = dayCount === 2
-      ? 'No completed tasks started in this range'
-      : 'No completed tasks started on this date';
+      ? 'No completed task executions started in this range'
+      : 'No completed task executions started on this date';
     elements.standupEmptyMessage.textContent = dayCount === 2
-      ? 'Choose another start date or finish a task that began during these two days.'
-      : 'Choose another start date or finish a task that began on this date.';
+      ? 'Choose another start date or finish work that executed during these two days.'
+      : 'Choose another start date or finish work that executed on this date.';
     elements.standupCount.textContent = '0 source tasks';
     elements.standupSourceNote.textContent = dayCount === 2
-      ? 'Only completed tasks whose start falls in these two days are eligible'
-      : 'Only completed tasks whose start falls on this date are eligible';
+      ? 'Only completed execution attempts whose start falls in these two days are eligible'
+      : 'Only completed execution attempts whose start falls on this date are eligible';
     elements.standupGenerate.textContent = 'Generate changelog';
   } else {
     elements.standupEmpty.dataset.state = 'empty';
     elements.standupEmptyTitle.textContent = 'Ready to generate';
     elements.standupEmptyMessage.textContent = dayCount === 2
-      ? 'Generate concise Added, Changed, Fixed, and Security bullets for tasks started during these two days.'
-      : 'Generate concise Added, Changed, Fixed, and Security bullets for tasks started on this date.';
+      ? 'Generate concise Added, Changed, Fixed, and Security bullets for work executed during these two days.'
+      : 'Generate concise Added, Changed, Fixed, and Security bullets for work executed on this date.';
     elements.standupCount.textContent = `${sourceTasks.length} source task${sourceTasks.length === 1 ? '' : 's'}`;
     elements.standupSourceNote.textContent = 'The output uses the same categories and limits as deploy';
     elements.standupGenerate.textContent = 'Generate changelog';
@@ -5222,7 +5337,7 @@ function renderStandup() {
 
 function openStandup() {
   if (!state.activeProjectPath) return;
-  if (!state.standupGenerating) {
+  if (!standupBusy()) {
     state.standupDate = '';
     resetStandupOutput();
   }
@@ -5244,7 +5359,7 @@ function closeStandup() {
 }
 
 async function generateStandup() {
-  if (state.standupGenerating || state.standupPromptSaving) return;
+  if (standupBusy()) return;
   const anchor = dateFromLocalInput(elements.standupDate.value);
   const dayCount = selectedStandupDays();
   state.standupDate = elements.standupDate.value;
@@ -5307,6 +5422,7 @@ async function generateStandup() {
     });
     state.standupChanges = sections;
     state.standupTaskCount = Number(body.taskCount || sourceTasks.length);
+    state.standupExecutionCount = Number(body.executionCount || state.standupTaskCount);
     state.standupIncludedTaskCount = Number(body.includedTaskCount || state.standupTaskCount);
     state.standupProvider = body.provider || null;
     state.standupCustomPromptApplied = body.customPromptApplied === true;
@@ -5323,6 +5439,90 @@ async function generateStandup() {
     if (sequence === state.standupRequestSequence) {
       state.standupGenerating = false;
       renderStandup();
+    }
+  }
+}
+
+function standupFollowUpConversation() {
+  return [
+    { role: 'assistant', text: state.standupClipboardText.slice(0, 8_000) },
+    ...state.standupFollowUps.flatMap((turn) => [
+      { role: 'user', text: turn.question },
+      { role: 'assistant', text: turn.answer },
+    ]),
+  ].filter((message) => message.text).slice(-8);
+}
+
+async function askStandupFollowUp(suggestedQuestion = '') {
+  if (standupBusy() || !standupFollowUpSupported() || !state.standupClipboardText) return;
+  const question = String(suggestedQuestion || elements.standupFollowUpInput.value).trim();
+  if (!question) {
+    state.standupFollowUpError = 'Write a question about this Standup.';
+    renderStandup();
+    elements.standupFollowUpInput.focus();
+    return;
+  }
+  if (question.length > MAX_STANDUP_FOLLOW_UP_LENGTH) {
+    state.standupFollowUpError = `Keep the Standup question under ${MAX_STANDUP_FOLLOW_UP_LENGTH.toLocaleString()} characters.`;
+    renderStandup();
+    return;
+  }
+  const anchor = dateFromLocalInput(elements.standupDate.value);
+  const dayCount = selectedStandupDays();
+  if (!anchor) return;
+  const { start, end } = standupDateRange(anchor, dayCount);
+  const finalDay = new Date(end);
+  finalDay.setDate(finalDay.getDate() - 1);
+  const requestContext = {
+    projectPath: state.activeProjectPath,
+    date: state.standupDate,
+    dateEnd: localDateInputValue(finalDay),
+    dayCount,
+  };
+  const sequence = ++state.standupFollowUpRequestSequence;
+  state.standupFollowUpPending = true;
+  state.standupFollowUpError = '';
+  if (suggestedQuestion) elements.standupFollowUpInput.value = question;
+  renderStandup();
+  try {
+    const body = await api('/api/standup/follow-up', {
+      method: 'POST',
+      body: JSON.stringify({
+        projectPath: requestContext.projectPath,
+        threadId: null,
+        provider: state.standupProvider || state.selectedProvider,
+        date: requestContext.date,
+        dateEnd: requestContext.dateEnd,
+        start: start.toISOString(),
+        end: end.toISOString(),
+        question,
+        conversation: standupFollowUpConversation(),
+      }),
+      timeoutMs: 150_000,
+      timeoutMessage: (seconds) => `The Standup follow-up did not answer within ${seconds} seconds. You can retry safely.`,
+    });
+    if (
+      sequence !== state.standupFollowUpRequestSequence
+      || requestContext.projectPath !== state.activeProjectPath
+      || requestContext.date !== state.standupDate
+      || requestContext.dayCount !== state.standupDays
+    ) return;
+    const answer = typeof body.answer === 'string' ? body.answer.trim() : '';
+    if (!answer) throw new Error('The Standup follow-up returned no usable answer.');
+    state.standupFollowUps.push({
+      question,
+      answer,
+      provider: body.provider || state.standupProvider || state.selectedProvider,
+    });
+    elements.standupFollowUpInput.value = '';
+  } catch (error) {
+    if (sequence !== state.standupFollowUpRequestSequence) return;
+    state.standupFollowUpError = error.message;
+  } finally {
+    if (sequence === state.standupFollowUpRequestSequence) {
+      state.standupFollowUpPending = false;
+      renderStandup();
+      elements.standupFollowUpInput.focus();
     }
   }
 }
@@ -5470,6 +5670,7 @@ function renderExecutionControls() {
   }
   renderEffortSelection(efforts, settings.effort);
   elements.executionControls.hidden = state.taskMode !== 'execute' || isExecuteCouncilEnabled();
+  renderQuickSkills();
 }
 
 function isClaudePlanReady() {
@@ -5977,14 +6178,14 @@ function renderTurboControls({ force = false } = {}) {
   state.turboControlsSignature = turboControlsSignature(turboControlsSignatureInputs());
 }
 
-function attachmentLimitIssue() {
-  if (state.attachments.length > MAX_IMAGE_ATTACHMENTS) {
+function attachmentLimitIssue(attachments = state.attachments) {
+  if (attachments.length > MAX_IMAGE_ATTACHMENTS) {
     return `Attach at most ${MAX_IMAGE_ATTACHMENTS} images.`;
   }
-  if (state.attachments.some((attachment) => attachment.size > MAX_IMAGE_BYTES)) {
+  if (attachments.some((attachment) => attachment.size > MAX_IMAGE_BYTES)) {
     return 'Each image must be smaller than 5 MB.';
   }
-  const totalBytes = state.attachments.reduce((total, attachment) => total + attachment.size, 0);
+  const totalBytes = attachments.reduce((total, attachment) => total + attachment.size, 0);
   return totalBytes > MAX_TOTAL_IMAGE_BYTES ? 'Images may total at most 20 MB.' : '';
 }
 
@@ -6013,11 +6214,16 @@ function providerInstallationIssue() {
  * "Choose a connected terminal" for a session that was in fact connected. Those
  * conditions are validated at submit time instead, where the message can be exact.
  */
-function composerValidationIssue() {
-  if (!elements.prompt.value.trim()) return 'Write a prompt before adding the task.';
-  const taskReferenceIssue = taskReferencePromptIssue(elements.prompt.value, state.taskReferences);
+function composerValidationIssue({
+  prompt = elements.prompt.value,
+  taskName = elements.taskName.value,
+  attachments = state.attachments,
+  taskReferences = state.taskReferences,
+} = {}) {
+  if (!prompt.trim()) return 'Write a prompt before adding the task.';
+  const taskReferenceIssue = taskReferencePromptIssue(prompt, taskReferences);
   if (taskReferenceIssue) return taskReferenceIssue;
-  if (elements.taskName.value.trim() && state.status && !taskNamingSupported()) {
+  if (taskName.trim() && state.status && !taskNamingSupported()) {
     return 'Restart CC Relay before naming a task.';
   }
   if (usesDisposableTerminalPools()) {
@@ -6025,7 +6231,20 @@ function composerValidationIssue() {
   } else if (!state.selectedThreadId) {
     return 'Choose a connected CC Relay before adding the task.';
   }
-  return providerInstallationIssue() || attachmentLimitIssue();
+  return providerInstallationIssue() || attachmentLimitIssue(attachments);
+}
+
+function quickSkillValidationIssue(skill) {
+  if (!skill) return 'This saved skill is unavailable.';
+  if (state.taskMode !== 'execute' || isExecuteCouncilEnabled()) {
+    return 'Saved skills run as direct Execute tasks. Choose Execute without Plan council.';
+  }
+  return composerValidationIssue({
+    prompt: skill.prompt,
+    taskName: taskNamingSupported() ? skill.label : '',
+    attachments: [],
+    taskReferences: [],
+  });
 }
 
 function updateSubmitState() {
@@ -6046,6 +6265,7 @@ function updateSubmitState() {
     : isExecuteCouncilEnabled()
       ? 'Build reviewed plan'
       : state.taskMode === 'turbo' ? 'Plan and execute' : openingSession ? 'Open session' : 'Add to queue';
+  renderQuickSkills();
 }
 
 /*
@@ -6057,6 +6277,31 @@ function setComposerAlert(message, kind = 'failure') {
   elements.composerAlert.textContent = message || '';
   elements.composerAlert.hidden = !message;
   elements.composerAlert.dataset.kind = message ? kind : '';
+}
+
+function renderQuickSkills() {
+  const execution = selectedExecution();
+  const effort = execution.effort || 'default';
+  const selectedThread = state.threads.find((thread) => thread.id === state.selectedThreadId);
+  const target = usesDisposableTerminalPools()
+    ? providerLabel(state.selectedProvider)
+    : selectedThread ? threadDisplayName(selectedThread) : providerLabel(state.selectedProvider);
+  for (const button of elements.quickSkillButtons) {
+    const skill = quickSkillById(button.dataset.quickSkill);
+    const issue = quickSkillValidationIssue(skill);
+    const context = button.querySelector('[data-quick-skill-context]');
+    button.disabled = state.submitting || Boolean(issue);
+    if (context) {
+      context.textContent = state.taskMode === 'execute' && !isExecuteCouncilEnabled()
+        ? `Run now / ${target} / ${effort}`
+        : 'Direct Execute only';
+    }
+    const label = issue
+      ? `${skill?.label || 'Saved skill'}. ${issue}`
+      : `Run ${skill.label} now with ${target} at ${effort} effort.`;
+    button.setAttribute('aria-label', label);
+    button.title = label;
+  }
 }
 
 function setComposerPending(pending) {
@@ -6596,7 +6841,7 @@ function taskCardAttachmentPreviewsMarkup(task) {
             rel="noreferrer"
             aria-label="Open image ${index + 1} of ${attachments.length}: ${escapeHtml(name)}"
             title="Open ${escapeHtml(name)}"
-          ><img src="${source}" alt="" loading="lazy" draggable="false"></a>
+          ><img data-preview-source="${source}" alt="" loading="lazy" decoding="async" draggable="false"></a>
         `;
       }).join('')}
       ${remaining > 0 ? `
@@ -6607,6 +6852,33 @@ function taskCardAttachmentPreviewsMarkup(task) {
       ` : ''}
     </div>
   `;
+}
+
+function taskListRenderSignature(visibleTasks, searching) {
+  return JSON.stringify({
+    tasks: visibleTasks,
+    selectedTaskId: state.selectedTaskId,
+    activeProjectPath: state.activeProjectPath,
+    taskView: state.taskView,
+    historyPeriod: state.historyPeriod,
+    historyAnchor: state.historyAnchor,
+    searching,
+    taskSearchPending: state.taskSearchPending,
+    taskSearchError: state.taskSearchError,
+    taskSearchResults: state.taskSearchResults,
+    taskSearchTotal: state.taskSearchTotal,
+    unreadTaskIds: visibleTasks
+      .filter((task) => state.projectCompletionNotifications.includes(task.repo_path, task.id))
+      .map((task) => task.id),
+    assigningTaskId: state.assigningTaskId,
+    taskTitleRename: state.taskTitleRename,
+    taskStarSavingIds: [...state.taskStarSavingIds],
+    parallelTaskIds: [...state.parallelTaskIds],
+    threads: state.threads,
+    projects: state.projects,
+    capabilities: state.status?.capabilities,
+    planningTaskIds: state.status?.planningTaskIds,
+  }, (key, value) => key === 'latest_event_id' ? undefined : value);
 }
 
 function renderTasks() {
@@ -6657,6 +6929,8 @@ function renderTasks() {
     state.taskTitleRename = null;
   }
   renderHistoryLedger(scopedTasks, visibleTasks);
+  const listSignature = taskListRenderSignature(visibleTasks, searching);
+  if (renderedTaskListSignature === listSignature) return;
   if (visibleTasks.length === 0) {
     state.parallelTaskIds.clear();
     renderParallelBatchBar();
@@ -6674,6 +6948,7 @@ function renderTasks() {
         : state.activeProjectPath
           ? `No tasks in ${escapeHtml(workspaceName(state.activeProjectPath))} yet.`
           : 'Choose a terminal and add the first prompt.';
+    releaseTaskAttachmentPreviews();
     elements.taskList.innerHTML = `
       <div class="queue-empty">
         <span aria-hidden="true">00</span>
@@ -6681,6 +6956,7 @@ function renderTasks() {
         <p>${emptyMessage}</p>
       </div>
     `;
+    renderedTaskListSignature = listSignature;
     return;
   }
 
@@ -6706,6 +6982,7 @@ function renderTasks() {
   let previousHistoryDate = '';
   let previousQueueSection = '';
   let searchStarredHeadingShown = false;
+  releaseTaskAttachmentPreviews();
   elements.taskList.innerHTML = visibleTasks.map((task) => {
     const unread = state.projectCompletionNotifications.includes(task.repo_path, task.id);
     const starred = task.starred === true;
@@ -6888,6 +7165,8 @@ function renderTasks() {
       </article>
     `;
   }).join('');
+  renderedTaskListSignature = listSignature;
+  observeTaskAttachmentPreviews();
 
   for (const card of elements.taskList.querySelectorAll('.task-card')) {
     const select = () => {
@@ -7384,7 +7663,7 @@ function closeTaskDetailModal() {
  *
  * The dialog owns one interval, created when it opens and cleared on its own close
  * event, on a task switch and the moment the task stops being live. It never reuses the
- * two-second detail poll, because that poll runs whether or not this dialog is open.
+ * periodic detail poll, because that poll runs whether or not this dialog is open.
  * ------------------------------------------------------------------ */
 
 const TASK_DIFF_POLL_MS = 3_000;
@@ -8044,7 +8323,7 @@ function renderSessionStrip(task, active) {
               : 'The task is still open. Complete the session now or send a message to relaunch its saved conversation.'
           : 'The terminal workspace will stay open after its first turn.'
     : closeReason;
-  // A close outcome has to outlive the two-second refresh. Without this the success or
+  // A close outcome has to outlive the periodic refresh. Without this the success or
   // failure text would be replaced by the generic hint before it could be read. The
   // equality check matters just as much: this is a live region, and rewriting the same
   // sentence every two seconds would have a screen reader read it every two seconds.
@@ -8292,11 +8571,16 @@ function renderSessionHistory(task, turns, active) {
   restoreSessionDisclosures(task.id);
 }
 
+function taskDetailSnapshotSignature(task) {
+  if (!task) return '';
+  return JSON.stringify(task, (key, value) => key === 'latest_event_id' ? undefined : value);
+}
+
 async function selectTask(taskId) {
   const requestSequence = ++state.taskLoadSequence;
   const eventTaskChanged = state.eventTaskId !== taskId;
   state.selectedTaskId = taskId;
-  // Polling refreshes the selected task every two seconds. Clearing clipboard state on
+  // Polling refreshes the selected task periodically. Clearing clipboard state on
   // every pass made the buttons visibly blink and briefly impossible to click. Only a
   // real task change may invalidate the previous task's payload and feedback.
   if (eventTaskChanged) setDetailCopyContent({}, { resetFeedback: true });
@@ -8312,6 +8596,7 @@ async function selectTask(taskId) {
     // An older backend answers without responses at all. buildSessionTurns falls back to
     // the task row rather than showing a conversation with no answers in it.
     responses,
+    eventRevision,
     plan = null,
     turboPlan = null,
   } = await api(`/api/tasks/${taskId}`);
@@ -8559,6 +8844,13 @@ async function selectTask(taskId) {
   refreshPlanTaskActions(task);
 
   state.eventTaskId = taskId;
+  const resolvedEventRevision = Number(eventRevision ?? events.at(-1)?.id ?? 0);
+  state.selectedTaskEventRevision = Number.isFinite(resolvedEventRevision)
+    ? resolvedEventRevision
+    : 0;
+  state.selectedTaskSnapshotSignature = taskDetailSnapshotSignature(
+    state.tasks.find((item) => item.id === taskId) || task,
+  );
   renderTaskContinuation(task, { taskChanged: eventTaskChanged });
   renderEventStream(events, task, {
     forceBottom: eventTaskChanged,
@@ -8643,7 +8935,15 @@ async function loadSnapshot() {
   renderTaskReferences();
   updateSubmitState();
   if (state.selectedTaskId) {
-    await selectTask(state.selectedTaskId);
+    const selectedSummary = state.tasks.find((task) => task.id === state.selectedTaskId) || null;
+    const supportsEventRevision = Object.hasOwn(selectedSummary || {}, 'latest_event_id');
+    const summaryRevision = Number(selectedSummary?.latest_event_id || 0);
+    const summarySignature = taskDetailSnapshotSignature(selectedSummary);
+    const detailIsCurrent = supportsEventRevision
+      && state.eventTaskId === state.selectedTaskId
+      && Number(state.selectedTaskEventRevision || 0) >= summaryRevision
+      && state.selectedTaskSnapshotSignature === summarySignature;
+    if (!detailIsCurrent) await selectTask(state.selectedTaskId);
   }
 }
 
@@ -11091,7 +11391,11 @@ elements.plannerDetail.addEventListener('change', (event) => {
 });
 
 elements.form.addEventListener('submit', async (event) => {
-  event.preventDefault();
+  await submitComposerTask(event);
+});
+
+async function submitComposerTask(event, { quickSkill = null } = {}) {
+  event?.preventDefault();
   /*
    * A submission already in flight owns the composer. A repeated Enter is a deliberate
    * quiet no-op: turning it into a second POST or an error message reintroduces the false
@@ -11103,7 +11407,9 @@ elements.form.addEventListener('submit', async (event) => {
   setComposerAlert('');
   elements.formMessage.textContent = '';
 
-  const validationIssue = composerValidationIssue();
+  const validationIssue = quickSkill
+    ? quickSkillValidationIssue(quickSkill)
+    : composerValidationIssue();
   if (validationIssue) {
     setComposerAlert(validationIssue, 'validation');
     return;
@@ -11178,7 +11484,14 @@ elements.form.addEventListener('submit', async (event) => {
     }
   }
   const formData = new FormData(elements.form);
-  const submittedPrompt = taskReferencePrompt(formData.get('prompt'), state.taskReferences);
+  const submissionTaskReferences = quickSkill ? [] : state.taskReferences;
+  const submittedPrompt = taskReferencePrompt(
+    quickSkill?.prompt || formData.get('prompt'),
+    submissionTaskReferences,
+  );
+  const submittedTitle = quickSkill
+    ? taskNamingSupported() ? quickSkill.label : ''
+    : formData.get('title');
   const execution = {
     model: elements.modelSelect.value,
     effort: JSON.parse(elements.effortSelect.dataset.values || '[]')[Number(elements.effortSelect.value)] || '',
@@ -11186,7 +11499,7 @@ elements.form.addEventListener('submit', async (event) => {
   if (submissionMode === 'execute' && !councilRequested) {
     updateSelectedExecution(execution);
   }
-  const runNow = state.prioritySubmit;
+  const runNow = quickSkill ? true : state.prioritySubmit;
   state.prioritySubmit = false;
   /*
    * Idle routing has two implementations. The backend resolves a free CC Relay at dispatch
@@ -11202,7 +11515,8 @@ elements.form.addEventListener('submit', async (event) => {
     && state.keepTerminalOpen;
   const dispatchIdleRouting = state.status?.capabilities?.dispatchIdleRouting === true
     && !automaticTerminals;
-  const attachments = state.attachments.map((attachment) => ({
+  const submissionAttachments = quickSkill ? [] : state.attachments;
+  const attachments = submissionAttachments.map((attachment) => ({
     name: attachment.name,
     mimeType: attachment.mimeType,
     data: attachment.data,
@@ -11220,13 +11534,13 @@ elements.form.addEventListener('submit', async (event) => {
     threadId: automaticTerminals
       ? `automatic:${state.activeProjectPath || ''}`
       : state.selectedThreadId,
-    title: formData.get('title'),
+    title: submittedTitle,
     prompt: submittedPrompt,
     execution,
     planSettings: state.planSettings,
     turboSettings: state.turboSettings,
     keepTerminalOpen: retainTerminals,
-    attachments: state.attachments,
+    attachments: submissionAttachments,
   });
   const submissionId = resolveSubmissionId(
     state.pendingSubmission,
@@ -11343,8 +11657,11 @@ elements.form.addEventListener('submit', async (event) => {
         // Sent only when the backend advertises the capability, so an older backend never
         // receives a field it does not know about. The server decides whether to honour it.
         ...(dispatchIdleRouting ? { preferIdleTerminal: state.preferIdleTerminal } : {}),
-      };
-    if (taskNamingSupported()) requestBody.title = formData.get('title');
+    };
+    if (taskNamingSupported()) {
+      if (quickSkill) requestBody.title = submittedTitle;
+      else requestBody.title = formData.get('title');
+    }
     requestBody.submissionId = submissionId;
     const body = await api('/api/tasks', {
       method: 'POST',
@@ -11387,7 +11704,9 @@ elements.form.addEventListener('submit', async (event) => {
     state.selectedTaskId = createdTask.id;
     localStorage.setItem('relay.taskView', state.taskView);
     setComposerAlert(
-      `This exact prompt was already accepted as task ${createdTask.id}, which has finished. Press Enter again to run it as a new task.`,
+      quickSkill
+        ? `This saved skill was already accepted as task ${createdTask.id}, which has finished. Click ${quickSkill.label} again to run it as a new task.`
+        : `This exact prompt was already accepted as task ${createdTask.id}, which has finished. Press Enter again to run it as a new task.`,
       'notice',
     );
     try {
@@ -11418,23 +11737,30 @@ elements.form.addEventListener('submit', async (event) => {
   state.pendingSubmission = null;
   state.parallelTaskIds.clear();
   localStorage.setItem('relay.taskView', state.taskView);
-  elements.taskName.value = '';
-  elements.prompt.value = '';
-  state.taskReferences = [];
+  if (!quickSkill) {
+    elements.taskName.value = '';
+    elements.prompt.value = '';
+    state.taskReferences = [];
+    state.attachments = [];
+    renderAttachmentComposer();
+    renderTaskReferences();
+  }
   if (councilRequested) {
     state.planSettings.enabled = false;
     renderPlanControls();
     renderExecutionControls();
     renderPromptCopy();
   }
-  state.attachments = [];
-  renderAttachmentComposer();
-  renderTaskReferences();
   updateSubmitState();
   if (duplicateSubmission) {
     // Still waiting or running, so this is the same live task the user already asked for.
-    // Selecting it and clearing the composer is right; say which one it resolved to.
-    setComposerAlert(`This prompt was already queued as task ${createdTask.id}. Showing that task instead of adding a second one.`, 'notice');
+    // Ordinary submits clear the accepted draft. Saved skills keep the unrelated draft.
+    setComposerAlert(
+      quickSkill
+        ? `This saved skill was already queued as task ${createdTask.id}. Showing that task instead of adding a second one.`
+        : `This prompt was already queued as task ${createdTask.id}. Showing that task instead of adding a second one.`,
+      'notice',
+    );
   }
   try {
     // fresh: true so this cannot join a snapshot requested before the task existed.
@@ -11442,7 +11768,7 @@ elements.form.addEventListener('submit', async (event) => {
   } catch (error) {
     elements.queueSummary.textContent = error.message;
   }
-});
+}
 
 elements.standupButton.addEventListener('click', openStandup);
 elements.clearTaskNotificationsButton.addEventListener('click', async () => {
@@ -11508,6 +11834,24 @@ elements.standupGenerate.addEventListener('click', () => {
   void generateStandup();
 });
 elements.standupCopy.addEventListener('click', copyStandup);
+elements.standupFollowUpForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  void askStandupFollowUp();
+});
+elements.standupFollowUpInput.addEventListener('input', () => {
+  state.standupFollowUpError = '';
+  renderStandup();
+});
+elements.standupFollowUpInput.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  event.preventDefault();
+  void askStandupFollowUp();
+});
+for (const suggestion of elements.standupFollowUpSuggestions.querySelectorAll('[data-standup-question]')) {
+  suggestion.addEventListener('click', () => {
+    void askStandupFollowUp(suggestion.dataset.standupQuestion);
+  });
+}
 elements.standupCustomPrompt.addEventListener('input', () => {
   state.standupPromptEdited = (
     standupCustomPromptDraft() !== projectStandupCustomPrompt()
@@ -12015,6 +12359,7 @@ elements.effortSelect.addEventListener('input', () => {
   const effort = values[Number(elements.effortSelect.value)] || '';
   updateSelectedExecution({ effort });
   renderEffortSelection(selectedModel()?.supportedReasoningEfforts || [], effort);
+  renderQuickSkills();
 });
 elements.attachmentInput.addEventListener('change', async () => {
   await addImageFiles(elements.attachmentInput.files || []);
@@ -12196,6 +12541,18 @@ elements.prompt.addEventListener('keydown', (event) => {
   state.prioritySubmit = event.ctrlKey;
   elements.form.requestSubmit();
 });
+for (const button of elements.quickSkillButtons) {
+  button.addEventListener('click', () => {
+    if (state.submitting) return;
+    const skill = quickSkillById(button.dataset.quickSkill);
+    const issue = quickSkillValidationIssue(skill);
+    if (issue) {
+      setComposerAlert(issue, 'validation');
+      return;
+    }
+    void submitComposerTask(null, { quickSkill: skill });
+  });
+}
 elements.taskReferenceMenu.addEventListener('click', (event) => {
   const button = event.target.closest('[data-task-reference-scope]');
   if (!button || state.taskReferenceMenuTaskId === null) return;
@@ -12831,6 +13188,6 @@ setInterval(() => {
   if (document.visibilityState === 'visible') {
     load().catch(console.error);
   }
-}, 2_000);
+}, SNAPSHOT_FALLBACK_POLL_MS);
 
 setInterval(refreshTaskDurations, 1_000);

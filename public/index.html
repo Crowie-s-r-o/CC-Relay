@@ -607,13 +607,24 @@
               </small>
             </span>
             <textarea id="task-prompt" name="prompt" required rows="8" aria-describedby="prompt-shortcut voice-input-composer-status" placeholder="Describe the outcome, constraints, and how the agent should verify the work."></textarea>
-            <div id="voice-input-composer" class="voice-input-composer" data-state="idle" hidden>
-              <button id="voice-input-hold" class="voice-input-hold" type="button" aria-describedby="voice-input-composer-status">
-                <span class="voice-input-glyph" aria-hidden="true"><i></i><b></b></span>
-                <span id="voice-input-hold-label">Hold Ctrl+Shift+Space to talk</span>
-                <span class="voice-input-meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-              </button>
-              <span id="voice-input-composer-status" class="voice-input-composer-status" role="status" aria-live="polite">Voice input is off.</span>
+            <div id="composer-quick-actions" class="composer-quick-actions" data-voice-available="false">
+              <div id="voice-input-composer" class="voice-input-composer" data-state="idle" hidden>
+                <button id="voice-input-hold" class="voice-input-hold" type="button" aria-describedby="voice-input-composer-status">
+                  <span class="voice-input-glyph" aria-hidden="true"><i></i><b></b></span>
+                  <span id="voice-input-hold-label">Hold Ctrl+Shift+Space to talk</span>
+                  <span class="voice-input-meter" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                </button>
+                <span id="voice-input-composer-status" class="voice-input-composer-status" role="status" aria-live="polite">Voice input is off.</span>
+              </div>
+              <div id="quick-skill-list" class="quick-skill-list" aria-label="Saved skills">
+                <button class="quick-skill-button" type="button" data-quick-skill="deploy-check">
+                  <span class="quick-skill-glyph" aria-hidden="true">&gt;_</span>
+                  <span class="quick-skill-copy">
+                    <strong>Deploy check</strong>
+                    <small data-quick-skill-context>Run now with selected settings</small>
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1022,6 +1033,26 @@
               <strong id="standup-empty-title">Select a workday</strong>
               <p id="standup-empty-message">Generation starts only after you choose a date.</p>
             </div>
+          </section>
+          <section id="standup-follow-up" class="standup-follow-up" aria-labelledby="standup-follow-up-title" hidden>
+            <div class="standup-follow-up-heading">
+              <span>
+                <small>Dated Q&amp;A</small>
+                <strong id="standup-follow-up-title">Ask about what ran</strong>
+              </span>
+              <small id="standup-follow-up-range">Answers stay grounded in this workday</small>
+            </div>
+            <div id="standup-follow-up-suggestions" class="standup-follow-up-suggestions" aria-label="Suggested Standup questions">
+              <button type="button" data-standup-question="What ran on each selected day?">What ran each day?</button>
+              <button type="button" data-standup-question="Which work came from follow-up executions?">Which were follow-ups?</button>
+              <button type="button" data-standup-question="When did each change start and complete?">When did it run?</button>
+            </div>
+            <div id="standup-follow-up-ledger" class="standup-follow-up-ledger" role="log" aria-live="polite" aria-relevant="additions" hidden></div>
+            <form id="standup-follow-up-form" class="standup-follow-up-form">
+              <textarea id="standup-follow-up-input" rows="1" maxlength="4000" placeholder="Ask what ran on a day, when it completed, or which change came from a follow-up..." aria-label="Ask a question about this Standup"></textarea>
+              <button id="standup-follow-up-send" class="button compact" type="submit">Ask</button>
+            </form>
+            <p id="standup-follow-up-status" class="standup-follow-up-status" role="status"></p>
           </section>
           <p id="standup-copy-status" class="standup-copy-status" role="status" aria-live="polite"></p>
         </div>

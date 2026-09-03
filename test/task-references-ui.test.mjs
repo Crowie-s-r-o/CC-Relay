@@ -43,13 +43,18 @@ test('attaching reads canonical task history and keeps references inside the act
 });
 
 test('submission includes frozen task context in every workflow and clears it only after acceptance', () => {
-  assert.match(app, /const submittedPrompt = taskReferencePrompt\(formData\.get\('prompt'\), state\.taskReferences\)/);
+  assert.match(app, /const submissionTaskReferences = quickSkill \? \[\] : state\.taskReferences/);
+  assert.match(
+    app,
+    /const submittedPrompt = taskReferencePrompt\([\s\S]{0,120}quickSkill\?\.prompt \|\| formData\.get\('prompt'\),[\s\S]{0,80}submissionTaskReferences/,
+  );
   assert.equal((app.match(/prompt: submittedPrompt/g) || []).length, 4);
   const accepted = app.indexOf("if (!createdTask) {");
   const cleared = app.indexOf('state.taskReferences = [];', accepted);
   assert.ok(accepted >= 0 && cleared > accepted);
   assert.match(app.slice(cleared, cleared + 420), /renderTaskReferences\(\)/);
-  assert.match(app, /taskReferencePromptIssue\(elements\.prompt\.value, state\.taskReferences\)/);
+  assert.match(app, /taskReferences = state\.taskReferences/);
+  assert.match(app, /taskReferencePromptIssue\(prompt, taskReferences\)/);
 });
 
 test('task reference tickets and context menu support compact and dark layouts', () => {

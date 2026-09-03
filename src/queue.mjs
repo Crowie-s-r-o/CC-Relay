@@ -1671,6 +1671,7 @@ export class TaskQueue extends EventEmitter {
       const completedTask = this.database.completeTaskAttempt(task.id, {
         attemptStartedAt,
         attemptFinishedAt,
+        outcome: 'complete',
         changes: {
           status: manualSession ? 'open' : 'complete',
           finished_at: manualSession ? null : attemptFinishedAt,
@@ -1717,6 +1718,7 @@ export class TaskQueue extends EventEmitter {
       this.database.completeTaskAttempt(task.id, {
         attemptStartedAt,
         attemptFinishedAt,
+        outcome: outcomeStatus,
         changes: {
           status,
           finished_at: manualSession ? null : attemptFinishedAt,

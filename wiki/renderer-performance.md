@@ -8,9 +8,9 @@ type: diagnostics
 
 ## July 21, 2026 freeze diagnosis
 
-CC Relay currently performs unbounded full-view refreshes on the browser main thread. The visible freeze is not a single slow text assignment at the DevTools source location. A click into a task calls `selectTask()`, which synchronously calls `renderTasks()` before its first network await. `renderTasks()` replaces the complete task-card subtree and attaches listeners to every new card. The selected CC Relay workspace had 157 visible queue cards during diagnosis.
+CC Relay performed unbounded full-view refreshes on the browser main thread during this diagnosis. The visible freeze was not a single slow text assignment at the DevTools source location. A click into a task called `selectTask()`, which synchronously called `renderTasks()` before its first network await. `renderTasks()` replaced the complete task-card subtree and attached listeners to every new card. The selected CC Relay workspace had 157 visible queue cards during diagnosis.
 
-Every `loadSnapshot()` also calls `renderTasks()` and then calls `selectTask()` for the selected task, causing the full task list to be rebuilt a second time. The selected task detail then replaces the complete event stream. Before and after that replacement, CC Relay walks nested output nodes and reads or writes `scrollHeight`, `clientHeight`, `scrollTop`, and disclosure state. These layout reads around large DOM writes are consistent with the forced-reflow warning in Chrome.
+Every `loadSnapshot()` also called `renderTasks()` and then called `selectTask()` for the selected task, causing the full task list to be rebuilt a second time. The selected task detail then replaced the complete event stream. Before and after that replacement, CC Relay walked nested output nodes and read or wrote `scrollHeight`, `clientHeight`, `scrollTop`, and disclosure state. These layout reads around large DOM writes were consistent with the forced-reflow warning in Chrome.
 
 The refresh rate amplifies the cost:
 
@@ -24,6 +24,13 @@ The payloads were already large during the diagnosis: `/api/tasks` returned abou
 > [!important]
 > The `content.js:18` long-task warnings in the captured Chrome console came from the injected `@eyeo/webext-ad-filtering-solution` extension, not CC Relay source. Its mutation handling can add work when CC Relay replaces large DOM subtrees. Disable the ad-filtering extension for `127.0.0.1` as an isolation test, but do not treat that as the root fix: CC Relay's own click handler also produced 1.2 to 1.4 second long tasks.
 
+## September 3, 2026 memory repair
+
+> [!done]
+> The normal list endpoint now returns compact task summaries, selected detail is revision-gated, unchanged card inputs preserve the existing DOM, and the two-second snapshot interval is replaced by a 15-second safety poll behind SSE. Conversation history and search filter canonical messages inside SQLite before JavaScript receives payloads. Task-card images load only near the viewport, and new activity rows keep bounded display output while exact raw provider events remain in task artifacts. See [[memory-efficiency]].
+
+The renderer still rebuilds a changed list as one subtree and rebuilds a changed selected event window. Those operations are now bounded by compact inputs, unchanged-state gates, the existing 500-event detail window, and viewport image loading. A future keyed patcher may reduce changed-state work further, but it is no longer required to stop idle refreshes from repeatedly reconstructing the same DOM.
+
 ## Secondary backend pause
 
 `GET /api/status` calls `ClaudeRuntimeStatus.current()`. On each five-second cache expiry, `readClaudeRuntimeStatus()` uses `execFileSync` for `claude --version` and `claude auth status --json`. A measured cache-expiry request took about 448 ms while normal status requests took about 5 to 11 ms. This blocks the CC Relay Node event loop and delays requests and SSE delivery, but it does not directly cause Chrome's main-thread click violation.
@@ -31,12 +38,12 @@ The payloads were already large during the diagnosis: `/api/tasks` returned abou
 > [!done]
 > **Fixed.** `ClaudeRuntimeStatus.current()` is now a pure cache read that never spawns a process, refreshed by a background interval using bounded asynchronous probes. The probes previously had no timeout at all, so a stalled `claude auth status --json` could hang the server rather than merely slow it. The Codex probe received the same treatment and is no longer captured once at module load. No request handler spawns a provider CLI any more, which also removes this delay from `POST /api/tasks`. See [[task-add-reliability]].
 
-## Required repair order
+## Repair status
 
-1. Make the task-list API lightweight and paginate or window terminal task history. Do not return full results and other detail-only data for every card.
-2. Eliminate the double `renderTasks()` path in `loadSnapshot()` plus `selectTask()`.
-3. Patch only changed task cards and append or patch new task events. Do not replace the full event stream when its revision has not changed.
-4. Coalesce SSE updates by revision and use a slow safety poll instead of running the same full refresh from both SSE and a two-second interval.
+1. **Done.** The task-list API uses compact summaries, and selected task activity remains windowed.
+2. **Done.** A stable card signature makes the second `renderTasks()` call a no-op when selection and visible data match.
+3. **Bounded.** Unchanged card and detail DOM is preserved. Changed views still replace their bounded subtree.
+4. **Done.** Event revisions gate selected detail, SSE is primary, and the safety poll runs every 15 seconds.
 5. Preserve disclosure and nested scroll state without walking and measuring the complete event DOM on every update.
 6. ~~Refresh Claude runtime status asynchronously so CLI checks never block the server request loop.~~ **Done.** Both provider probes are asynchronous, bounded, and background-refreshed; request handlers only read cached values. See [[task-add-reliability]].
 
@@ -48,7 +55,7 @@ The payloads were already large during the diagnosis: `/api/tasks` returned abou
 - `public/app.js`: `renderEventStream()`, `renderTasks()`, `selectTask()`, `loadSnapshot()`, SSE handling, and polling intervals
 - `src/queue.mjs`: per-event task change notifications
 - `src/server.mjs`: SSE broadcast and `/api/status`
-- `src/claude-runtime-status.mjs`: synchronous CLI status checks
+- `src/claude-runtime-status.mjs`: bounded background CLI status checks
 
 See [[diagnostics]], [[interface-layout]], and [[task-history]].
 

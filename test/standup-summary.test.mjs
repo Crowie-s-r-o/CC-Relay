@@ -101,6 +101,35 @@ test('standup source selection can span two consecutive local calendar days', ()
   assert.deepEqual(tasksForStandupDays(tasks, selectedDay, 2).map((task) => task.id), [2, 3]);
 });
 
+test('standup source selection includes earlier completed execution dates from reused tasks', () => {
+  const selectedDay = new Date(2026, 8, 1, 12);
+  const tasks = [
+    {
+      id: 1,
+      status: 'complete',
+      started_at: new Date(2026, 8, 2, 11).toISOString(),
+      execution_starts: [
+        new Date(2026, 8, 1, 9).toISOString(),
+        new Date(2026, 8, 2, 11).toISOString(),
+      ],
+    },
+    {
+      id: 2,
+      status: 'complete',
+      started_at: new Date(2026, 8, 2, 10).toISOString(),
+      execution_starts: [new Date(2026, 8, 2, 10).toISOString()],
+    },
+    {
+      id: 3,
+      status: 'failed',
+      started_at: new Date(2026, 8, 2, 12).toISOString(),
+      execution_starts: [new Date(2026, 8, 1, 8).toISOString()],
+    },
+  ];
+
+  assert.deepEqual(tasksForStandupDays(tasks, selectedDay, 1).map((task) => task.id), [3, 1]);
+});
+
 test('AI standup output is split into changelog categories', () => {
   const output = `
 ### Added

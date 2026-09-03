@@ -1,8 +1,6 @@
 import { periodRange } from './task-history.js';
 import { escapeHtml } from './escape-html.js';
 
-const STANDUP_STATUSES = new Set(['complete']);
-
 export const STANDUP_CHANGELOG_SECTIONS = Object.freeze([
   Object.freeze({ key: 'added', title: 'Added' }),
   Object.freeze({ key: 'changed', title: 'Changed' }),
@@ -18,6 +16,18 @@ function validTimestamp(value) {
 
 function standupStartTimestamp(task) {
   return validTimestamp(task?.started_at) ?? validTimestamp(task?.created_at);
+}
+
+function standupExecutionStarts(task) {
+  const starts = (Array.isArray(task?.execution_starts) ? task.execution_starts : [])
+    .map(validTimestamp)
+    .filter((value) => value !== null);
+  return starts.length > 0 ? starts : [standupStartTimestamp(task)].filter((value) => value !== null);
+}
+
+function taskHasCompletedExecution(task) {
+  const starts = Array.isArray(task?.execution_starts) ? task.execution_starts : [];
+  return starts.some((value) => validTimestamp(value) !== null) || task?.status === 'complete';
 }
 
 export function localDateInputValue(date = new Date()) {
@@ -55,13 +65,15 @@ export function standupDateRange(anchor = new Date(), dayCount = 1) {
 export function tasksForStandupDays(tasks, anchor = new Date(), dayCount = 1) {
   const { start, end } = standupDateRange(anchor, dayCount);
   return (Array.isArray(tasks) ? tasks : [])
-    .filter((task) => STANDUP_STATUSES.has(task?.status))
+    .filter(taskHasCompletedExecution)
     .filter((task) => {
-      const timestamp = standupStartTimestamp(task);
-      return timestamp !== null && timestamp >= start.getTime() && timestamp < end.getTime();
+      return standupExecutionStarts(task).some(
+        (timestamp) => timestamp >= start.getTime() && timestamp < end.getTime(),
+      );
     })
     .sort((left, right) => (
-      standupStartTimestamp(left) - standupStartTimestamp(right)
+      Math.min(...standupExecutionStarts(left).filter((value) => value >= start.getTime() && value < end.getTime()))
+      - Math.min(...standupExecutionStarts(right).filter((value) => value >= start.getTime() && value < end.getTime()))
       || Number(left?.id || 0) - Number(right?.id || 0)
     ));
 }

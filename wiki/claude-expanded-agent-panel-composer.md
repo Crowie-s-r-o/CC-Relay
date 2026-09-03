@@ -105,6 +105,13 @@ A future Claude build that changes `/rc`, `⏺ main`, the member glyph, or the d
 will fail closed again. Capture that exact live frame before extending the pattern. More than twelve
 visible member rows also fail closed by design.
 
+> [!warning]
+> That residual risk became real on 2026-09-01. Claude Code 2.1.257 moved `/rc` onto the
+> working-directory row above the status row and added a `↓ N more` roster overflow row, which broke
+> the hint-anchored lookup described above. The roster is now located from its `⏺ main` header
+> instead. See [[claude-composer-read-failure-namiru]] for that frame, its root cause, and the
+> current contract.
+
 ## Files
 
 - `src/claude-terminal-executor.mjs`

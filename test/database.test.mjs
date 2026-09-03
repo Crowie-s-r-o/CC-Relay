@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { RelayDatabase } from '../src/database.mjs';
+import { ACTIVITY_TEXT_CHARACTER_LIMIT } from '../src/event-storage.mjs';
 import { withRelayNonInteractiveInstruction } from '../src/relay-prompt.mjs';
 
 test('database persists tasks in queue order and records events', () => {
@@ -97,6 +98,85 @@ test('database persists one unique submission ID per task', () => {
   }
 });
 
+test('task summaries bound finished detail and expose the latest event revision', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-task-summary-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  try {
+    const longPrompt = 'historical prompt '.repeat(100);
+    const finished = database.createTask({
+      title: 'Finished task',
+      prompt: longPrompt,
+      thread: { id: 'summary-finished', title: 'Finished', source: 'cli', cwd: '/repo' },
+    });
+    database.updateTask(finished.id, {
+      status: 'complete',
+      result: 'large response '.repeat(100),
+      error: 'saved error',
+    });
+    const latestEventId = database.addEvent(finished.id, 'queue', 'Finished detail').id;
+    const queued = database.createTask({
+      title: 'Queued task',
+      prompt: longPrompt,
+      thread: { id: 'summary-queued', title: 'Queued', source: 'cli', cwd: '/repo' },
+    });
+
+    const summaries = database.listTaskSummaries();
+    const finishedSummary = summaries.find((task) => task.id === finished.id);
+    const queuedSummary = summaries.find((task) => task.id === queued.id);
+
+    assert.equal(finishedSummary.prompt.length, 512);
+    assert.equal(finishedSummary.prompt_truncated, 1);
+    assert.equal(finishedSummary.result, null);
+    assert.equal(finishedSummary.error, 'saved error');
+    assert.equal(finishedSummary.detail_trimmed, 1);
+    assert.equal(finishedSummary.latest_event_id, latestEventId);
+    assert.equal(queuedSummary.prompt, longPrompt);
+    assert.equal(queuedSummary.prompt_truncated, 0);
+    assert.equal(queuedSummary.detail_trimmed, 0);
+    assert.equal(database.getTask(finished.id).prompt, longPrompt);
+    assert.match(database.getTask(finished.id).result, /large response/);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('database stores bounded activity output while leaving the caller event intact', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'relay-event-storage-'));
+  const database = new RelayDatabase(join(directory, 'relay.sqlite'));
+  try {
+    const task = database.createTask({
+      title: 'Bound activity',
+      prompt: 'Keep task activity compact',
+      thread: { id: 'bounded-activity', title: 'Bounded', source: 'cli', cwd: '/repo' },
+    });
+    const output = 'output line\n'.repeat(4_000);
+    const event = {
+      type: 'item/completed',
+      item: { type: 'commandExecution', aggregatedOutput: output },
+    };
+
+    database.addEvent(task.id, 'codex', 'Command completed', event);
+    const stored = database.listEvents(task.id).at(-1).payload;
+
+    assert.equal(event.item.aggregatedOutput, output);
+    assert.ok(stored.item.aggregatedOutput.length <= ACTIVITY_TEXT_CHARACTER_LIMIT);
+    assert.equal(stored.item.aggregatedOutputCharacters, output.length);
+    assert.equal(stored.item.activityDetailTruncated, true);
+
+    database.database.prepare(`
+      INSERT INTO events (task_id, kind, message, payload, created_at)
+      VALUES (?, 'codex', 'Legacy command', ?, ?)
+    `).run(task.id, JSON.stringify(event), new Date().toISOString());
+    const legacy = database.listEvents(task.id).at(-1).payload;
+    assert.ok(legacy.item.aggregatedOutput.length <= ACTIVITY_TEXT_CHARACTER_LIMIT);
+    assert.equal(legacy.item.aggregatedOutputCharacters, output.length);
+  } finally {
+    database.close();
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('conversation metrics sum duration and native tokens across follow-up attempts', () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-conversation-metrics-'));
   const database = new RelayDatabase(join(directory, 'relay.sqlite'));
@@ -128,6 +208,12 @@ test('conversation metrics sum duration and native tokens across follow-up attem
         result: 'First answer',
       },
     });
+    database.addEvent(task.id, 'queue', 'Task completed.', {
+      type: 'relay/task-attempt-finished',
+      attemptStartedAt: firstStart,
+      attemptFinishedAt: '2026-09-01T10:00:10.000Z',
+      outcome: 'complete',
+    });
 
     const followUpStart = '2026-09-01T11:00:00.000Z';
     database.beginTaskAttempt(task.id, {
@@ -157,6 +243,12 @@ test('conversation metrics sum duration and native tokens across follow-up attem
         result: 'Follow-up answer',
       },
     });
+    database.addEvent(task.id, 'queue', 'Follow-up completed.', {
+      type: 'relay/task-attempt-finished',
+      attemptStartedAt: followUpStart,
+      attemptFinishedAt: '2026-09-01T11:00:20.000Z',
+      outcome: 'complete',
+    });
 
     assert.deepEqual(database.getTask(task.id).conversation_metrics, {
       attempt_count: 2,
@@ -167,6 +259,20 @@ test('conversation metrics sum duration and native tokens across follow-up attem
       token_observed: true,
       active_attempt_started_at: null,
     });
+    assert.deepEqual(database.taskAttemptsMap(task.id).get(task.id), [
+      {
+        started_at: firstStart,
+        finished_at: '2026-09-01T10:00:10.000Z',
+        duration_ms: 10_000,
+        outcome: 'complete',
+      },
+      {
+        started_at: followUpStart,
+        finished_at: '2026-09-01T11:00:20.000Z',
+        duration_ms: 20_000,
+        outcome: 'complete',
+      },
+    ]);
     const daily = database.todayTokenUsage(new Date());
     assert.equal(daily.inputTokens, 350);
     assert.equal(daily.outputTokens, 70);
@@ -254,6 +360,28 @@ test('conversation metric backfill assigns legacy token snapshots to their activ
       token_observed: true,
       active_attempt_started_at: null,
     });
+    const expectedAttempts = [
+      {
+        started_at: firstStart,
+        finished_at: firstFinish,
+        duration_ms: 10_000,
+        outcome: 'complete',
+      },
+      {
+        started_at: followUpStart,
+        finished_at: followUpFinish,
+        duration_ms: 20_000,
+        outcome: 'complete',
+      },
+    ];
+    assert.deepEqual(database.taskAttemptsMap(task.id).get(task.id), expectedAttempts);
+
+    database.database.prepare(
+      'UPDATE task_attempts SET outcome = NULL WHERE task_id = ?',
+    ).run(task.id);
+    database.close();
+    database = new RelayDatabase(filePath);
+    assert.deepEqual(database.taskAttemptsMap(task.id).get(task.id), expectedAttempts);
   } finally {
     database.close();
     rmSync(directory, { recursive: true, force: true });

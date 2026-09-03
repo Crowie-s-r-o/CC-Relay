@@ -14,9 +14,19 @@ test('task cards render a bounded row of clickable image previews', () => {
   assert.match(app, /class="task-attachment-preview"[\s\S]*?href="\$\{source\}"[\s\S]*?target="_blank"[\s\S]*?rel="noreferrer"/);
   assert.match(app, /encodeURIComponent\(attachment\.id\)/);
   assert.match(app, /aria-label="Open image \$\{index \+ 1\} of \$\{attachments\.length\}: \$\{escapeHtml\(name\)\}"/);
-  assert.match(app, /<img src="\$\{source\}" alt="" loading="lazy" draggable="false">/);
+  assert.match(app, /<img data-preview-source="\$\{source\}" alt="" loading="lazy" decoding="async" draggable="false">/);
   assert.match(app, /class="task-attachment-overflow"[\s\S]*?>\+\$\{remaining\}</);
   assert.match(app, /\$\{taskCardAttachmentPreviewsMarkup\(task\)\}[\s\S]*?\$\{turboFleetMarkup\(task\)\}/);
+});
+
+test('task card images load only near the viewport and release before a list rebuild', () => {
+  assert.match(app, /new window\.IntersectionObserver\([\s\S]*?rootMargin: '240px 0px'/);
+  assert.match(app, /entry\.isIntersecting[\s\S]*?image\.setAttribute\('src', source\)/);
+  assert.match(app, /else if \(image\.hasAttribute\('src'\)\)[\s\S]*?image\.removeAttribute\('src'\)/);
+  assert.match(app, /function releaseTaskAttachmentPreviews\(\)[\s\S]*?taskAttachmentPreviewObserver\.disconnect\(\)/);
+  assert.match(app, /releaseTaskAttachmentPreviews\(\);\s*elements\.taskList\.innerHTML/);
+  assert.match(app, /elements\.taskList\.innerHTML = visibleTasks[\s\S]*?observeTaskAttachmentPreviews\(\)/);
+  assert.match(style, /\.task-card \{[\s\S]*?content-visibility: auto;[\s\S]*?contain-intrinsic-size: auto 150px;/);
 });
 
 test('thumbnail links keep their own pointer and keyboard behavior inside task cards', () => {
