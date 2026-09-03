@@ -2,6 +2,16 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.33] - 2026-09-04
+
+### Added
+
+- Owned Terminal.app screens can now be mirrored.
+
+### Changed
+
+- Token usage details now provide expanded information.
+
 ## [0.2.32] - 2026-09-03
 
 ### Added
