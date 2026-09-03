@@ -2,6 +2,26 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.31] - 2026-09-03
+
+### Added
+
+- Standup now supports question-and-answer interactions.
+- Release recovery evidence and guidance for transitive audit advisories are now documented.
+
+### Changed
+
+- Application memory use is now bounded.
+- Claude follow-up handling is more robust.
+
+### Fixed
+
+- Tagged release workflows can recover from previous failures.
+
+### Security
+
+- Build-only transitive dependencies were updated to clear a high-severity audit advisory without changing application source.
+
 ## [0.2.30] - 2026-09-01
 
 ### Added
