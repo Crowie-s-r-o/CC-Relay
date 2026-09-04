@@ -2,6 +2,12 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.34] - 2026-09-04
+
+### Changed
+
+- Splash styling checks now enforce accessible contrast and robust CSS rules.
+
 ## [0.2.33] - 2026-09-04
 
 ### Added
