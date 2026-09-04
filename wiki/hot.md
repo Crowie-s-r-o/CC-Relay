@@ -18,8 +18,25 @@ type: hot
 > status label reads the always-true `Starting local server` rather than a live claim the
 > JavaScript-free document cannot make. Reduced motion stops both animations and leaves the segments
 > at a visible resting fill. An exact 376 Electron capture confirmed the layout mid-animation. The
-> 10 focused brand and icon checks and all 1,945 repository tests pass, `release:check` is green for
-> v0.2.32, and `git diff --check` is clean. See [[brand-startup-and-about]].
+> 10 focused brand and icon checks and all 1,950 repository tests pass, `release:check` is green, and
+> `git diff --check` is clean. See [[brand-startup-and-about]].
+
+> [!warning]
+> **September 4: every splash text row now clears WCAG AA and the five rows form one fixed ladder.**
+> The 3B spec's greys dropped the informative text below AA on `#10151b`, and an interim fix raised
+> only the two status labels, leaving the tagline at `#6d7b8a` (4.24:1) and the credit at `#6a7684`
+> (3.96:1), both still short for 11px and 9.5px body text. The ladder is now the wordmark `#e9eff5`
+> (15.83:1), the tagline `#8392a3` (5.77:1), the left status `#7e8c9d` (5.35:1), the right status
+> note `#798797` (5.00:1), and the credit `#748190` (4.62:1, quietest); the reduced-motion resting
+> segment fill stays `rgba(255,255,255,.34)` (3.11:1, a non-text graphic). Do not restore the design
+> greys, and keep the credit quietest. `test/brand-experience.test.mjs` extracts each CSS rule body
+> with `splashRule()`, which now strips CSS comments first because a commented-out decoy rule was
+> returned in place of the live one; it also pins the wordmark color and weight, the `ccDot`
+> keyframe body, the status row's size, uppercase and `space-between`, the dot size, the inset
+> hairline, the two bottom margins, and both `@font-face` sources against files that must exist on
+> disk. A mirrored-tree mutation run now kills 19 of 19, including 13 mutations covering every
+> coverage gap listed from an independent 60-mutation sweep. Note also that `scrollHeight` cannot detect splash overflow, since
+> `overflow: hidden` pins it at 376. See [[brand-startup-and-about]].
 
 > [!important]
 > **September 4: Terminal now means the task's original Terminal.app screen, not Relay's event
@@ -455,12 +472,12 @@ type: hot
 > [!note]
 > **August 14 historical note, superseded September 4: desktop startup was one minimal square.** The
 > frameless splash was 320 by 320 and
-> contains `CC Relay`, `Starting`, and the restrained two-line attribution `Created by software
+> contained `CC Relay`, `Starting`, and the restrained two-line attribution `Created by software
 > development company Crowie s.r.o.` on the existing graphite surface. The Crowie artwork, tagline,
-> extra typeface, rounded treatment, progress UI, and motion are absent. The pre-server visibility
-> and clean handoff to the main window are unchanged. An isolated exact Electron render confirmed
+> extra typeface, rounded treatment, progress UI, and motion were absent. The pre-server visibility
+> and clean handoff to the main window were unchanged. An isolated exact Electron render confirmed
 > the final spacing, readable attribution contrast, and hairline edge. The 32 focused desktop checks
-> and all 1,551 repository tests pass, and `release:check` is green for v0.2.12. See
+> and all 1,551 repository tests passed, and `release:check` was green for v0.2.12. See
 > [[brand-startup-and-about]] and [[packaged-renderer-startup]].
 
 > [!important]

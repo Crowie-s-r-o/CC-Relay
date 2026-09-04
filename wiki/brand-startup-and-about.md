@@ -47,8 +47,30 @@ the splash forward during startup and the main application forward after handoff
 > The Electron `backgroundColor` in `src/electron-main.mjs` and every background declaration in
 > `public/splash.css` (`:root`, `html, body`, `.splash`) must be the same `#10151b`. Electron paints
 > `backgroundColor` before the document loads, so changing one place alone ships a visible color
-> flash on every launch while the focused test still passes. `test/brand-experience.test.mjs` pins
-> both sides and forbids the previous `#0d0e11` anywhere in the stylesheet.
+> flash on every launch while the focused test still passes. `test/brand-experience.test.mjs` holds
+> the graphite in one `GRAPHITE` constant, asserts the Electron literal against it, extracts the
+> `:root`, `html, body`, and `.splash` rule bodies with `splashRule()` and asserts the constant
+> inside each one independently, and forbids the previous `#0d0e11` anywhere in the stylesheet.
+
+> [!warning]
+> Assert splash CSS declarations inside an extracted rule body, never with a lazy
+> `/selector \{[\s\S]*?declaration/` scan across the stylesheet. That pattern walks past the end of
+> the named rule and is satisfied by any later block, so it silently accepts a mutated value.
+> `splashRule()` anchors on the previous rule's closing brace, and that anchor is what keeps
+> `.splash-credit` from resolving to the grouped typography selector it also appears inside.
+>
+> The brace anchor is *not* what saves `.splash-seg` and `.splash-dot` from the
+> `prefers-reduced-motion` overrides. Those overrides are themselves preceded by a closing brace and
+> would satisfy the same pattern. They are avoided only because `String.match` returns the first
+> match and the standalone rules appear earlier in source order. Keep every standalone splash rule
+> above the `@media (prefers-reduced-motion: reduce)` block, or these assertions silently start
+> reading the override body.
+>
+> `splashRule()` also matches raw stylesheet text, so `public/splash.css` comments are stripped once
+> when the test module loads. Without that strip a commented-out decoy such as
+> `/* legacy: } .splash-credit { color: #000000; } */` placed before the real rule is returned in
+> place of the live declaration. A renamed selector still throws loudly rather than matching an
+> empty body.
 
 > [!important]
 > The splash window is frameless and opaque, so `public/splash.css` must not round the tile. A CSS
@@ -57,12 +79,39 @@ the splash forward during startup and the main application forward after handoff
 > Making the window transparent to allow a CSS radius would break the invariant that a solid
 > background is visible immediately.
 
+> [!warning]
+> Never check the splash for overflow with `document.documentElement.scrollHeight`. The
+> `html, body { overflow: hidden }` rule pins that value at the 376px viewport regardless of content:
+> a probe with a 102px-tall credit line and another with a 300px mark both still reported 376. A
+> splash layout check must measure element geometry instead, for example each row's
+> `getBoundingClientRect().bottom` against the 376px window height. Do not relax `overflow: hidden`
+> to make the measurement easier; that rule is what keeps the frameless window from scrolling.
+
 > [!important]
 > `public/splash.html` declares `default-src 'self'; style-src 'self'`, so remote webfonts are
 > unavailable by contract. The 3B source design called for Space Grotesk and IBM Plex Mono; the
 > shipped splash substitutes the already bundled brand faces instead of loosening the policy or
 > adding font files. `instrument-sans-latin.woff2` exists in `public/fonts` but is only
 > `@font-face`'d by the main renderer's `public/style.css`, not by the splash.
+
+> [!important]
+> The splash grays were deliberately raised above the raw 3B design spec and must not be "restored".
+> The spec's greys put the only informative text far below WCAG AA on `#10151b`: the left status was
+> `#6d7b8a` at 4.24:1, the right status note `#48535f` at 2.34:1, and the credit line `#3f4a56` at
+> 2.03:1, down from the 4.61:1 credit the previous splash shipped. Every text row now clears WCAG AA
+> 4.5:1 on the graphite ground, and the five rows form one deliberate brightness ladder: the wordmark
+> `#e9eff5` at 15.83:1, the tagline `#8392a3` at 5.77:1, the left status `#7e8c9d` at 5.35:1, the
+> right status note `#798797` at 5.00:1, and the credit line `#748190` at 4.62:1, quietest. The
+> reduced-motion resting segment fill moved from `rgba(255,255,255,.22)` at 2.00:1 to
+> `rgba(255,255,255,.34)` at 3.11:1; that fill is a non-text graphic, so 3:1 is its bar.
+>
+> An interim revision raised only the two status labels, to `#7a8898` at 5.07:1 and `#718192` at
+> 4.59:1, and left the tagline at the spec's `#6d7b8a` (4.24:1) and the credit at `#6a7684`
+> (3.96:1). Both of those were still below AA for 11px and 9.5px body text, and the 3:1 tier does
+> not apply to either row. Raising all four together also removed the earlier oddity where the right
+> status note read brighter than the 11px brand tagline. The four small-label greys sit on one
+> blue-grey axis (r/b 0.803, g/b 0.894), the same axis `#7a8898` was on, so the ramp itself did not
+> change. The wordmark, the accent green `#4ec98a`, and the animated segment colors are unchanged.
 
 > [!note]
 > The right-hand status label reads `Starting local server`, not the design's `Opening terminals`.
@@ -77,9 +126,16 @@ The brand surfaces extend the neutral graphite language from [[dark-mode]] and t
 
 - Source Serif 4 carries the 32px `CC Relay` wordmark.
 - JetBrains Mono carries every small label: the tagline, the status row, and the credit line.
-- Graphite `#10151b` is the only background color. `#e9eff5`, the muted grays `#6d7b8a`, `#48535f`,
-  and `#3f4a56`, the single accent green `#4ec98a`, and one `rgba(255,255,255,.07)` inset hairline
-  provide the complete hierarchy.
+- Graphite `#10151b` is the only background color. `#e9eff5`, the muted grays `#8392a3`, `#7e8c9d`,
+  `#798797`, and `#748190`, the single accent green `#4ec98a`, and one `rgba(255,255,255,.07)` inset
+  hairline provide the complete hierarchy.
+- The small-label grays are contrast-driven, not decorative. Against `#10151b` the tagline `#8392a3`
+  measures 5.77:1, the left status `#7e8c9d` measures 5.35:1, the right status note `#798797`
+  measures 5.00:1, and the credit line `#748190` measures 4.62:1. Every text row on the splash, the
+  `#e9eff5` wordmark at 15.83:1 included, must stay at or above WCAG AA 4.5:1, and that order is the
+  intended ladder: wordmark brightest, tagline next as the 11px brand line, then the left status,
+  then the right status note, then the credit quietest. `test/brand-experience.test.mjs` pins all
+  five literals.
 - The frameless window and its content are one 376 by 376 left-aligned tile with 30px padding.
   Reading top to bottom: the Crowie bird mark, a flexible spacer, the `CC Relay` wordmark, the
   tagline `AI work, one task at a time`, the six-segment progress bar, the status row, and the
@@ -96,8 +152,9 @@ The brand surfaces extend the neutral graphite language from [[dark-mode]] and t
   `role="status"`, `aria-live="polite"`, and the `CC Relay is starting` accessible label, so the
   announced content is the wordmark, tagline, status text, and credit.
 - `@media (prefers-reduced-motion: reduce)` removes both animations and settles the segments at a
-  legible `rgba(255,255,255,.22)` resting fill, matching the pattern the main renderer already uses
-  for `.standup-loading-line`.
+  legible `rgba(255,255,255,.34)` resting fill, matching the pattern the main renderer already uses
+  for `.standup-loading-line`. That alpha composites to 3.11:1 over the graphite ground. The earlier
+  `.22` measured 2.00:1 and was not legible at rest.
 
 The About dialog retains its own rotating signal orbit, which stops when reduced motion is
 requested. The splash now carries its own quiet motion, which stops under the same query.
@@ -169,6 +226,47 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
 
 ## Verification
 
+- Splash AA ladder and assertion-coverage revision: all five splash text rows now clear WCAG AA
+  4.5:1 on `#10151b` in one fixed brightness order, wordmark `#e9eff5` 15.83:1, tagline `#8392a3`
+  5.77:1, left status `#7e8c9d` 5.35:1, right status note `#798797` 5.00:1, credit `#748190` 4.62:1.
+  `test/brand-experience.test.mjs` gained assertions for the wordmark color and `font-weight: 600`,
+  the `@keyframes ccDot` body including the `50% { opacity: .35 }` stop, the `.splash-status`
+  `font-size`, `text-transform: uppercase` and `justify-content: space-between`, the 5px
+  `.splash-dot` size, the `.splash` inset hairline `box-shadow`, the `.splash-progress` and
+  `.splash-credit` top margins, and both `@font-face` sources with an `existsSync` check that the
+  referenced woff2 files are really on disk. Its rule extractor now strips CSS comments before
+  matching. A scratchpad mutation run over a mirrored tree killed 19 of 19 with no survivors: 13
+  mutations covering every coverage gap listed from the independent verifier's 60-mutation sweep,
+  the four restored pre-fix colors, a comment decoy hiding a mutated `.splash-credit` body, and a
+  renamed selector that must throw loudly. A control run confirmed a decoy comment in front of a correct rule does not fail the
+  suite, and a direct comparison showed the pre-fix raw-text extractor returning
+  ` color: #000000; margin-top: 4px; ` from the comment while the stripped extractor returns the
+  live rule. An isolated Electron capture at the exact production 376 by 376 frameless size, taken
+  two seconds in, showed the raised greys still reading as one muted band beneath the wordmark with
+  the credit line quietest and nothing washed out or flat. The focused
+  `node --test test/brand-experience.test.mjs test/desktop-icon.test.mjs` passed 10 of 10, the
+  complete suite passed 1,950 of 1,950, `release:check` was green, and `git diff --check` was clean.
+- Splash contrast and assertion-strength revision: the three small-label grays and the
+  reduced-motion resting fill were raised above the raw design spec, with the before and after
+  ratios recorded in the accessibility callout above. Isolated Electron captures at the exact
+  production 376 by 376 frameless dimensions, taken two seconds in and then again under an emulated
+  `prefers-reduced-motion: reduce`, showed the raised grays still reading as one muted band beneath
+  the wordmark with the credit line quietest, and showed six flat, clearly visible resting segments
+  in the reduced-motion frame. Only the segments lose their green there. The 5px `.splash-dot` stays
+  `rgb(78,201,138)` at full opacity under reduced motion, because the query removes its shimmer
+  animation and nothing else. The lazy cross-block CSS regexes in
+  `test/brand-experience.test.mjs` were replaced with `splashRule()` block extraction; a scratchpad
+  mutation run over a mirrored copy of the tree killed 23 of 23 of the mutations that revision
+  defined, including each of the six
+  segment `animation-delay` values, all four graphite surfaces, the `.splash-credit` font size, both
+  `ccSeg` keyframe colors, the progress `gap`, the tagline font size, `overflow: hidden`, an
+  `aria-hidden` added to the status row, and every restored pre-fix color. That 23 of 23 covered
+  only the mutations that revision itself chose. An independent verifier later ran 60 mutations
+  against the same suite and found 13 structural survivors, which the AA ladder and coverage
+  revision above closes. The focused
+  `node --test test/brand-experience.test.mjs test/desktop-icon.test.mjs` passed 10 of 10, the
+  complete suite passed 1,950 of 1,950, `release:check` was green for v0.2.33, and `git diff --check`
+  was clean.
 - Left-aligned 3B tile revision: an isolated Electron capture at the exact production 376 by 376
   frameless dimensions, taken two seconds in so the segment stagger was mid-cycle, showed the white
   Crowie mark at the top left, the Source Serif 4 `CC Relay` wordmark and JetBrains Mono tagline
@@ -176,7 +274,7 @@ See [[interface-layout]], [[dark-mode]], and [[header-position]].
   muted `Starting local server` label, and the single-line company credit. Nothing clipped,
   overflowed, or collided, and the left edge aligned across all five text rows. The focused
   `node --test test/brand-experience.test.mjs test/desktop-icon.test.mjs` passed 10 of 10, the
-  complete suite passed 1,945 of 1,945, `release:check` was green for v0.2.32,
+  complete suite passed 1,950 of 1,950, `release:check` was green,
   `node --check src/electron-main.mjs` passed, and `git diff --check` was clean.
 - Centered Crowie mark revision: an exact Electron 43.4 capture at the production 320 by 320
   dimensions showed the white bird centered between the startup label and company credit, with no
