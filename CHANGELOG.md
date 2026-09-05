@@ -2,6 +2,12 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.36] - 2026-09-05
+
+### Added
+
+- Added GPT-6 Astra to the Codex fallback catalog while preserving existing defaults.
+
 ## [0.2.35] - 2026-09-05
 
 ### Added
