@@ -262,9 +262,6 @@ const MAX_STANDUP_FOLLOW_UP_LENGTH = 4_000;
 
 const API_TIMEOUT_MS = 20_000;
 const SNAPSHOT_FALLBACK_POLL_MS = 15_000;
-const NATIVE_TERMINAL_SCREEN_POLL_MS = 700;
-const NATIVE_TERMINAL_SCREEN_RETRY_MS = 2_500;
-const NATIVE_TERMINAL_SCREEN_MAX_CHARS = 250_000;
 const RUNNING_TASK_LAYOUT_DEFAULTS = Object.freeze({ rows: 1, width: 286 });
 const RUNNING_TASK_ROW_OPTIONS = new Set([1, 2, 3]);
 const RUNNING_TASK_WIDTH_OPTIONS = new Set([230, 286, 360]);
@@ -442,7 +439,7 @@ function cachedRunningTaskLayout() {
  * desktop app gets a new port, and therefore a new localStorage origin, on every launch.
  * The cache below only speeds up first paint.
  */
-const TERMINAL_WINDOW_VIEWS = ['all', 'conversation', 'mine', 'ai'];
+const TERMINAL_WINDOW_VIEWS = ['all', 'activity', 'conversation', 'mine', 'ai'];
 const TERMINAL_WINDOW_VIEW_DEFAULT = 'all';
 
 function normalizeTerminalWindowView(value) {
@@ -463,6 +460,7 @@ const state = {
   historyPeriod: ['day', 'week', 'month'].includes(localStorage.getItem('relay.historyPeriod'))
     ? localStorage.getItem('relay.historyPeriod') : 'week',
   terminalWindowView: normalizeTerminalWindowView(localStorage.getItem('relay.terminalWindowView')),
+  terminalMode: localStorage.getItem('relay.terminalMode') === 'activity' ? 'activity' : 'native',
   historyAnchor: new Date(),
   taskSearchQuery: '',
   taskSearchResults: [],
@@ -580,16 +578,8 @@ const state = {
   // reparented .events-section returns to, and its presence means the window is docked.
   inlineEventFilter: 'all',
   terminalWindowDock: null,
-  nativeTerminalScreen: {
-    taskId: null,
-    state: 'idle',
-    reason: '',
-    text: '',
-    busy: false,
-    provider: null,
-    capturedAt: null,
-  },
-  nativeTerminalScreenTimer: null,
+  nativeTerminalScreen: { taskId: null, state: 'ready', message: '', targets: [] },
+  originalTerminalAbort: null,
   nativeTerminalScreenPending: false,
   nativeTerminalScreenSequence: 0,
   showThinking: true,
@@ -952,10 +942,13 @@ const elements = {
   terminalWindowSubtitle: document.querySelector('#terminal-window-subtitle'),
   terminalWindowClose: document.querySelector('#terminal-window-close'),
   terminalWindowViews: [...document.querySelectorAll('[data-terminal-window-view]')],
+  originalTerminalButton: document.querySelector('#original-terminal-view'),
+  originalTerminalOpen: document.querySelector('#original-terminal-open'),
+  originalTerminalFallback: document.querySelector('#original-terminal-fallback'),
+  nativeTerminalTargets: document.querySelector('#original-terminal-targets'),
   nativeTerminalScreen: document.querySelector('#native-terminal-screen'),
   nativeTerminalScreenTitle: document.querySelector('#native-terminal-screen-title'),
   nativeTerminalScreenState: document.querySelector('#native-terminal-screen-state'),
-  nativeTerminalScreenOutput: document.querySelector('#native-terminal-screen-output'),
   nativeTerminalScreenNotice: document.querySelector('#native-terminal-screen-notice'),
   continuationForm: document.querySelector('#task-continuation-form'),
   continuationLabel: document.querySelector('#task-continuation-label'),
@@ -1314,14 +1307,14 @@ async function loadTerminalDisplays() {
  * its in-flight state forever, which reads as "CC Relay refuses to add the task".
  */
 async function api(path, options = {}) {
-  const { timeoutMs = API_TIMEOUT_MS, timeoutMessage = null, ...fetchOptions } = options;
+  const { timeoutMs = API_TIMEOUT_MS, timeoutMessage = null, signal: externalSignal, ...fetchOptions } = options;
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   let response;
   try {
     response = await fetch(path, {
       ...fetchOptions,
-      signal: controller.signal,
+      signal: externalSignal ? AbortSignal.any([controller.signal, externalSignal]) : controller.signal,
       headers: {
         'Content-Type': 'application/json',
         ...(fetchOptions.headers || {}),
@@ -1376,11 +1369,13 @@ function uiPreferencesPayload() {
     completionAlerts: state.completionAlertPreferences,
     voiceInput: state.voiceInputPreferences,
     terminalWindowView: state.terminalWindowView,
+    terminalMode: state.terminalMode,
     quickSkills: state.quickSkills,
   };
 }
 
 function cacheUiPreferences(preferences = uiPreferencesPayload()) {
+  localStorage.setItem('relay.terminalMode', preferences.terminalMode === 'activity' ? 'activity' : 'native');
   localStorage.setItem('relay.panelWidths', JSON.stringify(preferences.panelWidths));
   if (preferences.terminalHeight == null) localStorage.removeItem('relay.terminalHeight');
   else localStorage.setItem('relay.terminalHeight', String(preferences.terminalHeight));
@@ -1954,6 +1949,7 @@ async function restoreUiPreferences() {
     setQuickSkills(preferences.quickSkills, { persist: false });
     // An older server that predates the member returns nothing here. The localStorage
     // seed already in state stays, so the window still opens on the remembered view.
+    if (preferences.terminalMode != null) state.terminalMode = preferences.terminalMode === 'activity' ? 'activity' : 'native';
     if (preferences.terminalWindowView != null) {
       setTerminalWindowView(preferences.terminalWindowView, { persist: false, render: false });
     }
@@ -4251,7 +4247,7 @@ function updateEventControls(filterCounts = {}, reasoningCount = 0) {
     const filter = button.dataset.eventFilter;
     const count = Number(filterCounts[filter]) || 0;
     const label = button.querySelector('.event-filter-label')?.textContent?.trim() || filter;
-    button.setAttribute('aria-pressed', String(filter === inlineFilter));
+    button.setAttribute('aria-pressed', String(state.terminalMode !== 'native' && filter === inlineFilter));
     button.setAttribute('aria-label', `${label}: ${count} signal${count === 1 ? '' : 's'}`);
     const counter = button.querySelector('[data-event-filter-count]');
     if (counter) counter.textContent = count.toLocaleString();
@@ -4269,14 +4265,16 @@ function updateEventControls(filterCounts = {}, reasoningCount = 0) {
  * ------------------------------------------------------------------ */
 
 const TERMINAL_WINDOW_VIEW_TITLES = {
-  all: 'Terminal',
+  all: 'Original terminal',
+  activity: 'Relay activity',
   conversation: 'Conversation',
   mine: 'My messages',
   ai: 'AI messages',
 };
 
 const TERMINAL_WINDOW_VIEW_SUMMARIES = {
-  all: 'Live screen from the task\'s original Terminal.app window.',
+  all: 'Use the original CLI in its own terminal window.',
+  activity: 'All recorded task activity.',
   conversation: 'Your messages and AI responses in order.',
   mine: 'Only the messages you sent.',
   ai: 'Only the provider responses.',
@@ -4292,199 +4290,132 @@ function terminalWindowAiLabel(task) {
 }
 
 function nativeTerminalViewIsActive() {
-  return terminalWindowIsDocked() && state.terminalWindowView === 'all';
+  return Boolean(state.selectedTaskId) && !elements.taskDetail.hidden
+    && (terminalWindowIsDocked() ? state.terminalWindowView === 'all' : state.terminalMode === 'native');
 }
 
 function nativeTerminalCopyLabel() {
-  return nativeTerminalViewIsActive() ? 'Copy terminal' : 'Copy log';
+  return 'Copy log';
 }
 
 function stopNativeTerminalScreenPolling() {
-  if (state.nativeTerminalScreenTimer !== null) {
-    window.clearTimeout(state.nativeTerminalScreenTimer);
-    state.nativeTerminalScreenTimer = null;
-  }
-  if (state.nativeTerminalScreenPending) {
-    state.nativeTerminalScreenSequence += 1;
-    state.nativeTerminalScreenPending = false;
-  }
+  // Invalidates a pending open response. No output scraping or background focus polling.
+  state.nativeTerminalScreenSequence += 1;
+  state.originalTerminalAbort?.abort();
+  state.originalTerminalAbort = null;
+  state.nativeTerminalScreenPending = false;
 }
 
 function resetNativeTerminalScreen(taskId) {
-  state.nativeTerminalScreen = {
-    taskId,
-    state: 'loading',
-    reason: '',
-    text: '',
-    busy: false,
-    provider: state.selectedTaskForEvents
-      ? taskProvider(state.selectedTaskForEvents)
-      : null,
-    capturedAt: null,
-  };
-}
-
-function normalizeNativeTerminalScreen(value, taskId) {
-  const states = new Set(['live', 'connecting', 'unavailable', 'unsupported']);
-  const incomingState = states.has(value?.state) ? value.state : 'unavailable';
-  const incomingText = typeof value?.text === 'string'
-    ? value.text.slice(-NATIVE_TERMINAL_SCREEN_MAX_CHARS)
-    : '';
-  const previous = state.nativeTerminalScreen.taskId === taskId
-    ? state.nativeTerminalScreen
-    : null;
-  const keepLastScreen = incomingState !== 'live' && !incomingText && Boolean(previous?.text);
-  return {
-    taskId,
-    state: keepLastScreen ? 'stale' : incomingState,
-    reason: String(value?.reason || ''),
-    text: keepLastScreen ? previous.text : incomingText,
-    busy: incomingState === 'live' && value?.busy === true,
-    provider: value?.provider || previous?.provider || taskProvider(state.selectedTaskForEvents || {}),
-    capturedAt: value?.capturedAt || previous?.capturedAt || null,
-  };
-}
-
-function nativeTerminalScreenCopy(screen) {
-  if (screen.state === 'live') {
-    return screen.busy ? 'Live Terminal.app screen · process active' : 'Live Terminal.app screen';
-  }
-  if (screen.state === 'stale') return 'Terminal closed · last captured screen';
-  if (screen.state === 'connecting' || screen.state === 'loading') return 'Connecting to Terminal.app';
-  if (screen.state === 'unsupported') return 'Native terminal unavailable on this platform';
-  return 'Native terminal unavailable';
-}
-
-function nativeTerminalNoticeCopy(screen) {
-  if (screen.state === 'unsupported') {
-    return ['Terminal.app is available on macOS', 'Conversation views remain available for this task.'];
-  }
-  if (screen.state === 'connecting' || screen.state === 'loading') {
-    return ['Connecting to Terminal.app', 'Waiting for this task\'s exact terminal window.'];
-  }
-  if (screen.state === 'live') {
-    return ['Terminal screen is blank', 'The native terminal has not painted any text yet.'];
-  }
-  return [
-    'Original terminal unavailable',
-    'The Terminal.app window is closed, still starting, or no longer belongs to this task.',
-  ];
+  state.nativeTerminalScreen = { taskId, state: 'ready', message: '', targets: [] };
 }
 
 function renderNativeTerminalScreen() {
-  if (!elements.nativeTerminalScreen) return;
   const screen = state.nativeTerminalScreen;
-  const provider = providerLabel(screen.provider || taskProvider(state.selectedTaskForEvents || {}));
+  const provider = providerLabel(taskProvider(state.selectedTaskForEvents || {}));
+  const fallback = screen.state === 'unavailable';
   elements.nativeTerminalScreen.dataset.state = screen.state;
-  elements.nativeTerminalScreen.setAttribute(
-    'aria-busy',
-    String(screen.state === 'loading' || screen.state === 'connecting'),
-  );
-  elements.nativeTerminalScreenTitle.textContent = `${provider} · Terminal.app`;
-  elements.nativeTerminalScreenState.textContent = nativeTerminalScreenCopy(screen);
-  elements.nativeTerminalScreenOutput.hidden = !screen.text;
-  elements.nativeTerminalScreenNotice.hidden = Boolean(screen.text);
-  const [title, detail] = nativeTerminalNoticeCopy(screen);
-  elements.nativeTerminalScreenNotice.querySelector('strong').textContent = title;
-  elements.nativeTerminalScreenNotice.querySelector('span').textContent = detail;
-  elements.copyEventsButton.disabled = !screen.text;
-  elements.eventSummary.textContent = nativeTerminalScreenCopy(screen);
-  elements.eventSummary.title = screen.capturedAt
-    ? `Native terminal screen captured ${formatTime(screen.capturedAt)}.`
-    : nativeTerminalScreenCopy(screen);
+  elements.nativeTerminalScreen.setAttribute('aria-busy', String(state.nativeTerminalScreenPending));
+  elements.nativeTerminalScreenTitle.textContent = `${provider} · Original terminal`;
+  elements.nativeTerminalScreenState.textContent = state.nativeTerminalScreenPending
+    ? 'Opening original terminal' : fallback ? 'Relay activity fallback' : 'Native CLI';
+  elements.nativeTerminalScreenNotice.querySelector('strong').textContent = fallback
+    ? 'Using Relay activity' : screen.state === 'choose' ? 'Choose this task’s terminal'
+      : screen.state === 'opened' ? 'Original terminal opened' : 'Use the original terminal';
+  elements.nativeTerminalScreenNotice.querySelector('span').textContent = screen.message
+    || 'Work in the CLI’s own window with its keyboard shortcuts, menus, and full controls. Switch to Relay activity or messages here anytime.';
+  if (elements.originalTerminalOpen) elements.originalTerminalOpen.disabled = state.nativeTerminalScreenPending;
+  const targetSignature = JSON.stringify(screen.targets || []);
+  if (elements.nativeTerminalTargets && elements.nativeTerminalTargets.dataset.signature !== targetSignature) {
+    elements.nativeTerminalTargets.dataset.signature = targetSignature;
+    elements.nativeTerminalTargets.replaceChildren(...(screen.targets || []).map((target) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = `${providerLabel(target.provider)} · ${target.label}`;
+      button.addEventListener('click', () => void refreshNativeTerminalScreen(target.id));
+      return button;
+    }));
+  }
 }
 
-function scheduleNativeTerminalScreenPoll(delay = NATIVE_TERMINAL_SCREEN_POLL_MS) {
-  if (!nativeTerminalViewIsActive() || state.nativeTerminalScreenTimer !== null) return;
-  state.nativeTerminalScreenTimer = window.setTimeout(() => {
-    state.nativeTerminalScreenTimer = null;
-    void refreshNativeTerminalScreen();
-  }, delay);
-}
-
-async function refreshNativeTerminalScreen() {
+async function refreshNativeTerminalScreen(threadId = null) {
   if (!nativeTerminalViewIsActive() || state.nativeTerminalScreenPending) return;
   const taskId = state.selectedTaskId;
-  if (!taskId) return;
-  if (state.nativeTerminalScreenTimer !== null) {
-    window.clearTimeout(state.nativeTerminalScreenTimer);
-    state.nativeTerminalScreenTimer = null;
-  }
-  if (state.nativeTerminalScreen.taskId !== taskId) {
-    resetNativeTerminalScreen(taskId);
-    renderNativeTerminalScreen();
-  }
-  if (state.status?.capabilities?.nativeTerminalScreen !== true) {
-    state.nativeTerminalScreen = normalizeNativeTerminalScreen({
-      state: 'unsupported',
-      reason: 'unsupported-platform',
-      provider: taskProvider(state.selectedTaskForEvents || {}),
-    }, taskId);
-    renderNativeTerminalScreen();
-    return;
-  }
-
   const sequence = ++state.nativeTerminalScreenSequence;
+  const controller = new AbortController();
+  state.originalTerminalAbort = controller;
   state.nativeTerminalScreenPending = true;
-  let retryDelay = NATIVE_TERMINAL_SCREEN_POLL_MS;
+  resetNativeTerminalScreen(taskId);
+  renderNativeTerminalScreen();
   try {
-    const body = await api(`/api/tasks/${taskId}/terminal-screen`, { timeoutMs: 8_000 });
-    if (sequence !== state.nativeTerminalScreenSequence || !nativeTerminalViewIsActive()) return;
-    const next = normalizeNativeTerminalScreen(body.terminal, taskId);
-    if (next.text !== state.nativeTerminalScreen.text) {
-      await textSelectionGuard.waitForClear();
+    if (state.status?.capabilities?.originalTerminal !== true) {
+      state.nativeTerminalScreen = { taskId, state: 'unavailable', message: 'Original terminal opening is unavailable. Use Relay activity below, or restart Relay after updating.' };
+      return;
     }
-    if (sequence !== state.nativeTerminalScreenSequence || !nativeTerminalViewIsActive()) return;
-    const output = elements.nativeTerminalScreenOutput;
-    const remaining = output.scrollHeight - output.clientHeight - output.scrollTop;
-    const follow = remaining < 24;
-    const previousTop = output.scrollTop;
-    const previousLeft = output.scrollLeft;
-    state.nativeTerminalScreen = next;
-    if (output.textContent !== next.text) output.textContent = next.text;
-    renderNativeTerminalScreen();
-    output.scrollTop = follow ? output.scrollHeight : previousTop;
-    output.scrollLeft = previousLeft;
-    retryDelay = next.state === 'live'
-      ? NATIVE_TERMINAL_SCREEN_POLL_MS
-      : NATIVE_TERMINAL_SCREEN_RETRY_MS;
+    const { terminal } = await api(`/api/tasks/${taskId}/terminal/open`, {
+      method: 'POST', body: JSON.stringify({ threadId }), timeoutMs: 20_000, signal: controller.signal,
+    });
+    if (sequence !== state.nativeTerminalScreenSequence || state.selectedTaskId !== taskId || !nativeTerminalViewIsActive()) return;
+    state.nativeTerminalScreen = {
+      taskId,
+      state: ['opened', 'choose', 'unavailable'].includes(terminal?.state) ? terminal.state : 'unavailable',
+      message: typeof terminal?.message === 'string' ? terminal.message : '',
+      targets: Array.isArray(terminal?.targets) ? terminal.targets : [],
+    };
   } catch (error) {
-    if (sequence !== state.nativeTerminalScreenSequence || !nativeTerminalViewIsActive()) return;
-    state.nativeTerminalScreen = normalizeNativeTerminalScreen({
-      state: 'unavailable',
-      reason: error.status === 404 ? 'task-missing' : 'request-failed',
-      provider: taskProvider(state.selectedTaskForEvents || {}),
-    }, taskId);
-    renderNativeTerminalScreen();
-    retryDelay = NATIVE_TERMINAL_SCREEN_RETRY_MS;
+    if (sequence !== state.nativeTerminalScreenSequence || state.selectedTaskId !== taskId) return;
+    state.nativeTerminalScreen = { taskId, state: 'unavailable', message: `${error.message} Use Relay activity below.` };
   } finally {
     if (sequence === state.nativeTerminalScreenSequence) {
+      state.originalTerminalAbort = null;
       state.nativeTerminalScreenPending = false;
-      scheduleNativeTerminalScreenPoll(retryDelay);
+      syncTerminalWindowSurface();
     }
   }
 }
 
 function syncTerminalWindowSurface() {
   const native = nativeTerminalViewIsActive();
-  if (native) elements.eventsSection.dataset.terminalSurface = 'native';
+  if (state.nativeTerminalScreen.taskId !== state.selectedTaskId) {
+    stopNativeTerminalScreenPolling();
+    resetNativeTerminalScreen(state.selectedTaskId);
+  }
+  const fallback = native && state.nativeTerminalScreen.state === 'unavailable';
+  if (native) elements.eventsSection.dataset.terminalSurface = fallback ? 'fallback' : 'native';
   else delete elements.eventsSection.dataset.terminalSurface;
   elements.nativeTerminalScreen.hidden = !native;
-  elements.detailEvents.hidden = native;
+  elements.detailEvents.hidden = native && !fallback;
   elements.eventOverview.hidden = native;
-  elements.thinkingVisibilityButton.hidden = native;
-  elements.copyEventsButton.textContent = nativeTerminalCopyLabel();
-  if (native) {
-    if (state.nativeTerminalScreen.taskId !== state.selectedTaskId) {
-      resetNativeTerminalScreen(state.selectedTaskId);
-    }
-    renderNativeTerminalScreen();
-    if (!state.nativeTerminalScreenPending && state.nativeTerminalScreenTimer === null) {
-      void refreshNativeTerminalScreen();
-    }
-  } else {
-    stopNativeTerminalScreenPolling();
-    elements.copyEventsButton.disabled = state.visibleEventEntries.length === 0;
+  elements.thinkingVisibilityButton.hidden = native && !fallback;
+  elements.copyEventsButton.hidden = native && !fallback;
+  elements.copyEventsButton.textContent = 'Copy log';
+  elements.copyEventsButton.disabled = state.visibleEventEntries.length === 0;
+  // All interactive CLI input happens in the native window. The existing composer stays in
+  // the activity and message views; switching surfaces never clears its draft or attachments.
+  if (elements.continuationForm) elements.continuationForm.classList.toggle('native-terminal-hidden', native && !fallback);
+  elements.originalTerminalButton?.setAttribute('aria-pressed', String(state.terminalMode === 'native'));
+  if (native) renderNativeTerminalScreen();
+  else if (state.nativeTerminalScreenPending) stopNativeTerminalScreenPolling();
+}
+
+function useOriginalTerminal() {
+  state.terminalMode = 'native';
+  state.inlineEventFilter = 'all';
+  if (!terminalWindowIsDocked()) state.eventFilter = 'all';
+  queueUiPreferencesSave();
+  if (terminalWindowIsDocked()) setTerminalWindowView('all');
+  else rerenderTerminalWindowStream();
+  void refreshNativeTerminalScreen();
+}
+
+function useRelayActivity() {
+  state.terminalMode = 'activity';
+  state.inlineEventFilter = 'all';
+  if (terminalWindowIsDocked()) setTerminalWindowView('activity');
+  else {
+    state.eventFilter = 'all';
+    queueUiPreferencesSave();
+    rerenderTerminalWindowStream();
   }
 }
 
@@ -4504,14 +4435,14 @@ function updateTerminalWindowControls(filterCounts = {}) {
   const aiLabel = terminalWindowAiLabel(task);
   for (const button of elements.terminalWindowViews) {
     const view = button.dataset.terminalWindowView;
-    const count = Number(filterCounts[view]) || 0;
+    const count = Number(filterCounts[view === 'activity' ? 'all' : view]) || 0;
     const label = button.querySelector('.terminal-window-view-label');
     if (view === 'ai' && label) label.textContent = aiLabel;
     const text = label?.textContent?.trim() || view;
     button.setAttribute('aria-pressed', String(view === state.terminalWindowView));
     button.setAttribute(
       'aria-label',
-      view === 'all' ? 'Terminal: live native screen' : `${text}: ${count} signal${count === 1 ? '' : 's'}`,
+      view === 'all' ? 'Open the original CLI terminal' : `${text}: ${count} signal${count === 1 ? '' : 's'}`,
     );
     const counter = button.querySelector('[data-terminal-window-view-count]');
     if (counter) counter.textContent = count.toLocaleString();
@@ -4538,7 +4469,7 @@ function rerenderTerminalWindowStream({ forceBottom = false } = {}) {
 
 function setTerminalWindowView(view, { persist = true, render = true } = {}) {
   state.terminalWindowView = normalizeTerminalWindowView(view);
-  if (terminalWindowIsDocked()) state.eventFilter = state.terminalWindowView;
+  if (terminalWindowIsDocked()) state.eventFilter = state.terminalWindowView === 'activity' ? 'all' : state.terminalWindowView;
   // queueUiPreferencesSave writes the relay.terminalWindowView cache and PATCHes the
   // authoritative shared record in one step.
   if (persist) queueUiPreferencesSave();
@@ -4582,7 +4513,7 @@ function openTerminalWindow() {
    * and before showModal(), so the dialog never paints with an empty tools slot.
    */
   elements.terminalWindowTools.append(elements.eventTools);
-  state.eventFilter = state.terminalWindowView;
+  state.eventFilter = state.terminalWindowView === 'activity' ? 'all' : state.terminalWindowView;
   elements.terminalWindowModal.showModal();
   restoreEventOutputScroll();
   rerenderTerminalWindowStream({ forceBottom: follow });
@@ -4591,6 +4522,7 @@ function openTerminalWindow() {
     (button) => button.dataset.terminalWindowView === state.terminalWindowView,
   ) || elements.terminalWindowViews[0];
   pressed?.focus();
+  if (nativeTerminalViewIsActive()) void refreshNativeTerminalScreen();
 }
 
 /*
@@ -9586,7 +9518,7 @@ function taskDetailSnapshotSignature(task) {
   return JSON.stringify(task, (key, value) => key === 'latest_event_id' ? undefined : value);
 }
 
-async function selectTask(taskId) {
+async function selectTask(taskId, { openOriginal = true } = {}) {
   const requestSequence = ++state.taskLoadSequence;
   const eventTaskChanged = state.eventTaskId !== taskId;
   state.selectedTaskId = taskId;
@@ -9867,6 +9799,7 @@ async function selectTask(taskId) {
     resetDisclosures: eventTaskChanged,
     prompts: promptHistory,
   });
+  if (openOriginal && nativeTerminalViewIsActive()) void refreshNativeTerminalScreen();
 }
 
 async function loadSnapshot() {
@@ -9951,7 +9884,7 @@ async function loadSnapshot() {
       && state.eventTaskId === state.selectedTaskId
       && Number(state.selectedTaskEventRevision || 0) >= summaryRevision
       && state.selectedTaskSnapshotSignature === summarySignature;
-    if (!detailIsCurrent) await selectTask(state.selectedTaskId);
+    if (!detailIsCurrent) await selectTask(state.selectedTaskId, { openOriginal: false });
   }
 }
 
@@ -14068,17 +14001,23 @@ for (const button of elements.eventFilters) {
     // The inline rail owns state.inlineEventFilter so a later window close restores it.
     // While the window is docked the stream belongs to the window view, so the rail
     // records the selection it will return to and leaves state.eventFilter alone.
+    state.terminalMode = 'activity';
+    queueUiPreferencesSave();
     state.inlineEventFilter = button.dataset.eventFilter;
     if (!terminalWindowIsDocked()) state.eventFilter = state.inlineEventFilter;
     renderEventStream(state.selectedTaskEvents, state.selectedTaskForEvents);
   });
 }
 
+elements.originalTerminalButton.addEventListener('click', useOriginalTerminal);
+elements.originalTerminalOpen.addEventListener('click', () => void refreshNativeTerminalScreen());
+elements.originalTerminalFallback.addEventListener('click', useRelayActivity);
 elements.terminalWindowOpenButton.addEventListener('click', openTerminalWindow);
 elements.terminalWindowClose.addEventListener('click', closeTerminalWindow);
 for (const button of elements.terminalWindowViews) {
   button.addEventListener('click', () => {
     setTerminalWindowView(button.dataset.terminalWindowView);
+    if (nativeTerminalViewIsActive()) void refreshNativeTerminalScreen();
   });
 }
 elements.terminalWindowModal.addEventListener('click', (event) => {
@@ -14141,9 +14080,7 @@ elements.continuationInput.addEventListener('keydown', (event) => {
 });
 
 elements.copyEventsButton.addEventListener('click', async () => {
-  const text = nativeTerminalViewIsActive()
-    ? state.nativeTerminalScreen.text
-    : state.visibleEventEntries
+  const text = state.visibleEventEntries
       .map((entry) => eventCopyText(entry, state.selectedTaskForEvents))
       .join('\n\n');
   try {

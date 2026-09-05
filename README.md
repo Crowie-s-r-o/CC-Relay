@@ -62,7 +62,7 @@ While work runs:
 
 - **Every project at once.** Several repositories can execute side by side, each with its own queue, limits, and history.
 - **Hear and see the finish.** A sound plays when a task ends, and completed tasks stack up as notifications you can click through and review one by one.
-- **See the original terminal in Relay.** On macOS, the Terminal window mirrors the exact owned Terminal.app tab by window id and TTY. Conversation, My messages, and AI messages remain separate structured event views with live counts.
+- **Use the original terminal.** Task views default to the actual CLI window on macOS and Windows. Switch to Relay activity, Conversation, My messages, or AI messages whenever you want. Runs without a verified interactive window, including headless OpenCode and Windows Claude execution, show the activity fallback.
 - **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low. Relay saves the native conversation ID for continuation or retry where the provider supports it.
 
 | Workflow | Best for |

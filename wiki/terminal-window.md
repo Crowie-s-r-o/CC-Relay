@@ -1,6 +1,6 @@
 ---
 name: Terminal Window
-description: Full-viewport task window whose default view mirrors the exact owned Terminal.app tab, with separate event-ledger conversation views and safe dock restoration.
+description: Task terminal window, native CLI handoff, structured conversation views, and safe dock restoration.
 type: implementation
 tags:
   - relay
@@ -12,12 +12,19 @@ tags:
 
 # Terminal Window
 
+> [!important]
+> **September 5: the default now opens the original CLI window on macOS and Windows.**
+> The text mirror described in the historical sections below has been replaced by the native
+> handoff in [[original-terminal-default]]. The current rail is Original terminal, Relay activity,
+> Conversation, My messages, and provider messages. The two-node dock and focus invariants remain
+> binding. Headless and unavailable terminals show the activity fallback.
+
 The task terminal can be opened in a near full-viewport **Terminal window**. A **Window** control sits
 in the events toolbar (`.event-tools`, beside **Thinking** and **Copy log**) and opens
 `<dialog id="terminal-window-modal">`. The control is disabled while no task is selected, or while the
 detail panel is hidden, because the window has nothing to show without a live terminal underneath it.
 
-The window shows the task's original Terminal.app screen by default and offers a four-view rail
+The window opens the task's original CLI window by default and offers a five-view rail
 (`#terminal-window-views`) so the operator can switch to Relay's structured conversation without
 leaving the window. The view the operator selects becomes the default the window opens on next time,
 for any task, across restarts. See [[terminal-conversation-filters]] for the event-ledger role
@@ -27,7 +34,8 @@ contract and [[interface-layout]] for the surrounding execution ledger.
 
 | View id | Rail label | Meaning |
 | --- | --- | --- |
-| `all` | **Terminal** | the live visible text from the task's exact owned Terminal.app tab |
+| `all` | **Original terminal** | opens the exact existing native CLI window |
+| `activity` | **Relay activity** | all recorded Relay events and the continuation composer |
 | `conversation` | **Conversation** | the inline `conversation` filter |
 | `mine` | **My messages** | the inline `mine` filter |
 | `ai` | **`<Provider>` messages** | the inline `ai` filter, relabelled at render time; falls back to the literal **AI messages** when no task is selected |
@@ -43,7 +51,7 @@ The `ai` label, the dialog title, and the subtitle are written with `textContent
 > task-controlled values, so the heading, subtitle, and rail labels must stay on `textContent` and
 > never reach `innerHTML`.
 
-## Native terminal screen contract
+## Historical native terminal screen contract
 
 The **Terminal** view is not `renderEventStream()` under another label. The renderer polls
 `GET /api/tasks/:id/terminal-screen`, and the backend resolves the task's conversation to the exact
@@ -588,7 +596,7 @@ Recorded honestly rather than resolved.
 - `test/ui-preferences.test.mjs`: view normalization to the four supported ids and app-wide
   persistence including legacy records.
 
-## Current native-screen verification
+## Historical native-screen verification
 
 Verified on **September 4, 2026**, on v0.2.32:
 

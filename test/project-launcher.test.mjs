@@ -1956,7 +1956,7 @@ test('Windows launcher uses native PowerShell picker and opens cmd in the projec
     assert.match(result.command, new RegExp(`^${CLAUDE_RELAY_COMMAND} --session-id \\"[0-9a-f-]+\\"$`));
     assert.equal(calls[0][0], 'powershell.exe');
     assert.match(calls[0][1].at(-1), /FolderBrowserDialog/);
-    assert.match(calls[1][1].at(-1), /Start-Process -FilePath 'cmd\.exe'/);
+    assert.match(calls[1][1].at(-1), /Start-Process -FilePath 'conhost\.exe'/);
     assert.match(calls[1][1].at(-1), /dangerously-skip-permissions/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -2421,7 +2421,7 @@ test('a minimized Windows launch skips grid placement instead of moving an iconi
     assert.match(script, /-WindowStyle Minimized/);
     assert.ok(!script.includes('MoveWindow'));
     assert.ok(!script.includes('Add-Type'));
-    assert.match(script, /-PassThru; \$process\.Id$/);
+    assert.match(script, /-PassThru; try \{[\s\S]*ToFileTimeUtc/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
@@ -2445,12 +2445,12 @@ test('a quoted Windows provider command survives the cmd.exe /K quote-stripping 
     assert.ok(!launched.command.startsWith('""'));
     const script = calls.at(-1)[1].at(-1);
     assert.ok(
-      script.includes(`-ArgumentList '/k', '"${launched.command}"'`),
+      script.includes(`-ArgumentList 'cmd.exe', '/k', '"${launched.command}"'`),
       'the cmd.exe command must carry one extra wrapping quote pair',
     );
     // cmd /K removes the first character and the last quote of the line, which restores the
     // exact command including the quoted binary path.
-    const cmdLine = script.split("-ArgumentList '/k', '")[1].split("' -PassThru")[0];
+    const cmdLine = script.split("-ArgumentList 'cmd.exe', '/k', '")[1].split("' -PassThru")[0];
     const stripped = cmdLine.slice(1).replace(/"([^"]*)$/, '$1');
     assert.equal(stripped, launched.command);
   } finally {

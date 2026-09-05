@@ -171,7 +171,7 @@ test('drag clicks inside selected text are cancelled app-wide while keyboard cli
 test('every periodic renderer that can replace selected text uses the guard', () => {
   assert.match(app, /async function loadSnapshot\(\)[\s\S]*?await textSelectionGuard\.waitForClear\(\)/);
   assert.match(app, /async function loadProjects\(\)[\s\S]*?await textSelectionGuard\.waitForClear\(\)/);
-  assert.match(app, /async function selectTask\(taskId\)[\s\S]*?await textSelectionGuard\.waitForClear\(\)/);
+  assert.match(app, /async function selectTask\(taskId, \{ openOriginal = true \} = \{\}\)[\s\S]*?await textSelectionGuard\.waitForClear\(\)/);
   assert.match(app, /async function loadThreads[\s\S]*?if \(render\) await textSelectionGuard\.waitForClear\(\)/);
   assert.match(app, /async function loadPlans\(\)[\s\S]*?await textSelectionGuard\.waitForClear\(\)/);
   assert.match(app, /async function refreshPlannerFromServer\(\)[\s\S]*?await textSelectionGuard\.waitForClear\(\)/);

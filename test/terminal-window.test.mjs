@@ -44,12 +44,12 @@ test('the terminal window dialog is a sibling of the events section and owns a m
 test('the window rail exposes the native terminal plus three counted conversation views', () => {
   const views = [...terminalWindowDialog.matchAll(/data-terminal-window-view="([a-z]+)"/g)]
     .map((match) => match[1]);
-  assert.deepEqual(views, ['all', 'conversation', 'mine', 'ai']);
-  assert.match(terminalWindowDialog, /data-terminal-window-view="all"[\s\S]*?>Terminal</);
+  assert.deepEqual(views, ['all', 'activity', 'conversation', 'mine', 'ai']);
+  assert.match(terminalWindowDialog, /data-terminal-window-view="all"[\s\S]*?>Original terminal</);
   assert.match(terminalWindowDialog, /data-terminal-window-view="conversation"[\s\S]*?>Conversation</);
   assert.match(terminalWindowDialog, /data-terminal-window-view="mine"[\s\S]*?>My messages</);
   assert.match(terminalWindowDialog, /data-terminal-window-view="ai"[\s\S]*?>AI messages</);
-  assert.match(terminalWindowDialog, /data-terminal-window-view="all"[\s\S]*?class="terminal-window-live-badge"[\s\S]*?>Live</);
+  assert.match(terminalWindowDialog, /data-terminal-window-view="all"[\s\S]*?class="terminal-window-live-badge"[\s\S]*?>↗</);
   assert.doesNotMatch(
     terminalWindowDialog.match(/data-terminal-window-view="all"[\s\S]*?<\/button>/)?.[0] || '',
     /data-terminal-window-view-count/,
@@ -64,18 +64,14 @@ test('the window rail exposes the native terminal plus three counted conversatio
   assert.match(terminalWindowDialog, /role="group" aria-label="Terminal window view"/);
 });
 
-test('the default Terminal view owns a real Terminal.app screen surface', () => {
-  const eventsSection = markup.slice(
-    markup.indexOf('<section class="detail-section events-section"'),
-    markup.indexOf('<dialog id="terminal-window-modal"'),
-  );
-  assert.match(eventsSection, /id="native-terminal-screen"[\s\S]*?data-state="loading"[\s\S]*?hidden/);
-  assert.match(eventsSection, /id="native-terminal-screen-title">Terminal\.app</);
-  assert.match(eventsSection, /id="native-terminal-screen-state"[\s\S]*?role="status"/);
-  assert.match(eventsSection, /id="native-terminal-screen-output"[\s\S]*?aria-label="Live native terminal screen"/);
-  assert.match(app, /api\(`\/api\/tasks\/\$\{taskId\}\/terminal-screen`/);
-  assert.match(app, /if \(output\.textContent !== next\.text\) output\.textContent = next\.text/);
-  assert.match(app, /view === 'all' \? 'Terminal: live native screen'/);
+test('the default view opens the original CLI and does not scrape a replica', () => {
+  assert.match(markup, /id="original-terminal-view"[\s\S]*?aria-pressed="true"/);
+  assert.match(markup, /id="original-terminal-open"/);
+  assert.match(markup, /id="original-terminal-fallback"/);
+  assert.doesNotMatch(markup, /id="native-terminal-screen-output"/);
+  assert.match(app, /api\(`\/api\/tasks\/\$\{taskId\}\/terminal\/open`/);
+  assert.doesNotMatch(app, /api\(`\/api\/tasks\/\$\{taskId\}\/terminal-screen`/);
+  assert.match(app, /openOriginal && nativeTerminalViewIsActive\(\)/);
 });
 
 test('the terminal screen API is task scoped and delegates to owned native identity', () => {
@@ -123,7 +119,7 @@ test('the dialog header owns an empty slot the docked tools cluster moves into',
 });
 
 test('the persisted view defaults to all and rejects unknown stored values', () => {
-  assert.match(app, /const TERMINAL_WINDOW_VIEWS = \['all', 'conversation', 'mine', 'ai'\];/);
+  assert.match(app, /const TERMINAL_WINDOW_VIEWS = \['all', 'activity', 'conversation', 'mine', 'ai'\];/);
   assert.match(app, /const TERMINAL_WINDOW_VIEW_DEFAULT = 'all';/);
   assert.match(
     app,
@@ -178,7 +174,7 @@ test('opening the window reparents the live section and applies the persisted vi
     open.indexOf('elements.terminalWindowTools.append') < open.indexOf('elements.terminalWindowModal.showModal()'),
     'the dialog never opens with an empty tools slot',
   );
-  assert.match(open, /state\.eventFilter = state\.terminalWindowView;/);
+  assert.match(open, /state\.eventFilter = state\.terminalWindowView === 'activity' \? 'all' : state\.terminalWindowView;/);
   assert.match(open, /elements\.terminalWindowModal\.showModal\(\)/);
   // Scroll and follow-to-bottom survive the reattach, and focus lands on the live view.
   assert.match(open, /const follow = state\.eventFollow;/);
@@ -290,7 +286,7 @@ test('the window rail reuses the computed filter counts and never recomputes the
     app.indexOf('function updateTerminalWindowControls'),
     app.indexOf('function rerenderTerminalWindowStream'),
   );
-  assert.match(controls, /const count = Number\(filterCounts\[view\]\) \|\| 0;/);
+  assert.match(controls, /const count = Number\(filterCounts\[view === 'activity' \? 'all' : view\]\) \|\| 0;/);
   assert.doesNotMatch(controls, /filterEventEntries|eventMessageCounts|groupEventEntries/);
   assert.match(controls, /button\.setAttribute\('aria-pressed', String\(view === state\.terminalWindowView\)\)/);
   assert.match(controls, /counter\.textContent = count\.toLocaleString\(\)/);
@@ -323,7 +319,7 @@ test('opening or closing the window leaves the inline rail selection alone', () 
     controls,
     /const inlineFilter = terminalWindowIsDocked\(\) \? state\.inlineEventFilter : state\.eventFilter;/,
   );
-  assert.match(controls, /button\.setAttribute\('aria-pressed', String\(filter === inlineFilter\)\)/);
+  assert.match(controls, /button\.setAttribute\('aria-pressed', String\(state\.terminalMode !== 'native' && filter === inlineFilter\)\)/);
   assert.match(app, /state\.inlineEventFilter = button\.dataset\.eventFilter;\s*if \(!terminalWindowIsDocked\(\)\) state\.eventFilter = state\.inlineEventFilter;/);
 });
 
@@ -539,9 +535,7 @@ function buildWorld({
   nativeScreen = false,
   terminalResponse = {
     terminal: {
-      state: 'live',
-      reason: 'read',
-      text: 'real terminal output',
+      state: 'opened',
       busy: true,
       provider: 'claude',
       capturedAt: '2026-09-04T12:00:00.000Z',
@@ -624,7 +618,7 @@ function buildWorld({
   eventTools.append(copyButton);
   eventTools.append(openButton);
 
-  const viewButtons = ['all', 'conversation', 'mine', 'ai'].map((view) => {
+  const viewButtons = ['all', 'activity', 'conversation', 'mine', 'ai'].map((view) => {
     const button = new FakeNode(`view:${view}`);
     button.dataset.terminalWindowView = view;
     const label = new FakeNode('label');
@@ -681,7 +675,7 @@ function buildWorld({
     terminalWindowDock: null,
     terminalWindowView: 'all',
     eventFollow: true,
-    status: { capabilities: { nativeTerminalScreen: nativeScreen } },
+    status: { capabilities: { originalTerminal: nativeScreen } },
     nativeTerminalScreen: {
       taskId: null,
       state: 'idle',
@@ -769,7 +763,7 @@ function buildWorld({
       + ' updateTerminalWindowAvailability, updateTerminalWindowControls, updateEventControls,'
       + ' setTerminalWindowView, terminalWindowIsDocked, normalizeTerminalWindowView,'
       + ' rerenderTerminalWindowStream, focusTerminalWindowOpenButton, focusTaskDetailLandmark,'
-      + ' hideTaskDetailPanel, refreshNativeTerminalScreen, syncTerminalWindowSurface };',
+      + ' hideTaskDetailPanel, refreshNativeTerminalScreen, syncTerminalWindowSurface, useOriginalTerminal };',
   );
 
   let api;
@@ -1069,36 +1063,44 @@ test('a reopen uses the persisted window view while the inline rail keeps its ow
   );
 });
 
-test('the default view renders the native screen and stops polling on a conversation view', async () => {
+test('the default view opens the original terminal once and refresh never steals focus', async () => {
   const world = buildWorld({ nativeScreen: true });
   world.api.openTerminalWindow();
   await new Promise((resolve) => setImmediate(resolve));
-
-  assert.deepEqual(world.calls.screenRequests, [{
-    path: '/api/tasks/7/terminal-screen',
-    options: { timeoutMs: 8_000 },
-  }]);
-  assert.equal(world.calls.selectionWaits, 1, 'new terminal text waits for active selection to clear');
-  assert.equal(world.state.nativeTerminalScreen.state, 'live');
-  assert.equal(world.state.nativeTerminalScreen.text, 'real terminal output');
-  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'real terminal output');
+  assert.equal(world.calls.screenRequests.length, 1);
+  assert.equal(world.calls.screenRequests[0].path, '/api/tasks/7/terminal/open');
+  assert.equal(world.calls.screenRequests[0].options.method, 'POST');
+  assert.equal(world.state.nativeTerminalScreen.state, 'opened');
   assert.equal(world.elements.nativeTerminalScreen.hidden, false);
   assert.equal(world.elements.detailEvents.hidden, true);
-  assert.equal(world.elements.eventOverview.hidden, true);
   assert.equal(world.elements.thinkingVisibilityButton.hidden, true);
-  assert.equal(world.elements.copyEventsButton.disabled, false);
-  assert.equal(world.elements.copyEventsButton.textContent, 'Copy terminal');
+  assert.equal(world.elements.copyEventsButton.hidden, true);
   assert.equal(world.elements.eventsSection.dataset.terminalSurface, 'native');
-  assert.equal(world.timers.size, 1, 'a live screen schedules its next bounded poll');
-
+  world.api.rerenderTerminalWindowStream();
+  world.api.rerenderTerminalWindowStream();
+  assert.equal(world.calls.screenRequests.length, 1);
+  assert.equal(world.timers.size, 0);
   world.api.setTerminalWindowView('conversation');
   assert.equal(world.elements.nativeTerminalScreen.hidden, true);
   assert.equal(world.elements.detailEvents.hidden, false);
-  assert.equal(world.elements.eventOverview.hidden, false);
   assert.equal(world.elements.thinkingVisibilityButton.hidden, false);
-  assert.equal(world.elements.copyEventsButton.textContent, 'Copy log');
+  assert.equal(world.elements.copyEventsButton.hidden, false);
   assert.equal(world.elements.eventsSection.dataset.terminalSurface, undefined);
-  assert.equal(world.timers.size, 0, 'leaving Terminal cancels its next poll');
+});
+
+test('unavailable native terminals immediately reveal the activity fallback', async () => {
+  const world = buildWorld({ nativeScreen: true, terminalResponse: {
+    terminal: { state: 'unavailable', message: 'The original terminal closed.' },
+  } });
+  world.api.openTerminalWindow();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(world.elements.detailEvents.hidden, false);
+  assert.equal(world.elements.eventsSection.dataset.terminalSurface, 'fallback');
+  assert.equal(world.elements.nativeTerminalScreenNotice.querySelector('span').textContent, 'The original terminal closed.');
+  world.api.setTerminalWindowView('activity');
+  assert.equal(world.state.eventFilter, 'all');
+  assert.equal(world.elements.nativeTerminalScreen.hidden, true);
+  assert.equal(world.elements.detailEvents.hidden, false);
 });
 
 test('a live render while docked keeps the dock and the window view', () => {
@@ -1167,4 +1169,52 @@ test('closing a window that was never open moves no focus', () => {
   assert.deepEqual(world.focusLog(), [], 'a defensive close leaves the operator where they are');
   assert.equal(world.state.terminalWindowDock, null);
   assert.equal(world.elements.eventsSection.parentNode, world.elements.taskDetail);
+});
+
+test('switching to messages aborts a delayed open and ignores its response', async () => {
+  let finish;
+  const response = new Promise((resolve) => { finish = resolve; });
+  const world = buildWorld({ nativeScreen: true, terminalResponse: response });
+  world.api.openTerminalWindow();
+  assert.equal(world.calls.screenRequests.length, 1);
+  const signal = world.calls.screenRequests[0].options.signal;
+  world.api.setTerminalWindowView('conversation');
+  assert.equal(signal.aborted, true);
+  finish({ terminal: { state: 'opened' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(world.state.terminalWindowView, 'conversation');
+  assert.notEqual(world.state.nativeTerminalScreen.state, 'opened');
+  assert.equal(world.elements.detailEvents.hidden, false);
+});
+
+test('changing tasks invalidates a pending native result and resets the task surface', async () => {
+  let finish;
+  const response = new Promise((resolve) => { finish = resolve; });
+  const world = buildWorld({ nativeScreen: true, terminalResponse: response });
+  world.state.terminalMode = 'native';
+  world.api.syncTerminalWindowSurface();
+  const opening = world.api.refreshNativeTerminalScreen();
+  world.state.selectedTaskId = 8;
+  world.state.selectedTaskForEvents = { id: 8, provider: 'codex', status: 'running' };
+  world.api.syncTerminalWindowSurface();
+  finish({ terminal: { state: 'unavailable', message: 'Old task failure' } });
+  await opening;
+  assert.equal(world.state.nativeTerminalScreen.taskId, 8);
+  assert.equal(world.state.nativeTerminalScreen.state, 'ready');
+  assert.equal(world.state.nativeTerminalScreen.message, '');
+});
+
+
+test('native fallback shows all activity after switching from an AI-only inline filter', async () => {
+  const world = buildWorld({ nativeScreen: true, terminalResponse: {
+    terminal: { state: 'unavailable', message: 'Headless task' },
+  } });
+  world.state.terminalMode = 'activity';
+  world.state.eventFilter = 'ai';
+  world.state.inlineEventFilter = 'ai';
+  world.api.useOriginalTerminal();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(world.state.eventFilter, 'all');
+  assert.equal(world.state.inlineEventFilter, 'all');
+  assert.equal(world.elements.detailEvents.hidden, false);
 });

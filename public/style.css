@@ -19200,8 +19200,7 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   background: #08090d;
 }
 
-/* The Terminal view is the exact visible text read from the task's owned Terminal.app tab.
-   It is deliberately a plain terminal viewport, not a second execution-ledger renderer. */
+/* The Original terminal view hands control to the task's existing native CLI window. */
 .native-terminal-screen {
   position: relative;
   display: grid;
@@ -19214,7 +19213,6 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
 }
 
 .native-terminal-screen[hidden],
-#native-terminal-screen-output[hidden],
 .native-terminal-screen-notice[hidden] {
   display: none;
 }
@@ -19255,48 +19253,6 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   color: #e0af68;
 }
 
-.native-terminal-screen-lights {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.native-terminal-screen-lights i {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #ff5f57;
-  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 20%);
-}
-
-.native-terminal-screen-lights i:nth-child(2) { background: #febc2e; }
-.native-terminal-screen-lights i:nth-child(3) { background: #28c840; }
-
-#native-terminal-screen-output {
-  min-width: 0;
-  min-height: 0;
-  max-height: none;
-  margin: 0;
-  padding: 18px 20px 28px;
-  border: 0;
-  border-radius: 0;
-  overflow: auto;
-  color: #c8d3f5;
-  background: #0c0e17;
-  font: 500 13px/1.42 var(--font-mono);
-  tab-size: 4;
-  white-space: pre;
-  word-break: normal;
-  scrollbar-color: #3b4261 #0c0e17;
-  scrollbar-width: thin;
-  user-select: text;
-}
-
-#native-terminal-screen-output:focus-visible {
-  outline: 2px solid #7aa2f7;
-  outline-offset: -2px;
-}
-
 .native-terminal-screen-notice {
   display: grid;
   grid-row: 2;
@@ -19306,21 +19262,6 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   padding: 32px;
   color: #737aa2;
   text-align: center;
-}
-
-.native-terminal-screen-notice i {
-  width: 9px;
-  height: 9px;
-  margin-bottom: 14px;
-  border-radius: 50%;
-  background: #7aa2f7;
-  box-shadow: 0 0 0 5px rgb(122 162 247 / 12%);
-}
-
-.native-terminal-screen[data-state="unavailable"] .native-terminal-screen-notice i,
-.native-terminal-screen[data-state="unsupported"] .native-terminal-screen-notice i {
-  background: #e0af68;
-  box-shadow: 0 0 0 5px rgb(224 175 104 / 12%);
 }
 
 .native-terminal-screen-notice strong {
@@ -19355,10 +19296,9 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   box-shadow: none;
 }
 
-/* In the native view the overview and event list leave the grid. The live Terminal.app
-   screen takes their place while the continuation composer and task status stay usable. */
+/* Original-terminal input belongs to the native window; the status stays in Relay. */
 #terminal-window-mount > .events-section[data-terminal-window="open"][data-terminal-surface="native"] {
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .events-section[data-terminal-window="open"][data-terminal-surface="native"] .event-overview,
@@ -19503,10 +19443,6 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
     font-size: 9px;
   }
 
-  #native-terminal-screen-output {
-    padding: 12px 14px 20px;
-    font-size: 11px;
-  }
 }
 
 /* Dark theme. The chrome follows the same surface steps as every other app dialog; the body
@@ -19643,3 +19579,90 @@ html[data-theme="dark"] .terminal-window-close:hover {
 }
 
 /* End terminal window dialog. */
+
+/* Original CLI handoff and the retained Relay activity fallback. */
+.detail-panel #task-detail .events-section[data-terminal-surface] {
+  grid-template-columns: minmax(0, 1fr);
+}
+.detail-panel #task-detail .events-section[data-terminal-surface="native"] {
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+.detail-panel #task-detail .events-section[data-terminal-surface="fallback"] {
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+}
+#terminal-window-mount > .events-section[data-terminal-window="open"][data-terminal-surface="fallback"] {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
+}
+.native-terminal-hidden,
+.events-section[data-terminal-surface] #detail-events[hidden],
+.events-section[data-terminal-surface] .event-overview[hidden],
+.event-tools button[hidden] {
+  display: none !important;
+}
+.native-terminal-screen-bar {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.native-terminal-screen-notice {
+  min-width: 0;
+  grid-template-columns: minmax(0, 560px);
+  overflow: auto;
+  gap: 8px;
+  padding: 24px;
+  color: #a9b1d6;
+}
+.original-terminal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 10px;
+}
+.original-terminal-actions:empty { display: none; }
+.original-terminal-actions button {
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 1px solid #56658b;
+  border-radius: 7px;
+  color: #c8d3f5;
+  background: #1a2238;
+  font: 600 11px/1.4 var(--font-mono);
+  cursor: pointer;
+}
+.original-terminal-actions button:focus-visible {
+  outline: 2px solid #7aa2f7;
+  outline-offset: 3px;
+}
+.original-terminal-actions button:disabled { opacity: .6; cursor: wait; }
+[data-terminal-surface="fallback"] .native-terminal-screen-notice {
+  padding: 10px 16px;
+  justify-items: start;
+  text-align: left;
+}
+[data-terminal-surface="fallback"] .native-terminal-screen-notice > strong,
+[data-terminal-surface="fallback"] .native-terminal-screen-bar { display: none; }
+[data-terminal-surface="fallback"] .native-terminal-screen-notice > span { max-width: none; margin: 0; }
+[data-terminal-surface="fallback"] .original-terminal-actions { margin-top: 0; }
+html:not([data-theme="dark"]) .native-terminal-screen {
+  color: #24334f;
+  background: #f3f5fa;
+}
+html:not([data-theme="dark"]) .native-terminal-screen-bar {
+  color: #4c5c79;
+  border-color: #c8d0e0;
+  background: #e7edf7;
+}
+html:not([data-theme="dark"]) .native-terminal-screen-bar strong { color: #24334f; }
+html:not([data-theme="dark"]) .native-terminal-screen-bar > span:last-child { color: #2455ad; }
+html:not([data-theme="dark"]) .native-terminal-screen-notice,
+html:not([data-theme="dark"]) .native-terminal-screen-notice strong { color: #344460; }
+html:not([data-theme="dark"]) .original-terminal-actions button {
+  color: #203554;
+  border-color: #7d8fab;
+  background: #fff;
+}
+html:not([data-theme="dark"]) .original-terminal-actions button:focus-visible { outline-color: #2455ad; }
+@media (max-width: 640px) {
+  .native-terminal-screen-notice { padding: 12px; }
+  .original-terminal-actions { gap: 6px; }
+  .native-terminal-screen-bar { gap: 8px; padding: 5px 8px; }
+}

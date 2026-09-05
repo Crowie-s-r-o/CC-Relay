@@ -2,7 +2,7 @@ export const UI_PREFERENCES_SETTING = 'ui-layout-preferences';
 export const DEFAULT_VOICE_INPUT_SHORTCUT = 'Control+Shift+Space';
 
 const COMPLETION_SOUNDS = new Set(['none', 'chime', 'bell', 'pulse']);
-const TERMINAL_WINDOW_VIEWS = new Set(['all', 'conversation', 'mine', 'ai']);
+const TERMINAL_WINDOW_VIEWS = new Set(['all', 'activity', 'conversation', 'mine', 'ai']);
 const RUNNING_TASK_ROWS = new Set([1, 2, 3]);
 const RUNNING_TASK_WIDTHS = new Set([230, 286, 360]);
 const COMPLETION_SPEECH_MIN_WORDS = 1;
@@ -160,6 +160,7 @@ export function normalizeUiPreferences(value) {
     terminalHeight,
     headerPosition,
     terminalWindowView,
+    terminalMode: value.terminalMode === 'activity' ? 'activity' : 'native',
     runningTaskLayout,
     completionAlerts,
     voiceInput,

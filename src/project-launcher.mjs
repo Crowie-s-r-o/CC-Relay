@@ -5,6 +5,7 @@ import { basename, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import { TerminalRuntimeResolver, normalizeTerminalTty } from './terminal-runtime-resolver.mjs';
 import { NativeTerminalScreenReader } from './native-terminal-screen.mjs';
+import { openNativeTerminal } from './native-terminal-opener.mjs';
 import {
   CLAUDE_TRUST_DIALOG_KEYS,
   isClaudeTrustDialogScreen,
@@ -498,6 +499,7 @@ export class ProjectLauncher {
     path,
     terminalWindowId = null,
     terminalProcessId = null,
+    terminalProcessStartedAt = null,
     terminalTty = null,
     runtimeProcessId = null,
     expectedThreadId = null,
@@ -524,6 +526,7 @@ export class ProjectLauncher {
       threadId: null,
       terminalWindowId,
       terminalProcessId,
+      terminalProcessStartedAt,
       terminalTty,
       runtimeProcessId,
       expectedThreadId,
@@ -988,6 +991,46 @@ export class ProjectLauncher {
     };
   }
 
+  async openOriginalTerminal(thread, { isCurrent = () => true } = {}) {
+    if (this.closing) throw new Error('CC Relay is closing.');
+    const open = this.launchQueue.then(async () => {
+      const terminal = this.ownedTerminalForThread(thread?.id);
+      if (!terminal || terminal.provider !== thread.provider
+        || validateProjectPath(thread.cwd).path !== terminal.path || !isCurrent()) {
+        throw new Error('The original terminal is no longer owned by this task.');
+      }
+      const identity = { ...terminal };
+      if (this.platform === 'darwin') {
+        if (await this.foreignOwnerOfAdoption(terminal)) {
+          throw new Error('The terminal belongs to another Relay process.');
+        }
+        const resolved = await this.runtimeResolver.resolve([thread]);
+        const current = resolved.find((item) => item.threadId === thread.id);
+        if (!current || current.terminalWindowId !== identity.terminalWindowId
+          || !current.terminalTty
+          || (identity.terminalTty && current.terminalTty !== identity.terminalTty)) {
+          throw new Error('The original terminal process and window could not be verified.');
+        }
+        identity.terminalTty = current.terminalTty;
+        if (await this.foreignOwnerOfAdoption(terminal)) {
+          throw new Error('The terminal belongs to another Relay process.');
+        }
+      }
+      if (this.closing || !isCurrent() || this.ownedTerminals.get(identity.launchId) !== terminal
+        || terminal.threadId !== thread.id || terminal.terminalWindowId !== identity.terminalWindowId
+        || terminal.terminalProcessId !== identity.terminalProcessId) {
+        throw new Error('The task terminal changed before it could be opened.');
+      }
+      await openNativeTerminal({ platform: this.platform, run: this.run, terminal: identity });
+      this.diagnostic('terminal.original.opened', {
+        launchId: identity.launchId, threadId: thread.id, provider: thread.provider,
+      });
+      return { state: 'opened', provider: thread.provider };
+    });
+    this.launchQueue = open.catch(() => {});
+    return open;
+  }
+
   terminalForLaunch(launchId) {
     const terminal = this.ownedTerminals.get(launchId);
     if (!terminal) return null;
@@ -1418,7 +1461,10 @@ JSON.stringify(screens.map((screen, index) => {
       // that line begins with a quote, which is exactly what a resolved `claude.cmd` path
       // produces. One extra wrapping pair makes that rule consume the wrapper instead of a real
       // argument quote, and it is lossless for a command that does not begin with a quote.
-      const startProcess = `$process = Start-Process -FilePath 'cmd.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList '/k', ${powershellQuote(`"${command}"`)}${background ? " -WindowStyle Minimized" : ''} -PassThru`;
+      // An explicit console host gives each owned launch its own native window, even when
+      // Windows Terminal is the default app. A shared Terminal window cannot safely identify
+      // the task's tab through a shell PID. Keep the original CLI inside this OS console.
+      const startProcess = `$process = Start-Process -FilePath 'conhost.exe' -WorkingDirectory ${powershellQuote(project.path)} -ArgumentList 'cmd.exe', '/k', ${powershellQuote(`"${command}"`)}${background ? " -WindowStyle Minimized" : ''} -PassThru`;
       // A minimized launch has no visible rectangle, so grid placement is skipped rather than
       // moved on an iconic window. Windows keeps the grid for foreground launches only.
       const placeWindow = Boolean(bounds) && !background;
@@ -1439,14 +1485,17 @@ JSON.stringify(screens.map((screen, index) => {
         "$ErrorActionPreference = 'Stop'",
         startProcess,
         ...(placement ? [`try { ${placement} } catch { }`] : []),
-        '$process.Id',
+        "try { ($process.Id.ToString() + '|' + $process.StartTime.ToUniversalTime().ToFileTimeUtc().ToString()) } catch { $process.Id }",
       ].join('; ');
       let terminalProcessId = null;
+      let terminalProcessStartedAt = null;
       try {
         const { stdout = '' } = await this.run('powershell.exe', ['-NoProfile', '-Command', script]);
-        const parsedProcessId = Number.parseInt(stdout.trim(), 10);
+        const [processIdText, startedAt] = stdout.trim().split('|');
+        const parsedProcessId = Number.parseInt(processIdText, 10);
         if (Number.isInteger(parsedProcessId) && parsedProcessId > 0) {
           terminalProcessId = parsedProcessId;
+          terminalProcessStartedAt = /^\d{15,20}$/.test(startedAt || '') ? startedAt : null;
         }
       } catch (error) {
         cancelWorkspaceReservation?.();
@@ -1457,6 +1506,7 @@ JSON.stringify(screens.map((screen, index) => {
         provider,
         path: project.path,
         terminalProcessId,
+        terminalProcessStartedAt,
         expectedThreadId,
         cancelWorkspaceReservation,
         launchSettings: launchSettingsRecord,

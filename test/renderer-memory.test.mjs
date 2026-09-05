@@ -26,7 +26,7 @@ test('unchanged task lists and selected details skip repeated reconstruction', (
   assert.match(app, /key === 'latest_event_id' \? undefined : value/);
   assert.match(app, /if \(renderedTaskListSignature === listSignature\) return;/);
   assert.match(app, /const detailIsCurrent = supportsEventRevision[\s\S]*?selectedTaskEventRevision[\s\S]*?selectedTaskSnapshotSignature/);
-  assert.match(app, /if \(!detailIsCurrent\) await selectTask\(state\.selectedTaskId\);/);
+  assert.match(app, /if \(!detailIsCurrent\) await selectTask\(state\.selectedTaskId, \{ openOriginal: false \}\);/);
 });
 
 test('conversation extraction filters canonical event shapes in SQLite', () => {

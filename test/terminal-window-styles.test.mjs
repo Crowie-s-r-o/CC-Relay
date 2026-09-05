@@ -61,25 +61,22 @@ test('the card is a fixed header over a mount that owns all remaining height', (
   assert.match(rules, /\.terminal-window-close \{[^}]*cursor: pointer;/s);
 });
 
-test('the native Terminal.app screen replaces the fabricated ledger in the default view', () => {
+test('the original terminal handoff replaces the screen replica in the default view', () => {
   const rules = windowRules();
   assert.match(
     rules,
     /\.native-terminal-screen \{[^}]*display: grid;[^}]*grid-template-rows: auto minmax\(0, 1fr\);[^}]*overflow: hidden;/s,
   );
+  assert.doesNotMatch(rules, /#native-terminal-screen-output/);
   assert.match(
     rules,
-    /#native-terminal-screen-output \{[^}]*max-height: none;[^}]*border: 0;[^}]*overflow: auto;[^}]*font: 500 13px\/1\.42 var\(--font-mono\);[^}]*white-space: pre;[^}]*word-break: normal;[^}]*user-select: text;/s,
-  );
-  assert.match(
-    rules,
-    /#terminal-window-mount > \.events-section\[data-terminal-window="open"\]\[data-terminal-surface="native"\] \{\s*grid-template-rows: minmax\(0, 1fr\) auto auto;\s*\}/,
+    /#terminal-window-mount > \.events-section\[data-terminal-window="open"\]\[data-terminal-surface="native"\] \{\s*grid-template-rows: minmax\(0, 1fr\) auto;\s*\}/,
   );
   assert.match(
     rules,
     /\.events-section\[data-terminal-window="open"\]\[data-terminal-surface="native"\] \.event-overview,[\s\S]*?\.event-list \{\s*display: none;\s*\}/,
   );
-  assert.match(rules, /#native-terminal-screen-output\[hidden\],[\s\S]*?display: none;/);
+  assert.match(rules, /\.native-terminal-screen\[hidden\],[\s\S]*?display: none;/);
   assert.doesNotMatch(rules, /html\[data-theme="dark"\] \.native-terminal-screen/);
 });
 
@@ -501,4 +498,9 @@ test('no em dash characters reach the terminal window sources', () => {
   assert.ok(!windowCssBlock().includes(emDash), 'public/style.css terminal window block has no em dash');
   const spec = readFileSync(new URL('./terminal-window-styles.test.mjs', import.meta.url), 'utf8');
   assert.ok(!spec.includes(emDash), 'test/terminal-window-styles.test.mjs has no em dash');
+});
+
+test('the inline original terminal cannot expand its grid beyond the available pane', () => {
+  assert.match(style, /\.detail-panel #task-detail \.events-section\[data-terminal-surface\] \{\s*grid-template-columns: minmax\(0, 1fr\);/);
+  assert.match(style, /\.native-terminal-screen-notice \{\s*min-width: 0;\s*grid-template-columns: minmax\(0, 560px\);/);
 });

@@ -443,9 +443,9 @@ test('direct effort slider submits its exact mapped value', () => {
   assert.doesNotMatch(composerApp, /--effort-step-position/);
 });
 
-test('the right-side terminal shows all activity by default', () => {
+test('the right-side terminal defaults to the original CLI with all activity available', () => {
   assert.match(composerApp, /eventFilter: 'all'/);
-  assert.match(composer, /data-event-filter="all" aria-pressed="true"><span class="event-filter-label">All<\/span>/);
+  assert.match(composer, /id="original-terminal-view"[^>]*aria-pressed="true"/);
   assert.match(composer, /data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights<\/span>/);
   assert.match(composer, /data-event-filter="conversation"[^>]*><span class="event-filter-label">Conversation<\/span>/);
   assert.match(composer, /data-event-filter="mine"[^>]*><span class="event-filter-label">My messages<\/span>/);
@@ -613,7 +613,7 @@ test('every request is bounded so a hung fetch cannot freeze the composer', () =
   const apiSource = composerApp.slice(apiStart, apiEnd);
 
   assert.match(apiSource, /const controller = new AbortController\(\)/);
-  assert.match(apiSource, /signal: controller\.signal/);
+  assert.match(apiSource, /signal: externalSignal \? AbortSignal.any\(\[controller.signal, externalSignal\]\) : controller.signal/);
   assert.match(apiSource, /window\.clearTimeout\(timer\)/);
   assert.match(composerApp, /const API_TIMEOUT_MS = 20_000/);
   assert.match(composerApp, /const TASK_SUBMIT_TIMEOUT_MS = 45_000/);

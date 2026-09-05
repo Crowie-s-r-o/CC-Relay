@@ -19,6 +19,7 @@ import { ClaudeSessionRegistry } from './claude-session-registry.mjs';
 import { CodexAppServer } from './codex-app-server.mjs';
 import { readCodexRuntimeStatus } from './codex-runtime-status.mjs';
 import { RelayDatabase } from './database.mjs';
+import { TaskOriginalTerminal } from './task-original-terminal.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
 import { normalizeDesktopUpdateState } from './desktop-update-status.mjs';
 import { desktopZoomStatus } from './desktop-zoom.mjs';
@@ -209,6 +210,14 @@ const claudeExecution = new ClaudeExecutionRunner({
   diagnostic,
 });
 const opencodeRuntime = new OpenCodeRuntimeStatus();
+const taskOriginalTerminal = new TaskOriginalTerminal({
+  database,
+  launcher: projectLauncher,
+  knownThread: (thread) => thread.provider === 'claude'
+    ? claudeSessions.knownSession(thread.id)
+    : codexAppServer.knownThread(thread.id),
+  claudeMode: (threadId) => claudeExecution.activeBySession.get(threadId)?.executionMode,
+});
 const opencodeRunner = new OpenCodeRunner({ command: () => opencodeRuntime.command });
 const planCouncil = new PlanCouncilRunner({
   claude: PLAN_COUNCIL_TERMINAL_EXECUTION ? claudeExecution : claudeRunner,
@@ -1302,6 +1311,7 @@ export const server = createServer(async (request, response) => {
           queueReorder: true,
           projectLauncher: true,
           nativeTerminalScreen: process.platform === 'darwin',
+          originalTerminal: ['darwin', 'win32'].includes(process.platform),
           terminalControl: true,
           parallelCodexBatch: true,
           taskContinuation: true,
@@ -2833,6 +2843,24 @@ export const server = createServer(async (request, response) => {
         return;
       }
       serveTaskAttachment(task, attachment, response, request);
+      return;
+    }
+
+    if (request.method === 'POST' && /^\/api\/tasks\/\d+\/terminal\/open$/.test(pathname)) {
+      const taskId = taskIdFromPath(pathname);
+      if (!database.getTask(taskId)) {
+        sendError(response, 404, 'Task not found.');
+        return;
+      }
+      const body = await readJson(request, 2048);
+      if (!body || (body.threadId != null && (typeof body.threadId !== 'string' || body.threadId.length > 512))) {
+        sendError(response, 400, 'Invalid task terminal.');
+        return;
+      }
+      const terminal = await taskOriginalTerminal.open(taskId, body.threadId, {
+        isRequested: () => !response.destroyed,
+      });
+      if (!response.destroyed) sendJson(response, 200, { terminal });
       return;
     }
 

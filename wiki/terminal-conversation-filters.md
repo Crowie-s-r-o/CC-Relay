@@ -12,9 +12,9 @@ tags:
 
 # Terminal Conversation Filters
 
-Task Activity exposes six counted views: **All**, **Highlights**, **Commands**, **Conversation**, **My messages**, and **AI messages**. All remains the default. The conversation views use exact message roles, not broad provider-event categories.
+Task Activity exposes six counted views: **All**, **Highlights**, **Commands**, **Conversation**, **My messages**, and **AI messages**. The inline task surface now defaults to **Original terminal**; these six counted filters remain available through the activity fallback. See [[original-terminal-default]]. The conversation views use exact message roles, not broad provider-event categories.
 
-The same filters back the four-view rail in the [[terminal-window]], where `all`, `conversation`, `mine`, and `ai` are relabelled **Terminal**, **Conversation**, **My messages**, and **`<Provider>` messages**. That window reuses these filters and their computed counts rather than defining its own.
+The same filters back the conversation portion of the five-view rail in the [[terminal-window]], where `activity` reuses `all`, and `conversation`, `mine`, and `ai` provide **Conversation**, **My messages**, and **`<Provider>` messages**. The separate Original terminal selection performs the native handoff. That window reuses these filters and their computed counts rather than defining its own.
 
 > [!important]
 > The window and the inline rail are two independent selections over one `state.eventFilter`. Opening the window saves the inline selection in `state.inlineEventFilter` and restores it on close, and the inline rail's `aria-pressed` reads the saved value while docked. Only the window's view is persisted; the inline rail always defaults to **All**.

@@ -63,6 +63,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   }), {
     panelWidths: { composer: 582, queue: 499 },
     terminalHeight: 701,
+    terminalMode: 'native',
     headerPosition: 'bottom',
     terminalWindowView: 'mine',
     runningTaskLayout: { rows: 3, width: 360 },
@@ -482,4 +483,13 @@ test('a worst-realistic preferences record fits the preferences route body cap',
     bytes <= UI_PREFERENCES_BODY_CAP,
     `a full CJK strip must fit the preferences body cap, measured ${bytes} bytes`,
   );
+});
+
+test('original terminal is the default inline mode and the activity fallback persists', () => {
+  for (const value of [undefined, null, 'unknown', '<script>', {}]) {
+    assert.equal(normalizeUiPreferences(baseUiPreferenceInput({ terminalMode: value })).terminalMode, 'native');
+  }
+  const saved = normalizeUiPreferences(baseUiPreferenceInput({ terminalMode: 'activity', terminalWindowView: 'activity' }));
+  assert.equal(parseUiPreferences(JSON.stringify(saved)).terminalMode, 'activity');
+  assert.equal(parseUiPreferences(JSON.stringify(saved)).terminalWindowView, 'activity');
 });

@@ -6,6 +6,8 @@ type: index
 
 # CC Relay Wiki
 
+- [[trading-research-task-routing]]
+
 - [[../FEATURES|CC Relay Features]]
 - [[project-workspaces]]
 - [[project-reorder-review]]
@@ -71,6 +73,8 @@ type: index
 - [[terminal-markdown]]
 - [[terminal-conversation-filters]]
 - [[terminal-window]]
+- [[original-terminal-default]]
+- [[original-terminal-review]]
 - [[continuation-input-review]]
 - [[same-task-session-continuation]]
 - [[claude-live-steering-review]]
@@ -116,6 +120,7 @@ type: index
 - [[semantic-palette-review]]
 - [[product-naming]]
 - [[core-product-story]]
+- [[landing-page-build-prompt]]
 - [[desktop-updates]]
 - [[desktop-update-supersession-review]]
 - [[desktop-update-discovery-review]]

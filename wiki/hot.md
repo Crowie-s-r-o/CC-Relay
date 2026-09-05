@@ -6,6 +6,15 @@ type: hot
 
 # Current CC Relay Notes
 
+> [!important]
+> **September 5: Original terminal replaces the read-only screen mirror and is the inline default.**
+> Explicit task selection and the Original terminal control foreground the exact owned CLI window.
+> Background refresh never requests focus. Relay activity, Conversation, My messages, and AI
+> messages remain available; headless or unverifiable windows show the activity fallback.
+> macOS verifies process, window and TTY; Windows uses a dedicated console host with PID creation
+> time and native window checks. No new CLI is launched by the open action. See
+> [[original-terminal-default]] and [[original-terminal-review]].
+
 > [!note]
 > **September 5: the Codex startup catalog now includes GPT-6 Astra.** The fallback exposes
 > `gpt-6-astra` with low through max reasoning effort, but GPT-5.6 Sol remains the fallback default

@@ -927,8 +927,9 @@
               <div id="event-overview-body" class="event-overview-body"></div>
             </details>
             <div class="event-toolbar">
-              <div id="event-filters" class="event-filters" role="group" aria-label="Filter terminal output">
-                <button type="button" data-event-filter="all" aria-pressed="true"><span class="event-filter-label">All</span><b data-event-filter-count aria-hidden="true">0</b></button>
+              <div id="event-filters" class="event-filters" role="group" aria-label="Terminal and activity views">
+                <button id="original-terminal-view" type="button" aria-pressed="true"><span class="event-filter-label">Original terminal</span><i aria-hidden="true">↗</i></button>
+                <button type="button" data-event-filter="all" aria-pressed="false"><span class="event-filter-label">Relay activity</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="commands" aria-pressed="false"><span class="event-filter-label">Commands</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="conversation" aria-pressed="false"><span class="event-filter-label">Conversation</span><b data-event-filter-count aria-hidden="true">0</b></button>
@@ -947,17 +948,19 @@
                 </button>
               </div>
             </div>
-            <div id="native-terminal-screen" class="native-terminal-screen" data-state="loading" aria-busy="true" hidden>
+            <div id="native-terminal-screen" class="native-terminal-screen" data-state="ready" aria-busy="false" hidden>
               <div class="native-terminal-screen-bar">
-                <span class="native-terminal-screen-lights" aria-hidden="true"><i></i><i></i><i></i></span>
-                <strong id="native-terminal-screen-title">Terminal.app</strong>
-                <span id="native-terminal-screen-state" role="status" aria-live="polite">Connecting to the native terminal</span>
+                <strong id="native-terminal-screen-title">Original terminal</strong>
+                <span id="native-terminal-screen-state" role="status" aria-live="polite">Native CLI</span>
               </div>
-              <pre id="native-terminal-screen-output" tabindex="0" aria-label="Live native terminal screen"></pre>
               <div id="native-terminal-screen-notice" class="native-terminal-screen-notice">
-                <i aria-hidden="true"></i>
-                <strong>Connecting to Terminal.app</strong>
-                <span>Waiting for this task's exact terminal window.</span>
+                <strong>Use the original terminal</strong>
+                <span>Work in the CLI's own window. Your conversation stays available in Relay.</span>
+                <div id="original-terminal-targets" class="original-terminal-actions"></div>
+                <div class="original-terminal-actions">
+                  <button id="original-terminal-open" type="button">Show original terminal ↗</button>
+                  <button id="original-terminal-fallback" type="button">Use Relay activity</button>
+                </div>
               </div>
             </div>
             <div id="detail-events" class="event-list" role="log" aria-live="polite" aria-relevant="additions"></div>
@@ -1006,7 +1009,8 @@
                   <p id="terminal-window-subtitle">Full session output.</p>
                 </div>
                 <div id="terminal-window-views" class="terminal-window-views" role="group" aria-label="Terminal window view">
-                  <button type="button" data-terminal-window-view="all" aria-pressed="true"><span class="terminal-window-view-label">Terminal</span><b class="terminal-window-live-badge" aria-hidden="true">Live</b></button>
+                  <button type="button" data-terminal-window-view="all" aria-pressed="true"><span class="terminal-window-view-label">Original terminal</span><b class="terminal-window-live-badge" aria-hidden="true">↗</b></button>
+                  <button type="button" data-terminal-window-view="activity" aria-pressed="false"><span class="terminal-window-view-label">Relay activity</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
                   <button type="button" data-terminal-window-view="conversation" aria-pressed="false"><span class="terminal-window-view-label">Conversation</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
                   <button type="button" data-terminal-window-view="mine" aria-pressed="false"><span class="terminal-window-view-label">My messages</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
                   <button type="button" data-terminal-window-view="ai" aria-pressed="false"><span class="terminal-window-view-label">AI messages</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>

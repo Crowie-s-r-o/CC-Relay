@@ -6,6 +6,15 @@ type: review
 
 # Windows Compatibility
 
+> [!note]
+> **September 5: original-terminal opening now has a Windows implementation.** New launches use
+> a dedicated native `conhost.exe` window around `cmd.exe`, retaining the CLI itself. The launcher
+> records the host PID and process creation time. Opening validates both, the window's owning PID,
+> and foreground success. Old launches without a creation-time identity use the activity fallback.
+> Claude execution and OpenCode remain headless on Windows and use that same fallback. This path
+> has deterministic win32 coverage but still needs the real-machine smoke gate below. See
+> [[original-terminal-default]] and [[original-terminal-review]].
+
 > [!important]
 > As of August 12, 2026 the code base is Windows-correct by static analysis and simulated win32 tests, but the project has still only ever executed on macOS. Windows support is code-complete pending the smoke checklist below on a real Windows machine. Items 1 through 5 of that checklist are the release gate.
 
