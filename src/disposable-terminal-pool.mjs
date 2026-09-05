@@ -377,6 +377,7 @@ export class DisposableTerminalPool {
       // task's model and effort ride along on whichever session argument it chose.
       {
         ...launchOptions,
+        ...(this.launcher?.embeddedTerminalHost ? { taskId: task.id } : {}),
         ...(claudeLaunchSettings ? { claudeLaunchSettings } : {}),
         ...(codexLaunchSettings ? { codexLaunchSettings } : {}),
       },

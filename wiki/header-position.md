@@ -8,9 +8,9 @@ tags: [relay, ui, header, monitoring, accessibility]
 # Monitor bar position
 
 > [!important]
-> **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
-> owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh
-> columns, Bottom monitor default, and accessible light/dark palette. Older visual descriptions
+> **September 5: [[launchpad-v2-design]] is the current design contract.** The application entry
+> stylesheet layers legacy rules beneath the structural reference port: 51px dock, 420/440px fresh
+> columns, shared prompt toolbar, council/Turbo tables, and two 24px Bottom monitor rows. Older visual descriptions
 > below are historical where they conflict; saved layout choices and execution contracts remain.
 
 
@@ -36,9 +36,9 @@ The renderer keeps the button label, arrow, accessible name, and `aria-pressed` 
 > global monitoring, appearance, connection state, and queue controls therefore remain one
 > coherent bar.
 
-Bottom placement fixes the header to the viewport edge and reserves its measured height as body
-padding. A `ResizeObserver` updates `--app-header-height` when the bar wraps, so it cannot cover
-workspace content at responsive widths.
+Bottom placement assigns the header to the last body grid row. Top placement assigns it before
+the project dock. The workspace owns the remaining flexible row, so neither placement covers
+workspace content. The existing height observer remains compatible with saved layout controls.
 
 The running-card type scale is intentionally one pixel larger at each compact level: metadata
 `8px`, prompt `11px`, response `10px`, and provider label `8px`. The card width and horizontal

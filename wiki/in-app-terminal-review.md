@@ -7,6 +7,9 @@ tags: [relay, terminal, renderer, review, macos]
 
 # In-App Original Terminal Review
 
+> [!warning]
+> This review covered a read-only terminal screen, not the requested interactive CLI. It is superseded by [[embedded-terminal-review]] and [[embedded-original-terminal]].
+
 ## Executive Summary
 
 **Ticket confidence: High for the macOS in-app screen.** **Show original terminal** now opens CC Relay's existing dialog and reads the original terminal screen. The follow-up composer stays visible and uses its existing task-scoped submission path. The current renderer makes no native foreground request. See [[original-terminal-default]] for the current contract and [[original-terminal-review]] for the superseded external-window behavior.

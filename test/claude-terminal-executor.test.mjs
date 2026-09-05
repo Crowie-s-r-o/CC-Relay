@@ -3339,8 +3339,7 @@ test('a held live update receives no second Return once the composer is empty', 
       }
       return { ok: true, reason: 'read', text: EMPTY_COMPOSER_FRAME };
     },
-    now: Date.now,
-    wait: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+    // Use the fixture clock: a loaded test worker must not consume the 30 ms evidence window.
     steerSubmitNudgeMs: 3,
     steerAcceptanceTimeoutMs: 30,
     submitRetryMs: 3,

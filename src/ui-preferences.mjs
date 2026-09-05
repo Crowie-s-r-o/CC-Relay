@@ -149,7 +149,7 @@ export function normalizeUiPreferences(value) {
   const requestedRunningTaskRows = Number(value.runningTaskLayout?.rows);
   const requestedRunningTaskWidth = Number(value.runningTaskLayout?.width);
   const runningTaskLayout = {
-    rows: RUNNING_TASK_ROWS.has(requestedRunningTaskRows) ? requestedRunningTaskRows : 1,
+    rows: RUNNING_TASK_ROWS.has(requestedRunningTaskRows) ? requestedRunningTaskRows : 2,
     width: RUNNING_TASK_WIDTHS.has(requestedRunningTaskWidth) ? requestedRunningTaskWidth : 286,
   };
   const voiceInput = normalizeVoiceInputPreferences(value.voiceInput);

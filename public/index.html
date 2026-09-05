@@ -25,25 +25,22 @@
         try {
           const runningTaskLayout = JSON.parse(localStorage.getItem('relay.runningTaskLayout') || '{}');
           document.documentElement.dataset.runningTaskRows = [1, 2, 3].includes(runningTaskLayout.rows)
-            ? String(runningTaskLayout.rows) : '1';
+            ? String(runningTaskLayout.rows) : '2';
           document.documentElement.dataset.runningTaskWidth = [230, 286, 360].includes(runningTaskLayout.width)
             ? String(runningTaskLayout.width) : '286';
         } catch {
-          document.documentElement.dataset.runningTaskRows = '1';
+          document.documentElement.dataset.runningTaskRows = '2';
           document.documentElement.dataset.runningTaskWidth = '286';
         }
       })();
     </script>
-    <link rel="stylesheet" href="/style.css">
-    <link rel="stylesheet" href="/launchpad.css">
+    <link rel="stylesheet" href="/application.css">
+    <link rel="stylesheet" href="/vendor/xterm.css">
+    <link rel="stylesheet" href="/embedded-terminal.css">
   </head>
   <body>
     <div class="desktop-titlebar">
-      <button id="desktop-titlebar-token-usage" class="desktop-titlebar-token-usage" type="button" aria-expanded="false" aria-controls="desktop-titlebar-token-panel" aria-label="Today's recorded token usage is unavailable">
-        <img class="desktop-titlebar-mark" src="/favicon.svg" alt="" aria-hidden="true">
-        <span id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --</span>
-      </button>
-      <div id="desktop-titlebar-token-panel" class="desktop-titlebar-token-panel" role="region" aria-label="Today's token usage by project" hidden></div>
+
     </div>
     <header class="app-header">
       <button id="about-button" class="brand-lockup" type="button" aria-haspopup="dialog" aria-controls="about-modal" title="About CC Relay">
@@ -79,18 +76,8 @@
             <span class="provider-usage-track" role="progressbar" aria-label="Claude weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
             <small class="provider-usage-reset"></small>
           </div>
-          <div class="provider-usage-meter" data-usage-key="claude-fable" data-provider="claude" data-level="checking">
-            <span>Fable</span>
-            <strong>--</strong>
-            <span class="provider-usage-track" role="progressbar" aria-label="Claude Fable weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
-            <small class="provider-usage-reset"></small>
-          </div>
-          <div class="provider-usage-meter" data-usage-key="codex-five-hour" data-provider="codex" data-level="checking">
-            <span>Cod 5h</span>
-            <strong>--</strong>
-            <span class="provider-usage-track" role="progressbar" aria-label="Codex 5-hour usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
-            <small class="provider-usage-reset"></small>
-          </div>
+
+
           <div class="provider-usage-meter" data-usage-key="codex-weekly" data-provider="codex" data-level="checking">
             <span>Cod Week</span>
             <strong>--</strong>
@@ -104,6 +91,17 @@
           </summary>
           <div class="display-settings-popover">
             <strong>Display</strong>
+            <section class="display-settings-section" aria-label="Additional subscription windows"><span class="display-settings-section-title">Subscription details</span><div class="display-provider-usage">          <div class="provider-usage-meter" data-usage-key="claude-fable" data-provider="claude" data-level="checking">
+            <span>Fable</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Claude Fable weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
+          </div>          <div class="provider-usage-meter" data-usage-key="codex-five-hour" data-provider="codex" data-level="checking">
+            <span>Cod 5h</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Codex 5-hour usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
+          </div></div></section>
             <section class="display-settings-section" aria-labelledby="running-task-display-heading">
               <span id="running-task-display-heading" class="display-settings-section-title">Task monitor</span>
               <label for="running-task-rows">Rows
@@ -161,6 +159,11 @@
           <strong>Launchpad</strong>
         </div>
         <div class="project-dock-actions">
+      <button id="desktop-titlebar-token-usage" class="desktop-titlebar-token-usage" type="button" aria-expanded="false" aria-controls="desktop-titlebar-token-panel" aria-label="Today's recorded token usage is unavailable">
+        <img class="desktop-titlebar-mark" src="/favicon.svg" alt="" aria-hidden="true">
+        <span id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --</span>
+      </button>
+      <div id="desktop-titlebar-token-panel" class="desktop-titlebar-token-panel" role="region" aria-label="Today's token usage by project" hidden></div>
           <button id="add-project-button" class="button primary compact" type="button">+ Add project</button>
         </div>
       </div>
@@ -207,7 +210,7 @@
               focusing, typing, or using its spinner never changes the selected provider.
             -->
             <div class="agent-settings">
-              <div class="agent-settings-heading">Agent</div>
+              <div class="agent-settings-heading"><span>Agent</span><small id="agent-pool-summary" aria-live="polite"></small></div>
               <div id="provider-tabs" class="agent-tabs">
                 <div class="agent-tab-shell" data-provider="codex">
                   <button
@@ -227,10 +230,12 @@
                     <span class="agent-availability" aria-hidden="true"></span>
                   </button>
                   <div class="agent-tab-pool">
-                    <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
-                    <input id="max-codex-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Codex instances">
-                    <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
-                    <small id="codex-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                    <small id="codex-pool-usage" class="agent-pool-usage">0 active</small>
+                    <span class="number-stepper">
+                      <button type="button" data-step-input="max-codex-instances" data-step="-1" aria-label="Decrease maximum codex instances">−</button>
+                      <input id="max-codex-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Codex instances">
+                      <button type="button" data-step-input="max-codex-instances" data-step="1" aria-label="Increase maximum codex instances">+</button>
+                    </span>
                   </div>
                 </div>
                 <div class="agent-tab-shell" data-provider="claude">
@@ -252,10 +257,12 @@
                     <span class="agent-availability" aria-hidden="true"></span>
                   </button>
                   <div class="agent-tab-pool">
-                    <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
-                    <input id="max-claude-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Claude instances">
-                    <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
-                    <small id="claude-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                    <small id="claude-pool-usage" class="agent-pool-usage">0 active</small>
+                    <span class="number-stepper">
+                      <button type="button" data-step-input="max-claude-instances" data-step="-1" aria-label="Decrease maximum claude instances">−</button>
+                      <input id="max-claude-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Claude instances">
+                      <button type="button" data-step-input="max-claude-instances" data-step="1" aria-label="Increase maximum claude instances">+</button>
+                    </span>
                   </div>
                 </div>
                 <div class="agent-tab-shell" data-provider="opencode">
@@ -277,9 +284,12 @@
                     <span class="agent-availability" aria-hidden="true"></span>
                   </button>
                   <div class="agent-tab-pool">
-                    <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
-                    <input id="max-opencode-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum OpenCode instances">
-                    <small id="opencode-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                    <small id="opencode-pool-usage" class="agent-pool-usage">0 active</small>
+                    <span class="number-stepper">
+                      <button type="button" data-step-input="max-opencode-instances" data-step="-1" aria-label="Decrease maximum opencode instances">−</button>
+                      <input id="max-opencode-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum OpenCode instances">
+                      <button type="button" data-step-input="max-opencode-instances" data-step="1" aria-label="Increase maximum opencode instances">+</button>
+                    </span>
                   </div>
                 </div>
               </div>
@@ -326,7 +336,7 @@
             <div class="plan-council-option">
               <label class="plan-council-toggle">
                 <input id="plan-council-enabled" type="checkbox" aria-controls="plan-council-order plan-council-route plan-council-readiness">
-                <span><strong>Use Plan council for this prompt</strong><small>Builds a reviewed, read-only plan instead of executing.</small></span>
+                <span><strong>Plan council</strong><small>reviewed, read-only plan</small></span><b class="council-provider-count">2 providers</b>
               </label>
             </div>
 
@@ -337,13 +347,13 @@
             </div>
 
             <div id="plan-council-route" class="council-route execute-council-route" aria-label="Claude drafts, Codex reviews, then Claude revises" data-first="claude" hidden>
+              <div class="council-row-labels" aria-hidden="true"><span></span><span>Agent</span><span>Model</span><span>Effort</span><span>Role</span></div>
               <article class="council-node council-node-claude execute-council-provider execute-council-provider-claude">
                 <div class="council-node-heading">
                   <span id="plan-council-claude-role" class="council-role">01 Author</span>
                   <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
                 </div>
                 <strong>Claude</strong>
-                <small id="plan-council-claude-copy">Inspects the project and writes the first plan in the selected terminal.</small>
                 <label id="plan-author-terminal-field" for="plan-author-terminal" hidden>
                   <span>Terminal</span>
                   <select id="plan-author-terminal" name="authorThreadId"></select>
@@ -356,6 +366,7 @@
                   <span>Effort</span>
                   <select id="plan-author-effort" name="claudeEffort"></select>
                 </label>
+                <small id="plan-council-claude-copy">Inspects the project and writes the first plan in the selected terminal.</small>
               </article>
 
               <div id="plan-council-connector" class="council-connector" aria-hidden="true"><span>review</span><b>→</b></div>
@@ -366,7 +377,6 @@
                   <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
                 </div>
                 <strong>Codex</strong>
-                <small id="plan-council-codex-copy">Challenges assumptions, gaps, risk, and verification.</small>
                 <label for="plan-reviewer-model">
                   <span>Model</span>
                   <select id="plan-reviewer-model" name="codexModel"></select>
@@ -375,6 +385,7 @@
                   <span>Effort</span>
                   <select id="plan-reviewer-effort" name="codexEffort"></select>
                 </label>
+                <small id="plan-council-codex-copy">Challenges assumptions, gaps, risk, and verification.</small>
               </article>
 
               <div class="council-return">
@@ -403,21 +414,12 @@
                 <span id="turbo-planning-count" class="council-minimum">1 planner</span>
                 <span id="turbo-readiness" class="turbo-readiness" aria-live="polite">Checking terminals</span>
               </div>
-            <div class="plan-council-option turbo-council-toggle-row">
-              <label class="plan-council-toggle">
-                <input id="turbo-council-enabled" type="checkbox" aria-controls="turbo-council-order turbo-council-route">
-                <span><strong>Use Plan council for this prompt</strong></span>
-              </label>
-              <button id="turbo-council-help-button" class="turbo-council-help-button" type="button" aria-expanded="false" aria-controls="turbo-council-help" aria-describedby="turbo-council-help" aria-label="Explain Turbo Plan council">?</button>
-              <div id="turbo-council-help" class="turbo-council-help" role="tooltip" hidden>
-                Adds a second-provider review before execution begins. Choose which AI builds the JSON graph first. The second AI independently checks and corrects it before execution starts. This adds time and requires a signed-in Claude CLI.
-              </div>
-            </div>
             <div id="turbo-council-order" class="turbo-council-order" role="group" aria-label="Choose which provider plans first" hidden>
               <span>Starts with</span>
               <button type="button" data-council-first="codex" aria-pressed="true">Codex first</button>
               <button type="button" data-council-first="claude" aria-pressed="false">Claude first</button>
             </div>
+            <div class="turbo-table-labels" aria-hidden="true"><span></span><span>Model</span><span>Effort</span></div>
             <div id="turbo-council-route" class="council-route turbo-council-route" aria-label="Codex plans the execution graph" data-enabled="false" data-first="codex">
               <article id="turbo-council-codex-step" class="council-node council-node-codex turbo-council-provider turbo-council-provider-codex" aria-describedby="turbo-council-codex-copy">
                 <div class="council-node-heading">
@@ -444,9 +446,18 @@
             </div>
             </section>
             <div class="turbo-settings">
-              <label><span>Execution model</span><select id="turbo-worker-model"></select></label>
-              <label><span>Execution effort</span><select id="turbo-worker-effort"></select></label>
-              <label><span>Concurrent executions</span><input id="turbo-worker-count" type="number" min="1" max="8" step="1" value="3"></label>
+              <div class="turbo-execution-row"><span class="turbo-row-identity"><strong>Execution</strong><small>›_ Codex</small></span><label><span>Execution model</span><select id="turbo-worker-model"></select></label><label><span>Execution effort</span><select id="turbo-worker-effort"></select></label></div>
+              <label class="turbo-concurrency"><span><strong>Concurrent executions</strong><small>Independent plan steps run in parallel</small></span><span class="number-stepper"><button type="button" data-step-input="turbo-worker-count" data-step="-1" aria-label="Decrease concurrent executions">−</button><input id="turbo-worker-count" type="number" min="1" max="8" step="1" value="3"><button type="button" data-step-input="turbo-worker-count" data-step="1" aria-label="Increase concurrent executions">+</button></span></label>
+            </div>
+            <div class="plan-council-option turbo-council-toggle-row">
+              <label class="plan-council-toggle">
+                <input id="turbo-council-enabled" type="checkbox" aria-controls="turbo-council-order turbo-council-route">
+                <span><strong>Use Plan council for the planning stage</strong></span>
+              </label>
+              <button id="turbo-council-help-button" class="turbo-council-help-button" type="button" aria-expanded="false" aria-controls="turbo-council-help" aria-describedby="turbo-council-help" aria-label="Explain Turbo Plan council">?</button>
+              <div id="turbo-council-help" class="turbo-council-help" role="tooltip" hidden>
+                Adds a second-provider review before execution begins. Choose which AI builds the JSON graph first. The second AI independently checks and corrects it before execution starts. This adds time and requires a signed-in Claude CLI.
+              </div>
             </div>
             <p id="turbo-note" class="turbo-note">The selected Codex terminal plans in read-only mode. CC Relay reads its JSON dependency graph and dispatches ready tasks across the other terminals in this workspace.</p>
           </section>
@@ -493,6 +504,7 @@
             <div class="terminal-settings-card">
               <div class="terminal-settings-header">
                 <div>
+                  <span class="eyebrow" id="terminal-settings-project">Project settings</span>
                   <h2 id="connection-help-title">Terminal settings</h2>
                   <p id="connection-help-copy">Project window layout and app-wide audio controls.</p>
                 </div>
@@ -501,26 +513,23 @@
               <div class="terminal-settings-body">
                 <section class="terminal-settings-section" aria-label="Terminal window layout">
                   <div class="terminal-settings-section-head terminal-layout-heading">
-                    <span>Window layout</span>
-                    <label class="terminal-settings-switch terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked><span>Arrange in a grid</span></label>
+                    <label class="terminal-settings-switch terminal-layout-toggle"><input id="terminal-layout-enabled" type="checkbox" checked><span><strong>Arrange windows in a grid</strong><small id="terminal-layout-status" role="status">Grid launches use the next available cell.</small></span></label>
+                    <button id="terminal-layout-apply-all" class="button compact" type="button">Apply to all projects</button>
                   </div>
                   <div class="terminal-layout-settings">
-                    <label><span>Columns</span><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"></label>
-                    <label><span>Rows</span><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"></label>
+                    <label><span>Columns</span><span class="number-stepper"><button type="button" data-step-input="terminal-layout-columns" data-step="-1" aria-label="Decrease grid columns">−</button><input id="terminal-layout-columns" type="number" min="1" max="8" value="3"><button type="button" data-step-input="terminal-layout-columns" data-step="1" aria-label="Increase grid columns">+</button></span></label>
+                    <label><span>Rows</span><span class="number-stepper"><button type="button" data-step-input="terminal-layout-rows" data-step="-1" aria-label="Decrease grid rows">−</button><input id="terminal-layout-rows" type="number" min="1" max="8" value="3"><button type="button" data-step-input="terminal-layout-rows" data-step="1" aria-label="Increase grid rows">+</button></span></label>
                     <label class="terminal-layout-display"><span>Monitor</span><select id="terminal-layout-display"><option value="0">Primary monitor</option></select></label>
                   </div>
                   <label class="terminal-settings-switch terminal-settings-switch-row terminal-background-toggle">
                     <input id="terminal-launch-background" type="checkbox" checked>
                     <span><strong>Open new terminals minimized</strong><small>Only the window CC Relay opens is minimized. Other Terminal windows are untouched.</small></span>
                   </label>
-                  <div class="terminal-layout-footer">
-                    <small id="terminal-layout-status" role="status">Grid launches use the next available cell.</small>
-                    <button id="terminal-layout-apply-all" class="button compact" type="button">Apply to all projects</button>
-                  </div>
+
                 </section>
                 <section class="terminal-settings-section completion-alert-settings" aria-label="Task completion alerts">
                   <div class="terminal-settings-section-head completion-alert-heading">
-                    <span>Completion alert</span>
+                    <span class="settings-heading-copy"><strong>Completion alert</strong><small id="completion-alert-status" role="status">Plays when a task finishes.</small></span>
                     <button id="completion-alert-preview" class="button compact" type="button">Test</button>
                   </div>
                   <label class="completion-alert-control-row completion-sound-setting" for="completion-sound">
@@ -545,7 +554,7 @@
                         <label><input id="completion-speech-status" type="checkbox"><span>“Task complete”</span></label>
                       </div>
                       <label class="completion-speech-word-setting" for="completion-speech-words">
-                        <span><strong>Task name length</strong><small>Read the first words from the task name.</small></span>
+                        <span><strong>First</strong><small>Read the first words from the task name.</small></span>
                         <span class="completion-speech-word-input"><input id="completion-speech-words" type="number" min="1" max="12" value="1" inputmode="numeric"><span>words</span></span>
                       </label>
                       <div class="completion-speech-example">
@@ -554,14 +563,13 @@
                       </div>
                     </fieldset>
                   </div>
-                  <small id="completion-alert-status" role="status">Plays when a task finishes.</small>
                 </section>
                 <section id="quick-skill-settings" class="terminal-settings-section quick-skill-settings" aria-label="Composer quick actions">
                   <div class="terminal-settings-section-head quick-skill-heading">
-                    <span>Quick actions</span>
+                    <span class="settings-heading-copy"><strong>Quick actions</strong><small>Shown under the prompt as one-tap runs</small></span>
                     <div class="quick-skill-heading-actions">
                       <button id="quick-skill-restore" class="button compact" type="button">Restore default</button>
-                      <button id="quick-skill-add" class="button compact" type="button">Add quick action</button>
+                      <button id="quick-skill-add" class="button compact" type="button">+ Add</button>
                     </div>
                   </div>
                   <ol id="quick-skill-editor-list" class="quick-skill-editor-list"></ol>
@@ -603,6 +611,7 @@
                   <small id="voice-input-status" class="voice-input-status" role="status" aria-live="polite">Checking the local voice engine.</small>
                 </section>
               </div>
+              <div class="terminal-settings-footer"><span>Changes are saved automatically.</span><button id="terminal-settings-done" class="button primary compact" type="button">Done</button></div>
             </div>
           </dialog>
 
@@ -611,7 +620,7 @@
               <strong>Task name</strong>
               <small>Optional. CC Relay uses the request when this is blank.</small>
             </span>
-            <input id="task-name" name="title" type="text" maxlength="120" autocomplete="off" placeholder="Optional">
+            <input id="task-name" name="title" type="text" maxlength="120" autocomplete="off" placeholder="Task name"><em class="task-name-optional" aria-hidden="true">optional</em>
           </label>
 
           <div class="prompt-field">
@@ -633,6 +642,14 @@
                 </button>
                 <span id="voice-input-composer-status" class="voice-input-composer-status" role="status" aria-live="polite">Voice input is off.</span>
               </div>
+              <label id="attachment-dropzone" class="attachment-dropzone" title="Choose, drop, or paste PNG, JPEG, or WebP. Up to 99 images, 5 MB each, 20 MB total." for="image-input" tabindex="0">
+                <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+                <span class="attachment-add-icon" aria-hidden="true">＋</span>
+                <span>
+                  <strong>Images</strong><span id="attachment-count">0 / 99</span>
+                  <small>Choose, drop, or paste PNG, JPEG, or WebP</small>
+                </span>
+              </label>
               <div id="quick-skill-list" class="quick-skill-list" aria-label="Saved skills">
                 <button class="quick-skill-button" type="button" data-quick-skill="deploy-check">
                   <span class="quick-skill-glyph" aria-hidden="true">&gt;_</span>
@@ -644,23 +661,9 @@
               </div>
             </div>
             <section class="attachment-composer" aria-labelledby="attachment-heading">
-              <div class="attachment-heading-row">
-                <div>
-                  <span id="attachment-heading">Reference images</span>
-                  <small id="attachment-route">Sent to the selected AI with the prompt.</small>
-                </div>
-                <span id="attachment-count">0 / 99</span>
-              </div>
-              <label id="attachment-dropzone" class="attachment-dropzone" for="image-input" tabindex="0">
-                <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
-                <span class="attachment-add-icon" aria-hidden="true">＋</span>
-                <span>
-                  <strong>Add images</strong>
-                  <small>Choose, drop, or paste PNG, JPEG, or WebP</small>
-                </span>
-              </label>
+              <span id="attachment-heading" class="sr-only">Reference images</span>
+              <small id="attachment-route" class="sr-only">Sent to the selected AI with the prompt.</small>
               <div id="attachment-list" class="attachment-list" aria-live="polite"></div>
-              <p class="attachment-limits">Up to 99 images, 5 MB each, 20 MB total.</p>
             </section>
           </div>
 
@@ -687,11 +690,11 @@
       <div id="composer-queue-resizer" class="workspace-resizer" role="separator" aria-label="Resize prompt and task queue panels" aria-orientation="vertical" tabindex="0"><span aria-hidden="true"></span></div>
 
       <section class="panel queue-panel">
+        <div class="queue-header">
         <div class="section-heading">
           <div>
             <span class="eyebrow">Sequence</span>
             <h2>Task queue</h2>
-            <p id="queue-summary">Loading queue</p>
           </div>
           <div class="queue-heading-actions">
             <div class="queue-view-switch" role="group" aria-label="Task view">
@@ -707,11 +710,13 @@
           <span class="task-search-glyph" aria-hidden="true">
             <svg viewBox="0 0 20 20" focusable="false"><circle cx="8.5" cy="8.5" r="5.5"></circle><path d="m12.5 12.5 4 4"></path></svg>
           </span>
-          <input id="task-search-input" type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Search every command and response" aria-describedby="task-search-hint task-search-status" disabled>
+          <input id="task-search-input" type="search" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Search commands and responses" aria-describedby="task-search-hint task-search-status" disabled>
           <kbd id="task-search-shortcut" aria-hidden="true">/</kbd>
           <button id="task-search-clear" class="task-search-clear" type="button" aria-label="Clear task search" hidden>Clear</button>
           <span id="task-search-status" class="task-search-status" role="status" aria-live="polite"></span>
           <span id="task-search-hint" class="sr-only">Searches all saved tasks in the selected project. Press slash to focus search and Escape to clear it.</span>
+        </div>
+          <p id="queue-summary">Loading queue</p>
         </div>
         <section id="history-ledger" class="history-ledger" aria-label="Task history statistics" hidden>
           <div class="history-toolbar">
@@ -757,7 +762,7 @@
             <div class="detail-identity">
               <div class="detail-title-line">
                 <span class="eyebrow">Task activity</span>
-                <h2 id="detail-title"></h2>
+                <h2 id="detail-title"></h2><span id="detail-status" class="task-status"></span>
               </div>
               <strong id="detail-task-name" class="detail-task-name"></strong>
               <div id="detail-execution-profile" class="detail-execution-profile"></div>
@@ -919,7 +924,7 @@
           <div id="terminal-height-resizer" class="terminal-height-resizer" role="separator" aria-label="Resize task details and terminal" aria-orientation="horizontal" tabindex="0"><span aria-hidden="true"></span></div>
 
           <section class="detail-section events-section" aria-label="Terminal output">
-            <details id="event-overview" class="event-overview" open>
+            <details id="event-overview" class="event-overview">
               <summary class="event-overview-summary">
                 <span id="event-metrics" class="event-metrics" aria-label="Execution summary"></span>
                 <span class="event-overview-toggle">
@@ -932,13 +937,17 @@
             </details>
             <div class="event-toolbar">
               <div id="event-filters" class="event-filters" role="group" aria-label="Terminal and activity views">
-                <button id="original-terminal-view" type="button" aria-pressed="true"><span class="event-filter-label">Original terminal</span></button>
+                <div class="event-primary-views">
+                <button id="original-terminal-view" type="button" aria-pressed="true"><span class="event-filter-label">Terminal</span></button>
+                <button type="button" data-event-filter="conversation" aria-pressed="false"><span class="event-filter-label">Conversation</span><b data-event-filter-count aria-hidden="true">0</b></button>
+                </div>
+                <details id="event-more-views" class="event-more-views"><summary>More views</summary><div class="event-more-menu">
                 <button type="button" data-event-filter="all" aria-pressed="false"><span class="event-filter-label">Relay activity</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="commands" aria-pressed="false"><span class="event-filter-label">Commands</span><b data-event-filter-count aria-hidden="true">0</b></button>
-                <button type="button" data-event-filter="conversation" aria-pressed="false"><span class="event-filter-label">Conversation</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="mine" aria-pressed="false"><span class="event-filter-label">My messages</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="ai" aria-pressed="false"><span class="event-filter-label">AI messages</span><b data-event-filter-count aria-hidden="true">0</b></button>
+                </div></details>
               </div>
               <div class="event-tools">
                 <button id="thinking-visibility-button" class="thinking-visibility-button" type="button" aria-controls="detail-events" aria-pressed="true" aria-label="Hide thinking summaries" title="Hide model-provided thinking summaries">
@@ -958,9 +967,10 @@
                 <span id="native-terminal-screen-state" role="status" aria-live="polite">Connecting</span>
               </div>
               <pre id="native-terminal-screen-output" tabindex="0" role="region" aria-label="Original terminal screen" aria-live="off" hidden></pre>
+              <div id="embedded-terminal" class="embedded-terminal" aria-label="Interactive original terminal" hidden></div>
               <div id="native-terminal-screen-notice" class="native-terminal-screen-notice">
                 <strong>Connecting to the original terminal</strong>
-                <span>The terminal screen appears here in CC Relay. Send follow-ups using the composer below.</span>
+                <span>The original terminal appears here in CC Relay. Click inside the terminal to type.</span>
               </div>
               <div class="native-terminal-screen-actions original-terminal-actions">
                 <div id="original-terminal-targets" class="original-terminal-actions"></div>
@@ -1410,6 +1420,8 @@
       </button>
     </div>
 
+    <script src="/vendor/xterm.js"></script>
+    <script src="/vendor/addon-fit.js"></script>
     <script type="module" src="/app.js"></script>
   </body>
 </html>

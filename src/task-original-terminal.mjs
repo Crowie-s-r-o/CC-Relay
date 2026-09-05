@@ -31,22 +31,39 @@ export class TaskOriginalTerminal {
   }
 
   targets(task) {
-    return taskTerminalCandidates(task).filter((thread) => {
+    const connected = taskTerminalCandidates(task).filter((thread) => {
       if (thread.provider === 'opencode') return false;
-      if (thread.provider === 'claude' && (this.platform !== 'darwin'
-        || this.claudeMode(thread.id) === 'headless')) return false;
       const owned = this.launcher.terminalForThread(thread.id);
+      if (thread.provider === 'claude' && ((this.platform !== 'darwin' && owned?.transport !== 'pty')
+        || this.claudeMode(thread.id) === 'headless')) return false;
       return owned?.provider === thread.provider && owned.path === thread.cwd;
     });
+    const pending = this.launcher.pendingEmbeddedTerminalsForTask?.(task) || [];
+    return [...connected, ...pending.map((terminal) => ({ id: `launch:${terminal.launchId}`,
+      provider: terminal.provider, cwd: terminal.path, label: `${terminal.provider} · starting`, launchId: terminal.launchId }))];
+  }
+
+  ownedTarget(task, target) {
+    if (!target) return null;
+    if (!target.launchId) return this.launcher.terminalForThread(target.id);
+    return this.launcher.pendingEmbeddedTerminalsForTask?.(task).find((item) => item.launchId === target.launchId) || null;
+  }
+
+  connection(taskId, threadId, launchId) {
+    const task = this.database.getTask(taskId);
+    if (!task || !threadId || !launchId) return null;
+    const target = this.targets(task).find((item) => item.id === threadId);
+    const owned = this.ownedTarget(task, target);
+    if (owned?.transport !== 'pty' || owned.launchId !== launchId
+      || !this.launcher.embeddedTerminalHost.isAlive(launchId)) return null;
+    return { taskId, threadId, launchId, provider: target.provider, cwd: task.repo_path,
+      taskProvider: task.provider, mode: task.mode };
   }
 
   async read(taskId, requestedThreadId = null, { isRequested = () => true } = {}) {
     const unavailable = (message) => ({ state: 'unavailable', text: '', busy: false, message });
     const task = this.database.getTask(taskId);
     if (!task) return unavailable('This task no longer exists.');
-    if (this.platform !== 'darwin') {
-      return unavailable('The original terminal screen is unavailable on this platform. Use Relay activity below.');
-    }
     const targets = this.targets(task);
     if (!targets.length) {
       if (!taskTerminalCandidates(task).length && ['queued', 'running'].includes(task.status)) {
@@ -62,16 +79,23 @@ export class TaskOriginalTerminal {
         ? unavailable('That terminal is no longer part of this task.')
         : { state: 'choose', text: '', busy: false, targets: targets.map(({ id, provider, label }) => ({ id, provider, label })) };
     }
-    const launchId = this.launcher.terminalForThread(target.id)?.launchId;
+    const launchId = this.ownedTarget(task, target)?.launchId;
     const isCurrent = () => {
       const latest = this.database.getTask(taskId);
       return isRequested() && latest?.repo_path === task.repo_path && latest.provider === task.provider
         && latest.mode === task.mode
         && this.targets(latest).some((item) => item.id === target.id && item.provider === target.provider)
-        && this.launcher.terminalForThread(target.id)?.launchId === launchId;
+        && this.ownedTarget(latest, target)?.launchId === launchId;
     };
     try {
       if (!isCurrent()) return unavailable('The task terminal changed before it could be read.');
+      if (this.connection(taskId, target.id, launchId)) {
+        return { state: 'interactive', transport: 'pty', taskId, threadId: target.id,
+          launchId, provider: target.provider, targets: targets.length > 1 ? targets : [], text: '' };
+      }
+      if (this.platform !== 'darwin') {
+        return unavailable('This older session was launched outside Relay. New sessions open inside the app.');
+      }
       const terminal = await this.launcher.readTerminalScreen(target.id, { ...this.knownThread(target), ...target });
       if (!isCurrent()) return unavailable('The task terminal changed while it was being read.');
       return {
@@ -80,6 +104,7 @@ export class TaskOriginalTerminal {
         threadId: target.id,
         provider: target.provider,
         source: 'Terminal.app',
+        transport: 'legacy-screen',
         capturedAt: new Date().toISOString(),
         targets: targets.length > 1 ? targets.map(({ id, provider, label }) => ({ id, provider, label })) : [],
         message: terminal.state === 'live' ? '' : 'The original terminal screen is temporarily unavailable. You can use Relay activity.',

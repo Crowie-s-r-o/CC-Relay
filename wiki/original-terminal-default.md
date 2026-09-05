@@ -7,6 +7,9 @@ tags: [relay, terminal, macos, renderer]
 
 # Original Terminal Default
 
+> [!warning]
+> Superseded by [[embedded-original-terminal]]. The read-only mirror described below did not satisfy the requirement for the actual interactive CLI inside Relay. It remains only as compatibility for previously launched external sessions. New task terminals use a real PTY and direct keyboard input. Unavailable terminals no longer switch automatically to the event ledger.
+
 As of September 5, 2026, **Original terminal** displays the task's actual terminal screen inside CC Relay. **Show original terminal** opens the existing [[terminal-window]] dialog, with the screen and the same continuation composer inside it. In the expanded dialog that button becomes **Refresh screen**. Selecting a task, selecting a view, and refreshing never request an OS foreground action.
 
 > [!important]

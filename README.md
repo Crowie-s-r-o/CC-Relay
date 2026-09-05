@@ -62,7 +62,7 @@ While work runs:
 
 - **Every project at once.** Several repositories can execute side by side, each with its own queue, limits, and history.
 - **Hear and see the finish.** A sound plays when a task ends, and completed tasks stack up as notifications you can click through and review one by one.
-- **Use the original terminal inside Relay.** On macOS, task views show the original terminal screen inside the app. **Show original terminal** expands it in Relay, and the existing composer sends follow-ups. Switch to Relay activity or message views anytime. Headless runs, closed terminals, and unsupported platforms show the activity fallback.
+- **Use the original terminal inside Relay.** New Codex and Claude task terminals run in an embedded PTY with the CLI's own interface, direct typing, shortcuts, and resizing. **Window** expands the same terminal inside Relay. Each selected task starts on Original terminal; Relay activity and conversation filters remain explicit alternate views. Older external sessions have a labeled read-only screen, and headless runs report that no interactive terminal exists. See [embedded terminal behavior](wiki/embedded-original-terminal.md).
 - **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low. Relay saves the native conversation ID for continuation or retry where the provider supports it.
 
 | Workflow | Best for |

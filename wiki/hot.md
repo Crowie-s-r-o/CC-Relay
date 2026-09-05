@@ -7,11 +7,16 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
-> **September 5: Launchpad v2 owns the application design.** `public/launchpad.css` loads last,
-> using bundled Space Grotesk and IBM Plex Mono, continuous graphite/light surfaces, compact
-> content-sized project tabs, and grouped provider settings. Fresh columns are 420/440px with
-> Bottom monitoring; durable user preferences win. Compact workspace block flow and explicit row
-> flex direction in the monitor are required to avoid squeezed panels and horizontal overflow.
+> **September 5: task terminals now use real embedded PTYs.** New task-owned Codex and Claude launches render their own CLI inside Relay with direct keyboard input. The former read-only screen was insufficient. Each different task defaults to Original terminal, and an unavailable terminal never silently becomes the event ledger. Existing external sessions stay labeled read-only; new task sessions require the updated backend. See [[embedded-original-terminal]] and [[embedded-terminal-review]].
+
+
+> [!important]
+> **September 5: Launchpad v2 structural fidelity pass.** `application.css` imports old styles
+> into a lower cascade layer. The reference now owns the 51px dock, 420/440px columns, compact
+> provider steppers, shared prompt toolbar, council matrix, Turbo rows, queue accounting, activity
+> header, 640px settings dialog, and two 24px monitor rows. Extra verification fixed cached-project
+> startup retaining the old terminal picker. `scripts/verify-launchpad.cjs` checks geometry and real
+> controls with isolated synthetic data, including the interactive terminal and compact dialog.
 > See [[launchpad-v2-design]] and [[launchpad-v2-design-review]].
 
 

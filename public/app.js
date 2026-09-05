@@ -1,3 +1,4 @@
+import { EmbeddedTerminalView } from './embedded-terminal.js';
 import {
   assistantMessageStatus,
   entryFirstEvent,
@@ -262,7 +263,7 @@ const MAX_STANDUP_FOLLOW_UP_LENGTH = 4_000;
 
 const API_TIMEOUT_MS = 20_000;
 const SNAPSHOT_FALLBACK_POLL_MS = 15_000;
-const RUNNING_TASK_LAYOUT_DEFAULTS = Object.freeze({ rows: 1, width: 286 });
+const RUNNING_TASK_LAYOUT_DEFAULTS = Object.freeze({ rows: 2, width: 286 });
 const RUNNING_TASK_ROW_OPTIONS = new Set([1, 2, 3]);
 const RUNNING_TASK_WIDTH_OPTIONS = new Set([230, 286, 360]);
 // Task creation carries image data, so it gets a wider budget than a status read.
@@ -932,6 +933,7 @@ const elements = {
   termEffort: document.querySelector('#term-effort'),
   termDuration: document.querySelector('#term-duration'),
   eventFilters: [...document.querySelectorAll('[data-event-filter]')],
+  eventMoreViews: document.querySelector('#event-more-views'),
   eventTools: document.querySelector('.event-tools'),
   thinkingVisibilityButton: document.querySelector('#thinking-visibility-button'),
   copyEventsButton: document.querySelector('#copy-events-button'),
@@ -947,6 +949,7 @@ const elements = {
   originalTerminalOpen: document.querySelector('#original-terminal-open'),
   originalTerminalFallback: document.querySelector('#original-terminal-fallback'),
   nativeTerminalTargets: document.querySelector('#original-terminal-targets'),
+  embeddedTerminal: document.querySelector('#embedded-terminal'),
   nativeTerminalScreen: document.querySelector('#native-terminal-screen'),
   nativeTerminalScreenTitle: document.querySelector('#native-terminal-screen-title'),
   nativeTerminalScreenState: document.querySelector('#native-terminal-screen-state'),
@@ -3065,6 +3068,19 @@ function taskLifecycleDatesMarkup(task, formatter = formatCardTime) {
   `).join('');
 }
 
+function taskCardDatesMarkup(task) {
+  const dates = taskLifecycleDates(task);
+  return dates.map((date, index) => {
+    const sameDay = index > 0 && date.value && dates[0].value
+      && new Date(date.value).toDateString() === new Date(dates[0].value).toDateString();
+    const label = date.value ? formatCardTime(date.value) : date.pendingLabel;
+    const visible = date.value ? (sameDay ? label.slice(-5) : label) : '-';
+    return `<span class="task-lifecycle-date" title="${escapeHtml(`${date.label}: ${label}`)}">${date.value
+      ? `<time datetime="${escapeHtml(date.value)}">${escapeHtml(visible)}</time>`
+      : `<span aria-label="${escapeHtml(label)}">${visible}</span>`}</span>`;
+  }).join('');
+}
+
 function workspaceName(path) {
   // normalizedPath folds Windows separators, so a C:\Users\Pat\proj workspace shows its
   // folder name here instead of the whole path.
@@ -4254,6 +4270,10 @@ function updateEventControls(filterCounts = {}, reasoningCount = 0) {
     const counter = button.querySelector('[data-event-filter-count]');
     if (counter) counter.textContent = count.toLocaleString();
   }
+  if (elements.eventMoreViews) {
+    const active = elements.eventMoreViews.querySelector('[aria-pressed="true"] .event-filter-label');
+    elements.eventMoreViews.querySelector('summary').textContent = active?.textContent || 'More views';
+  }
   updateTerminalWindowControls(filterCounts);
   updateThinkingVisibilityControl(reasoningCount);
 }
@@ -4275,7 +4295,7 @@ const TERMINAL_WINDOW_VIEW_TITLES = {
 };
 
 const TERMINAL_WINDOW_VIEW_SUMMARIES = {
-  all: 'The original terminal screen inside CC Relay. Send follow-ups below.',
+  all: 'This task’s original terminal inside CC Relay.',
   activity: 'All recorded task activity.',
   conversation: 'Your messages and AI responses in order.',
   mine: 'Only the messages you sent.',
@@ -4297,7 +4317,7 @@ function nativeTerminalViewIsActive() {
 }
 
 function nativeTerminalCopyLabel() {
-  return nativeTerminalViewIsActive() && ['live', 'stale'].includes(state.nativeTerminalScreen.state)
+  return nativeTerminalViewIsActive() && ['interactive', 'live', 'stale'].includes(state.nativeTerminalScreen.state)
     ? 'Copy screen' : 'Copy log';
 }
 
@@ -4311,6 +4331,7 @@ function stopNativeTerminalScreenPolling() {
 }
 
 function resetNativeTerminalScreen(taskId) {
+  state.embeddedTerminalView?.disconnect();
   state.nativeTerminalScreen = { taskId, threadId: null, requestedThreadId: null, state: 'ready', text: '', message: '', targets: [] };
   elements.nativeTerminalScreenOutput.textContent = '';
   elements.nativeTerminalScreenOutput.scrollTop = 0;
@@ -4320,7 +4341,7 @@ function resetNativeTerminalScreen(taskId) {
 function scheduleNativeTerminalScreenPolling() {
   if (!nativeTerminalViewIsActive() || document.hidden || state.nativeTerminalScreenPending
     || state.nativeTerminalScreenTimer !== null || state.status?.capabilities?.nativeTerminalScreen !== true
-    || state.nativeTerminalScreen.state === 'choose') return;
+    || ['choose', 'interactive', 'detached'].includes(state.nativeTerminalScreen.state)) return;
   const delay = state.nativeTerminalScreen.state === 'ready' ? 0
     : state.nativeTerminalScreen.state === 'live' ? 1000 : 5000;
   state.nativeTerminalScreenTimer = window.setTimeout(() => {
@@ -4332,17 +4353,20 @@ function scheduleNativeTerminalScreenPolling() {
 function renderNativeTerminalScreen() {
   const screen = state.nativeTerminalScreen;
   const provider = providerLabel(screen.provider || taskProvider(state.selectedTaskForEvents || {}));
-  const hasScreen = ['live', 'stale'].includes(screen.state);
+  const interactive = screen.state === 'interactive';
+  const hasScreen = interactive || ['live', 'stale'].includes(screen.state);
   const output = elements.nativeTerminalScreenOutput;
   elements.nativeTerminalScreen.dataset.state = screen.state;
   elements.nativeTerminalScreen.setAttribute('aria-busy', String(state.nativeTerminalScreenPending && !hasScreen));
   elements.nativeTerminalScreenTitle.textContent = `${provider} · Original terminal`;
-  elements.nativeTerminalScreenState.textContent = screen.state === 'live' ? 'Live screen'
+  elements.nativeTerminalScreenState.textContent = interactive ? 'Interactive terminal'
+    : screen.state === 'live' ? 'Legacy session · read-only screen'
     : screen.state === 'stale' ? 'Last screen · reconnecting'
-      : screen.state === 'unavailable' ? 'Relay activity fallback'
+      : screen.state === 'unavailable' ? 'Terminal unavailable'
         : screen.state === 'choose' ? 'Choose terminal' : 'Connecting';
-  output.hidden = !hasScreen;
-  if (hasScreen && output.textContent !== screen.text && !textSelectionGuard.isActive()) {
+  output.hidden = !hasScreen || interactive;
+  if (elements.embeddedTerminal) elements.embeddedTerminal.hidden = !interactive;
+  if (hasScreen && !interactive && output.textContent !== screen.text && !textSelectionGuard.isActive()) {
     const follow = output.scrollHeight - output.clientHeight - output.scrollTop < 32;
     const scrollTop = output.scrollTop;
     output.textContent = screen.text;
@@ -4350,12 +4374,24 @@ function renderNativeTerminalScreen() {
   }
   elements.nativeTerminalScreenNotice.hidden = hasScreen;
   elements.nativeTerminalScreenNotice.querySelector('strong').textContent = screen.state === 'unavailable'
-    ? 'Using Relay activity' : screen.state === 'choose' ? 'Choose this task’s terminal' : 'Connecting to the original terminal';
+    ? 'Original terminal unavailable' : screen.state === 'detached' ? 'Terminal open in another view' : screen.state === 'choose' ? 'Choose this task’s terminal' : 'Connecting to the original terminal';
   elements.nativeTerminalScreenNotice.querySelector('span').textContent = screen.message
-    || 'The terminal screen appears here in CC Relay. Use the composer below to send a follow-up.';
+    || 'The original CLI session opens here. Click inside the terminal to type.';
   if (elements.originalTerminalOpen) {
     elements.originalTerminalOpen.textContent = terminalWindowIsDocked() ? 'Refresh screen' : 'Show original terminal';
     elements.originalTerminalOpen.disabled = terminalWindowIsDocked() && state.nativeTerminalScreenPending;
+    elements.originalTerminalOpen.hidden = interactive;
+  }
+  if (interactive && nativeTerminalViewIsActive() && !document.hidden) {
+    state.embeddedTerminalView ||= new EmbeddedTerminalView(elements.embeddedTerminal, {
+      onDisconnect: (message, code) => {
+        if (state.nativeTerminalScreen.transport !== 'pty') return;
+        state.nativeTerminalScreen = { ...state.nativeTerminalScreen,
+          state: code === 4001 ? 'detached' : 'connecting', message };
+        syncTerminalWindowSurface();
+      },
+    });
+    state.embeddedTerminalView.connect(screen);
   }
   const targetSignature = JSON.stringify(screen.targets || []);
   if (elements.nativeTerminalTargets && elements.nativeTerminalTargets.dataset.signature !== targetSignature) {
@@ -4406,13 +4442,16 @@ async function refreshNativeTerminalScreen(threadId = null) {
       timeoutMs: 10_000, signal: controller.signal,
     });
     if (sequence !== state.nativeTerminalScreenSequence || state.selectedTaskId !== taskId || !nativeTerminalViewIsActive()) return;
+    const interactive = terminal?.state === 'interactive' && terminal.transport === 'pty' && typeof terminal.launchId === 'string';
     const live = terminal?.state === 'live' && typeof terminal.text === 'string';
     const stale = !live && terminal?.state !== 'choose' && ['live', 'stale'].includes(previous.state);
     state.nativeTerminalScreen = {
       taskId,
       threadId: terminal?.threadId || selectedThreadId,
       requestedThreadId: selectedThreadId,
-      state: live ? 'live' : stale ? 'stale'
+      transport: terminal?.transport,
+      launchId: terminal?.launchId,
+      state: interactive ? 'interactive' : live ? 'live' : stale ? 'stale'
         : ['choose', 'connecting'].includes(terminal?.state) ? terminal.state : 'unavailable',
       text: live ? terminal.text.slice(-250_000) : stale ? previous.text : '',
       provider: terminal?.provider || previous.provider,
@@ -4444,23 +4483,26 @@ function syncTerminalWindowSurface() {
     state.nativeTerminalScreen = { ...state.nativeTerminalScreen, state: 'unavailable', text: '',
       message: 'The original terminal screen is unavailable. Use Relay activity below.' };
   }
-  const fallback = native && state.nativeTerminalScreen.state === 'unavailable';
-  if (native) elements.eventsSection.dataset.terminalSurface = fallback ? 'fallback' : 'native';
+  if (native) elements.eventsSection.dataset.terminalSurface = 'native';
   else delete elements.eventsSection.dataset.terminalSurface;
   elements.nativeTerminalScreen.hidden = !native;
-  elements.detailEvents.hidden = native && !fallback;
-  elements.eventOverview.hidden = native;
-  elements.thinkingVisibilityButton.hidden = native && !fallback;
+  elements.detailEvents.hidden = native;
+  elements.eventOverview.hidden = false;
+  elements.thinkingVisibilityButton.hidden = native;
   elements.copyEventsButton.hidden = false;
   elements.copyEventsButton.textContent = nativeTerminalCopyLabel();
-  elements.copyEventsButton.disabled = native && !fallback
-    ? !state.nativeTerminalScreen.text : state.visibleEventEntries.length === 0;
-  // The same task composer stays available in the in-app screen and the activity views.
+  elements.copyEventsButton.disabled = native
+    ? state.nativeTerminalScreen.state !== 'interactive' && !state.nativeTerminalScreen.text : state.visibleEventEntries.length === 0;
+  elements.eventsSection.dataset.terminalInteractive = String(native && state.nativeTerminalScreen.state === 'interactive');
+  // Real PTYs use the CLI's own composer. Relay's composer belongs to the activity views.
   elements.originalTerminalButton?.setAttribute('aria-pressed', String(state.terminalMode === 'native'));
   if (native) {
     renderNativeTerminalScreen();
     scheduleNativeTerminalScreenPolling();
-  } else stopNativeTerminalScreenPolling();
+  } else {
+    stopNativeTerminalScreenPolling();
+    state.embeddedTerminalView?.disconnect();
+  }
 }
 
 function useOriginalTerminal() {
@@ -5169,6 +5211,7 @@ function renderEventStream(events, task, {
     : `${visible.length} ${filterSummary} · ${grouped.length} total`;
   elements.eventSummary.title = `${visible.length} of ${grouped.length} signals · ${displayEvents.length} displayed events · ${events.length} provider events`;
   renderTerminalStatusBar(task);
+  const conversationTokens = taskTokenPresentation(task);
   elements.eventMetrics.innerHTML = `
     ${overview.runtimeMetric}
     ${stats.plan ? `<span class="has-plan"><b>${stats.plan.done}/${stats.plan.total}</b><small>plan steps</small></span>` : ''}
@@ -5179,7 +5222,11 @@ function renderEventStream(events, task, {
       <span class="has-token-input" title="${nativeTokenUsageTitle(throughput)}"><b>${Math.round(throughput.inputTokens).toLocaleString()}</b><small>input tokens</small></span>
       <span class="has-token-output" title="${nativeTokenUsageTitle(throughput)}"><b>${Math.round(throughput.outputTokens).toLocaleString()}</b><small>output tokens</small></span>
     ` : ''}
-    <span><b>${thinkingTokens.toLocaleString()}</b><small>thinking tokens</small></span>
+    ${!throughput && conversationTokens ? `
+      <span class="has-token-input"><b>${conversationTokens.inputTokens.toLocaleString()}</b><small>in</small></span>
+      <span class="has-token-output"><b>${conversationTokens.outputTokens.toLocaleString()}</b><small>out</small></span>
+    ` : ''}
+    <span><b>${thinkingTokens.toLocaleString()}</b><small>thinking</small></span>
     <span><b>${stats.commands}</b><small>commands</small></span>
     <span><b>${stats.files}</b><small>file changes</small></span>
     <span class="has-user-messages"><b>${messageCounts.user}</b><small>sent</small></span>
@@ -5393,7 +5440,7 @@ function turboFleetMarkup(task) {
 }
 
 function taskCardDurationLabel(task) {
-  return taskDurationLabel(task).replace(/^Took /, '');
+  return taskDurationLabel(task).replace(/^(?:Took|Running) /, '');
 }
 
 function taskTokenMetricsMarkup(presentation, className = 'task-token-metrics') {
@@ -6248,7 +6295,7 @@ function renderEffortSelection(efforts, effort) {
   const effortValues = efforts.map((item) => item.reasoningEffort);
   const effortIndex = Math.max(0, effortValues.indexOf(effort));
   elements.effortSelect.setAttribute('aria-valuetext', effort ? `${effort} effort` : 'Unavailable');
-  elements.effortSliderValue.textContent = effort ? `${effort} effort` : 'Unavailable';
+  elements.effortSliderValue.textContent = effort ? effort : 'Unavailable';
   for (const [index, marker] of [...elements.effortSliderSteps.children].entries()) {
     marker.classList.toggle('active', index === effortIndex);
   }
@@ -7333,6 +7380,7 @@ function selectMode(mode, { focus = false } = {}) {
   if (!['execute', 'turbo'].includes(mode)) {
     return;
   }
+  elements.formMessage.textContent = '';
   state.taskMode = mode;
   if (mode !== 'execute') {
     state.planSettings.enabled = false;
@@ -7595,6 +7643,7 @@ function renderHeaderRunningTasks() {
         ${monitor.terminalSession ? 'data-terminal-session="true"' : ''}
         aria-label="${escapeHtml(accessibleLabel)}"
       >
+        <span class="header-running-initial" aria-hidden="true">${escapeHtml(project.slice(0, 1).toUpperCase())}</span>
         <span class="header-running-meta">
           <i aria-hidden="true"></i>
           <b>#${String(task.id).padStart(3, '0')}</b>
@@ -7602,7 +7651,7 @@ function renderHeaderRunningTasks() {
           <span class="header-running-loc">${escapeHtml(relay)}</span>
           ${throughput ? `<span class="header-running-token-speed" data-header-token-speed="${task.id}" title="${tokenSpeedTitle(throughput)}">${throughput.rateLabel} tokens/s</span>` : ''}
           ${taskTokenMetricsMarkup(tokenUsage, 'header-running-token-usage')}
-          <time data-header-running-duration="${task.id}">${escapeHtml(taskDurationLabel(task))}</time>
+          <time data-header-running-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</time>
         </span>
         <strong class="header-running-prompt" title="${escapeHtml(`${project} · ${taskDisplayName(task)}`)}">
           <span class="header-running-project" title="${escapeHtml(task.repo_path)}">${escapeHtml(project)}</span>
@@ -8123,23 +8172,6 @@ function renderTasks() {
           </div>
         ` : ''}
         <div class="task-topline">
-          <span class="task-identity">
-            ${batchable ? `<input class="parallel-task-check" type="checkbox" aria-label="Select task ${task.id} for parallel Codex execution" ${state.parallelTaskIds.has(task.id) ? 'checked' : ''}>` : ''}
-            ${reorderable ? '<span class="drag-grip" draggable="true" role="button" tabindex="0" aria-label="Drag task to reorder">⠿</span>' : ''}
-            ${agentBadgeMarkup(task, 'task-agent-icon')}
-            <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
-            ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>${manualSessionCard ? 'Terminal' : 'Session'} · ${escapeHtml(sessionWord)}</span>` : ''}
-            ${unread && (!operationalQueue || starred) ? '<span class="task-unread-marker">Ready for review</span>' : ''}
-            ${task.continued_from_task_id ? `<span class="task-parent-link">↳ #${String(task.continued_from_task_id).padStart(3, '0')}</span>` : ''}
-          </span>
-          <span class="task-top-actions">
-            ${assignmentTargets.length ? `<button class="task-assign-button" type="button" data-show-assignment aria-expanded="${state.assigningTaskId === task.id}">Assign</button>` : ''}
-            ${reorderControls}
-            ${turboMarker ? `<span class="turbo-plan-marker turbo-plan-marker-${escapeHtml(turboMarker.phase)}" title="${escapeHtml(turboMarker.label)}" aria-label="Turbo stage: ${escapeHtml(turboMarker.label)}">${escapeHtml(turboMarker.label)}</span>` : ''}
-            <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
-          </span>
-        </div>
-        <div class="task-name-row" data-editing="${Boolean(renameState)}">
           ${taskStarringSupported() ? `
             <button
               class="task-star-button"
@@ -8151,6 +8183,25 @@ function renderTasks() {
               ${starSaving ? 'disabled' : ''}
             ><span class="sr-only">${starred ? 'Unstar' : 'Star'}</span></button>
           ` : ''}
+          <span class="task-identity">
+            ${batchable ? `<input class="parallel-task-check" type="checkbox" aria-label="Select task ${task.id} for parallel Codex execution" ${state.parallelTaskIds.has(task.id) ? 'checked' : ''}>` : ''}
+            ${reorderable ? '<span class="drag-grip" draggable="true" role="button" tabindex="0" aria-label="Drag task to reorder">⠿</span>' : ''}
+            ${agentBadgeMarkup(task, 'task-agent-icon')}
+            <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
+            ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>${manualSessionCard ? 'Terminal' : 'Session'} · ${escapeHtml(sessionWord)}</span>` : ''}
+            ${unread && (!operationalQueue || starred) ? '<span class="task-unread-marker">Ready for review</span>' : ''}
+            ${task.continued_from_task_id ? `<span class="task-parent-link">↳ #${String(task.continued_from_task_id).padStart(3, '0')}</span>` : ''}
+          </span>
+          <span class="task-footer-execution" data-provider="${escapeHtml(taskProvider(task))}" title="${escapeHtml(taskRelayLabel(task))}"><span class="task-relay-name ${turboOwner ? turboOwner.className : relayColorClass(task.thread_id)}">${escapeHtml(turboOwner ? `${turboOwner.role} ${turboOwner.label}` : `${providerLabel(taskProvider(task))}${task.thread_id ? ` · ${task.thread_id.slice(0, 7)}` : ''}`)}</span><span aria-hidden="true"> · </span>${escapeHtml(taskCardExecutionLabel(task))}</span>
+          <span class="task-top-actions">
+            ${assignmentTargets.length ? `<button class="task-assign-button" type="button" data-show-assignment aria-expanded="${state.assigningTaskId === task.id}">Assign</button>` : ''}
+            ${reorderControls}
+            ${turboMarker ? `<span class="turbo-plan-marker turbo-plan-marker-${escapeHtml(turboMarker.phase)}" title="${escapeHtml(turboMarker.label)}" aria-label="Turbo stage: ${escapeHtml(turboMarker.label)}">${escapeHtml(turboMarker.label)}</span>` : ''}
+            <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
+          </span>
+        </div>
+        <div class="task-name-row" data-editing="${Boolean(renameState)}">
+
           ${renameState ? `
             <form class="task-inline-rename" data-task-title-form aria-label="Rename task ${task.id}">
               <input
@@ -8188,12 +8239,11 @@ function renderTasks() {
           </div>
         ` : ''}
         <div class="task-footer">
-          <span class="task-footer-execution"><span class="task-relay-name ${turboOwner ? turboOwner.className : relayColorClass(task.thread_id)}">${escapeHtml(turboOwner ? `${turboOwner.role} ${turboOwner.label}` : taskRelayLabel(task))}</span><span aria-hidden="true"> · </span>${escapeHtml(taskCardExecutionLabel(task))}</span>
           <span class="task-footer-metrics">
             ${taskTokenMetricsMarkup(tokenUsage)}
             <span class="task-footer-timing"><span class="task-duration" data-task-duration="${task.id}">${escapeHtml(taskCardDurationLabel(task))}</span></span>
           </span>
-          <span class="task-footer-dates">${taskLifecycleDatesMarkup(task)}</span>
+          <span class="task-footer-dates">${taskCardDatesMarkup(task)}</span>
         </div>
       </article>
     `;
@@ -8562,7 +8612,7 @@ function refreshTaskDurations() {
   for (const element of elements.headerRunningMonitor.querySelectorAll('[data-header-running-duration]')) {
     const task = runningById.get(Number(element.dataset.headerRunningDuration));
     if (task) {
-      element.textContent = taskDurationLabel(task);
+      element.textContent = taskCardDurationLabel(task);
     }
   }
   for (const element of elements.headerRunningMonitor.querySelectorAll('[data-header-token-speed]')) {
@@ -9612,6 +9662,12 @@ function taskDetailSnapshotSignature(task) {
 async function selectTask(taskId, { openOriginal = true } = {}) {
   const requestSequence = ++state.taskLoadSequence;
   const eventTaskChanged = state.eventTaskId !== taskId;
+  if (eventTaskChanged) {
+    state.terminalMode = 'native';
+    state.inlineEventFilter = 'all';
+    state.eventFilter = 'all';
+    setTerminalWindowView('all', { persist: false, render: false });
+  }
   state.selectedTaskId = taskId;
   // Polling refreshes the selected task periodically. Clearing clipboard state on
   // every pass made the buttons visibly blink and briefly impossible to click. Only a
@@ -9670,6 +9726,9 @@ async function selectTask(taskId, { openOriginal = true } = {}) {
   const detailButtonLabel = task.mode === 'plan' ? 'Council details' : manualSessionSurface ? 'Session details' : 'Full details';
   elements.taskDetail.dataset.sessionMode = String(manualSessionSurface);
   elements.detailTitle.textContent = taskTitle;
+  const detailStatus = document.querySelector('#detail-status');
+  detailStatus.className = `task-status status-${task.status}`;
+  detailStatus.textContent = task.status;
   elements.detailTaskName.textContent = taskInspectorDefinition(task);
   elements.detailTaskName.title = taskInspectorDefinition(task);
   elements.detailExecutionProfile.innerHTML = `
@@ -9678,6 +9737,8 @@ async function selectTask(taskId, { openOriginal = true } = {}) {
       ${escapeHtml(providerLabel(taskProvider(task)))}
     </span>
     <strong>${escapeHtml(executionLabel(task))}</strong>
+    <span>· ${escapeHtml(workspaceName(task.repo_path))}</span>
+    <span>· ${task.started_at ? 'started' : 'created'} ${escapeHtml(formatCardTime(task.started_at || task.created_at))}</span>
   `;
   elements.taskDetailModalTitle.textContent = taskTitle;
   elements.taskDetailModalSubtitle.textContent = `${providerLabel(taskProvider(task))} · ${executionLabel(task)} · ${workspaceName(task.repo_path)} · ${task.status}`;
@@ -9938,6 +9999,9 @@ async function loadSnapshot() {
   hydrateThreadExecutionSettings(state, state.tasks);
   renderProviderTabs();
   renderExecutionControls();
+  // A cached active project can skip selectProject's mode render during startup.
+  // Refresh the automatic controls after capabilities and project limits are known.
+  if (usesDisposableTerminalPools()) renderAutomaticTerminalPool();
   const launcherEnabled = state.status?.capabilities?.projectLauncher === true;
   elements.launchCodexButton.disabled = !launcherEnabled || providerIsMissing('codex');
   elements.launchClaudeButton.disabled = !launcherEnabled || providerIsMissing('claude');
@@ -10120,11 +10184,10 @@ function selectProvider(provider, { focus = false } = {}) {
 // project whose window layout and completion alerts are being edited.
 function renderTerminalSettingsHeader() {
   const project = activeProject();
-  elements.connectionHelpTitle.textContent = project
-    ? `${project.name} terminal settings`
-    : 'Project terminal settings';
+  elements.connectionHelpTitle.textContent = 'Terminal settings';
+  document.querySelector('#terminal-settings-project').textContent = project ? `Project · ${project.name}` : 'Project settings';
   elements.connectionHelpCopy.textContent = project
-    ? `Window layout and completion alerts are saved for ${project.name}. You can copy the layout to every pinned project.`
+    ? 'Window layout, completion alerts, and composer quick actions.'
     : 'Choose a pinned project before changing terminal settings.';
 }
 
@@ -10200,9 +10263,10 @@ function renderAutomaticTerminalPool() {
   if (providerIsMissing('codex')) elements.maxCodexInstances.disabled = true;
   if (providerIsMissing('claude')) elements.maxClaudeInstances.disabled = true;
   if (providerIsMissing('opencode')) elements.maxOpenCodeInstances.disabled = true;
-  elements.codexPoolUsage.textContent = `${Number(active.codex || 0)} active · max ${limits.codex}`;
-  elements.claudePoolUsage.textContent = `${Number(active.claude || 0)} active · max ${limits.claude}`;
-  elements.openCodePoolUsage.textContent = `${Number(active.opencode || 0)} active · max ${limits.opencode}`;
+  elements.codexPoolUsage.textContent = `${Number(active.codex || 0)}/${limits.codex}`;
+  elements.claudePoolUsage.textContent = `${Number(active.claude || 0)}/${limits.claude}`;
+  elements.openCodePoolUsage.textContent = `${Number(active.opencode || 0)}/${limits.opencode}`;
+  document.querySelector('#agent-pool-summary').textContent = `${['codex', 'claude', 'opencode'].reduce((sum, provider) => sum + Number(active[provider] || 0), 0)} of ${limits.codex + limits.claude + limits.opencode} slots active`;
 
   if (!project) {
     elements.sessionMessage.textContent = 'Choose a pinned project to configure its automatic terminal instances.';
@@ -10220,6 +10284,7 @@ function renderAutomaticTerminalPool() {
       : `New ${providerLabel(state.selectedProvider)} tasks launch disposable terminals in ${project.name}.`;
   }
 
+  syncNumberSteppers();
   renderProviderTabs();
   renderPlanControls();
   renderTurboControls();
@@ -12940,7 +13005,7 @@ elements.historyNext.addEventListener('click', () => {
   renderTasks();
 });
 function constrainPanelWidths(composer, queue) {
-  const available = Math.max(elements.workspace.clientWidth - 16, 0);
+  const available = Math.max(elements.workspace.clientWidth, 0);
   const minimumQueue = 360;
   const minimumComposer = 400;
   const minimumDetail = 420;
@@ -12956,9 +13021,9 @@ function constrainPanelWidths(composer, queue) {
 
 function applyPanelWidths({ persist = false } = {}) {
   if (!Number.isFinite(state.panelWidths.queue)) {
-    const available = Math.max(elements.workspace.clientWidth - 16, 0);
+    const available = Math.max(elements.workspace.clientWidth, 0);
     state.panelWidths.queue = Number.isFinite(state.panelWidths.legacyDetail)
-      ? available - 48 - state.panelWidths.composer - state.panelWidths.legacyDetail
+      ? available - 64 - state.panelWidths.composer - state.panelWidths.legacyDetail
       : 440;
   }
   state.panelWidths = constrainPanelWidths(state.panelWidths.composer, state.panelWidths.queue);
@@ -12967,10 +13032,10 @@ function applyPanelWidths({ persist = false } = {}) {
   elements.composerQueueResizer.setAttribute('aria-valuenow', String(Math.round(state.panelWidths.composer)));
   elements.queueDetailResizer.setAttribute('aria-valuenow', String(Math.round(state.panelWidths.queue)));
   elements.composerQueueResizer.setAttribute('aria-valuemin', '400');
-  elements.composerQueueResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(400, elements.workspace.clientWidth - state.panelWidths.queue - 436))));
+  elements.composerQueueResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(400, elements.workspace.clientWidth - state.panelWidths.queue - 420))));
   elements.composerQueueResizer.setAttribute('aria-valuetext', `Prompt panel ${Math.round(state.panelWidths.composer)} pixels wide`);
   elements.queueDetailResizer.setAttribute('aria-valuemin', '360');
-  elements.queueDetailResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(360, elements.workspace.clientWidth - state.panelWidths.composer - 436))));
+  elements.queueDetailResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(360, elements.workspace.clientWidth - state.panelWidths.composer - 420))));
   elements.queueDetailResizer.setAttribute('aria-valuetext', `Task queue ${Math.round(state.panelWidths.queue)} pixels wide`);
   if (persist) {
     queueUiPreferencesSave();
@@ -13086,7 +13151,8 @@ function applyTerminalHeight({ persist = false } = {}) {
     elements.taskDetail.style.removeProperty('--event-terminal-height');
     return;
   }
-  const maximum = Math.max(180, elements.taskDetail.clientHeight - 150);
+  const headerHeight = elements.taskDetail.querySelector?.('.detail-header')?.getBoundingClientRect().height || 100;
+  const maximum = Math.max(180, elements.taskDetail.clientHeight - Math.max(100, headerHeight));
   if (!state.terminalHeight) {
     elements.taskDetail.style.removeProperty('--event-terminal-height');
     // Docked in the Terminal window the section sits outside the detail grid, so its
@@ -13176,6 +13242,30 @@ for (const input of [
     input.blur();
   });
 }
+function syncNumberSteppers() {
+  for (const button of document.querySelectorAll('[data-step-input]')) {
+    const input = document.getElementById(button.dataset.stepInput);
+    button.disabled = input.disabled || (Number(button.dataset.step) < 0
+      ? Number(input.value) <= Number(input.min)
+      : Number(input.value) >= Number(input.max));
+  }
+}
+
+document.querySelectorAll('[data-step-input]').forEach((button) => {
+  const input = document.getElementById(button.dataset.stepInput);
+  button.addEventListener('click', () => {
+    if (input.disabled) return;
+    const before = input.value;
+    if (Number(button.dataset.step) < 0) input.stepDown();
+    else input.stepUp();
+    if (input.value !== before) input.dispatchEvent(new Event('change', { bubbles: true }));
+    syncNumberSteppers();
+  });
+  input.addEventListener('change', syncNumberSteppers);
+  new MutationObserver(syncNumberSteppers).observe(input, { attributes: true, attributeFilter: ['disabled', 'min', 'max'] });
+});
+syncNumberSteppers();
+
 elements.maxCodexInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.maxClaudeInstances.addEventListener('change', saveProjectInstanceLimits);
 elements.maxOpenCodeInstances.addEventListener('change', saveProjectInstanceLimits);
@@ -13687,6 +13777,7 @@ elements.terminalSettingsButton.addEventListener('click', () => {
   elements.terminalSettingsModal.showModal();
   void refreshVoiceInputDevices({ requestPermission: state.voiceInputPreferences.enabled });
 });
+document.querySelector('#terminal-settings-done').addEventListener('click', () => elements.terminalSettingsModal.close());
 elements.terminalSettingsClose.addEventListener('click', () => {
   elements.terminalSettingsModal.close();
 });
@@ -13897,6 +13988,7 @@ window.addEventListener('blur', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') {
     stopNativeTerminalScreenPolling();
+    state.embeddedTerminalView?.disconnect();
     state.activeVoiceShortcut = null;
     voiceRecorder?.release();
   } else if (nativeTerminalViewIsActive()) void refreshNativeTerminalScreen();
@@ -14095,6 +14187,7 @@ for (const button of elements.eventFilters) {
     // records the selection it will return to and leaves state.eventFilter alone.
     state.terminalMode = 'activity';
     queueUiPreferencesSave();
+    if (elements.eventMoreViews) elements.eventMoreViews.open = false;
     state.inlineEventFilter = button.dataset.eventFilter;
     if (!terminalWindowIsDocked()) state.eventFilter = state.inlineEventFilter;
     renderEventStream(state.selectedTaskEvents, state.selectedTaskForEvents);
@@ -14120,7 +14213,12 @@ elements.terminalWindowModal.addEventListener('click', (event) => {
  * open. The section is undocked here, synchronously, before the browser hides the
  * dialog; the close listener is the fallback for any programmatic close.
  */
-elements.terminalWindowModal.addEventListener('cancel', () => {
+elements.terminalWindowModal.addEventListener('cancel', (event) => {
+  if (state.nativeTerminalScreen.state === 'interactive'
+    && document.activeElement?.closest?.('#embedded-terminal')) {
+    event.preventDefault();
+    return;
+  }
   undockTerminalWindow();
 });
 elements.terminalWindowModal.addEventListener('close', () => {
@@ -14173,7 +14271,8 @@ elements.continuationInput.addEventListener('keydown', (event) => {
 
 elements.copyEventsButton.addEventListener('click', async () => {
   const text = nativeTerminalCopyLabel() === 'Copy screen'
-    ? elements.nativeTerminalScreenOutput.textContent : state.visibleEventEntries
+    ? (state.nativeTerminalScreen.transport === 'pty'
+      ? state.embeddedTerminalView?.text() || '' : elements.nativeTerminalScreenOutput.textContent) : state.visibleEventEntries
       .map((entry) => eventCopyText(entry, state.selectedTaskForEvents))
       .join('\n\n');
   try {

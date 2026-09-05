@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
+import { EmbeddedTerminalHost } from './embedded-terminal.mjs';
+import { attachTerminalWebSockets } from './terminal-websocket.mjs';
 import { dirname, extname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ArtifactStore, isPathInside } from './artifacts.mjs';
@@ -137,6 +140,7 @@ let relayEndpointUrl = null;
 
 const diagnostics = new DiagnosticLog(join(DATA_ROOT, 'relay-diagnostics.jsonl'));
 const diagnostic = (event, details) => diagnostics.write(event, details);
+const embeddedTerminalHost = new EmbeddedTerminalHost();
 const voiceInput = new VoiceInputService({ dataRoot: DATA_ROOT, diagnostic });
 const claudeHookBridge = new ClaudeHookBridge({
   endpoint: () => relayEndpointUrl,
@@ -181,6 +185,7 @@ const resolveClaudeTerminal = async (session) => {
   if (!session || session.provider !== 'claude' || !session.id) return null;
   const owned = projectLauncher.terminalForThread(session.id);
   if (!owned || owned.provider !== 'claude') return null;
+  if (owned.transport === 'pty') return projectLauncher.resolveEmbeddedClaudeTerminal(session);
   const [native] = await terminalRuntimeResolver.resolve([{
     id: session.id,
     provider: 'claude',
@@ -201,6 +206,7 @@ const resolveClaudeTerminal = async (session) => {
   };
 };
 const claudeExecution = new ClaudeExecutionRunner({
+  embeddedTerminalHost,
   sessions: claudeSessions,
   command: claudeBinaryPath,
   platform: process.platform,
@@ -259,6 +265,7 @@ async function idleSessionCandidates(task) {
 }
 
 const projectLauncher = new ProjectLauncher({
+  embeddedTerminalHost,
   diagnostic,
   launchRegistry: launchOwnership,
   claudeBinary: claudeBinaryPath,
@@ -1051,10 +1058,17 @@ function standupSourceFromRequest(body) {
   };
 }
 
+const require = createRequire(import.meta.url);
+const terminalAssets = new Map([
+  ['/vendor/xterm.js', require.resolve('@xterm/xterm')],
+  ['/vendor/xterm.css', join(dirname(require.resolve('@xterm/xterm/package.json')), 'css/xterm.css')],
+  ['/vendor/addon-fit.js', require.resolve('@xterm/addon-fit')],
+]);
+
 function serveStatic(pathname, response) {
   const requested = pathname === '/' ? '/index.html' : pathname;
-  const filePath = resolve(PUBLIC_ROOT, `.${requested}`);
-  if (!isPathInside(PUBLIC_ROOT, filePath) || !existsSync(filePath) || !statSync(filePath).isFile()) {
+  const filePath = terminalAssets.get(requested) || resolve(PUBLIC_ROOT, `.${requested}`);
+  if ((!terminalAssets.has(requested) && !isPathInside(PUBLIC_ROOT, filePath)) || !existsSync(filePath) || !statSync(filePath).isFile()) {
     sendError(response, 404, 'Not found.');
     return;
   }
@@ -1310,7 +1324,8 @@ export const server = createServer(async (request, response) => {
           projectQueueIsolation: true,
           queueReorder: true,
           projectLauncher: true,
-          nativeTerminalScreen: process.platform === 'darwin',
+          nativeTerminalScreen: ['darwin', 'win32'].includes(process.platform),
+          embeddedTerminal: ['darwin', 'win32'].includes(process.platform),
           originalTerminal: ['darwin', 'win32'].includes(process.platform),
           terminalControl: true,
           parallelCodexBatch: true,
@@ -3402,6 +3417,10 @@ export const server = createServer(async (request, response) => {
   }
 });
 
+const closeTerminalWebSockets = attachTerminalWebSockets(server, {
+  terminals: taskOriginalTerminal, host: embeddedTerminalHost,
+});
+
 let resolveServerReady;
 let rejectServerReady;
 export const serverReady = new Promise((resolveReady, rejectReady) => {
@@ -3492,6 +3511,7 @@ server.listen(PORT, HOST, () => {
 });
 
 export async function shutdown() {
+  closeTerminalWebSockets();
   if (manualSessionTerminalCheckTimer) {
     clearInterval(manualSessionTerminalCheckTimer);
     manualSessionTerminalCheckTimer = null;

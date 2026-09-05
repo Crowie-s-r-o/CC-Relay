@@ -1282,6 +1282,7 @@ export class ClaudeExecutionRunner {
     requestAttention = null,
     hookBridge = null,
     terminalExecutor = null,
+    embeddedTerminalHost = null,
     terminateProcess = terminateChildProcess,
     diagnostic = () => {},
   } = {}) {
@@ -1303,6 +1304,7 @@ export class ClaudeExecutionRunner {
         resolveTerminal,
         requestAttention,
         hookBridge,
+        embeddedTerminalHost,
         diagnostic,
       });
     this.activeByTask = new Map();
@@ -1692,13 +1694,12 @@ export class ClaudeExecutionRunner {
   // so a failed injection cannot double-execute the turn.
   async resolveTerminalTarget(session, active) {
     if (active.cancelRequested) return null;
-    if (this.platform !== 'darwin') return null;
     if (typeof this.resolveTerminal !== 'function') return null;
     try {
       const terminal = await this.resolveTerminal(session);
-      if (terminal
-        && Number.isInteger(terminal.terminalWindowId)
-        && terminal.terminalWindowId > 0) {
+      if (terminal && ((terminal.transport === 'pty' && typeof terminal.terminalId === 'string'
+        && terminal.terminalId.startsWith('pty:')) || (this.platform === 'darwin'
+        && Number.isInteger(terminal.terminalWindowId) && terminal.terminalWindowId > 0))) {
         return terminal;
       }
     } catch {

@@ -6,6 +6,9 @@ type: index
 
 # CC Relay Wiki
 
+- [[embedded-original-terminal]]
+- [[embedded-terminal-review]]
+
 - [[trading-research-task-routing]]
 
 - [[../FEATURES|CC Relay Features]]

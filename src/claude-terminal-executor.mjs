@@ -1,3 +1,5 @@
+import { isEmbeddedTerminalTarget, terminalInputTarget } from './embedded-terminal.mjs';
+import { cmdQuote } from './project-launcher.mjs';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -819,19 +821,21 @@ export function claudeTerminalRelaunchCommand({
   tools = [],
   addDirectories = [],
   settings = null,
+  platform = process.platform,
 } = {}) {
+  const quote = platform === 'win32' ? cmdQuote : shellQuote;
   return [
-    shellQuote(command),
+    quote(command),
     ...(permissionMode
-      ? ['--permission-mode', shellQuote(permissionMode)]
+      ? ['--permission-mode', quote(permissionMode)]
       : ['--dangerously-skip-permissions']),
     resumed ? '--resume' : '--session-id',
-    shellQuote(sessionId),
-    ...(model ? ['--model', shellQuote(model)] : []),
-    ...(effort ? ['--effort', shellQuote(effort)] : []),
-    ...(tools.length ? ['--tools', shellQuote(tools.join(','))] : []),
-    ...addDirectories.flatMap((directory) => ['--add-dir', shellQuote(directory)]),
-    ...(settings ? ['--settings', shellQuote(JSON.stringify(settings))] : []),
+    quote(sessionId),
+    ...(model ? ['--model', quote(model)] : []),
+    ...(effort ? ['--effort', quote(effort)] : []),
+    ...(tools.length ? ['--tools', quote(tools.join(','))] : []),
+    ...addDirectories.flatMap((directory) => ['--add-dir', quote(directory)]),
+    ...(settings ? ['--settings', quote(JSON.stringify(settings))] : []),
   ].join(' ');
 }
 
@@ -846,6 +850,7 @@ export class ClaudeTerminalExecutor {
     resolveTerminal = null,
     requestAttention = null,
     hookBridge = null,
+    embeddedTerminalHost = null,
     inject = defaultInject,
     submit = submitHeldTerminalPaste,
     relaunch = defaultRelaunch,
@@ -944,14 +949,19 @@ export class ClaudeTerminalExecutor {
     this.resolveTerminal = resolveTerminal;
     this.requestAttention = requestAttention;
     this.hookBridge = hookBridge;
-    this.inject = inject;
-    this.submit = submit;
-    this.relaunch = relaunch;
+    const dispatch = (native, embedded) => (target, ...args) => {
+      if (!isEmbeddedTerminalTarget(target)) return native(target, ...args);
+      if (!embeddedTerminalHost) throw new Error('Embedded terminal transport is unavailable.');
+      return embedded(target, ...args);
+    };
+    this.inject = dispatch(inject, (target, text) => embeddedTerminalHost.input(target, `${bracketedPastePayload(text)}\r`));
+    this.submit = dispatch(submit, (target) => embeddedTerminalHost.input(target, ' \r'));
+    this.relaunch = dispatch(relaunch, (target, command) => embeddedTerminalHost.input(target, `${command}\r`));
     this.terminateProcess = terminateProcess;
     this.isProcessAlive = isProcessAlive;
-    this.sendCancel = sendCancel;
-    this.readScreen = readScreen;
-    this.sendKeys = sendKeys;
+    this.sendCancel = dispatch(sendCancel, (target) => embeddedTerminalHost.input(target, '\x1b'));
+    this.readScreen = dispatch(readScreen, (target) => embeddedTerminalHost.readScreen(target.slice(4)));
+    this.sendKeys = dispatch(sendKeys, (target, keys) => embeddedTerminalHost.input(target, `${keys}\r`));
     this.openTranscript = openTranscript;
     this.wait = wait;
     this.now = now;
@@ -1105,7 +1115,7 @@ export class ClaudeTerminalExecutor {
       await this.ensureComposerScreen(
         task,
         active,
-        activeTerminal.terminalWindowId,
+        terminalInputTarget(activeTerminal),
         this.now() + (preapplied
           ? Math.max(this.readinessTimeoutMs, this.relaunchTimeoutMs)
           : this.readinessTimeoutMs),
@@ -1119,7 +1129,7 @@ export class ClaudeTerminalExecutor {
       await this.normalizeComposerBeforePaste(
         task,
         active,
-        activeTerminal.terminalWindowId,
+        terminalInputTarget(activeTerminal),
         onEvent,
         screens,
       );
@@ -1133,7 +1143,7 @@ export class ClaudeTerminalExecutor {
       const reader = createTranscriptReader(source, injectionOffset);
 
       try {
-        await this.inject(activeTerminal.terminalWindowId, prompt);
+        await this.inject(terminalInputTarget(activeTerminal), prompt);
       } catch (error) {
         // A do script osascript timeout can fire after Terminal.app already delivered and
         // processed the Apple Event, so the prompt may have been submitted. Never auto-retry
@@ -1147,7 +1157,7 @@ export class ClaudeTerminalExecutor {
       this.recordDiagnostic('task.claude.terminal.prompt_injected', {
         taskId: task.id ?? null,
         threadId: sessionId,
-        terminalWindowId: activeTerminal.terminalWindowId,
+        terminalWindowId: terminalInputTarget(activeTerminal),
         transcriptPath: source.path || null,
         transcriptInitiallyAbsent: initialTranscriptState === 'absent',
         injectionOffset,
@@ -1618,7 +1628,7 @@ export class ClaudeTerminalExecutor {
       settings: hookSettings,
     });
     try {
-      await this.relaunch(terminal.terminalWindowId, command);
+      await this.relaunch(terminalInputTarget(terminal), command);
     } catch (error) {
       throw new ClaudeExecutionError(
         `CC Relay could not confirm Claude restarted in the ${task.thread_name || sessionId} terminal with the selected model and effort: ${error.message}. The launch command may already have run, so CC Relay will not send it again or type the prompt. Check the terminal before retrying.`,
@@ -1663,7 +1673,7 @@ export class ClaudeTerminalExecutor {
           fresh = null;
         }
         if (fresh) {
-          const moved = fresh.terminalWindowId !== terminal.terminalWindowId
+          const moved = terminalInputTarget(fresh) !== terminalInputTarget(terminal)
             || (terminal.terminalTty && fresh.terminalTty && fresh.terminalTty !== terminal.terminalTty);
           if (moved) {
             throw new ClaudeExecutionError(
@@ -1685,7 +1695,7 @@ export class ClaudeTerminalExecutor {
           // the session already registers as idle, and CC Relay pasted a council prompt straight
           // into that dialog. Require a positively recognized composer, resolve the one dialog
           // CC Relay understands, and keep polling for anything else.
-          const screen = await this.inspectTerminalScreen(fresh.terminalWindowId);
+          const screen = await this.inspectTerminalScreen(terminalInputTarget(fresh));
           // The snapshot is an await inside a loop that can run for the whole relaunch window. A
           // cancel that lands here must stop CC Relay from answering a dialog, from announcing a
           // terminal ready, and from proceeding to type, for work the user abandoned. Nothing has
@@ -1694,13 +1704,13 @@ export class ClaudeTerminalExecutor {
             throw new ClaudeExecutionError('Task cancelled.', { cancelled: true });
           }
           if (screen.ok && screen.classification === 'trust-dialog') {
-            await this.resolveTrustDialogScreen(task, fresh.terminalWindowId, onEvent, screens);
+            await this.resolveTrustDialogScreen(task, terminalInputTarget(fresh), onEvent, screens);
             // Re-prove process identity, idle status, and screen state after the prompt closes.
             await this.wait(this.restartPollMs);
             continue;
           }
           if (screen.ok && screen.classification === 'resume-picker') {
-            await this.resolveResumePickerScreen(task, fresh.terminalWindowId, onEvent, screens);
+            await this.resolveResumePickerScreen(task, terminalInputTarget(fresh), onEvent, screens);
             // Re-verify the pid, the idle status, AND the screen from scratch on the next pass.
             // Nothing about this terminal is assumed to have survived answering a dialog.
             await this.wait(this.restartPollMs);
@@ -1899,7 +1909,7 @@ export class ClaudeTerminalExecutor {
         { retryable: true },
       );
     }
-    const mismatch = fresh.terminalWindowId !== terminal.terminalWindowId
+    const mismatch = terminalInputTarget(fresh) !== terminalInputTarget(terminal)
       || (terminal.terminalTty && fresh.terminalTty && fresh.terminalTty !== terminal.terminalTty)
       || (terminal.runtimeProcessId && fresh.runtimeProcessId && fresh.runtimeProcessId !== terminal.runtimeProcessId);
     if (mismatch) {
@@ -1988,7 +1998,7 @@ export class ClaudeTerminalExecutor {
       throw fail('That Claude turn is no longer working. Send the message again as a normal continuation after the task finishes.');
     }
     let activeTerminal = verified.terminal;
-    const screen = await this.inspectTerminalScreen(activeTerminal.terminalWindowId);
+    const screen = await this.inspectTerminalScreen(terminalInputTarget(activeTerminal));
     if (!screen.ok) {
       throw fail(`CC Relay could not read the exact ${sessionName} terminal before typing. Your live update was not sent.`);
     }
@@ -2072,7 +2082,7 @@ export class ClaudeTerminalExecutor {
         }
         activeTerminal = verified.terminal;
 
-        const blockingScreen = await this.inspectTerminalScreen(activeTerminal.terminalWindowId);
+        const blockingScreen = await this.inspectTerminalScreen(terminalInputTarget(activeTerminal));
         if (accepted()) return request.result();
         if (!blockingScreen.ok || blockingScreen.classification !== 'composer') {
           stableReads = 0;
@@ -2101,7 +2111,7 @@ export class ClaudeTerminalExecutor {
 
         request.blockingComposerSubmitAttempts += 1;
         try {
-          await this.submit(activeTerminal.terminalWindowId);
+          await this.submit(terminalInputTarget(activeTerminal));
         } catch (error) {
           await waitWithinAcceptance(acceptanceRemainingMs());
           if (accepted()) return request.result();
@@ -2118,7 +2128,7 @@ export class ClaudeTerminalExecutor {
       }
 
       if (!composerCleared) {
-        const after = await this.inspectTerminalScreen(activeTerminal.terminalWindowId);
+        const after = await this.inspectTerminalScreen(terminalInputTarget(activeTerminal));
         const afterComposer = after.ok && after.classification === 'composer'
           ? claudeComposerContent(after.text)
           : { found: false, text: '' };
@@ -2169,7 +2179,7 @@ export class ClaudeTerminalExecutor {
 
     request.injectionStarted = true;
     try {
-      await this.inject(activeTerminal.terminalWindowId, request.deliveredPrompt);
+      await this.inject(terminalInputTarget(activeTerminal), request.deliveredPrompt);
     } catch (error) {
       await waitForAcknowledgement(this.steerAcceptanceTimeoutMs);
       if (accepted()) return request.result();
@@ -2220,7 +2230,7 @@ export class ClaudeTerminalExecutor {
       }
 
       activeTerminal = verified.terminal;
-      const heldScreen = await this.inspectTerminalScreen(activeTerminal.terminalWindowId);
+      const heldScreen = await this.inspectTerminalScreen(terminalInputTarget(activeTerminal));
       if (accepted()) return request.result();
       if (active.cancelRequested) break;
       lastComposerState = heldScreen.ok && heldScreen.classification === 'composer'
@@ -2236,7 +2246,7 @@ export class ClaudeTerminalExecutor {
         request.submitAttempts += 1;
         request.submitAttempted = true;
         try {
-          await this.submit(activeTerminal.terminalWindowId);
+          await this.submit(terminalInputTarget(activeTerminal));
         } catch (error) {
           await waitWithinAcceptance(acceptanceRemainingMs());
           if (accepted()) return request.result();
@@ -3708,7 +3718,7 @@ export class ClaudeTerminalExecutor {
           // here, so an unreadable screen or an unrecognized composer keeps the former blind
           // action. Refusing everything CC Relay cannot classify would turn a recoverable held
           // paste into a guaranteed dead task, which is the exact defect this file keeps fixing.
-          const screen = await this.inspectTerminalScreen(terminal.terminalWindowId);
+          const screen = await this.inspectTerminalScreen(terminalInputTarget(terminal));
           // That snapshot is an await, exactly like the fresh session read above, so re-prove both
           // gates that could have changed underneath it before anything is typed.
           if (active.cancelRequested) {
@@ -3733,7 +3743,7 @@ export class ClaudeTerminalExecutor {
             // task workspace and let the next pass prove the empty composer before re-delivery.
             await this.resolveTrustDialogScreen(
               task,
-              terminal.terminalWindowId,
+              terminalInputTarget(terminal),
               onEvent,
               screens,
               { pasted: true },
@@ -3746,7 +3756,7 @@ export class ClaudeTerminalExecutor {
             // never reached the composer. Answer it and let the schedule re-evaluate: the next
             // pass finds an empty composer and re-delivers the exact prompt. No submit attempt is
             // consumed, because no submit action was sent.
-            await this.resolveResumePickerScreen(task, terminal.terminalWindowId, onEvent, screens, { pasted: true });
+            await this.resolveResumePickerScreen(task, terminalInputTarget(terminal), onEvent, screens, { pasted: true });
             await this.waitForTranscriptOrPoll(source, reader.offset, this.pollMs);
             continue;
           }
@@ -3774,7 +3784,7 @@ export class ClaudeTerminalExecutor {
             // is a verified no-op, and if the clear failed it would submit the foreign text, which
             // is precisely why the re-read below fails closed instead of typing anything more.
             try {
-              await this.sendComposerClear(terminal.terminalWindowId, screens);
+              await this.sendComposerClear(terminalInputTarget(terminal), screens);
             } catch (error) {
               throw new ClaudeExecutionError(
                 `The ${task.thread_name || sessionId} Claude terminal is holding text that is not this task's prompt and CC Relay could not clear it: ${error.message}. Nothing else was typed. Open the terminal, clear it, then retry.`,
@@ -3782,7 +3792,7 @@ export class ClaudeTerminalExecutor {
               );
             }
             await this.wait(this.screenSettleMs);
-            const cleared = await this.inspectTerminalScreen(terminal.terminalWindowId);
+            const cleared = await this.inspectTerminalScreen(terminalInputTarget(terminal));
             if (active.cancelRequested) {
               await this.cancelTurn(terminal, sessionId, onEvent);
               throw new ClaudeExecutionError('Task cancelled.', { cancelled: true });
@@ -3917,7 +3927,7 @@ export class ClaudeTerminalExecutor {
             }
             screens.reinjections += 1;
             try {
-              await this.inject(terminal.terminalWindowId, prompt);
+              await this.inject(terminalInputTarget(terminal), prompt);
             } catch (error) {
               throw new ClaudeExecutionError(
                 `CC Relay found the ${task.thread_name || sessionId} composer empty and could not confirm it pasted the prompt again: ${error.message}. The prompt may now be running, so CC Relay will not retry automatically. Check the terminal before retrying.`,
@@ -3960,7 +3970,7 @@ export class ClaudeTerminalExecutor {
           // must report the attempt that actually caused it.
           submitAttempts += 1;
           try {
-            await this.submit(terminal.terminalWindowId);
+            await this.submit(terminalInputTarget(terminal));
           } catch (error) {
             throw new ClaudeExecutionError(
               `CC Relay pasted the prompt into the ${task.thread_name || sessionId} terminal but could not confirm the separate submit action: ${error.message}. The prompt may now be running, so CC Relay will not retry automatically. Check the terminal before retrying.`,
@@ -4143,7 +4153,7 @@ export class ClaudeTerminalExecutor {
 
   async cancelTurn(terminal, sessionId, onEvent) {
     try {
-      await this.sendCancel(terminal.terminalWindowId);
+      await this.sendCancel(terminalInputTarget(terminal));
     } catch {
       // best effort only
     }

@@ -7,9 +7,9 @@ type: design
 # Compact Interface Density
 
 > [!important]
-> **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
-> owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh
-> columns, Bottom monitor default, and accessible light/dark palette. Older visual descriptions
+> **September 5: [[launchpad-v2-design]] is the current design contract.** The application entry
+> stylesheet layers legacy rules beneath the structural reference port: 51px dock, 420/440px fresh
+> columns, shared prompt toolbar, council/Turbo tables, and two 24px Bottom monitor rows. Older visual descriptions
 > below are historical where they conflict; saved layout choices and execution contracts remain.
 
 

@@ -1,86 +1,130 @@
 ---
 name: Launchpad v2 Design
-description: Port of the supplied Launchpad v2 reference, design ownership, compatibility, and verification.
+description: Structural port of the Launchpad v2 reference, cascade ownership, live controls, and visual verification.
 type: design
 tags: [relay, ui, design, accessibility]
 ---
 
 # Launchpad v2 design
 
-The September 5 redesign follows `CC Relay Launchpad v2.html` from Downloads, specifically its
-1A workspace and 1B, 1C, and 1D council, Turbo, and terminal-settings states. The source is a
-self-contained bundled page. Its decoded template and embedded Latin font assets supplied the
-reference; its demo scripts, invented terminal output, and static task data are not application code.
+The September 5 revision follows `CC Relay Launchpad v2.html`, including 1A (workspace), 1B
+(council), 1C (Turbo), and 1D (terminal settings). The first pass retained too much of the old
+component structure. This revision replaces those stacked blocks with the reference's shared rows
+and tables. Reference data and terminal output are never embedded in the application.
 
-## Current visual contract
+## Presentation ownership
 
-`public/launchpad.css` loads after `public/style.css` and owns the new application presentation.
-The older sheet retains the component behavior and terminal styles. Scope final selectors through
-`html[data-theme]`; ordinary `.class` overrides lose against legacy dark selectors. Project-aware
-composer rules also require the existing `#task-form[class*="project-color-"]` boundary.
+`public/application.css` imports `style.css` into the `legacy` cascade layer, then imports
+`launchpad.css` without a layer. Existing compatibility components keep their styles while the
+Launchpad rules consistently own the redesigned surfaces. This avoids escalating selector
+specificity against the many older theme and project-color rules. Existing `[hidden]` rules remain
+binding. The interactive terminal keeps its own small stylesheet and renderer.
 
-- Space Grotesk owns interface text and headings; IBM Plex Mono owns compact metadata. Both load
-  from local WOFF2 files. The source bundle's unmodified fonts, their OFL licenses, third-party
-  notices, and release license checks are all included. The existing terminal typography remains.
-- Dark surfaces are canvas `#0b0e12`, panel `#0d1116`, well `#10151b`, and control `#151b22`.
-  Text is `#e7edf4`, `#b6c2ce`, and `#8b9aab`. Light mode uses white, cool grey surfaces, and
-  muted text `#596b7f`. The three text levels and primary action pass 4.5:1 on every base surface.
-- The workspace has continuous surfaces and 8px keyboard-focusable separators. Fresh layouts
-  start with a 420px Composer and 440px Queue, giving Activity the remaining width. The usable
-  minimums remain 400, 360, and 420px. Saved widths remain authoritative.
-- Launchpad tabs are content sized, 110 to 230px wide and 30px high. Names, worded activity,
-  project colors, completion counts, reordering, color editing, and unpin controls remain.
-- Workflow selection uses neutral raised chrome; provider selection uses provider identity;
-  the primary queue action and effort accent use violet. Project colors still identify the
-  Launchpad and global monitor, while selected queue cards use a quiet violet edge.
-- Provider and direct Model/Effort settings form one group. Plan council exposes its author and
-  reviewer in two adjacent columns and retains provider-order switching. Direct settings fold
-  away while council is enabled. The same form elements and IDs still own all submissions.
-- The writing surface groups the prompt, quick actions, and image picker. Image paste/drop,
-  upload limits, attachment previews, task references, and submission shortcuts retain their
-  existing event handlers. The primary action spans the Composer width.
-- A fresh monitor preference is Bottom. An explicitly cached Top choice and the backend's
-  authoritative preferences still restore. Theme continues to follow the system until chosen.
+- Space Grotesk is the interface face. IBM Plex Mono is used for metadata and the terminal. Fonts
+  remain local WOFF2 assets with their existing licenses and release checks.
+- Dark surfaces are `#0b0e12`, `#0d1116`, `#10151b`, and `#151b22`. The primary action is `#8b6cff`.
+  Body and metadata colors remain readable in both themes; provider colors have separate light
+  and dark values. Theme still follows the system until the operator selects one.
+- The reference-sized viewport is 1720 by 1040. The dock is 51px high. Composer and Queue start
+  at 420px and 440px. Activity takes the remaining 860px. Panels share hairline borders with no
+  layout gutters. Resizers retain overlapping 8px pointer and keyboard targets.
+- Project chips are 30px high and fit their contents. State remains in the accessible label and
+  status dot. Reorder handles remain keyboard accessible; names, colors, completion counts, color
+  editing, and close controls retain the existing ownership and handlers.
+- Daily recorded token usage and its project popover now belong to the project dock in both the
+  browser and desktop app. The macOS drag region remains separate.
 
-## Geometry and cascade gotchas
+## Composer and workflows
+
+The provider card contains the live slot summary, three provider tiles, and one Model/Effort row.
+Each tile has a real minus/input/plus stepper. It dispatches the existing input change handler and
+therefore uses the existing project PATCH, bounds checks, saving lock, and rollback behavior.
+Changing capacity does not select a provider or submit a prompt. The effort slider uses a neutral
+track and a plain value; its accessible value still includes the word "effort".
+
+Direct council and automatic-terminal options share adjoining rows. When council is enabled, the
+provider card is replaced by a matrix with aligned Agent, Model, Effort, and Role rows. Columns
+follow the actual author provider. Turbo uses aligned Planner and Execution rows; its reviewer
+row appears only when council is enabled and follows the actual author order.
+
+The task name is a 34px field. The prompt is the flexible surface. Voice input, image selection
+and count, and real quick actions share its footer. Image previews appear only when images exist.
+Paste/drop, limits, references, drafts, voice setup, submission shortcuts, and immediate quick-action
+execution retain their original controls. The primary action is 38px high.
 
 > [!important]
-> Panel calculations subtract 16px for two 8px separators. The previous geometry subtracted 64px.
-> Conversion from a legacy saved Activity width subtracts the additional 48px when deriving Queue
-> so that migration still uses the previous coordinate system. ARIA maximum widths subtract 436px
-> for the separators plus the 420px Activity minimum. Keep CSS, constraints, and ARIA synchronized.
+> A cached active project can cause `selectProject` to skip its initial mode render. After
+> `loadSnapshot` has loaded capabilities and projects, it must refresh automatic pool controls.
+> The extra visual pass found that omitting this left the old terminal picker on a reload even
+> though the backend advertised automatic pools. The Electron smoke checks this cached reload.
 
-At 1100px and below the workspace becomes a single scrolling sequence, with a bounded 700px
-Activity panel. Electron keeps the workspace as its scroll owner. A fixed-height grid with automatic
-rows silently compresses each panel into one third of the available height; use block flow here.
-The compact monitor explicitly uses **row** flex direction plus wrapping. The old column direction
-combined with wrapping sent entire monitor rails off the right edge despite their 100% widths.
+## Queue, activity, and monitor
 
-> [!note]
-> Model and effort cells must reset `grid-template-areas` as well as columns. The old
-> `"index copy select"` named areas create implicit columns and hide labels behind selects when
-> only `grid-template-columns` is changed. Council columns must explicitly follow `data-first`.
+The queue header owns search and the live summary. Cards use an identity line, a two-line title,
+and a compact dates/tokens/runtime footer. Full owner labels remain in tooltips and accessibility
+text. Same-day completion timestamps show only the ending time, while overnight completions retain
+the ending date and all `<time datetime>` values. Stars, rename, assignment, reorder, attachments,
+workflow state, and task selection keep their existing actions.
 
-## Validation and review
+Activity has a compact identity header, live metrics, and Terminal/Conversation controls.
+**More views** exposes Relay activity, Highlights, Commands, My messages, and AI messages, with the
+active secondary view named in the summary. Existing full details, cancellation, retention,
+changes, copy, and terminal-window controls remain available. Aggregate recorded in/out tokens
+remain visible even when a throughput sample is unavailable.
 
-The isolated Electron preview served repository assets and synthetic project/task API fixtures on
-an ephemeral loopback port. It never contacted the live Relay database or launched provider work.
-Captures covered 1720px desktop, 1200px medium, 480px compact, 320px narrow, light and dark themes,
-Execute, both council orders, Turbo, terminal settings, and empty projects. No page overflow or
-renderer console errors remained. Compact Activity remained reachable above the fixed monitor.
+The terminal uses actual task-scoped output. Interactive sessions use the CLI's own input; legacy
+read-only screens retain the follow-up composer. The redesign does not change terminal ownership,
+launch identity, transport, or conversation routing. Concurrent interactive-terminal work was
+preserved and its visible surface was checked with a synthetic WebSocket snapshot.
 
-The extra pass verified draft preservation across provider selection, independent capacity focus,
-visible keyboard focus, council column order, keyboard panel resizing, saved Top placement and
-width restoration after reload, local font loading, enabled valid direct submission, and disabled
-submission without a project. The legacy no-terminal empty state also receives an explicit
-dark surface so an older backend cannot expose a white panel. Focus emulation was required for the hidden Electron fixture window;
-without it Chromium correctly reports no active focus styling even after `element.focus()`.
+Fresh preferences use Bottom and two 24px monitor rows separated by 5px. Existing saved row count,
+card width, and placement win. Both rows stay between the brand and usage controls. Three primary
+subscription windows match the reference; the additional Fable and Codex 5h meters remain in the
+Display popover and continue to receive live updates.
 
-`test/composer-workflows.test.mjs`, `test/header-position.test.mjs`, `test/project-layout.test.mjs`,
-and `test/dark-mode.test.mjs` cover the updated grouping, defaults, saved-width compatibility,
-stylesheet ownership, and numerical contrast floor. The full suite (1,990 tests), release metadata check,
-and whitespace check pass. Temporary fixture servers and Electron processes exited on completion.
+## Terminal settings
 
-See [[launchpad-v2-design-review]], [[interface-layout]], [[compact-interface-density]],
-[[dark-mode]], [[header-position]], [[active-project-composer-colors]],
-[[durable-ui-layout-preferences]], and [[hover-stability]].
+The 640px dialog uses divided groups for layout, completion alerts, quick actions, and available
+voice settings. Grid dimensions use real steppers. Quick-action labels and prompts remain editable;
+a prompt grows when focused. Settings still save immediately, so the footer accurately says
+**Changes are saved automatically** and provides **Done**. The reference's Save/Cancel controls
+are not presented as transactional when the application saves on change.
+
+## Layout invariants
+
+The body owns dock, workspace, and monitor as explicit grid rows. The workspace is the bounded
+scroll owner at compact widths. From 1101px through 1344px it uses three fluid columns; at 1100px
+and below it stacks Composer, Queue, and Activity, with a bounded 780px Activity panel. The macOS
+titlebar adds its own grid row. Moving the monitor never covers the workspace.
+
+The terminal height separator overlaps its neighbors instead of consuming layout height. Its
+pointer and keyboard targets remain available. A saved terminal height sets the event pane flex
+basis; without a saved value, the compact reference header and flexible terminal are used.
+
+> [!important]
+> Overlapping resizers consume no layout width. Width constraints use the full workspace width
+> and reserve 420px for Activity. Legacy composer/detail preference conversion still subtracts
+> the original 64px of chrome. CSS, pointer behavior, keyboard bounds, and ARIA must agree.
+
+Reset old grid areas, pseudo-elements, margins, and minimums when rebuilding a component. The
+council's legacy `::before` stripe occupied a real table row; the Turbo reviewer had an inherited
+conditional `display` rule. Settings groups must not shrink inside their scrolling body. The
+monitor must retain an actual flex wrapper in multi-row mode; legacy `display: contents` expanded
+the entire document beyond the viewport. These cases are checked in the rendered preview.
+
+## Verification
+
+Run `node node_modules/electron/cli.js scripts/verify-launchpad.cjs /tmp/relay-launchpad-check` on
+macOS. It serves repository assets with isolated synthetic HTTP and WebSocket fixtures, captures
+both themes and workflow variants, and exits after closing its window, sockets, and server. It
+never attaches to a live Relay server or launches provider work.
+
+The smoke checks reference geometry, attachment staging/removal, capacity bounds and one PATCH
+per click, provider isolation, council row alignment/order, Turbo reviewer visibility, secondary
+views, draft/focus preservation, keyboard resizing, saved layout restoration, cached-project
+startup, native titlebar layout, interactive output, the compact terminal dialog, and empty projects.
+Screens cover 1720, 1200, 480, 380, and 320px. The full suite, release metadata, and whitespace gates
+are recorded in [[launchpad-v2-design-review]].
+
+See [[interface-layout]], [[compact-interface-density]], [[header-position]], [[dark-mode]],
+[[durable-ui-layout-preferences]], and [[original-terminal-default]].

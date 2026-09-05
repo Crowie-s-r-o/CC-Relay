@@ -8,7 +8,7 @@ const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf
 
 test('monitor bar position is restored before the stylesheet paints', () => {
   const initializer = html.indexOf("localStorage.getItem('relay.headerPosition')");
-  const stylesheet = html.indexOf('<link rel="stylesheet" href="/style.css">');
+  const stylesheet = html.indexOf('<link rel="stylesheet" href="/application.css">');
   assert.ok(initializer > 0);
   assert.ok(initializer < stylesheet);
   assert.match(

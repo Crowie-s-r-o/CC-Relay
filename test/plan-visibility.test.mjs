@@ -689,7 +689,7 @@ test('the metrics strip shows plan progress only when the task published a plan'
   const metrics = sourceBetween('elements.eventMetrics.innerHTML = `', '`;');
   assert.match(metrics, /\$\{stats\.plan \? `<span class="has-plan"><b>\$\{stats\.plan\.done\}\/\$\{stats\.plan\.total\}<\/b><small>plan steps<\/small><\/span>` : ''\}/);
   // Operational tiles survive, and the former combined message count is now split by role.
-  for (const label of ['thinking tokens', 'commands', 'file changes', 'sent', 'AI messages', 'errors', 'sub-agents', 'active']) {
+  for (const label of ['thinking', 'commands', 'file changes', 'sent', 'AI messages', 'errors', 'sub-agents', 'active']) {
     assert.ok(metrics.includes(`<small>${label}</small>`), `${label} tile survives`);
   }
 });

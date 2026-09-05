@@ -1,5 +1,9 @@
 # Third-party notices
 
+## Embedded terminal components
+
+The application bundles node-pty 1.1.0 (Microsoft Corporation, MIT) and xterm.js 6.0.0 with its fit, headless, and serialize packages (the xterm.js authors, MIT). Their license texts remain in the installed package directories included by Electron Builder. See [node-pty](https://github.com/microsoft/node-pty) and [xterm.js](https://github.com/xtermjs/xterm.js).
+
 CC Relay bundles the following font files. Each font remains under the SIL Open Font License 1.1 rather than the CC Relay project license.
 
 | Font | Bundled file | Copyright notice | License and source |

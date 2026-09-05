@@ -84,6 +84,19 @@ test('task lifecycle dates always expose started and completed fields', () => {
 });
 
 test('task cards and Task Activity both render lifecycle dates', () => {
-  assert.ok(app.includes('<span class="task-footer-dates">${taskLifecycleDatesMarkup(task)}</span>'));
+  assert.ok(app.includes('<span class="task-footer-dates">${taskCardDatesMarkup(task)}</span>'));
   assert.ok(app.includes('<span class="detail-lifecycle-dates">${taskLifecycleDatesMarkup(task, formatTime)}</span>'));
+});
+
+test('compact card dates retain full days across midnight and semantic timestamps', () => {
+  const formatSource = app.slice(app.indexOf('function formatCardTime('), app.indexOf('function taskLifecycleDatesMarkup('));
+  const cardSource = app.slice(app.indexOf('function taskCardDatesMarkup('), app.indexOf('function workspaceName('));
+  const render = new Function('taskLifecycleDates', 'escapeHtml', `${formatSource}\n${cardSource}\nreturn taskCardDatesMarkup;`)(taskLifecycleDates, String);
+  const sameDay = render({ started_at: '2026-09-03T17:34:00', finished_at: '2026-09-03T17:58:00' });
+  assert.match(sameDay, />03 Sept 17:34<|>03 Sep 17:34</);
+  assert.match(sameDay, /datetime="2026-09-03T17:58:00">17:58</);
+  const overnight = render({ started_at: '2026-09-03T23:34:00', finished_at: '2026-09-04T00:12:00' });
+  assert.match(overnight, /datetime="2026-09-04T00:12:00">04 Sept? 00:12</);
+  const pending = render({ started_at: '2026-09-03T17:34:00' });
+  assert.match(pending, /aria-label="Not completed">-</);
 });

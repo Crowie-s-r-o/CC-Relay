@@ -727,7 +727,7 @@ test('terminal settings carries the quick-action editor beside the other app-wid
 
   assert.ok(modalStart >= 0 && editor > modalStart && voice > editor && modalEnd > voice);
   assert.match(markup, /<section id="quick-skill-settings" class="terminal-settings-section quick-skill-settings"/);
-  assert.match(markup, /id="quick-skill-add" class="button compact" type="button">Add quick action</);
+  assert.match(markup, /id="quick-skill-add" class="button compact" type="button">\+ Add</);
   assert.match(markup, /id="quick-skill-restore" class="button compact" type="button">Restore default</);
   assert.match(markup, /<ol id="quick-skill-editor-list" class="quick-skill-editor-list"><\/ol>/);
   assert.match(markup, /id="quick-skill-editor-status"[^>]*role="status"/);

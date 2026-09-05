@@ -73,7 +73,7 @@ test('the original terminal button opens the in-app dialog and only reads its sc
 });
 
 test('the terminal screen API is task scoped and delegates to owned native identity', () => {
-  assert.match(server, /nativeTerminalScreen: process\.platform === 'darwin'/);
+  assert.match(server, /embeddedTerminal: \['darwin', 'win32'\]\.includes\(process\.platform\)/);
   const routeStart = server.indexOf("/^\\/api\\/tasks\\/\\d+\\/terminal-screen$/");
   const routeEnd = server.indexOf("/^\\/api\\/tasks\\/\\d+\\/plan$/", routeStart);
   assert.ok(routeStart >= 0 && routeEnd > routeStart);
@@ -270,7 +270,7 @@ test('escape and backdrop close only the terminal window', () => {
     app,
     /elements\.terminalWindowModal\.addEventListener\('click', \(event\) => \{\s*if \(event\.target === elements\.terminalWindowModal\) closeTerminalWindow\(\);/,
   );
-  assert.match(app, /elements\.terminalWindowModal\.addEventListener\('cancel', \(\) => \{\s*undockTerminalWindow\(\);/);
+  assert.match(app, /elements\.terminalWindowModal\.addEventListener\('cancel', \(event\) =>/);
   assert.match(app, /elements\.terminalWindowModal\.addEventListener\('close', \(\) => \{\s*undockTerminalWindow\(\);/);
   // Escape must never reach the surrounding task detail dialog.
   assert.doesNotMatch(app, /terminalWindowModal\.addEventListener\('cancel'[\s\S]{0,200}closeTaskDetailModal/);
@@ -520,8 +520,9 @@ class FakeDialog extends FakeNode {
 
   // Escape: the browser fires cancel, then closes and fires close.
   escape() {
-    this.fire('cancel', {});
-    this.close();
+    let prevented = false;
+    this.fire('cancel', { preventDefault: () => { prevented = true; } });
+    if (!prevented) this.close();
   }
 }
 
@@ -1099,14 +1100,14 @@ test('the default view reads the screen inside Relay and schedules only one poll
   assert.equal(world.elements.eventsSection.dataset.terminalSurface, undefined);
 });
 
-test('unavailable native terminals immediately reveal the activity fallback', async () => {
+test('unavailable original terminals require an explicit switch to activity', async () => {
   const world = buildWorld({ nativeScreen: true, terminalResponse: {
     terminal: { state: 'unavailable', message: 'The original terminal closed.' },
   } });
   world.api.openTerminalWindow();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.equal(world.elements.detailEvents.hidden, false);
-  assert.equal(world.elements.eventsSection.dataset.terminalSurface, 'fallback');
+  assert.equal(world.elements.detailEvents.hidden, true);
+  assert.equal(world.elements.eventsSection.dataset.terminalSurface, 'native');
   assert.equal(world.elements.nativeTerminalScreenNotice.querySelector('span').textContent, 'The original terminal closed.');
   world.api.setTerminalWindowView('activity');
   assert.equal(world.state.eventFilter, 'all');
@@ -1216,7 +1217,7 @@ test('changing tasks invalidates a pending native result and resets the task sur
 });
 
 
-test('native fallback shows all activity after switching from an AI-only inline filter', async () => {
+test('an unavailable original terminal never substitutes the previous AI-only activity filter', async () => {
   const world = buildWorld({ nativeScreen: true, terminalResponse: {
     terminal: { state: 'unavailable', message: 'Headless task' },
   } });
@@ -1227,7 +1228,7 @@ test('native fallback shows all activity after switching from an AI-only inline 
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(world.state.eventFilter, 'all');
   assert.equal(world.state.inlineEventFilter, 'all');
-  assert.equal(world.elements.detailEvents.hidden, false);
+  assert.equal(world.elements.detailEvents.hidden, true);
 });
 
 test('Show original terminal opens the in-app dialog even while the screen request is pending', async () => {
@@ -1347,12 +1348,27 @@ test('automatic reads follow a direct task retry instead of pinning its old conv
   assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'Retry terminal');
 });
 
-test('background rendering on an unsupported server shows activity without a screen request', () => {
+test('an unsupported server reports the terminal unavailable without silently showing activity', () => {
   const world = buildWorld();
   world.state.terminalMode = 'native';
   world.api.syncTerminalWindowSurface();
   assert.equal(world.state.nativeTerminalScreen.state, 'unavailable');
-  assert.equal(world.elements.detailEvents.hidden, false);
+  assert.equal(world.elements.detailEvents.hidden, true);
   assert.equal(world.calls.screenRequests.length, 0);
   assert.equal(world.timers.size, 0);
+});
+
+
+test('Escape stays in the focused CLI instead of closing its containing dialog', () => {
+  const world = buildWorld();
+  world.api.openTerminalWindow();
+  const dock = world.state.terminalWindowDock;
+  world.state.nativeTerminalScreen.state = 'interactive';
+  world.document.activeElement = { closest: (selector) => selector === '#embedded-terminal' ? {} : null };
+  world.elements.terminalWindowModal.escape();
+  assert.equal(world.elements.terminalWindowModal.open, true);
+  assert.equal(world.state.terminalWindowDock, dock);
+  world.state.nativeTerminalScreen.state = 'unavailable';
+  world.elements.terminalWindowModal.escape();
+  assert.equal(world.elements.terminalWindowModal.open, false);
 });

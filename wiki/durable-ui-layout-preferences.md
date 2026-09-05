@@ -79,7 +79,7 @@ See [[header-position]], [[interface-layout]], and [[shared-project-configuratio
 
 ## Running-task monitor layout
 
-The running-task layout defaults to one row and Default 286px cards. The renderer caches the
+The running-task layout defaults to two rows and Default 286px card minimums. The renderer caches the
 choice under `relay.runningTaskLayout` for first paint, then restores the authoritative shared
 record through `GET /api/ui-preferences`. Backend normalization accepts only rows 1, 2, or 3 and
 widths 230px, 286px, or 360px. Missing or stale values fall back independently to the defaults, so

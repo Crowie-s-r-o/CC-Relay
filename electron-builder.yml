@@ -1,6 +1,8 @@
 appId: com.relay.queue
 productName: CC Relay
 asar: true
+asarUnpack:
+  - node_modules/node-pty/**/*
 generateUpdatesFilesForAllChannels: true
 files:
   - src/**/*

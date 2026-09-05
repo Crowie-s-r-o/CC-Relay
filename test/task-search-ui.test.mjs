@@ -9,7 +9,7 @@ const server = readFileSync(new URL('../src/server.mjs', import.meta.url), 'utf8
 
 test('task list exposes a capability-gated full conversation search', () => {
   assert.match(html, /id="task-search-input"[^>]*type="search"[^>]*maxlength="200"/);
-  assert.match(html, /Search every command and response/);
+  assert.match(html, /Search commands and responses/);
   assert.match(server, /taskFullTextSearch: true/);
   assert.match(server, /pathname === '\/api\/tasks\/search'/);
   assert.match(server, /database\.listTaskSearchDocuments\(resolve\(requestedPath\)\)/);

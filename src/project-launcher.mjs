@@ -405,6 +405,7 @@ export class ProjectLauncher {
     codexClientForThread = () => null,
     runtimeResolver = null,
     terminalScreenReader = null,
+    embeddedTerminalHost = null,
     createId = randomUUID,
     now = Date.now,
     delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -418,6 +419,7 @@ export class ProjectLauncher {
     launchRegistry = null,
   } = {}) {
     this.run = run;
+    this.embeddedTerminalHost = embeddedTerminalHost;
     this.platform = platform;
     this.diagnostic = diagnostic;
     this.launchRegistry = launchRegistry;
@@ -510,6 +512,8 @@ export class ProjectLauncher {
     // It stays null for every other entry point, including recovery and adoption, so a terminal
     // CC Relay did not launch in this process can never be treated as pre-configured.
     launchSettings = null,
+    transport = null,
+    taskId = null,
   }) {
     if (!terminalWindowId && !terminalProcessId) return null;
     const duplicate = [...this.ownedTerminals.values()].find((terminal) => (
@@ -534,6 +538,8 @@ export class ProjectLauncher {
       ownershipSource,
       cancelWorkspaceReservation,
       launchSettings,
+      transport,
+      taskId,
       // Folder trust input is bounded per exact native launch. The coordinator already latches a
       // successful resolution, and this state makes the launcher method itself idempotent too.
       folderTrustResolution: null,
@@ -761,6 +767,7 @@ export class ProjectLauncher {
   async verifyTerminalForThread(thread) {
     const terminal = this.ownedTerminalForThread(thread?.id);
     if (!terminal) return false;
+    if (terminal.transport === 'pty') return this.embeddedTerminalHost.isAlive(terminal.launchId);
     if (terminal.ownershipSource !== 'runtime') return true;
     // A runtime adoption is the only ownership this process did not create by launching. If a
     // second live backend has since claimed the same launch, drop the adoption instead of
@@ -885,7 +892,28 @@ export class ProjectLauncher {
       threadId: terminal.threadId,
       provider: terminal.provider,
       path: terminal.path,
+      ...(terminal.transport ? { transport: terminal.transport } : {}),
     };
+  }
+
+  pendingEmbeddedTerminalsForTask(task) {
+    if (!task || !['running', 'queued'].includes(task.status)) return [];
+    const providers = task.mode === 'plan' ? ['codex', 'claude']
+      : task.mode === 'turbo' ? ['codex'] : [task.provider];
+    return [...this.ownedTerminals.values()].filter((terminal) => terminal.transport === 'pty'
+      && terminal.taskId === task.id && !terminal.threadId && terminal.path === task.repo_path
+      && providers.includes(terminal.provider) && this.embeddedTerminalHost.isAlive(terminal.launchId));
+  }
+
+  async resolveEmbeddedClaudeTerminal(session) {
+    const owned = this.ownedTerminalForThread(session?.id);
+    if (owned?.transport !== 'pty') return null;
+    const target = await this.embeddedTerminalHost.resolveClaudeTerminal(owned, session);
+    if (!target || this.ownedTerminals.get(owned.launchId) !== owned) return null;
+    owned.runtimeProcessId = target.runtimeProcessId;
+    if (owned.launchSettings && !owned.launchSettingsProcessId) owned.launchSettingsProcessId = target.runtimeProcessId;
+    this.recordOwnership('updateLaunch', owned.launchId, { runtimeProcessId: target.runtimeProcessId });
+    return { ...target, launchSettings: this.provenClaudeLaunchSettings(session.id) };
   }
 
   async readTerminalScreen(threadId, thread = null) {
@@ -1001,6 +1029,10 @@ export class ProjectLauncher {
         throw new Error('The original terminal is no longer owned by this task.');
       }
       const identity = { ...terminal };
+      if (terminal.transport === 'pty') {
+        return { state: this.embeddedTerminalHost.isAlive(terminal.launchId) ? 'embedded' : 'unavailable',
+          launchId: terminal.launchId, threadId: terminal.threadId, transport: 'pty' };
+      }
       if (this.platform === 'darwin') {
         if (await this.foreignOwnerOfAdoption(terminal)) {
           throw new Error('The terminal belongs to another Relay process.');
@@ -1051,13 +1083,13 @@ export class ProjectLauncher {
     const terminal = this.ownedTerminals.get(launchId);
     if (
       this.closing
-      || this.platform !== 'darwin'
+      || (this.platform !== 'darwin' && terminal?.transport !== 'pty')
       || !terminal
       || terminal.provider !== 'claude'
       || terminal.ownershipSource !== 'launch'
       || terminal.threadId
-      || !Number.isInteger(Number(terminal.terminalWindowId))
-      || Number(terminal.terminalWindowId) <= 0
+      || (terminal.transport !== 'pty' && (!Number.isInteger(Number(terminal.terminalWindowId))
+        || Number(terminal.terminalWindowId) <= 0))
     ) {
       return { status: 'not-eligible' };
     }
@@ -1073,7 +1105,9 @@ export class ProjectLauncher {
 
     let screen;
     try {
-      screen = await this.readClaudeLaunchScreen(terminal.terminalWindowId);
+      screen = terminal.transport === 'pty'
+        ? await this.embeddedTerminalHost.readScreen(launchId)
+        : await this.readClaudeLaunchScreen(terminal.terminalWindowId);
     } catch (error) {
       this.diagnostic('terminal.launch.claude_folder_trust_inspection_failed', {
         launchId,
@@ -1105,10 +1139,18 @@ export class ProjectLauncher {
     terminal.folderTrustResolution = 'resolving';
     let accepted;
     try {
-      accepted = await this.acceptClaudeFolderTrust(
-        terminal.terminalWindowId,
-        screen.text,
-      );
+      if (terminal.transport === 'pty') {
+        const fresh = await this.embeddedTerminalHost.readScreen(launchId);
+        if (this.closing || this.ownedTerminals.get(launchId) !== terminal || terminal.threadId
+          || !fresh.ok || fresh.text !== screen.text) {
+          accepted = { status: 'screen-changed' };
+        } else {
+          this.embeddedTerminalHost.write(launchId, '1\r');
+          accepted = { ok: true, status: 'accepted' };
+        }
+      } else {
+        accepted = await this.acceptClaudeFolderTrust(terminal.terminalWindowId, screen.text);
+      }
     } catch (error) {
       // An osascript timeout can happen after Terminal accepted the Apple Event. Do not risk a
       // second option key when delivery is ambiguous.
@@ -1173,6 +1215,9 @@ export class ProjectLauncher {
 
   async requestTerminalAttentionNow(thread) {
     const terminal = this.ownedTerminalForThread(thread?.id);
+    if (terminal?.transport === 'pty' && terminal.provider === thread.provider) {
+      return this.embeddedTerminalHost.isAlive(terminal.launchId);
+    }
     if (!terminal || terminal.provider !== thread?.provider) {
       this.diagnostic('terminal.attention.skipped', {
         threadId: thread?.id,
@@ -1352,6 +1397,7 @@ JSON.stringify(screens.map((screen, index) => {
   }
 
   async launchNow(path, provider, requestedLayout = null, {
+    taskId = null,
     resumeThreadId = null,
     initializeThreadId = null,
     // Codex receives model and effort on its first TUI command so a newly opened planner or
@@ -1389,7 +1435,8 @@ JSON.stringify(screens.map((screen, index) => {
     const expectedThreadId = typeof requestedThreadId === 'string' && requestedThreadId.trim()
       ? requestedThreadId.trim()
       : expectedLaunchId;
-    const layout = normalizeTerminalLayout(requestedLayout);
+    const embedded = this.embeddedTerminalHost && Number.isSafeInteger(taskId) && taskId > 0;
+    const layout = embedded ? null : normalizeTerminalLayout(requestedLayout);
     const background = requestedLayout?.background === true;
     const displays = layout ? await this.listDisplays() : [];
     const displayIndex = displays.length ? Math.min(layout?.display || 0, displays.length - 1) : 0;
@@ -1457,6 +1504,24 @@ JSON.stringify(screens.map((screen, index) => {
       launchModel: launchSettingsRecord?.model || codexLaunchSettings?.model || undefined,
       launchEffort: launchSettingsRecord?.effort || codexLaunchSettings?.effort || undefined,
     });
+    if (embedded) {
+      try {
+        const { processId, tty } = this.embeddedTerminalHost.launch({
+          launchId: expectedLaunchId, provider, path: project.path, command,
+        });
+        this.trackOwnedTerminal({
+          launchId: expectedLaunchId, provider, path: project.path,
+          terminalProcessId: processId, terminalTty: tty, expectedThreadId,
+          transport: 'pty', taskId, cancelWorkspaceReservation, launchSettings: launchSettingsRecord,
+        });
+        return { launchId: expectedLaunchId, expectedThreadId, provider, path: project.path,
+          terminalProcessId: processId, transport: 'pty', command };
+      } catch (error) {
+        await this.embeddedTerminalHost.close(expectedLaunchId);
+        cancelWorkspaceReservation?.();
+        throw error;
+      }
+    }
     if (this.platform === 'win32') {
       // cmd.exe /K strips the first character and the last quote of its command line whenever
       // that line begins with a quote, which is exactly what a resolved `claude.cmd` path
@@ -1736,7 +1801,9 @@ JSON.stringify(screens.map((screen, index) => {
       ownershipSource: terminal.ownershipSource,
     });
     try {
-      if (this.platform === 'darwin' && terminal.terminalWindowId) {
+      if (terminal.transport === 'pty') {
+        await this.embeddedTerminalHost.close(terminal.launchId);
+      } else if (this.platform === 'darwin' && terminal.terminalWindowId) {
         if (terminal.terminalTty && terminal.runtimeProcessId) {
           try {
             const { stdout = '' } = await this.run(
@@ -1834,6 +1901,13 @@ JSON.stringify(screens.map((screen, index) => {
   async closeOwnedTerminals() {
     this.closing = true;
     await this.launchQueue;
+    for (const terminal of [...this.ownedTerminals.values()]) {
+      if (terminal.transport !== 'pty') continue;
+      this.releaseLaunchReservation(terminal.launchId);
+      await this.embeddedTerminalHost.close(terminal.launchId);
+      this.forgetTrackedTerminal(terminal.launchId);
+    }
+    await this.embeddedTerminalHost?.shutdown();
     const windowIds = [...this.ownedTerminalWindowIds];
     const processIds = [...this.ownedTerminalProcessIds];
     for (const launchId of this.ownedTerminals.keys()) {

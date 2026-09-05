@@ -44,7 +44,9 @@ export class TerminalLaunchCoordinator {
     }
 
     try {
-      let deadline = this.now() + this.timeoutMs;
+      // A starting embedded terminal is already visible and editable in the task panel.
+      // Allow time for the user to complete the CLI's own first-run or login screen.
+      let deadline = this.now() + (launched.transport === 'pty' ? Math.max(this.timeoutMs, 60_000) : this.timeoutMs);
       let candidateId = null;
       let observations = 0;
       let folderTrustAccepted = false;

@@ -76,8 +76,8 @@ function agentFinishedEvent(overrides = {}) {
   };
 }
 
-test('the task activity manifest is expanded by default and uses a native compact toggle', () => {
-  assert.match(markup, /<details id="event-overview" class="event-overview" open>/);
+test('the task activity manifest starts compact and uses a native compact toggle', () => {
+  assert.match(markup, /<details id="event-overview" class="event-overview">/);
   assert.match(markup, /<summary class="event-overview-summary">/);
   assert.match(markup, /id="event-metrics"[\s\S]*?Minimize[\s\S]*?Show details[\s\S]*?id="event-overview-body"/);
   assert.match(app, /const overview = taskActivityOverview\(grouped, task\);/);

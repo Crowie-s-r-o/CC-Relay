@@ -90,7 +90,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
-  })?.runningTaskLayout, { rows: 1, width: 286 });
+  })?.runningTaskLayout, { rows: 2, width: 286 });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
   })?.voiceInput, {
@@ -102,7 +102,7 @@ test('UI preferences accept bounded layout values and normalize pixels', () => {
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
     runningTaskLayout: { rows: 8, width: 999 },
-  })?.runningTaskLayout, { rows: 1, width: 286 });
+  })?.runningTaskLayout, { rows: 2, width: 286 });
   assert.deepEqual(normalizeUiPreferences({
     panelWidths: { composer: 580, queue: 500 },
     completionAlerts: { sound: 'invalid', speak: 'yes' },

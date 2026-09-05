@@ -75,7 +75,7 @@ test('empty task monitor uses one canonical task-card slot with text only', () =
 test('Launchpad exposes one add-project action without launching a terminal', () => {
   assert.match(
     markup,
-    /<div class="project-dock-actions">\s*<button id="add-project-button" class="button primary compact" type="button">\+ Add project<\/button>\s*<\/div>/,
+    /<div class="project-dock-actions">[\s\S]*?<button id="add-project-button" class="button primary compact" type="button">\+ Add project<\/button>\s*<\/div>/,
   );
   assert.doesNotMatch(markup, /add-launch-project-button|Pin folder|Add and launch/);
   assert.match(app, /elements\.addProjectButton\.addEventListener\('click', \(\) => chooseProject\(false\)\);/);
@@ -141,7 +141,7 @@ test('task queue header controls remain readable at compact desktop density', ()
 test('Launchpad defaults prioritize activity while respecting saved panel widths', () => {
   assert.match(
     launchpad,
-    /grid-template-columns: var\(--composer-width, 420px\) 8px var\(--queue-width, 440px\) 8px minmax\(420px, 1fr\);/,
+    /grid-template-columns: var\(--composer-width, 420px\) 0 var\(--queue-width, 440px\) 0 minmax\(0, 1fr\);/,
   );
   assert.match(app, /composer: Number\.isFinite\(saved\.composer\) \? saved\.composer : 420/);
   assert.match(app, /queue: Number\.isFinite\(saved\.queue\) \? saved\.queue : null/);

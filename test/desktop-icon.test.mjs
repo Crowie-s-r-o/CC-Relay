@@ -62,7 +62,7 @@ test('the in-app header uses the Crowie icon instead of a text monogram', () => 
   assert.doesNotMatch(markup, /class="brand-mark"[^>]*>R/);
 });
 
-test('the macOS desktop title bar carries Crowie with today\'s token sum', () => {
+test('the desktop keeps its drag region and the project dock carries daily usage', () => {
   const main = readFileSync(join(projectRoot, 'src', 'electron-main.mjs'), 'utf8');
   const markup = readFileSync(join(projectRoot, 'public', 'index.html'), 'utf8');
   const style = readFileSync(join(projectRoot, 'public', 'style.css'), 'utf8');
@@ -75,9 +75,10 @@ test('the macOS desktop title bar carries Crowie with today\'s token sum', () =>
   assert.match(markup, /desktopTitlebarMode === 'hidden-inset-v1'/);
   assert.match(markup, /dataset\.desktopTitlebar = 'true'/);
   assert.ok(titlebar);
-  assert.match(titlebar, /id="desktop-titlebar-token-usage"/);
-  assert.match(titlebar, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);
-  assert.match(titlebar, /id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --<\/span>/);
+  const dock = markup.slice(markup.indexOf('<nav class="project-dock"'), markup.indexOf('</nav>'));
+  assert.match(dock, /id="desktop-titlebar-token-usage"/);
+  assert.match(dock, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);
+  assert.match(dock, /id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --<\/span>/);
   assert.doesNotMatch(titlebar, /CC Relay/);
   assert.match(style, /html\[data-desktop-titlebar="true"\] \{\s*--desktop-titlebar-height: 32px;/);
   assert.match(style, /\.desktop-titlebar-mark \{[\s\S]*?width: 20px;[\s\S]*?height: 20px;[\s\S]*?flex: 0 0 20px;/);

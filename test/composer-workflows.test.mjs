@@ -43,7 +43,7 @@ test('Plan council is optional inside Execute and Forward-planning Turbo', () =>
 
   assert.ok(executeStart >= 0 && executeCouncil > executeStart && executeCouncil < turboStart);
   assert.ok(turboStart >= 0 && turboCouncil > turboStart);
-  assert.match(composer, /Builds a reviewed, read-only plan instead of executing\./);
+  assert.match(composer, /reviewed, read-only plan/);
 });
 
 test('Execute and Forward-planning Turbo share the same Plan council option component', () => {
@@ -52,7 +52,8 @@ test('Execute and Forward-planning Turbo share the same Plan council option comp
 
   assert.equal(options.length, 2);
   assert.ok(options.every((option) => option.includes('class="plan-council-toggle"')));
-  assert.ok(options.every((option) => option.includes('<strong>Use Plan council for this prompt</strong>')));
+  assert.match(options[0], /<strong>Plan council<\/strong>/);
+  assert.match(options[1], /<strong>Use Plan council for the planning stage<\/strong>/);
   assert.match(options[0], /id="plan-council-enabled"/);
   assert.match(options[1], /id="turbo-council-enabled"/);
 });

@@ -9,7 +9,7 @@ const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf
 
 test('theme is restored before the stylesheet paints', () => {
   const initializer = html.indexOf("localStorage.getItem('relay.theme')");
-  const stylesheet = html.indexOf('<link rel="stylesheet" href="/style.css">');
+  const stylesheet = html.indexOf('<link rel="stylesheet" href="/application.css">');
   assert.ok(initializer > 0);
   assert.ok(initializer < stylesheet);
   assert.match(html, /matchMedia\('\(prefers-color-scheme: dark\)'\)\.matches/);
@@ -72,7 +72,9 @@ test('Launchpad text and primary action meet AA contrast in both themes', () => 
 });
 
 test('Launchpad owns final chrome tokens after the legacy stylesheet', () => {
-  assert.ok(html.indexOf('href="/launchpad.css"') > html.indexOf('href="/style.css"'));
+  const entry = readFileSync(new URL('../public/application.css', import.meta.url), 'utf8');
+  assert.match(entry, /@import url\("\/style\.css"\) layer\(legacy\);/);
+  assert.ok(entry.indexOf('/launchpad.css') > entry.indexOf('/style.css'));
   assert.match(launchpad, /--app-panel: var\(--lp-panel\);/);
   assert.match(launchpad, /--app-text-quiet: var\(--lp-muted\);/);
   assert.equal(launchpadColor('dark', '--lp-canvas'), '#0b0e12');
