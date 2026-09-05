@@ -73,7 +73,7 @@ test('embedded launch keeps the Codex reservation without native window commands
   }
 });
 
-test('only the launching task can interact with its pre-conversation CLI, and binding retires the temporary target', async () => {
+test('only the launching task can interact with its startup CLI, and its address follows the same registered launch', async () => {
   const host = { launch: () => ({ processId: 4242 }), isAlive: () => true, close: async () => {}, shutdown: async () => {} };
   const launcher = new ProjectLauncher({ embeddedTerminalHost: host, createId: () => 'pending-qa',
     run: () => assert.fail('No external terminal.') });
@@ -87,9 +87,20 @@ test('only the launching task can interact with its pre-conversation CLI, and bi
   assert.ok(service.connection(7, starting.threadId, starting.launchId));
   assert.equal(service.connection(8, starting.threadId, starting.launchId), null);
   launcher.bindOwnedTerminal(starting.launchId, { id: 'connected-qa', provider: 'codex', cwd: task.repo_path });
+  assert.equal((await service.read(7)).threadId, starting.threadId,
+    'the startup terminal remains available while the task assignment is being saved');
+  assert.equal(service.connection(7, starting.threadId, starting.launchId).threadId, starting.threadId);
   task.thread_id = 'connected-qa';
-  assert.equal(service.connection(7, starting.threadId, starting.launchId), null);
+  launcher.confirmTaskTerminalBinding(starting.launchId, task.id, task.thread_id);
+  assert.equal(service.connection(7, starting.threadId, starting.launchId).threadId, task.thread_id);
   assert.equal((await service.read(7)).threadId, task.thread_id);
+  assert.equal((await service.read(7, starting.threadId)).threadId, task.thread_id,
+    'an explicitly selected startup terminal follows its own conversation');
+  assert.equal(service.connection(8, starting.threadId, starting.launchId), null,
+    'registration does not allow another task to use the startup address');
+  task.thread_id = 'other-conversation';
+  assert.equal(service.connection(7, starting.threadId, starting.launchId), null,
+    'the startup address cannot bypass persisted conversation ownership');
   await launcher.closeOwnedTerminals();
 });
 
@@ -117,7 +128,7 @@ test('Claude routes prompt, submit, keys, and cancel into the same PTY on Window
 
 test('task terminal metadata and socket authorization require its exact current embedded launch', async () => {
   let task = { id: 7, provider: 'claude', mode: 'execute', repo_path: '/synthetic/project', thread_id: 'session-qa' };
-  let owned = { provider: 'claude', path: task.repo_path, launchId: 'launch-qa', transport: 'pty' };
+  let owned = { provider: 'claude', path: task.repo_path, launchId: 'launch-qa', transport: 'pty', taskId: task.id };
   const launcher = { terminalForThread: () => owned, embeddedTerminalHost: { isAlive: () => true } };
   const terminals = new TaskOriginalTerminal({ platform: 'win32', database: { getTask: () => task }, launcher, knownThread: () => null });
   assert.equal((await terminals.read(7)).state, 'interactive');

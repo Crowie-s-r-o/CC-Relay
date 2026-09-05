@@ -45,6 +45,13 @@ Guarded controls: `#model-select`, `#plan-author-model`, `#plan-reviewer-model`,
 
 The effort slider markers are rebuilt only when the effort values themselves change. `renderEffortSelection` already owned the active marker, so the markers carry no inline active class and a refresh tick no longer replaces the slider under the pointer.
 
+The range's `min`, `max`, and `step` now also assign only on a difference. The September 5
+Launchpad fix keeps effort text above the full-width rail and fixes the size of every stop and
+thumb on hover. DOM stability alone does not prevent a variable-width sibling label from moving
+the native target. The Electron fixture exercises a backend change during a drag, checks the
+same range node and no scale-attribute mutations after rendering resumes, and retains the chosen
+effort. See [[task-selection-and-effort-control]].
+
 > [!note]
 > This is the same defect [[turbo-execution]] fixed for the Forward-planning Turbo panel with the render-skip token in `public/turbo-controls-signature.js`. That fold must name every datum its panel draws from, and a forgotten one leaves a stale panel with no event able to repair it. A per-control diff carries no such risk because it always recomputes the intended options, so new poll-driven selects should prefer it. Both remain valid; do not mix them in one render path.
 

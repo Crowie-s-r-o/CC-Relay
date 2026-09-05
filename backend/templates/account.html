@@ -1,0 +1,7 @@
+{% extends 'allauth/layouts/base.html' %}
+{% block head_title %}Your account{% endblock %}
+{% block content %}<h1>Your workspace starts here.</h1><p>Signed in as <strong>{{ user.email }}</strong>.</p>
+<section><h2>Get the application</h2>{% for download in downloads %}<p><a class="button" href="{% url 'download' download.slug %}">{{ download.name }}</a></p>{% empty %}<p>Downloads are being prepared.</p>{% endfor %}</section>
+<section><h2>Try VibeIDE</h2>{% if trial %}<p>Your trial was started on {{ trial.started_at|date:'j M Y' }}.</p>{% else %}<p>Record your interest in trying the application.</p><form action="{% url 'trial' %}" method="post">{% csrf_token %}<button>Start a trial</button></form>{% endif %}</section>
+<section><h2>Account security</h2><p><a href="{% url 'account_change_password' %}">Change password</a></p><p><a href="{% url 'mfa_index' %}">Manage two-factor authentication</a></p><p><a href="{% url 'socialaccount_connections' %}">Connected accounts</a></p></section>
+{% if user.is_staff %}<section><h2>Operations</h2><a class="button" href="/admin/metrics/">Open analytics</a> <a href="/admin/">Manage users</a></section>{% endif %}{% endblock %}

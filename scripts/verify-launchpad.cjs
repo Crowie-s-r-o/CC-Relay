@@ -5,9 +5,13 @@ const http = require('node:http');
 const fs = require('node:fs');
 const assert = require('node:assert/strict');
 const path = require('node:path');
+const verifySelectionAndEffort = require('./verify-selection-effort.cjs');
+const verifyDesktopChrome = require('./verify-desktop-chrome.cjs');
 const root = path.resolve(__dirname, '../public');
 const out = path.resolve(process.argv[2] || fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'relay-launchpad-')));
 fs.mkdirSync(out,{recursive:true});
+const chromeOnly = process.argv.includes('--desktop-chrome');
+let providerUsage;
 const projectPath='/synthetic/relay';
 const now=Date.now();
 const date=ago=>new Date(now-ago).toISOString();
@@ -15,17 +19,17 @@ const projects=['relay','Atlas','vector-lab','talent-finder','northstar','docs',
 const titles=['Refine the Launchpad workspace and verify each layout','Review the provider connection recovery flow','Add support for the new model catalog','Improve keyboard navigation in task history','Check queue ordering across projects'];
 const tasks=titles.map((title,i)=>({id:201-i,title,prompt:title,provider:i===1?'claude':'codex',mode:'execute',repo_path:projectPath,status:i===0?'running':'complete',model:'gpt-6-astra',effort:'high',thread_id:'synthetic-thread-'+i,terminal_lifecycle:'disposable',created_at:date(3600000*(i+1)),started_at:date(3600000*(i+1)),finished_at:i?date(3400000*i):null,result:i?'Verified the change and its focused checks.':null,starred:i===1,input_tokens:870815,output_tokens:6840,conversation_metrics:{token_observed:true,input_tokens:870815,output_tokens:6840,total_tokens:877655},latest_event_id:3}));
 const monitorTasks=[tasks[0],...projects.slice(1,6).map((p,i)=>({...tasks[0],id:190-i,repo_path:p.path,title:'Verify the next project milestone'}))];
-let prefs=null,interactive=false;const requests=[],errors=[];
+let prefs=chromeOnly?{panelWidths:{composer:420,queue:440},headerPosition:'top'}:null,interactive=false,zoomFactor=1;const requests=[],errors=[],eventClients=new Set();
 function answer(u,method,body) {
  if(u.pathname==='/api/ui-preferences') {if(method==='PATCH')prefs=JSON.parse(body);return {preferences:prefs};}
- if(u.pathname==='/api/status')return {capabilities:{projectLauncher:true,disposableTerminalPools:true,taskFullTextSearch:true,taskStarring:true,taskNaming:true,imageAttachments:true,pushToTalkVoiceInput:true,taskTerminalScreen:true,originalTerminalScreen:true,nativeTerminalScreen:true,planCouncilProviderOrder:true,retainedTerminalSessions:true,planCouncilTerminalExecution:true,turboSingleExecutorPipeline:true},codex:{available:true,authenticated:true},claude:{available:true,authenticated:true},opencode:{available:true,authenticated:true},runningTasks:tasks.length?monitorTasks:[],terminalPool:{repoPath:projectPath,active:{codex:1}},queue:{runningTaskId:tasks.find(t=>t.status==='running')?.id||null,waiting:0},counts:{running:tasks.filter(t=>t.status==='running').length,queued:0,complete:tasks.filter(t=>t.status==='complete').length},paused:false};
+ if(u.pathname==='/api/status')return {desktopZoom:{percent:zoomFactor*100},providerUsage,capabilities:{providerUsage:true,desktopZoomControls:true,projectLauncher:true,disposableTerminalPools:true,taskFullTextSearch:true,taskStarring:true,taskNaming:true,imageAttachments:true,...(process.argv.includes('--paste-images')?{taskFollowUpAttachments:true,taskSteering:true,taskDirectFollowUp:true}:{}),pushToTalkVoiceInput:true,taskTerminalScreen:true,originalTerminalScreen:true,nativeTerminalScreen:true,planCouncilProviderOrder:true,retainedTerminalSessions:true,planCouncilTerminalExecution:true,turboSingleExecutorPipeline:true},codex:{available:true,authenticated:true},claude:{available:true,authenticated:true},opencode:{available:true,authenticated:true},runningTasks:tasks.length?monitorTasks:[],terminalPool:{repoPath:projectPath,active:{codex:1}},queue:{runningTaskId:tasks.find(t=>t.status==='running')?.id||null,waiting:0},counts:{running:tasks.filter(t=>t.status==='running').length,queued:0,complete:tasks.filter(t=>t.status==='complete').length},paused:false};
  if(u.pathname==='/api/projects')return {projects,activeProjectPath:projects.length?projectPath:null};
  if(u.pathname==='/api/threads')return {threads:[],connection:{connected:true},providers:[]};
  if(u.pathname==='/api/tasks')return {tasks};
  if(/^\/api\/tasks\/\d+$/.test(u.pathname))return {task:tasks.find(t=>t.id===Number(u.pathname.split('/').at(-1))),events:[{id:1,type:'task.started',created_at:date(120000),payload:{}},{id:2,type:'item.completed',created_at:date(100000),payload:{item:{type:'agentMessage',text:'I will check the workspace layout, preserve the queue controls, and verify light and dark themes.'}}},{id:3,type:'item.completed',created_at:date(90000),payload:{item:{type:'commandExecution',command:'npm test',aggregatedOutput:'Focused checks passed.',exitCode:0,status:'completed'}}}],prompts:[]};
  if(u.pathname.endsWith('/terminal-screen') && interactive)return {terminal:{state:'interactive',transport:'pty',launchId:'synthetic-launch',provider:'codex',threadId:'synthetic-thread-0'}};
  if(u.pathname.endsWith('/terminal-screen'))return {terminal:{state:'live',provider:'codex',threadId:'synthetic-thread-0',text:'› codex --model gpt-6-astra --effort high\n\nI will inspect the workspace layout, preserve the queue controls,\nand verify light and dark themes.\n\n$ rg -n "project-dock|task-card" public/\n  public/index.html\n  public/launchpad.css\n\n  Updated composer, queue cards, and activity panel.\n\n$ npm test\n  All focused checks passed.\n\n› Continuing verification...'}};
- if(u.pathname==='/api/models')return {models:[]};
+ if(u.pathname==='/api/models')return {models:u.searchParams.get('provider')==='opencode'?[{model:'synthetic-single-effort',displayName:'Single effort fixture',isDefault:true,defaultReasoningEffort:'high',supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:[]};
  if(u.pathname==='/api/terminal-displays')return {displays:[{index:0,name:'Primary display',width:1920,height:1080}]};
  if(u.pathname==='/api/plans')return {plans:[]};
  if(u.pathname==='/api/tasks/search')return {tasks:[],matches:[],query:u.searchParams.get('query')};
@@ -35,7 +39,7 @@ function answer(u,method,body) {
 }
 const server=http.createServer((req,res)=>{
  const u=new URL(req.url,'http://localhost'); 
- if(u.pathname==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': fixture\n\n');return;}
+ if(u.pathname==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': fixture\n\n');eventClients.add(res);res.on('close',()=>eventClients.delete(res));return;}
  if(u.pathname.startsWith('/api/')){let body='';req.on('data',d=>body+=d);req.on('end',()=>{requests.push([req.method,u.pathname]);res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(answer(u,req.method,body)));});return;}
  const vendors={'/vendor/xterm.js':'@xterm/xterm/lib/xterm.js','/vendor/xterm.css':'@xterm/xterm/css/xterm.css','/vendor/addon-fit.js':'@xterm/addon-fit/lib/addon-fit.js'};
  const file=vendors[u.pathname]?path.join(root,'../node_modules',vendors[u.pathname]):path.join(root,u.pathname==='/'?'index.html':u.pathname);
@@ -50,22 +54,68 @@ app.whenReady().then(async()=>{
  try{
  await new Promise(r=>server.listen(0,'127.0.0.1',r));
  nativeTheme.themeSource='dark';
- w=new BrowserWindow({show:false,frame:false,width:1720,height:1040,webPreferences:{sandbox:true,partition:'relay-launchpad-qa-'+Date.now()}});
+ w=new BrowserWindow({show:false,...(chromeOnly?{titleBarStyle:'hiddenInset'}:{frame:false}),width:1720,height:1040,webPreferences:{sandbox:true,partition:'relay-launchpad-qa-'+Date.now()}});
  w.webContents.on('did-start-loading',()=>console.log('Loading'));
  w.webContents.on('dom-ready',()=>console.log('DOM ready'));
  w.webContents.on('did-finish-load',()=>console.log('Loaded'));
  w.webContents.on('console-message',(_e,level,message)=>{if(level>=2){errors.push(message);console.log('Renderer',message);}});
- await w.loadURL('http://127.0.0.1:'+server.address().port+'/');
+ await w.loadURL('http://127.0.0.1:'+server.address().port+(chromeOnly?'/?desktopTitlebar=hidden-inset-v1':'/'));
  await sleep(1200);
  const js=s=>w.webContents.executeJavaScript(s);
+ if(process.argv.includes('--paste-images')){
+   await require('./verify-paste-images.cjs')({window:w,js,out});
+   assert.deepEqual(errors,[],'No renderer errors');
+   return;
+ }
+ if(process.argv.includes('--more-views')){
+   if(process.argv.includes('--interactive')){
+     interactive=true;
+     await w.reload();
+     await sleep(1400);
+     await js(`document.querySelector('#original-terminal-view').click()`);
+     await sleep(400);
+     assert.equal(await js(`document.querySelector('.events-section').dataset.terminalInteractive`),'true');
+   }
+   await require('./verify-more-views.cjs')({window:w,js,out});
+   assert.deepEqual(errors,[],'No renderer warnings or errors');
+   assert.ok(!requests.some(([method,p])=>method==='POST'&&p==='/api/tasks'),'No provider work was launched');
+   return;
+ }
+ if(process.argv.includes('--provider-usage')){
+   await require('./verify-provider-usage.cjs')({window:w,js,out,setUsage:value=>{
+     providerUsage=value;
+     for(const client of eventClients)client.write('event: change\ndata: {"providerUsage":true}\n\n');
+   }});
+   assert.deepEqual(errors,[],'No renderer warnings or errors');
+   assert.ok(!requests.some(([method,p])=>method==='POST'&&p==='/api/tasks'),'No provider work was launched');
+   return;
+ }
  const capture=async name=>{await sleep(150);fs.writeFileSync(out+'/'+name+'.png',(await w.webContents.capturePage()).toPNG());if(!(await js(`document.body.scrollWidth <= innerWidth`)))console.log('Overflow '+name,await js(`JSON.stringify([...document.querySelectorAll('body *')].filter(e=>e.getBoundingClientRect().right>innerWidth+2&&e.getBoundingClientRect().width>0).slice(0,18).map(e=>({id:e.id,cl:e.className,w:e.getBoundingClientRect().width,right:e.getBoundingClientRect().right})))`));assert.ok(await js(`document.body.scrollWidth <= innerWidth`),'No page overflow: '+name);};
+ if(chromeOnly){
+   await verifyDesktopChrome({window:w,js,capture,updatePreferences:value=>{prefs=value?{...prefs,...value}:null;},setZoom:factor=>{zoomFactor=factor;w.webContents.setZoomFactor(factor);}});
+   assert.deepEqual(errors,[],'No renderer warnings or errors');
+   assert.ok(!requests.some(([method,p])=>method==='POST'&&p==='/api/tasks'),'No provider work was launched');
+   console.log('Artifacts:',out);
+   return;
+ }
  const metrics=()=>js(`JSON.stringify({theme:document.documentElement.dataset.theme,body:[document.body.clientWidth,document.body.scrollWidth],panels:[...document.querySelectorAll('.workspace > .panel')].map(e=>({class:e.className,rect:e.getBoundingClientRect().toJSON(),scroll:[e.clientHeight,e.scrollHeight,e.clientWidth,e.scrollWidth]})),prompt:document.querySelector('#task-prompt').getBoundingClientRect().toJSON(),submit:document.querySelector('#task-submit-button').getBoundingClientRect().toJSON(),errors:document.querySelector('#queue-summary').textContent})`);
  await js(`document.fonts.ready`);await capture('dark-desktop');console.log(await metrics());
+ await verifySelectionAndEffort({window:w,js,capture,label:'dark-desktop',refresh:()=>{
+   assert.ok(eventClients.size > 0, 'A renderer change stream is connected');
+   for(const client of eventClients)client.write('event: change\ndata: {"tasks":true}\n\n');
+ }});
  assert.deepEqual(await js(`Array.from(document.querySelectorAll('.workspace > .panel'), e=>e.getBoundingClientRect().width)`),[420,440,860]);
  assert.equal(await js(`document.querySelector('.project-dock').getBoundingClientRect().height`),51);
  assert.equal(await js(`document.querySelector('#task-submit-button').getBoundingClientRect().height`),38);
- assert.equal(await js(`document.querySelector('.header-running-task').getBoundingClientRect().height`),24);
- assert.ok(await js(`Math.abs(document.querySelector('.native-terminal-screen').getBoundingClientRect().top - 251) <= 1`),'Terminal inset matches reference geometry');
+ assert.equal(await js(`document.querySelector('.header-running-task').getBoundingClientRect().height`),48);
+ assert.ok(await js(`(() => {
+   const terminal = document.querySelector('.native-terminal-screen');
+   const style = getComputedStyle(terminal);
+   const rect = terminal.getBoundingClientRect();
+   return style.borderTopWidth === '0px' && style.borderRadius === '0px'
+     && Math.abs(rect.top - document.querySelector('.event-toolbar').getBoundingClientRect().bottom) <= 1
+     && Math.abs(rect.width - terminal.parentElement.getBoundingClientRect().width) <= 1;
+ })()`),'Terminal starts flush below its toolbar without the retired inset card');
  await js(`document.querySelector('#event-more-views').open=true; document.querySelector('[data-event-filter=commands]').click()`);
  assert.equal(await js(`document.querySelector('#event-more-views').open`),false);
  assert.equal(await js(`document.querySelector('#event-more-views summary').textContent`),'Commands');
@@ -84,10 +134,15 @@ app.whenReady().then(async()=>{
  await capture('turbo-council');await js(`document.querySelector('#turbo-council-enabled').click()`);
  await js(`document.querySelector('#mode-execute').click();document.querySelector('#plan-council-enabled').checked && document.querySelector('#plan-council-enabled').click(); document.querySelector('#terminal-settings-button').click()`);await capture('settings-dark'); await js(`document.querySelector('.terminal-settings-body').scrollTop=9999`);await capture('settings-bottom');
  await js(`document.querySelector('#terminal-settings-close').click();document.querySelector('#theme-toggle').click()`);await capture('light-desktop');
+ await verifySelectionAndEffort({window:w,js,capture,label:'light-desktop'});
  w.setContentSize(1200,900);await capture('light-medium');console.log(await metrics());
+ await verifySelectionAndEffort({window:w,js,capture,label:'light-medium'});
  w.setContentSize(480,900);await capture('light-compact');console.log(await metrics());
+ await verifySelectionAndEffort({window:w,js,capture,label:'light-compact'});
  await js(`document.querySelector('#theme-toggle').click()`);await capture('dark-compact');
+ await verifySelectionAndEffort({window:w,js,capture,label:'dark-compact'});
  w.setContentSize(320,900);await capture('dark-mobile');console.log(await metrics());
+ await verifySelectionAndEffort({window:w,js,capture,label:'dark-mobile'});
  // Extra verification pass: real renderer controls, saved preferences, both scroll owners.
  await js(`document.querySelector('.workspace').scrollTop = document.querySelector('.workspace').scrollHeight`);
  await capture('compact-activity');
@@ -101,19 +156,17 @@ app.whenReady().then(async()=>{
  assert.equal(projects[0].max_codex_instances,6,'Stepper saves the capacity through the original project endpoint');
  assert.equal(requests.filter(([method,p])=>method==='PATCH'&&p==='/api/projects/1').length,beforePatches+1,'One click saves once');
  assert.equal(await js(`document.querySelector('#provider-claude').getAttribute('aria-selected')`),'true','Changing Codex capacity keeps Claude selected');
- await js(`document.querySelector('#max-codex-instances').value='8';document.querySelector('#max-codex-instances').dispatchEvent(new Event('change',{bubbles:true}))`);await sleep(200);
- assert.equal(await js(`document.querySelector('[data-step-input=max-codex-instances][data-step=\"1\"]').disabled`),true,'The plus control stops at 8');
+ await js(`document.querySelector('#max-codex-instances').value='20';document.querySelector('#max-codex-instances').dispatchEvent(new Event('change',{bubbles:true}))`);await sleep(200);
+ assert.equal(await js(`document.querySelector('[data-step-input=max-codex-instances][data-step=\"1\"]').disabled`),true,'The plus control stops at 20');
  await js(`document.querySelector('[data-step-input=max-codex-instances][data-step=\"-1\"]').click()`);await sleep(200);
- assert.equal(projects[0].max_codex_instances,7);
+ assert.equal(projects[0].max_codex_instances,19);
  w.webContents.debugger.attach('1.3'); await w.webContents.debugger.sendCommand('Emulation.setFocusEmulationEnabled',{enabled:true});
  await js(`document.querySelector('#max-codex-instances').focus()`);
  assert.equal(await js(`document.querySelector('#provider-claude').getAttribute('aria-selected')`),'true','Pool focus does not select provider');
  console.log('Focus',await js(`JSON.stringify({id:document.activeElement.id,focused:document.hasFocus(),visible:document.activeElement.matches(':focus-visible'),disabled:document.querySelector('#max-codex-instances').disabled})`)); assert.notEqual(await js(`getComputedStyle(document.activeElement).outlineStyle`),'none');
  await js(`document.querySelector('#provider-codex').click(); document.querySelector('#display-settings').open = true; document.querySelector('#header-position-toggle').click()`);
  assert.equal(await js(`document.documentElement.dataset.headerPosition`),'top');
- const oldTerminalHeight=await js(`document.querySelector('.events-section').getBoundingClientRect().height`);
- await js(`document.querySelector('#terminal-height-resizer').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true}))`);await sleep(150);
- assert.ok(await js(`document.querySelector('.events-section').getBoundingClientRect().height`) < oldTerminalHeight,'Keyboard terminal resizing changes the actual surface');
+ assert.equal(await js(`document.querySelector('#terminal-height-resizer')`),null,'The retired terminal height separator stays removed');
  const oldWidth=await js(`document.querySelector('.composer').getBoundingClientRect().width`);
  await js(`document.querySelector('#composer-queue-resizer').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowRight',bubbles:true}))`);
  await sleep(180);
@@ -132,8 +185,13 @@ app.whenReady().then(async()=>{
  // Verify compatibility state chrome independently of live terminal discovery.
  await js(`const sample = document.createElement('div'); sample.className = 'terminal-empty'; sample.innerHTML = '<strong>No terminal connected</strong><p>Launch a terminal to continue.</p>'; document.querySelector('#terminal-panel').append(sample);`);
  assert.equal(await js(`getComputedStyle(document.querySelector('.terminal-empty')).backgroundColor`),'rgb(21, 27, 34)','Dark empty-state surface follows the final palette');
+ const previousWindow=w;
+ w=new BrowserWindow({show:false,titleBarStyle:'hiddenInset',width:1720,height:1040,webPreferences:{sandbox:true,partition:'relay-native-chrome-qa-'+Date.now()}});
+ previousWindow.destroy();
+ w.webContents.on('console-message',(_e,level,message)=>{if(level>=2)errors.push(message);});
  await w.loadURL('http://127.0.0.1:'+server.address().port+'/?desktopTitlebar=hidden-inset-v1');await sleep(1200);await capture('native-desktop');assert.equal(await js(`document.querySelector('#terminal-legend').textContent`),'Automatic terminals','A cached project reload still renders automatic controls');
  assert.equal(await js(`document.documentElement.dataset.desktopTitlebar`),'true');
+ await verifyDesktopChrome({window:w,js,capture,updatePreferences:value=>{prefs=value?{...prefs,...value}:null;},setZoom:factor=>{zoomFactor=factor;w.webContents.setZoomFactor(factor);}});
  interactive=true;await w.reload();await sleep(1400);await js(`document.querySelector('#original-terminal-view').click()`);await sleep(400);await capture('interactive-terminal');
  assert.equal(await js(`document.querySelector('.events-section').dataset.terminalInteractive`),'true');
  assert.equal(await js(`document.querySelector('#terminal-legend').textContent`),'Automatic terminals');
@@ -150,5 +208,5 @@ app.whenReady().then(async()=>{
  console.log('Extra verification: provider isolation, draft, focus, council order, keyboard resize, persisted monitor/width, font loading, reachable compact activity, and empty project passed.');
  fs.writeFileSync(out+'/result.json',JSON.stringify({requests,errors},null,2));
  console.log('Header styles',await js(`JSON.stringify([...document.querySelectorAll('.app-header,.header-running-monitor,.header-actions,.provider-usage')].map(e=>({cl:e.className,display:getComputedStyle(e).display,wrap:getComputedStyle(e).flexWrap,width:getComputedStyle(e).width,position:getComputedStyle(e).position,flex:getComputedStyle(e).flex,columns:getComputedStyle(e).gridTemplateColumns,height:getComputedStyle(e).height})))`)); console.log('Overflow',await js(`JSON.stringify([...document.querySelectorAll('body *')].filter(e=>e.getBoundingClientRect().right>innerWidth+2 && e.getBoundingClientRect().width>0 && getComputedStyle(e).position!=='absolute').slice(0,40).map(e=>({id:e.id,cl:e.className,w:e.getBoundingClientRect().width,right:e.getBoundingClientRect().right})))`));console.log('Artifacts:',out);console.log('Errors:',JSON.stringify(errors));assert.deepEqual(errors,[],'No renderer warnings or errors');assert.ok(!requests.some(([method,p])=>method==='POST'&&p==='/api/tasks'),'No provider work was launched');
- }catch(e){console.error(e);process.exitCode=1;}finally{if(w&&!w.isDestroyed())w.destroy();for(const socket of sockets.clients)socket.terminate();sockets.close();server.closeAllConnections();server.close(()=>app.quit());}
+ }catch(e){console.error(e);process.exitCode=1;}finally{if(w&&!w.isDestroyed())w.destroy();for(const socket of sockets.clients)socket.terminate();sockets.close();server.closeAllConnections();server.close(()=>app.exit(process.exitCode||0));}
 });

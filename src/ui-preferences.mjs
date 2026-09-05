@@ -126,7 +126,7 @@ export function normalizeUiPreferences(value) {
   const composer = boundedNumber(value.panelWidths?.composer, 400, 5000);
   const queue = boundedNumber(value.panelWidths?.queue, 360, 5000);
   const terminalHeight = boundedNumber(value.terminalHeight, 180, 5000);
-  const headerPosition = value.headerPosition === 'bottom' ? 'bottom' : 'top';
+  const headerPosition = value.headerPosition === 'top' ? 'top' : 'bottom';
   const terminalWindowView = TERMINAL_WINDOW_VIEWS.has(value.terminalWindowView)
     ? value.terminalWindowView
     : 'all';

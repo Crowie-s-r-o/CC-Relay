@@ -122,9 +122,9 @@ test('provider choice is explicit and the left panel configures automatic instan
   assert.doesNotMatch(composer, /id="launch-terminal-button"/);
   assert.match(composer, /id="provider-tabs" class="agent-tabs"/);
   assert.match(composer, /id="provider-opencode"[\s\S]{0,500}<strong>OpenCode<\/strong>/);
-  assert.match(composer, /id="max-codex-instances"[^>]*min="1" max="8"/);
-  assert.match(composer, /id="max-claude-instances"[^>]*min="1" max="8"/);
-  assert.match(composer, /id="max-opencode-instances"[^>]*min="1" max="8"/);
+  assert.match(composer, /id="max-codex-instances"[^>]*min="1" max="20"/);
+  assert.match(composer, /id="max-claude-instances"[^>]*min="1" max="20"/);
+  assert.match(composer, /id="max-opencode-instances"[^>]*min="1" max="20"/);
   assert.match(composerApp, /disposableTerminalPools === true/);
   assert.match(composerApp, /async function saveProjectInstanceLimits/);
   assert.match(composerApp, /terminalLifecycle: 'disposable'/);

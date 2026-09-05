@@ -33,6 +33,7 @@ function setup({
   const launches = [];
   const closes = [];
   const retentions = [];
+  const bindings = [];
   let sequence = 0;
   const coordinator = {
     async launch(path, provider, layout, options) {
@@ -55,6 +56,13 @@ function setup({
     },
   };
   const launcher = {
+    confirmTaskTerminalBinding(launchId, taskId, threadId) {
+      const task = database.getTask(taskId);
+      assert.ok([task.thread_id, task.author_thread_id, task.turbo?.plannerThreadId,
+        task.turbo?.executionThreadId, task.turbo?.councilThreadId].includes(threadId),
+      'retire the startup target only after its conversation is saved on the task');
+      bindings.push({ launchId, taskId, threadId });
+    },
     async closeOwnedTerminal(threadId) {
       closes.push(threadId);
     },
@@ -73,7 +81,7 @@ function setup({
     claudeConversationState,
     codexConversationState,
   });
-  return { directory, database, artifacts, project, pool, launches, closes, retentions };
+  return { directory, database, artifacts, project, pool, launches, closes, retentions, bindings };
 }
 
 test('Claude conversation inspection distinguishes a transcript, absence, and unreadable state', () => {
@@ -147,6 +155,7 @@ test('direct disposable tasks launch fresh, close, and later resume the saved co
 
     const prepared = await context.pool.prepare(first);
     assert.equal(prepared.thread_id, 'claude-thread-1');
+    assert.deepEqual(context.bindings, [{ launchId: 'claude-launch-1', taskId: first.id, threadId: prepared.thread_id }]);
     assert.equal(context.launches[0].options.resumeThreadId, null);
     assert.deepEqual(context.launches[0].layout, { enabled: false, background: true });
     assert.deepEqual(await context.pool.release(first.id), { closed: 1, failed: 0 });
@@ -370,6 +379,8 @@ test('direct and Plan council terminals receive their complete settings on the f
     });
     context.artifacts.initializeTask(council);
     await context.pool.prepare(council);
+    assert.equal(context.bindings.filter(({ taskId }) => taskId === council.id).length, 2,
+      'both council startup targets retire after the shared task assignment');
     assert.deepEqual(context.launches.slice(1).map(({ provider, options }) => ({ provider, options })), [
       {
         provider: 'claude',
@@ -841,6 +852,7 @@ test('Turbo opens and closes its planner before creating one fresh execution ses
     const stored = context.database.getTask(task.id);
     assert.equal(stored.thread_id, executor.threadId);
     assert.equal(stored.turbo.executionThreadId, executor.threadId);
+    assert.deepEqual(context.bindings.map(({ threadId }) => threadId), [planner.threadId, executor.threadId]);
     await context.pool.finishTurboStage(task.id, executor, { retain: false });
 
     assert.deepEqual(context.closes, ['codex-launch-1', 'codex-launch-2']);
@@ -1379,6 +1391,33 @@ test('a Windows terminal CC Relay could not terminate keeps its project pool slo
     assert.deepEqual(await context.pool.release(task.id), { closed: 0, failed: 1 });
     assert.deepEqual(context.pool.usage(context.directory), { codex: 1, claude: 0, opencode: 0 });
   } finally {
+    rmSync(context.directory, { recursive: true, force: true });
+  }
+});
+
+
+test('twenty provider slots persist and the twenty-first task waits independently per provider', () => {
+  const context = setup();
+  try {
+    context.database.updateProjectInstanceLimits(context.project.id, { codex: 20, claude: 20, opencode: 20 });
+    context.database.close();
+    context.database = new RelayDatabase(join(context.directory, 'relay.sqlite'));
+    context.pool.database = context.database;
+    assert.deepEqual(context.pool.limits(context.directory), { codex: 20, claude: 20, opencode: 20 });
+    for (const provider of ['codex', 'claude', 'opencode']) {
+      const task = { id: 100, repo_path: context.directory, terminal_lifecycle: 'disposable', mode: 'execute', provider };
+      const running = Array.from({ length: 20 }, (_, id) => ({ ...task, id: id + 1 }));
+      assert.equal(context.pool.canRun(task, running.slice(0, 19)), true);
+      assert.equal(context.pool.canRun(task, running), false);
+      assert.equal(context.pool.canRun({ ...task, repo_path: '/another/project' }, running), true);
+      const otherProvider = provider === 'codex' ? 'claude' : 'codex';
+      assert.equal(context.pool.canRun({ ...task, provider: otherProvider }, running), true);
+    }
+    const turbo = { id: 101, repo_path: context.directory, terminal_lifecycle: 'disposable', mode: 'turbo', turbo: { workerCount: 19 } };
+    assert.equal(context.pool.capacityIssue(turbo), '');
+    assert.match(context.pool.capacityIssue({ ...turbo, turbo: { workerCount: 20 } }), /needs 21 Codex instances/);
+  } finally {
+    context.database.close();
     rmSync(context.directory, { recursive: true, force: true });
   }
 });

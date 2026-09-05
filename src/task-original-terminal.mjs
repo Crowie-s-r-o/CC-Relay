@@ -17,6 +17,8 @@ export function taskTerminalCandidates(task) {
   }
   if (task.mode === 'turbo') {
     add(task.turbo?.plannerThreadId || task.turbo?.planner?.threadId, 'codex', 'Planner');
+    add(task.turbo?.executionThreadId, 'codex', 'Executor');
+    add(task.turbo?.councilThreadId, 'claude', 'Council');
     const workers = Array.isArray(task.turbo?.workers) ? task.turbo.workers : [];
     for (const [index, worker] of workers.entries()) {
       add(worker?.threadId, 'codex', `Worker ${index + 1}`);
@@ -36,9 +38,11 @@ export class TaskOriginalTerminal {
       const owned = this.launcher.terminalForThread(thread.id);
       if (thread.provider === 'claude' && ((this.platform !== 'darwin' && owned?.transport !== 'pty')
         || this.claudeMode(thread.id) === 'headless')) return false;
-      return owned?.provider === thread.provider && owned.path === thread.cwd;
+      return owned?.provider === thread.provider && owned.path === thread.cwd
+        && (owned.transport !== 'pty' || owned.taskId === task.id);
     });
-    const pending = this.launcher.pendingEmbeddedTerminalsForTask?.(task) || [];
+    const pending = (this.launcher.pendingEmbeddedTerminalsForTask?.(task) || [])
+      .filter((terminal) => !connected.some((target) => this.launcher.terminalForThread(target.id)?.launchId === terminal.launchId));
     return [...connected, ...pending.map((terminal) => ({ id: `launch:${terminal.launchId}`,
       provider: terminal.provider, cwd: terminal.path, label: `${terminal.provider} · starting`, launchId: terminal.launchId }))];
   }
@@ -49,14 +53,24 @@ export class TaskOriginalTerminal {
     return this.launcher.pendingEmbeddedTerminalsForTask?.(task).find((item) => item.launchId === target.launchId) || null;
   }
 
+  requestedTarget(task, targets, threadId) {
+    return targets.find((target) => {
+      if (target.id === threadId) return true;
+      // A startup address may outlive conversation registration. Resolve it only
+      // through this task's current targets and the same exact owned launch.
+      const launchId = this.ownedTarget(task, target)?.launchId;
+      return Boolean(launchId && threadId === `launch:${launchId}`);
+    });
+  }
+
   connection(taskId, threadId, launchId) {
     const task = this.database.getTask(taskId);
     if (!task || !threadId || !launchId) return null;
-    const target = this.targets(task).find((item) => item.id === threadId);
+    const target = this.requestedTarget(task, this.targets(task), threadId);
     const owned = this.ownedTarget(task, target);
     if (owned?.transport !== 'pty' || owned.launchId !== launchId
       || !this.launcher.embeddedTerminalHost.isAlive(launchId)) return null;
-    return { taskId, threadId, launchId, provider: target.provider, cwd: task.repo_path,
+    return { taskId, threadId: target.id, launchId, provider: target.provider, cwd: task.repo_path,
       taskProvider: task.provider, mode: task.mode };
   }
 
@@ -72,7 +86,7 @@ export class TaskOriginalTerminal {
       return unavailable('This task has no verified interactive terminal. Its conversation and activity are available below.');
     }
     const target = requestedThreadId
-      ? targets.find((item) => item.id === requestedThreadId)
+      ? this.requestedTarget(task, targets, requestedThreadId)
       : targets.length === 1 ? targets[0] : null;
     if (!target) {
       return requestedThreadId

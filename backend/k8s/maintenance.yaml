@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: vibeide-maintenance
+  namespace: vibeide-dev
+  labels: {app: vibeide}
+spec:
+  schedule: "17 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 1
+      template:
+        metadata:
+          labels: {app: vibeide-maintenance}
+        spec:
+          automountServiceAccountToken: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            fsGroup: 10001
+            seccompProfile: {type: RuntimeDefault}
+          containers:
+            - name: maintenance
+              image: localhost:5000/vibeide:RELEASE_TAG
+              command: [python, manage.py, maintain]
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: {drop: [ALL]}
+              resources:
+                requests: {cpu: 50m, memory: 128Mi}
+                limits: {cpu: 250m, memory: 256Mi}
+              volumeMounts:
+                - {name: config, mountPath: /app/config, readOnly: true}
+                - {name: data, mountPath: /app/.data}
+          volumes:
+            - name: config
+              secret: {secretName: vibeide-config, defaultMode: 0440}
+            - name: data
+              persistentVolumeClaim: {claimName: vibeide-data}

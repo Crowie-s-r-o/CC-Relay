@@ -67,6 +67,18 @@ Provider status is `checking`, `ready`, `stale`, or `unavailable`. Claude's own 
 
 ## Header behavior
 
+> [!note]
+> **September 5: all five windows are visible again.** Launchpad had moved Fable and Cod 5h
+> into Display. Both now live directly in `#provider-usage`, alongside Cla 5h, Cla Week, and
+> Cod Week. Each retains its percentage and 9px reset countdown in both themes. On compact
+> screens the strip takes its own row, with the Display cog beside it and percentages beneath
+> labels. Explicitly reset the inherited mobile `order` and header action direction, or the
+> legacy cascade puts the cog on an unnecessary separate row.
+> Codex plans are not inferred from a tier name: a reported 300-minute window works independently
+> of weekly data, through either primary or secondary and either rate-limit response shape.
+> Missing windows show `--`; Fable zero without a reset shows `0%` with no borrowed countdown.
+> See [[provider-usage-visibility-review]] and [[launchpad-v2-design]].
+
 `public/provider-usage.js` owns the pure presentation mapping. Values below 50 percent are green, values from 50 through 74 percent are yellow, values from 75 through 89 percent are orange, and values from 90 through 100 percent are red. The text percentage remains visible beside every bar, reset details live in its title, and stale values say **Last known value**.
 
 The visible compact labels are **Cla 5h**, **Cla Week**, **Fable**, **Cod 5h**, and **Cod Week**. Their full provider and window names remain on the accessible progress bars and in reset tooltips. Fable gets a numeric progress value only from a direct Fable section. Reset countdowns use 9px monospace text so the remaining time stays readable within the fixed header instrument.

@@ -107,7 +107,7 @@ test('task activity identifies review-ready completions and can clear the curren
   assert.match(markup, /id="clear-task-notifications-button"[\s\S]*?>Mark reviewed<\/button>/);
   assert.match(app, /projectCompletionNotifications\.includes\(task\.repo_path, task\.id\)/);
   assert.match(app, /class="task-card [^"]*\$\{unread \? 'task-card-unread' : ''\}/);
-  assert.match(app, /unread && \(!operationalQueue \|\| starred\) \? '<span class="task-unread-marker">Ready for review<\/span>'/);
+  assert.match(app, /unread \? '<span class="task-unread-marker">Ready for review<\/span>'/);
   assert.match(app, /Mark reviewed · \$\{unreadCount\}/);
   assert.match(app, /projectCompletionNotifications\.taskIds\(state\.activeProjectPath\)/);
   assert.match(app, /api\('\/api\/tasks\/review-project'/);

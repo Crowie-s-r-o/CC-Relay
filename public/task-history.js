@@ -56,6 +56,13 @@ export function sortOperationalTasks(tasks, { isReadyForReview = () => false } =
   }));
 }
 
+export function tasksReadyForReview(tasks, { isReadyForReview = () => false } = {}) {
+  return sortOperationalTasks(
+    tasks.filter((task) => task.status === 'complete' && isReadyForReview(task)),
+    { isReadyForReview },
+  );
+}
+
 function validPeriod(period) {
   return PERIODS.has(period) ? period : 'week';
 }

@@ -403,7 +403,7 @@ test('a media recorder failure discards partial audio and closes the microphone'
   assert.deepEqual(errors, ['Microphone disconnected.']);
 });
 
-test('desktop grants only microphone and safe clipboard writes to its exact loopback renderer', () => {
+test('desktop grants microphone and safe clipboard access only to its exact loopback renderer', () => {
   const rendererUrl = 'http://127.0.0.1:54321/?relayDesktop=macos';
   const webContents = { getURL: () => rendererUrl };
   assert.equal(desktopPermissionAllowed({
@@ -441,6 +441,21 @@ test('desktop grants only microphone and safe clipboard writes to its exact loop
   let granted = null;
   handlers.request(webContents, 'media', (value) => { granted = value; }, { mediaTypes: ['audio'] });
   assert.equal(granted, true);
+});
+
+test('desktop clipboard reads require the exact renderer origin and main frame in both permission phases', () => {
+  const rendererUrl = 'http://127.0.0.1:54321/';
+  const webContents = { getURL: () => rendererUrl };
+  for (const phase of ['check', 'request']) {
+    const request = { permission: 'clipboard-read', webContents, rendererUrl, phase,
+      details: { requestingUrl: rendererUrl, isMainFrame: true } };
+    assert.equal(desktopPermissionAllowed(request), true);
+    assert.equal(desktopPermissionAllowed({ ...request, details: { ...request.details, isMainFrame: false } }), false);
+    assert.equal(desktopPermissionAllowed({ ...request, details: {} }), false);
+    assert.equal(desktopPermissionAllowed({ ...request, requestingOrigin: 'https://example.test' }), false);
+    assert.equal(desktopPermissionAllowed({ ...request, webContents: { getURL: () => 'https://example.test' } }), false);
+    assert.equal(desktopPermissionAllowed({ ...request, requestingOrigin: 'http://127.0.0.1:54322' }), false);
+  }
 });
 
 class FakeWhisperWorker extends EventEmitter {

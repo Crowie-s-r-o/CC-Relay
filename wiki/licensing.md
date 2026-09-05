@@ -23,6 +23,14 @@ All commits at the relicensing point have the same author, so the current tree c
 > [!note]
 > Before accepting third-party code, decide whether a contributor agreement is needed. Without adequate relicensing rights from contributors, Patrik Kelemen may not be able to grant a commercial license covering their contributions alone.
 
-Related: [[open-source-releases]], [[desktop-updates]], [[project-workspaces]]
+## Paid offering pricing
+
+The September 5, 2026 product request adds a 30-day trial, $7.99 monthly, $79.99 yearly,
+and $159.98 lifetime access with automatic updates forever, using USD as an assumption.
+See [[pricing]] for the reusable copy and [[landing-page-build-prompt]] for its integration.
+This records product pricing; it does not modify the source license. Checkout, trial activation,
+paid entitlement enforcement, and accompanying commercial license terms are not implemented.
+
+Related: [[open-source-releases]], [[desktop-updates]], [[project-workspaces]], [[pricing]]
 
 #relay #license #polyform #noncommercial #source-available #distribution

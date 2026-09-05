@@ -5283,47 +5283,6 @@ pre {
   background: rgb(18 22 42 / 55%);
 }
 
-.event-tools .thinking-visibility-button {
-  border-color: rgb(187 154 247 / 28%);
-}
-
-.thinking-visibility-button i {
-  position: relative;
-  display: inline-block;
-  width: 20px;
-  height: 11px;
-  border: 1px solid var(--term-muted);
-  border-radius: 999px;
-  background: rgb(123 129 141 / 14%);
-}
-
-.thinking-visibility-button i::after {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--term-muted2);
-  content: "";
-}
-
-.thinking-visibility-button[aria-pressed="true"] {
-  border-color: rgb(187 154 247 / 48%);
-  color: #eadfff;
-  background: rgb(187 154 247 / 12%);
-}
-
-.thinking-visibility-button[aria-pressed="true"] i {
-  border-color: rgb(187 154 247 / 68%);
-  background: rgb(187 154 247 / 18%);
-}
-
-.thinking-visibility-button[aria-pressed="true"] i::after {
-  left: 11px;
-  background: var(--term-caret);
-}
-
 .event-tools button:disabled { cursor: not-allowed; opacity: 0.45; }
 
 .event-filters button:focus-visible,
@@ -18847,8 +18806,7 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
    button geometry from .event-filters button, .event-tools button and only adds its own
    cyan identity, glyph, and explicit disabled treatment.
 
-   The identity rules are scoped under .event-tools for the same reason
-   .event-tools .thinking-visibility-button is: the shared color, border and background come
+   The identity rules are scoped under .event-tools: the shared color, border and background come
    from .event-tools button, whose trailing element selector outranks a bare class. */
 .event-tools .terminal-window-open {
   border-color: rgb(125 207 255 / 26%);
@@ -19085,7 +19043,7 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
 }
 
 /* Docked tools slot ---------------------------------------------
-   While the window is open the live .event-tools cluster (Thinking and Copy log) is moved
+   While the window is open the live .event-tools cluster (Copy log and Window) is moved
    out of the now hidden .event-toolbar row and into this header slot, so the operator keeps
    both controls and the window loses a full width strip of dead space under the header.
 
@@ -19143,31 +19101,10 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   background: var(--mist);
 }
 
-/* Thinking ships aria-pressed="true", and the ledger paints that state as #eadfff on a
-   violet wash, which is invisible on white. The header uses the same pressed indigo the
-   view rail does, at 7.43:1 on --signal-soft. */
 #terminal-window-tools.terminal-window-tools .event-tools button[aria-pressed="true"] {
   border-color: rgb(34 57 201 / 40%);
   color: #2239c9;
   background: var(--signal-soft);
-}
-
-#terminal-window-tools.terminal-window-tools .thinking-visibility-button i {
-  border-color: rgb(52 64 90 / 38%);
-  background: rgb(52 64 90 / 12%);
-}
-
-#terminal-window-tools.terminal-window-tools .thinking-visibility-button i::after {
-  background: var(--graphite);
-}
-
-#terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i {
-  border-color: rgb(34 57 201 / 52%);
-  background: rgb(34 57 201 / 16%);
-}
-
-#terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i::after {
-  background: #2239c9;
 }
 
 /* The ledger ring is --term-blue, which measures 2.31:1 on this white header, under the
@@ -19552,8 +19489,7 @@ html[data-theme="dark"] .terminal-window-close:focus-visible {
 
 /* Dark header tools. The ledger chrome is already dark, so this is a smaller correction
    than the light half, but the chips still have to be the app's control surface rather than
-   the ledger's navy wash, and Thinking's violet pressed state still has to become the app's
-   own selected blue so it matches the rail beside it. */
+   the ledger's navy wash. */
 html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .event-tools button {
   border-color: var(--app-border);
   color: var(--app-text-body);
@@ -19570,24 +19506,6 @@ html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .event-tool
   border-color: color-mix(in srgb, var(--app-blue) 60%, var(--app-border));
   color: var(--app-text);
   background: color-mix(in srgb, var(--app-blue) 16%, var(--app-control));
-}
-
-html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button i {
-  border-color: var(--app-border-strong);
-  background: rgb(156 162 173 / 16%);
-}
-
-html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button i::after {
-  background: var(--app-text-muted);
-}
-
-html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i {
-  border-color: color-mix(in srgb, var(--app-blue) 62%, var(--app-border));
-  background: rgb(122 162 247 / 22%);
-}
-
-html[data-theme="dark"] #terminal-window-tools.terminal-window-tools .thinking-visibility-button[aria-pressed="true"] i::after {
-  background: var(--app-blue);
 }
 
 html[data-theme="dark"] .terminal-window-close {

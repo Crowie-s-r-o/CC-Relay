@@ -201,7 +201,7 @@ test('a submit click commits a worker count that no blur committed', () => {
 });
 
 test('automatic pools cap the fleet one below the project instance ceiling', () => {
-  assert.match(app, /const MAX_PROJECT_INSTANCES = 8;/);
+  assert.match(app, /const MAX_PROJECT_INSTANCES = 20;/);
   assert.match(app, /const MAX_TURBO_WORKERS = 8;/);
   assert.match(app, /const MAX_POOL_TURBO_WORKERS = MAX_PROJECT_INSTANCES - 1;/);
   assert.match(app, /function maxTurboWorkers\(automatic = usesDisposableTerminalPools\(\)\) \{\n\s+return automatic \? MAX_POOL_TURBO_WORKERS : MAX_TURBO_WORKERS;/);
@@ -210,7 +210,8 @@ test('automatic pools cap the fleet one below the project instance ceiling', () 
   assert.match(app, /elements\.turboWorkerCount\.max = String\(workerLimit\);/);
   assert.match(app, /const limit = maxTurboWorkers\(\);/);
   // Legacy live-terminal Turbo keeps eight workers, on the server and in the markup default.
-  assert.match(server, /workerCount < 1 \|\| workerCount > 8/);
+  assert.match(server, /const workerLimit = disposable \? MAX_PROJECT_INSTANCES - 1 : 8;/);
+  assert.match(server, /workerCount < 1 \|\| workerCount > workerLimit/);
   assert.match(markup, /id="turbo-worker-count"[^>]*max="8"/);
   assert.match(markup, />Planning and execution</);
   assert.match(markup, />Execution model</);
@@ -287,4 +288,27 @@ test('the dark theme keeps the Turbo council surface frameless', () => {
   const painting = repaints.filter((index) => /background:/.test(style.slice(index, style.indexOf('}', index))));
   assert.ok(painting.length >= 2);
   assert.ok(painting.every((index) => index < guard));
+});
+
+
+test('provider limit validation accepts twenty and rejects invalid values', () => {
+  const source = server.slice(server.indexOf('const MAX_PROJECT_INSTANCES ='), server.indexOf('function validateProjectColor('));
+  const validate = new Function(`${source}; return validateInstanceLimit;`)();
+  for (const provider of ['Codex', 'Claude', 'OpenCode']) {
+    for (const value of [1, 8, 9, 19, 20, '20']) assert.equal(validate(value, provider), Number(value));
+    for (const value of [0, -1, 21, 20.5, null, '', undefined, NaN, Infinity]) {
+      assert.throws(() => validate(value, provider), /whole number from 1 to 20/);
+    }
+  }
+});
+
+test('Turbo submission accepts nineteen automatic executions and retains the legacy ceiling', () => {
+  const constants = server.match(/const MAX_PROJECT_INSTANCES = \d+;/)[0];
+  const start = server.indexOf('const workerCount = Number(body.workerCount);');
+  const end = server.indexOf('const models = await codexAppServer.listModels();', start);
+  const validate = new Function('body', 'disposable', `${constants} ${server.slice(start, end)} return workerCount;`);
+  for (const count of [1, 8, 9, 19]) assert.equal(validate({ workerCount: count }, true), count);
+  for (const count of [0, 19.5, 20, 21]) assert.throws(() => validate({ workerCount: count }, true), /between 1 and 19/);
+  assert.equal(validate({ workerCount: 8 }, false), 8);
+  assert.throws(() => validate({ workerCount: 9 }, false), /between 1 and 8/);
 });

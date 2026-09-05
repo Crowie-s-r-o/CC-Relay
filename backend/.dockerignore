@@ -1,0 +1,8 @@
+.venv
+.data
+config/runtime.json
+__pycache__
+**/__pycache__
+staticfiles
+tests
+.git

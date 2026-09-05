@@ -383,6 +383,27 @@ export class RelayDatabase {
         UNIQUE(task_id, started_at)
       );
 
+      CREATE TABLE IF NOT EXISTS terminal_history_turns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT,
+        outcome TEXT,
+        revision INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(task_id, provider, thread_id, turn_id)
+      );
+      CREATE TABLE IF NOT EXISTS terminal_history_messages (
+        turn_id INTEGER NOT NULL REFERENCES terminal_history_turns(id) ON DELETE CASCADE,
+        message_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(turn_id, message_id, role)
+      );
+
       CREATE TABLE IF NOT EXISTS task_token_usage_deltas (
         event_id INTEGER PRIMARY KEY,
         task_id INTEGER NOT NULL,
@@ -990,7 +1011,104 @@ export class RelayDatabase {
         outcome: row.outcome || null,
       });
     }
+    const terminalTurns = this.database.prepare(`
+      SELECT turns.task_id, turns.started_at, turns.finished_at, turns.outcome
+      FROM terminal_history_turns AS turns
+      WHERE EXISTS (
+        SELECT 1 FROM terminal_history_messages AS messages
+        WHERE messages.turn_id = turns.id AND messages.role = 'user'
+      )
+      ${taskId === null ? '' : 'AND turns.task_id = ?'}
+      ORDER BY turns.started_at, turns.id
+    `).all(...(taskId === null ? [] : [taskId]));
+    // Queue attempts remain authoritative when their execution interval already covers the
+    // native turn, including steering and automatic goal successors. Imported turns never
+    // become queue owners or unfinished task_attempts rows.
+    const relayAttempts = new Map([...attempts].map(([id, values]) => [id, [...values]]));
+    for (const turn of terminalTurns) {
+      const id = Number(turn.task_id);
+      if ((relayAttempts.get(id) || []).some((attempt) => (
+        turn.started_at >= attempt.started_at
+        && (!attempt.finished_at || turn.started_at < attempt.finished_at)
+      ))) continue;
+      if (!attempts.has(id)) attempts.set(id, []);
+      attempts.get(id).push({
+        started_at: turn.started_at,
+        finished_at: turn.finished_at,
+        duration_ms: turn.finished_at
+          ? Math.max(0, timestampMilliseconds(turn.finished_at) - timestampMilliseconds(turn.started_at)) : 0,
+        outcome: turn.outcome,
+        source: 'terminal',
+      });
+    }
+    for (const values of attempts.values()) values.sort((a, b) => a.started_at.localeCompare(b.started_at));
     return attempts;
+  }
+
+  terminalHistoryTasks() {
+    return this.database.prepare(`
+      SELECT tasks.id, tasks.provider, tasks.thread_id, tasks.repo_path, tasks.mode,
+        CASE WHEN tasks.mode = 'turbo'
+          THEN (SELECT MIN(finished_at) FROM task_attempts WHERE task_id = tasks.id)
+          ELSE COALESCE((SELECT MIN(started_at) FROM task_attempts WHERE task_id = tasks.id), tasks.started_at)
+        END AS started_at
+      FROM tasks
+      WHERE tasks.provider IN ('codex', 'claude') AND tasks.thread_id IS NOT NULL AND (
+        tasks.mode = 'execute' OR (
+          tasks.mode = 'turbo' AND tasks.provider = 'codex' AND tasks.terminal_lifecycle = 'disposable'
+          AND json_valid(tasks.turbo_json) = 1 AND json_extract(tasks.turbo_json, '$.executionThreadId') = tasks.thread_id
+        )
+      )
+    `).all();
+  }
+
+  recordTerminalHistory(sourceTask, turn, message = null) {
+    const task = this.getTask(sourceTask.id);
+    if (!task || task.provider !== sourceTask.provider || task.thread_id !== sourceTask.thread_id
+      || task.repo_path !== sourceTask.repo_path || task.mode !== sourceTask.mode) return false;
+    if (task.mode !== 'execute' && !(task.mode === 'turbo' && task.provider === 'codex'
+      && task.terminal_lifecycle === 'disposable' && task.turbo?.executionThreadId === task.thread_id)) return false;
+    this.database.exec('BEGIN IMMEDIATE');
+    try {
+      const existing = this.database.prepare(`
+        SELECT * FROM terminal_history_turns
+        WHERE task_id = ? AND provider = ? AND thread_id = ? AND turn_id = ?
+      `).get(task.id, task.provider, task.thread_id, turn.id);
+      let changed = !existing || existing.finished_at !== turn.finished_at || existing.outcome !== turn.outcome;
+      const row = this.database.prepare(`
+        INSERT INTO terminal_history_turns (task_id, provider, thread_id, turn_id, started_at, finished_at, outcome)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id, provider, thread_id, turn_id) DO UPDATE SET
+          finished_at = excluded.finished_at, outcome = excluded.outcome
+        RETURNING id
+      `).get(task.id, task.provider, task.thread_id, turn.id, turn.started_at, turn.finished_at, turn.outcome);
+      if (message) {
+        const result = this.database.prepare(`
+          INSERT INTO terminal_history_messages (turn_id, message_id, role, text, created_at)
+          VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT(turn_id, message_id, role) DO UPDATE SET text = excluded.text
+          WHERE terminal_history_messages.text != excluded.text
+        `).run(row.id, message.id, message.role, message.text, message.created_at);
+        changed ||= result.changes > 0;
+      }
+      if (changed) this.database.prepare('UPDATE terminal_history_turns SET revision = revision + 1 WHERE id = ?').run(row.id);
+      this.database.exec('COMMIT');
+      return changed;
+    } catch (error) {
+      this.database.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  terminalHistoryMessages(taskId, role) {
+    return this.database.prepare(`
+      SELECT turns.id AS turn_id, turns.started_at AS execution_started_at,
+        turns.finished_at AS execution_finished_at, messages.message_id, messages.text, messages.created_at
+      FROM terminal_history_messages AS messages
+      JOIN terminal_history_turns AS turns ON turns.id = messages.turn_id
+      WHERE turns.task_id = ? AND messages.role = ?
+      ORDER BY messages.created_at, turns.id, messages.message_id
+    `).all(taskId, role);
   }
 
   beginTaskAttempt(id, { attemptStartedAt, changes = {} } = {}) {
@@ -1424,7 +1542,8 @@ export class RelayDatabase {
           WHERE events.task_id = tasks.id
           ORDER BY events.id DESC
           LIMIT 1
-        ), 0) AS latest_event_id
+        ), 0) AS latest_event_id,
+        COALESCE((SELECT SUM(revision) FROM terminal_history_turns WHERE task_id = tasks.id), 0) AS terminal_history_revision
       FROM tasks
       ORDER BY
         CASE status
@@ -1877,7 +1996,41 @@ export class RelayDatabase {
         created_at: event.created_at,
       });
     }
-    return prompts;
+    const normalized = (text) => {
+      let value = withoutRelayNonInteractiveInstruction(text).replace(/\r\n?/gu, '\n').replaceAll('\t', '    ').trim();
+      const marker = '\n\nReference images are attached. Use the Read tool to inspect every image before working:\n';
+      const index = value.lastIndexOf(marker);
+      if (index >= 0 && value.slice(index + marker.length).split('\n').every((line) => (
+        task.attachments.some((attachment) => line.replace(/^\d+\. /u, '') === `${attachment.name}: ${attachment.path}`)
+      ))) value = value.slice(0, index).trim();
+      return value;
+    };
+    const receipts = prompts.map((entry) => ({ ...entry, normalized: normalized(entry.text) }));
+    const matched = new Set();
+    const nativeSeen = new Set();
+    const attempts = this.database.prepare(`SELECT started_at, finished_at FROM task_attempts WHERE task_id = ?`).all(taskId);
+    for (const message of this.terminalHistoryMessages(taskId, 'user')) {
+      const text = normalized(message.text);
+      const nativeKey = `${message.turn_id}:${text}`;
+      if (!text || nativeSeen.has(nativeKey)) continue;
+      nativeSeen.add(nativeKey);
+      const attempt = attempts.find((entry) => message.created_at >= entry.started_at
+        && (!entry.finished_at || message.created_at < entry.finished_at));
+      const receipt = receipts.find((entry) => !matched.has(entry.id) && entry.normalized === text && (
+        (entry.kind === 'original' && attempt)
+        || (timestampMilliseconds(entry.created_at) >= timestampMilliseconds(attempt?.started_at || message.execution_started_at) - 1000
+          && (!attempt?.finished_at || entry.created_at <= attempt.finished_at)
+          && entry.created_at <= (message.execution_finished_at || message.created_at))
+      ));
+      if (receipt) { matched.add(receipt.id); continue; }
+      prompts.push({
+        id: `terminal-${message.turn_id}-${message.message_id}`,
+        kind: 'follow-up', source: 'terminal', text: message.text,
+        created_at: message.created_at,
+        execution_started_at: attempt?.started_at || message.execution_started_at,
+      });
+    }
+    return [prompts[0], ...prompts.slice(1).sort((a, b) => a.created_at.localeCompare(b.created_at))];
   }
 
   listTaskResponses(taskId) {
@@ -1918,13 +2071,35 @@ export class RelayDatabase {
     }
     const latestResult = typeof task.result === 'string' ? task.result.trim() : '';
     if (latestResult && !seen.has(latestResult)) {
+      seen.add(latestResult);
       responses.push({
         id: `task-${task.id}-result`,
         text: latestResult,
         created_at: task.finished_at || task.created_at,
       });
     }
-    return responses;
+    const terminalMessages = this.terminalHistoryMessages(taskId, 'assistant');
+    const relayResponses = [...responses];
+    const nativeSeen = new Set();
+    const attempts = terminalMessages.length
+      ? this.database.prepare('SELECT started_at, finished_at FROM task_attempts WHERE task_id = ?').all(taskId) : [];
+    for (const message of terminalMessages) {
+      const text = message.text.trim();
+      const key = `${message.turn_id}:${text}`;
+      if (!text || nativeSeen.has(key)) continue;
+      nativeSeen.add(key);
+      const attempt = attempts.find((entry) => message.execution_started_at >= entry.started_at
+        && (!entry.finished_at || message.execution_started_at < entry.finished_at));
+      if (attempt && relayResponses.some((response) => response.text === text
+        && response.created_at >= attempt.started_at
+        && (!attempt.finished_at || response.created_at <= attempt.finished_at))) continue;
+      responses.push({
+        id: `terminal-${message.turn_id}-${message.message_id}`,
+        source: 'terminal', text, created_at: message.created_at,
+        execution_started_at: message.execution_started_at,
+      });
+    }
+    return terminalMessages.length ? responses.sort((a, b) => a.created_at.localeCompare(b.created_at)) : responses;
   }
 
   listTaskSearchDocuments(repoPath) {
@@ -2002,6 +2177,12 @@ export class RelayDatabase {
     }
 
     for (const document of documents.values()) {
+      for (const message of this.terminalHistoryMessages(document.taskId, 'user')) {
+        appendUniqueText(document.commands, document.commandSeen, message.text);
+      }
+      for (const message of this.terminalHistoryMessages(document.taskId, 'assistant')) {
+        appendUniqueText(document.responses, document.responseSeen, message.text);
+      }
       for (const fallback of document.responseFallbacks) {
         appendUniqueText(document.responses, document.responseSeen, fallback);
       }

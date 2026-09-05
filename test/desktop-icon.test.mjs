@@ -62,11 +62,11 @@ test('the in-app header uses the Crowie icon instead of a text monogram', () => 
   assert.doesNotMatch(markup, /class="brand-mark"[^>]*>R/);
 });
 
-test('the desktop keeps its drag region and the project dock carries daily usage', () => {
+test('the desktop folds its drag region into content and the project dock carries daily usage', () => {
   const main = readFileSync(join(projectRoot, 'src', 'electron-main.mjs'), 'utf8');
   const markup = readFileSync(join(projectRoot, 'public', 'index.html'), 'utf8');
   const style = readFileSync(join(projectRoot, 'public', 'style.css'), 'utf8');
-  const titlebar = markup.match(/<div class="desktop-titlebar"[\s\S]*?<\/div>/)?.[0];
+  const launchpad = readFileSync(join(projectRoot, 'public', 'launchpad.css'), 'utf8');
 
   assert.match(main, /const titlebarOptions = desktopTitlebarOptions\(process\.platform\);/);
   assert.match(main, /\.\.\.titlebarOptions,/);
@@ -74,16 +74,16 @@ test('the desktop keeps its drag region and the project dock carries daily usage
   assert.match(markup, /navigator\.userAgent\.includes\('Macintosh'\)/);
   assert.match(markup, /desktopTitlebarMode === 'hidden-inset-v1'/);
   assert.match(markup, /dataset\.desktopTitlebar = 'true'/);
-  assert.ok(titlebar);
+  assert.doesNotMatch(markup, /class="desktop-titlebar"/);
   const dock = markup.slice(markup.indexOf('<nav class="project-dock"'), markup.indexOf('</nav>'));
   assert.match(dock, /id="desktop-titlebar-token-usage"/);
   assert.match(dock, /class="desktop-titlebar-mark" src="\/favicon\.svg" alt=""/);
   assert.match(dock, /id="desktop-titlebar-token-count" role="status" aria-live="polite">Today --<\/span>/);
-  assert.doesNotMatch(titlebar, /CC Relay/);
-  assert.match(style, /html\[data-desktop-titlebar="true"\] \{\s*--desktop-titlebar-height: 32px;/);
+  assert.match(launchpad, /html\[data-desktop-titlebar="true"\] \{\s*--desktop-titlebar-height: 0px;/);
   assert.match(style, /\.desktop-titlebar-mark \{[\s\S]*?width: 20px;[\s\S]*?height: 20px;[\s\S]*?flex: 0 0 20px;/);
   assert.match(style, /\.desktop-titlebar-token-usage \{[\s\S]*?display: inline-flex;[\s\S]*?gap: 7px;[\s\S]*?pointer-events: auto;[\s\S]*?-webkit-app-region: no-drag;/);
-  assert.match(style, /html\[data-desktop-titlebar="true"\] \.desktop-titlebar \{[\s\S]*?justify-content: center;[\s\S]*?-webkit-app-region: drag;/);
+  assert.match(launchpad, /html\[data-desktop-titlebar="true"\]:not\(\[data-header-position="top"\]\) \.project-dock,[\s\S]*?padding-left: calc\(84px \/ var\(--desktop-chrome-scale, 1\)\);[\s\S]*?-webkit-app-region: drag;/);
+  assert.match(launchpad, /:is\(\.project-list, \.project-dock-actions, \.app-header > \*\) \{\s*-webkit-app-region: no-drag;/);
   assert.match(style, /height: calc\(100vh - var\(--desktop-titlebar-height\)/);
 });
 

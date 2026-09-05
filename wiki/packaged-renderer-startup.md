@@ -82,12 +82,13 @@ Verification for this regression:
 ## Native title-bar pairing
 
 The macOS title bar crosses the main-process and renderer boundary. `hiddenInset` must be present
-when `BrowserWindow` is constructed, while the 36px drag region and centered Crowie mark live in
-the renderer. User-agent detection alone cannot prove those two halves came from the same build.
+when `BrowserWindow` is constructed, while the drag region and native-button clearance live in
+the first renderer content bar. The separate title-bar row was removed on September 5; see
+[[desktop-chrome-and-monitor-defaults]]. User-agent detection alone cannot prove those two halves came from the same build.
 
 The main process now adds `desktopTitlebar=hidden-inset-v1` to its loopback renderer URL only on
 macOS. The early `public/index.html` bootstrap requires that marker together with Electron and
-Macintosh identity before it enables the custom title-bar row. A newer renderer refreshed inside
+Macintosh identity before it enables the integrated drag region and native control inset. A newer renderer refreshed inside
 an older default-title window therefore keeps the native shell instead of stacking a second bar.
 
 > [!important]

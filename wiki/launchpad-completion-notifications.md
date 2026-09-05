@@ -15,11 +15,16 @@ The badge is project-scoped and remains visible alongside higher-priority **Runn
 so another unchecked completion in the same project keeps the badge visible.
 
 The operational Queue moves those same unread completions directly below running work and groups
-them under a rose **Ready for review** divider. Each card keeps a rose left rail and tint, while the
-shared divider avoids repeating a long label on every compact card. History and task search retain
-their own chronology or relevance order, so an unread result in either view carries an individual
-**Ready for review** marker. The existing **Complete** badge remains unchanged: Complete is the task
+them under a rose **Ready for review** divider. Every unread card also carries a prominent rose
+**Ready for review** badge, left rail, and tinted surface in Queue, History, and search. The counted
+**Ready for review** view beside Queue and History shows only the selected project's unread
+completions across all dates. The existing **Complete** badge remains unchanged: Complete is the task
 lifecycle state, while Ready for review says that its result has not been opened in Task Activity.
+
+> [!important]
+> `public/launchpad.css` owns these review styles above the legacy cascade. The Launchpad reset
+> for card pseudo-elements previously hid the review rail, and its card backgrounds replaced the
+> old review tint. Keep review-specific rules in the owning stylesheet. See [[task-review-visibility]].
 
 > [!important]
 > "Checked" means the completed task was opened in Task Activity. Merely selecting its Launchpad

@@ -23,8 +23,9 @@ test('header places five accessible usage meters before the rightmost display co
   ]);
   assert.equal((html.match(/data-usage-key=/g) || []).length, 5);
   assert.equal((html.match(/class="provider-usage-reset"/g) || []).length, 5);
+  const visibleUsage = html.slice(html.indexOf('id="provider-usage"'), html.indexOf('id="display-settings"'));
   for (const meter of PROVIDER_USAGE_METERS) {
-    assert.match(html, new RegExp(`data-usage-key="${meter.key}"`));
+    assert.match(visibleUsage, new RegExp(`data-usage-key="${meter.key}"`));
     assert.match(html, new RegExp(`<span>${meter.label}</span>`));
   }
   assert.doesNotMatch(html, /id="pause-button"/);

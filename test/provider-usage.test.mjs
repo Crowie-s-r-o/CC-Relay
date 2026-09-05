@@ -286,6 +286,41 @@ test('Codex usage normalization selects exact five-hour and seven-day Codex buck
   });
 });
 
+test('Codex five-hour-only accounts remain ready without weekly usage through refresh failures', async () => {
+  const { providerUsagePresentation } = await import('../public/provider-usage.js');
+  const now = Date.parse('2026-09-05T12:00:00Z');
+  const window = { usedPercent: 75, windowDurationMins: 300, resetsAt: now / 1000 + 14_400 };
+  let response;
+  let offline = false;
+  const monitor = new ProviderUsageMonitor({
+    now: () => now,
+    readCodex: async () => {
+      if (offline) throw new Error('offline');
+      return normalizeCodexUsage(response);
+    },
+  });
+  for (const field of ['primary', 'secondary']) {
+    for (const keyed of [false, true]) {
+      const snapshot = { [field]: window };
+      response = keyed ? { rateLimitsByLimitId: { codex: snapshot } } : { rateLimits: snapshot };
+      await monitor.refresh();
+      assert.equal(monitor.current().codex.status, 'ready');
+      assert.equal(monitor.current().codex.weekly, null);
+      const meters = providerUsagePresentation(monitor.current(), { now });
+      assert.equal(meters[3].value, '75%');
+      assert.equal(meters[3].countdown, '4h 0m');
+      assert.equal(meters[4].value, '--');
+      assert.equal(meters[4].countdown, '');
+    }
+  }
+  offline = true;
+  await monitor.refresh();
+  assert.equal(monitor.current().codex.status, 'stale');
+  assert.equal(monitor.current().codex.fiveHour.usedPercent, 75);
+  assert.equal(monitor.current().codex.weekly, null);
+  monitor.stop();
+});
+
 test('provider usage monitor deduplicates refreshes and preserves last-known values on failure', async () => {
   let shouldFail = false;
   let claudeReads = 0;

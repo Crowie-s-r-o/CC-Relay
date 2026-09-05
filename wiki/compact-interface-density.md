@@ -9,13 +9,13 @@ type: design
 > [!important]
 > **September 5: [[launchpad-v2-design]] is the current design contract.** The application entry
 > stylesheet layers legacy rules beneath the structural reference port: 51px dock, 420/440px fresh
-> columns, shared prompt toolbar, council/Turbo tables, and two 24px Bottom monitor rows. Older visual descriptions
+> columns, shared prompt toolbar, council/Turbo tables, and two 48px Bottom monitor rows with latest-message previews. Older visual descriptions
 > below are historical where they conflict; saved layout choices and execution contracts remain.
 
 
 CC Relay uses a high-density desktop shell that keeps monitoring and project selection visible without taking space from active work.
 
-The macOS Electron title bar uses a `32px` renderer row with a centered `20px` Crowie mark. This is intentionally only a modest reduction from the original `36px` row so the native traffic lights retain comfortable surrounding space while the workspace gains four pixels of height. Browser and non-macOS shells do not receive this row. See [[interface-layout]] and [[packaged-renderer-startup]].
+The macOS Electron shell has no separate title-bar row. Its first content bar starts at the top edge and provides window dragging plus zoom-adjusted clearance for native traffic lights. That bar is the project dock by default, or the monitor when the saved placement is Top. Browser and non-macOS shells need no inset. See [[desktop-chrome-and-monitor-defaults]], [[interface-layout]], and [[packaged-renderer-startup]].
 
 > [!important]
 > The one-row wide-screen vertical budget is header `58px` and Launchpad `44px`. Two task rows make the header `109px`; three make it `160px`. `.workspace` subtracts the measured `--app-header-height` plus `44px`, while the legacy bounded `.task-list` calculation remains separate. Keep these values synchronized with the 44px task card and 7px row gap.

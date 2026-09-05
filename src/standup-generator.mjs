@@ -153,10 +153,24 @@ function compactText(value, maximum) {
   return `${text.slice(0, Math.max(0, maximum - 35)).trimEnd()}\n[truncated by CC Relay]`;
 }
 
-function boundedMessages(messages, limit, { preserveFirst = false } = {}) {
+function boundedMessages(messages, limit, { preserveFirst = false, executions = [] } = {}) {
   const values = (Array.isArray(messages) ? messages : [])
     .filter((message) => typeof message?.text === 'string' && message.text.trim());
   if (values.length <= limit) return values;
+  const selected = executions.filter((execution) => execution?.selectedForRange === true);
+  if (selected.length) {
+    const relevant = values.filter((message) => selected.some((execution) => {
+      const start = timestamp(execution.startedAt || execution.started_at);
+      const finish = timestamp(execution.completedAt || execution.finished_at);
+      if (message.execution_started_at) return timestamp(message.execution_started_at) === start;
+      const at = timestamp(message.created_at);
+      return at !== null && start !== null && at >= start - 1000 && finish !== null && at <= finish;
+    }));
+    const retained = new Set(preserveFirst ? [values[0]] : []);
+    for (const message of [...relevant].reverse()) if (retained.size < limit) retained.add(message);
+    for (const message of [...values].reverse()) if (retained.size < limit) retained.add(message);
+    return values.filter((message) => retained.has(message));
+  }
   if (preserveFirst) return [values[0], ...values.slice(-(limit - 1))];
   return values.slice(-limit);
 }
@@ -172,9 +186,9 @@ function boundedExecutions(executions) {
 }
 
 function compactRecord(record, textLimit) {
-  const prompts = boundedMessages(record?.prompts, MAX_PROMPTS_PER_TASK, { preserveFirst: true });
-  const responses = boundedMessages(record?.responses, MAX_RESPONSES_PER_TASK);
   const executions = boundedExecutions(record?.executions);
+  const prompts = boundedMessages(record?.prompts, MAX_PROMPTS_PER_TASK, { preserveFirst: true, executions });
+  const responses = boundedMessages(record?.responses, MAX_RESPONSES_PER_TASK, { executions });
   return {
     taskId: record?.id ?? null,
     title: compactText(record?.title, 300),
@@ -191,17 +205,22 @@ function compactRecord(record, textLimit) {
       completedAt: execution?.completedAt || execution?.finished_at || null,
       completedLocal: execution?.completedLocal || null,
       outcome: execution?.outcome || null,
+      source: execution?.source || 'relay',
       selectedForRange: execution?.selectedForRange === true,
     })),
     omittedExecutionCount: Math.max(0, (record?.executions?.length || 0) - executions.length),
     prompts: prompts.map((item) => ({
       kind: item.kind || 'prompt',
       createdAt: item.created_at || null,
+      source: item.source || 'relay',
+      executionStartedAt: item.execution_started_at || null,
       text: compactText(item.text, textLimit),
     })),
     omittedPromptCount: Math.max(0, (record?.prompts?.length || 0) - prompts.length),
     responses: responses.map((item) => ({
       createdAt: item.created_at || null,
+      source: item.source || 'relay',
+      executionStartedAt: item.execution_started_at || null,
       text: compactText(item.text, textLimit),
     })),
     omittedResponseCount: Math.max(0, (record?.responses?.length || 0) - responses.length),
@@ -328,6 +347,7 @@ Security and grounding:
 - Do not inspect files, run tools, or use outside knowledge. Base every statement only on the saved prompts, responses, and outcomes below.
 - Earlier conversation entries may provide context. Every included task belongs to the selected workday range by its recorded start time.
 - The executions array is the authoritative run ledger. Only completed executions marked selectedForRange belong to this Standup, including a later follow-up attempt on the same saved task.
+- Entries with source "terminal" were submitted directly in the provider CLI. Their executionStartedAt links saved messages to that execution even when the task row still describes an earlier Relay run.
 ${projectGuidanceSection}
 
 <recorded_work_json>

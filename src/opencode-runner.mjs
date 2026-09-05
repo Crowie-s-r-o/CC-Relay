@@ -161,7 +161,7 @@ function toolItem(record) {
 export function openCodeRunArguments(task) {
   // OpenCode intentionally suppresses reasoning records in a non-interactive run unless
   // `--thinking` is explicit, including when its JSON session export contains those parts.
-  // Relay needs the native record so Task Activity can show it live through the Thinking switch.
+  // Relay needs the native record so Task Activity can show it live in Relay activity.
   const args = ['run', '--format', 'json', '--thinking', '--auto', '--dir', task.repo_path];
   if (task.thread_id) args.push('--session', task.thread_id);
   if (task.model && task.model !== 'default') args.push('--model', task.model);

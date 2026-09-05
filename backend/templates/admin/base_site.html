@@ -1,0 +1,4 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ title }} | VibeIDE operations{% endblock %}
+{% block branding %}<div id="site-name"><a href="{% url 'admin:index' %}">VibeIDE operations</a></div>{% endblock %}
+{% block nav-global %}<a href="{% url 'metrics' %}">Acquisition &amp; activity</a>{% endblock %}

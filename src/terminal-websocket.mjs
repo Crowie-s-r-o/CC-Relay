@@ -23,14 +23,25 @@ export function attachTerminalWebSockets(server, { terminals, host }) {
     const taskId = Number(match?.[1]);
     const threadId = url.searchParams.get('threadId');
     const launchId = url.searchParams.get('launchId');
-    const identity = match && Number.isSafeInteger(taskId) && threadId.length <= 512 && launchId.length <= 512
+    let identity = match && Number.isSafeInteger(taskId) && threadId.length <= 512 && launchId.length <= 512
       ? terminals.connection(taskId, threadId, launchId) : null;
     if (!identity) {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       return;
     }
-    const signature = JSON.stringify(identity);
-    const current = () => JSON.stringify(terminals.connection(taskId, threadId, launchId)) === signature;
+    const current = () => {
+      const next = terminals.connection(taskId, identity.threadId, launchId);
+      if (JSON.stringify(next) === JSON.stringify(identity)) return true;
+      // Registration gives the same PTY its durable conversation ID. Permit this
+      // one handoff without dropping output or input, then pin that conversation.
+      // Every other ownership field must still match the original connection.
+      if (identity.threadId === `launch:${launchId}` && next
+        && JSON.stringify({ ...next, threadId: identity.threadId }) === JSON.stringify(identity)) {
+        identity = next;
+        return true;
+      }
+      return false;
+    };
     sockets.handleUpgrade(request, socket, head, (client) => {
       const previous = controllers.get(launchId);
       controllers.set(launchId, client);

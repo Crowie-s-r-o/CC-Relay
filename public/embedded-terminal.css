@@ -1,9 +1,8 @@
 .embedded-terminal {
   flex: 1 1 0;
-  min-height: 240px;
+  min-height: 0;
   min-width: 0;
   width: 100%;
-  padding: 16px 18px;
   overflow: hidden;
   background: #050709;
 }
@@ -13,11 +12,18 @@
 .events-section[data-terminal-interactive="true"] .terminal-status-bar {
   display: none !important;
 }
-.embedded-terminal .xterm { height: 100%; }
-.native-terminal-screen[data-state="interactive"] { min-height: 300px; flex: 1 1 0; }
+/* FitAddon subtracts the xterm element's padding from the container size.
+   Padding on the container instead overstates the PTY's usable rows and columns. */
+.embedded-terminal .xterm {
+  height: 100%;
+  padding: 16px 18px;
+}
+/* The legacy viewport sits behind xterm's themed scroll surface. Its default
+   black fill must not show through the inset, especially in the light theme. */
+.embedded-terminal .xterm-viewport { background: transparent; }
+.native-terminal-screen[data-state="interactive"] { min-height: 0; flex: 1 1 0; }
 .native-terminal-screen[data-state="interactive"] .native-terminal-screen-actions { flex: 0 0 auto; }
 html:not([data-theme="dark"]) .embedded-terminal { background: #f6f8fc; }
 @media (max-width: 600px) {
-  .embedded-terminal { padding: 4px; }
-  .native-terminal-screen[data-state="interactive"] { min-height: 340px; }
+  .embedded-terminal .xterm { padding: 4px; }
 }

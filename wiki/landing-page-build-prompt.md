@@ -76,6 +76,12 @@ of this task.
 
 ## Verification
 
+The subsequent pricing request is incorporated into section 11 and the navigation, FAQ, and
+verification instructions. [[pricing]] records the 30-day trial, USD assumption, $7.99 monthly,
+$79.99 yearly, and $159.98 lifetime offer with automatic updates forever. Reusable copy lives in
+[[../docs/pricing]]. The brief requires planned-pricing disclosure until real activation and
+checkout flows exist.
+
 - The full repository suite passed through `npm test -- --test-reporter=dot`.
 - `npm run release:check` reported consistent v0.2.35 metadata.
 - Repository, latest release, README, and license destinations all returned HTTP 200; the latest

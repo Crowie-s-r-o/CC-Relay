@@ -1,0 +1,25 @@
+# Flannel alone does not enforce this policy. Keep ClusterIP private until the
+# cluster has a policy-capable CNI. Redis and Gunicorn bind only to pod loopback.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vibeide-boundaries
+  namespace: vibeide-dev
+  labels: {app: vibeide}
+spec:
+  podSelector: {matchLabels: {app: vibeide}}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - ipBlock: {cidr: 144.76.107.210/32}
+        - ipBlock: {cidr: 10.244.0.1/32}
+      ports: [{protocol: TCP, port: 8443}]
+  egress:
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+      ports: [{protocol: UDP, port: 53}, {protocol: TCP, port: 53}]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 127.0.0.0/8, 144.76.107.210/32]
+      ports: [{protocol: TCP, port: 443}, {protocol: TCP, port: 587}]

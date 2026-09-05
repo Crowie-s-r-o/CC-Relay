@@ -1,0 +1,8 @@
+{
+  "secret_key": "REPLACE_WITH_A_RANDOM_SECRET_OF_AT_LEAST_50_CHARACTERS",
+  "development": false,
+  "public_origin": "https://vibeide.dev",
+  "allowed_hosts": ["vibeide.dev", "www.vibeide.dev", "127.0.0.1", "localhost"],
+  "google": {},
+  "smtp": {}
+}

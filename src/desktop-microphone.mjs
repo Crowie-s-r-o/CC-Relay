@@ -30,6 +30,9 @@ export function desktopPermissionAllowed({
   const origin = requestingOrigin || trustedRequestOrigin(webContents, details);
   if (!sameOrigin(origin, trustedOrigin)) return false;
   if (permission === 'clipboard-sanitized-write') return true;
+  if (permission === 'clipboard-read') {
+    return details.isMainFrame === true && sameOrigin(webContents?.getURL?.(), trustedOrigin);
+  }
   if (permission !== 'media') return false;
   if (phase === 'check') return details.mediaType === 'audio';
   return Array.isArray(details.mediaTypes)

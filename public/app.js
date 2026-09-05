@@ -14,7 +14,6 @@ import {
   isGoalEntry,
   isPlanEntry,
   isPlanToolItem,
-  isReasoningEntry,
   isSubAgentEntry,
   mergePromptMessages,
   planEntryDetails,
@@ -37,7 +36,7 @@ import {
   refreshActivityOverviewDurations,
   taskActivityOverview,
 } from './task-activity-overview.js';
-import { clipboardImageFiles } from './clipboard-images.js';
+import { clipboardImageFiles, readClipboardImageFiles } from './clipboard-images.js';
 import {
   PROJECT_COLOR_COUNT,
   PROJECT_COLOR_PRESETS,
@@ -86,7 +85,7 @@ import {
   supportedClaudeModelCatalog,
 } from './claude-model-selection.js';
 import { idleExecutionThreadId, runningDirectTask, selectedExecutionProvider, selectedWorkflowMode } from './task-routing.js';
-import { activityBuckets, isFinishedTaskStatus, periodRange, prioritizeStarredTasks, shiftPeriod, sortOperationalTasks, taskHistoryStats, tasksForScope, tasksInPeriod } from './task-history.js';
+import { activityBuckets, isFinishedTaskStatus, periodRange, prioritizeStarredTasks, shiftPeriod, sortOperationalTasks, taskHistoryStats, tasksForScope, tasksInPeriod, tasksReadyForReview } from './task-history.js';
 import {
   TASK_SEARCH_DEBOUNCE_MS,
   taskSearchActive,
@@ -250,12 +249,12 @@ const TASK_CARD_ATTACHMENT_SLOT_LIMIT = 6;
 /*
  * A project accepts at most MAX_PROJECT_INSTANCES per provider (validateInstanceLimit in
  * src/server.mjs). Automatic Turbo keeps one planning lane plus the configured number of
- * concurrent execution lanes available. Eight concurrent executions would therefore need
- * nine Codex slots, which no project can be configured to allow. Automatic pools cap the
+ * concurrent execution lanes available. Twenty concurrent executions would therefore need
+ * twenty-one Codex slots, which no project can be configured to allow. Automatic pools cap the
  * pipeline one below the project ceiling. Legacy live-terminal Turbo still allows eight
  * because its workers are terminals the user opened, not managed slots.
  */
-const MAX_PROJECT_INSTANCES = 8;
+const MAX_PROJECT_INSTANCES = 20;
 const MAX_TURBO_WORKERS = 8;
 const MAX_POOL_TURBO_WORKERS = MAX_PROJECT_INSTANCES - 1;
 const MAX_STANDUP_CUSTOM_PROMPT_LENGTH = 4_000;
@@ -343,7 +342,7 @@ function setTheme(theme, { persist = true } = {}) {
 setTheme(currentTheme(), { persist: false });
 
 function currentHeaderPosition() {
-  return document.documentElement.dataset.headerPosition === 'bottom' ? 'bottom' : 'top';
+  return document.documentElement.dataset.headerPosition === 'top' ? 'top' : 'bottom';
 }
 
 function renderHeaderPositionToggle() {
@@ -370,7 +369,7 @@ function syncHeaderHeight() {
 }
 
 function setHeaderPosition(position, { persist = true } = {}) {
-  const nextPosition = position === 'bottom' ? 'bottom' : 'top';
+  const nextPosition = position === 'top' ? 'top' : 'bottom';
   document.documentElement.dataset.headerPosition = nextPosition;
   if (persist) {
     localStorage.setItem('relay.headerPosition', nextPosition);
@@ -457,7 +456,8 @@ const state = {
   projectReorderPending: false,
   projectDrag: null,
   projectDragClickSuppressed: false,
-  taskView: localStorage.getItem('relay.taskView') === 'history' ? 'history' : 'queue',
+  taskView: ['queue', 'history', 'review'].includes(localStorage.getItem('relay.taskView'))
+    ? localStorage.getItem('relay.taskView') : 'queue',
   historyPeriod: ['day', 'week', 'month'].includes(localStorage.getItem('relay.historyPeriod'))
     ? localStorage.getItem('relay.historyPeriod') : 'week',
   terminalWindowView: normalizeTerminalWindowView(localStorage.getItem('relay.terminalWindowView')),
@@ -584,7 +584,6 @@ const state = {
   originalTerminalAbort: null,
   nativeTerminalScreenPending: false,
   nativeTerminalScreenSequence: 0,
-  showThinking: true,
   eventFollow: true,
   eventTaskId: null,
   selectedTaskEventRevision: null,
@@ -822,6 +821,8 @@ const elements = {
   aboutClose: document.querySelector('#about-close'),
   appHeader: document.querySelector('.app-header'),
   taskViewButtons: [...document.querySelectorAll('[data-task-view]')],
+  taskReviewFilter: document.querySelector('#task-review-filter'),
+  taskReviewCount: document.querySelector('#task-review-count'),
   queueSummary: document.querySelector('#queue-summary'),
   taskSearch: document.querySelector('#task-search'),
   taskSearchInput: document.querySelector('#task-search-input'),
@@ -935,7 +936,6 @@ const elements = {
   eventFilters: [...document.querySelectorAll('[data-event-filter]')],
   eventMoreViews: document.querySelector('#event-more-views'),
   eventTools: document.querySelector('.event-tools'),
-  thinkingVisibilityButton: document.querySelector('#thinking-visibility-button'),
   copyEventsButton: document.querySelector('#copy-events-button'),
   terminalWindowOpenButton: document.querySelector('#terminal-window-open'),
   terminalWindowModal: document.querySelector('#terminal-window-modal'),
@@ -960,6 +960,7 @@ const elements = {
   continuationContext: document.querySelector('#task-continuation-context'),
   continuationState: document.querySelector('#task-continuation-state'),
   continuationAttach: document.querySelector('#task-continuation-attach'),
+  continuationPasteImage: document.querySelector('#task-continuation-paste-image'),
   continuationAttachments: document.querySelector('#task-continuation-attachments'),
   continuationAttachmentInput: document.querySelector('#task-continuation-image-input'),
   continuationAttachmentCount: document.querySelector('#task-continuation-attachment-count'),
@@ -1012,6 +1013,7 @@ const elements = {
   attachmentCount: document.querySelector('#attachment-count'),
   attachmentDropzone: document.querySelector('#attachment-dropzone'),
   attachmentInput: document.querySelector('#image-input'),
+  pasteImage: document.querySelector('#paste-image'),
   attachmentList: document.querySelector('#attachment-list'),
   taskReferences: document.querySelector('#task-references'),
   taskReferenceCount: document.querySelector('#task-reference-count'),
@@ -1087,7 +1089,6 @@ const elements = {
   workspace: document.querySelector('.workspace'),
   composerQueueResizer: document.querySelector('#composer-queue-resizer'),
   queueDetailResizer: document.querySelector('#queue-detail-resizer'),
-  terminalHeightResizer: document.querySelector('#terminal-height-resizer'),
 };
 
 let renderedTaskListSignature = '';
@@ -2812,6 +2813,7 @@ function renderAttachmentComposer() {
   const full = state.attachments.length >= MAX_IMAGE_ATTACHMENTS;
   elements.attachmentDropzone.dataset.state = !available ? 'unavailable' : full ? 'full' : 'ready';
   elements.attachmentInput.disabled = full || !available;
+  elements.pasteImage.disabled = full || !available || elements.pasteImage.dataset.reading === 'true';
   elements.attachmentList.innerHTML = state.attachments.map((attachment, index) => `
     <article class="attachment-card">
       <img src="${attachment.data}" alt="Preview of ${escapeHtml(attachment.name)}">
@@ -2997,7 +2999,11 @@ async function addImageFiles(fileList) {
     setComposerAlert('Restart CC Relay once to enable image attachments.');
     return;
   }
-  const result = await mergeImageFiles(fileList, state.attachments);
+  const projectPath = state.activeProjectPath;
+  const originalAttachments = state.attachments;
+  const result = await mergeImageFiles(fileList, originalAttachments);
+  // Never let a delayed read replace a switched, cleared, or submitted draft.
+  if (state.activeProjectPath !== projectPath || state.attachments !== originalAttachments) return;
   state.attachments = result.attachments;
   // Attachment problems belong to the composer, not to the shared status channel. A clean
   // add writes nothing, so the live region stays quiet when there is nothing to say.
@@ -3024,10 +3030,17 @@ async function addContinuationImageFiles(fileList) {
   }
   // Copy the FileList before the input is reset. Per-task serialization preserves quick
   // consecutive additions, while Clear images invalidates every merge already in flight.
-  const files = [...fileList];
+  // Observe rejection immediately, even if another merge is still reading its files.
+  const files = typeof fileList === 'function'
+    ? fileList().then((value) => ({ value }), (error) => ({ error }))
+    : Promise.resolve({ value: [...fileList] });
   const update = await state.continuationAttachments.merge(
     task.id,
-    (current) => mergeImageFiles(files, current),
+    async (current) => {
+      const read = await files;
+      if (read.error) throw read.error;
+      return mergeImageFiles(read.value, current);
+    },
   );
   if (!update.committed || state.selectedTaskForEvents?.id !== task.id) return;
   const { result } = update;
@@ -4246,15 +4259,7 @@ function eventCopyText(entry, task) {
   return lines.filter(Boolean).join('\n');
 }
 
-function updateThinkingVisibilityControl(reasoningCount = 0) {
-  const action = state.showThinking ? 'Hide' : 'Show';
-  const summaryLabel = `${reasoningCount.toLocaleString()} thinking ${reasoningCount === 1 ? 'summary' : 'summaries'}`;
-  elements.thinkingVisibilityButton.setAttribute('aria-pressed', String(state.showThinking));
-  elements.thinkingVisibilityButton.setAttribute('aria-label', `${action} thinking summaries`);
-  elements.thinkingVisibilityButton.title = `${action} model-provided thinking summaries. ${summaryLabel}.`;
-}
-
-function updateEventControls(filterCounts = {}, reasoningCount = 0) {
+function updateEventControls(filterCounts = {}) {
   /*
    * While the Terminal window is docked it borrows state.eventFilter for its own view.
    * The inline rail must keep showing its own selection, so it reads the remembered
@@ -4275,7 +4280,6 @@ function updateEventControls(filterCounts = {}, reasoningCount = 0) {
     elements.eventMoreViews.querySelector('summary').textContent = active?.textContent || 'More views';
   }
   updateTerminalWindowControls(filterCounts);
-  updateThinkingVisibilityControl(reasoningCount);
 }
 
 /* ------------------------------------------------------------------
@@ -4389,6 +4393,7 @@ function renderNativeTerminalScreen() {
         state.nativeTerminalScreen = { ...state.nativeTerminalScreen,
           state: code === 4001 ? 'detached' : 'connecting', message };
         syncTerminalWindowSurface();
+        if (code !== 4001) void refreshNativeTerminalScreen();
       },
     });
     state.embeddedTerminalView.connect(screen);
@@ -4447,6 +4452,8 @@ async function refreshNativeTerminalScreen(threadId = null) {
     const stale = !live && terminal?.state !== 'choose' && ['live', 'stale'].includes(previous.state);
     state.nativeTerminalScreen = {
       taskId,
+      reviewUnavailable: terminal?.state === 'unavailable' && !terminal?.targets?.length
+        && terminal?.transport !== 'legacy-screen',
       threadId: terminal?.threadId || selectedThreadId,
       requestedThreadId: selectedThreadId,
       transport: terminal?.transport,
@@ -4483,12 +4490,24 @@ function syncTerminalWindowSurface() {
     state.nativeTerminalScreen = { ...state.nativeTerminalScreen, state: 'unavailable', text: '',
       message: 'The original terminal screen is unavailable. Use Relay activity below.' };
   }
+  // A completed task with no owned terminal should open its saved conversation.
+  // A transient read failure or a retained live session still belongs to Original terminal.
+  const task = state.selectedTaskForEvents;
+  if (native && task?.id === state.selectedTaskId
+    && ['complete', 'failed', 'cancelled', 'interrupted'].includes(task.status)
+    && (state.nativeTerminalScreen.reviewUnavailable || (state.status && state.status.capabilities?.nativeTerminalScreen !== true))) {
+    state.terminalMode = 'activity';
+    state.inlineEventFilter = 'conversation';
+    state.eventFilter = 'conversation';
+    setTerminalWindowView('conversation', { persist: false, render: false });
+    rerenderTerminalWindowStream({ forceBottom: true });
+    return;
+  }
   if (native) elements.eventsSection.dataset.terminalSurface = 'native';
   else delete elements.eventsSection.dataset.terminalSurface;
   elements.nativeTerminalScreen.hidden = !native;
   elements.detailEvents.hidden = native;
   elements.eventOverview.hidden = false;
-  elements.thinkingVisibilityButton.hidden = native;
   elements.copyEventsButton.hidden = false;
   elements.copyEventsButton.textContent = nativeTerminalCopyLabel();
   elements.copyEventsButton.disabled = native
@@ -4631,7 +4650,7 @@ function openTerminalWindow() {
   elements.terminalWindowMount.append(elements.eventsSection);
   elements.eventsSection.dataset.terminalWindow = 'open';
   /*
-   * Thinking and Copy log follow the terminal into the window's own header. The docked
+   * Copy log and Window follow the terminal into the window's own header. The docked
    * .event-toolbar row is hidden by CSS, so leaving them behind would strand a 34px
    * strip holding nothing but those two controls. This runs after the section is docked
    * and before showModal(), so the dialog never paints with an empty tools slot.
@@ -4699,7 +4718,7 @@ function undockTerminalWindow() {
   rerenderTerminalWindowStream({ forceBottom: dock.follow });
   restoreNativeTerminalScreenScroll(dock);
   if (!dock.follow) elements.detailEvents.scrollTop = dock.scrollTop;
-  // The section is back inside the detail grid, so the resize handle can describe it again.
+  // Clear any legacy height after restoring the full-height inline pane.
   applyTerminalHeight();
 }
 
@@ -5047,6 +5066,8 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
   elements.continuationAttachmentInput.disabled = presentation.inputDisabled
     || !attachmentsAvailable
     || attachments.length >= MAX_IMAGE_ATTACHMENTS;
+  elements.continuationPasteImage.disabled = elements.continuationAttachmentInput.disabled
+    || elements.continuationPasteImage.dataset.reading === 'true';
   elements.continuationAttachmentCount.textContent = attachments.length === 0
     ? 'No images attached'
     : `${attachments.length} image${attachments.length === 1 ? '' : 's'} attached`;
@@ -5068,7 +5089,8 @@ function renderTaskContinuation(task, { taskChanged = false } = {}) {
     elements.continuationMessage.title = presentation.hint;
   }
   resizeContinuationInput();
-  elements.continuationSend.disabled = presentation.sendDisabled;
+  elements.continuationSend.disabled = presentation.sendDisabled
+    || elements.continuationPasteImage.dataset.reading === 'true';
 }
 
 function eventDisclosureKey(details) {
@@ -5153,14 +5175,12 @@ function renderEventStream(events, task, {
   const restorePlanFocus = document.activeElement === previousPlanScroller;
   const displayEvents = mergePromptMessages(events, prompts, { provider: taskProvider(task) });
   const grouped = groupEventEntries(displayEvents);
-  const filterOptions = { showThinking: state.showThinking };
-  const visible = filterEventEntries(grouped, state.eventFilter, filterOptions);
-  const reasoningCount = grouped.filter(isReasoningEntry).length;
+  const visible = filterEventEntries(grouped, state.eventFilter);
   const messageCounts = eventMessageCounts(grouped);
   const filterCounts = {
-    all: filterEventEntries(grouped, 'all', filterOptions).length,
-    highlights: filterEventEntries(grouped, 'highlights', filterOptions).length,
-    commands: filterEventEntries(grouped, 'commands', filterOptions).length,
+    all: filterEventEntries(grouped, 'all').length,
+    highlights: filterEventEntries(grouped, 'highlights').length,
+    commands: filterEventEntries(grouped, 'commands').length,
     conversation: messageCounts.user + messageCounts.assistant,
     mine: messageCounts.user,
     ai: messageCounts.assistant,
@@ -5205,8 +5225,7 @@ function renderEventStream(events, task, {
     ai: 'AI messages',
   };
   const filterSummary = filterSummaryLabels[state.eventFilter] || 'signals';
-  const thinkingIsHidingSignals = !state.showThinking && reasoningCount > 0;
-  elements.eventSummary.textContent = state.eventFilter === 'all' && !thinkingIsHidingSignals
+  elements.eventSummary.textContent = state.eventFilter === 'all'
     ? `${grouped.length} signals`
     : `${visible.length} ${filterSummary} · ${grouped.length} total`;
   elements.eventSummary.title = `${visible.length} of ${grouped.length} signals · ${displayEvents.length} displayed events · ${events.length} provider events`;
@@ -5249,12 +5268,7 @@ function renderEventStream(events, task, {
     highlights: ['No highlights yet', 'Important work and outcomes will appear here.'],
     all: ['No activity yet', 'New task signals will appear here.'],
   };
-  const emptyState = state.eventFilter === 'all'
-    && !state.showThinking
-    && reasoningCount > 0
-    && visible.length === 0
-    ? ['Thinking is hidden', 'Turn on Thinking to see provider summaries.']
-    : emptyStates[state.eventFilter] || emptyStates.all;
+  const emptyState = emptyStates[state.eventFilter] || emptyStates.all;
   elements.detailEvents.innerHTML = visible.length === 0
     ? `<div class="events-empty"><span aria-hidden="true">⌁</span><strong>${escapeHtml(emptyState[0])}</strong><small>${escapeHtml(emptyState[1])}</small></div>`
     : visible.map((entry) => renderEventEntry(entry, task, entrySequence.get(entry))).join('');
@@ -5267,7 +5281,7 @@ function renderEventStream(events, task, {
   } else {
     elements.detailEvents.scrollTop = previousScrollTop;
   }
-  updateEventControls(filterCounts, reasoningCount);
+  updateEventControls(filterCounts);
 }
 
 function threadProvider(thread) {
@@ -5639,8 +5653,7 @@ function renderHistoryLedger(scopedTasks, visibleTasks) {
   const historyActive = state.taskView === 'history' && !searching;
   elements.historyLedger.hidden = !historyActive;
   for (const button of elements.taskViewButtons) {
-    button.setAttribute('aria-pressed', String(button.dataset.taskView === state.taskView));
-    button.disabled = searching;
+    button.setAttribute('aria-pressed', String(button.dataset.taskView === state.taskView && !searching));
   }
   if (!historyActive) return;
 
@@ -6338,9 +6351,11 @@ function renderExecutionControls() {
   }
   const effortValues = efforts.map((item) => item.reasoningEffort);
   const effortIndex = Math.max(0, effortValues.indexOf(settings.effort));
-  elements.effortSelect.min = '0';
-  elements.effortSelect.max = String(Math.max(0, effortValues.length - 1));
-  elements.effortSelect.step = '1';
+  // Snapshot refreshes must leave an unchanged native range alone during a drag.
+  if (elements.effortSelect.min !== '0') elements.effortSelect.min = '0';
+  const effortMax = String(Math.max(0, effortValues.length - 1));
+  if (elements.effortSelect.max !== effortMax) elements.effortSelect.max = effortMax;
+  if (elements.effortSelect.step !== '1') elements.effortSelect.step = '1';
   setControlValue(elements.effortSelect, String(effortIndex));
   setControlDisabled(elements.effortSelect, efforts.length === 0);
   const effortValuesJson = JSON.stringify(effortValues);
@@ -6912,6 +6927,7 @@ function composerValidationIssue({
   taskReferences = state.taskReferences,
 } = {}) {
   if (!prompt.trim()) return 'Write a prompt before adding the task.';
+  if (elements.pasteImage.dataset.reading === 'true') return 'Wait for the clipboard image to finish loading.';
   const taskReferenceIssue = taskReferencePromptIssue(prompt, taskReferences);
   if (taskReferenceIssue) return taskReferenceIssue;
   if (taskName.trim() && state.status && !taskNamingSupported()) {
@@ -7874,6 +7890,9 @@ function renderStatus() {
       : state.taskSearchError
         ? state.taskSearchError
         : `${state.taskSearchTotal} matching task${state.taskSearchTotal === 1 ? '' : 's'} across all dates`;
+  } else if (state.taskView === 'review') {
+    const reviewCount = state.projectCompletionNotifications.count(state.activeProjectPath);
+    elements.queueSummary.textContent = `${reviewCount} task${reviewCount === 1 ? '' : 's'} ready for review in this project`;
   } else if (state.taskView === 'history') {
     const historyCount = tasksInPeriod(scopedTasks, state.historyPeriod, state.historyAnchor).length;
     elements.queueSummary.textContent = `${historyCount} task${historyCount === 1 ? '' : 's'} in selected ${state.historyPeriod}`;
@@ -7970,6 +7989,9 @@ function renderTasks() {
       ? 'Generate a date-selected AI standup from saved prompts and responses'
       : 'Restart CC Relay to activate configured AI standup generation';
   const unreadCount = state.projectCompletionNotifications.count(state.activeProjectPath);
+  elements.taskReviewCount.textContent = String(unreadCount);
+  elements.taskReviewFilter.dataset.hasReviews = String(unreadCount > 0);
+  elements.taskReviewFilter.setAttribute('aria-label', `Ready for review, ${unreadCount} task${unreadCount === 1 ? '' : 's'} in this project`);
   elements.clearTaskNotificationsButton.hidden = unreadCount === 0;
   elements.clearTaskNotificationsButton.textContent = `Mark reviewed · ${unreadCount}`;
   elements.clearTaskNotificationsButton.setAttribute(
@@ -7985,6 +8007,10 @@ function renderTasks() {
   const searching = taskSearchActive(state.taskSearchQuery);
   const visibleTasks = searching
     ? prioritizeStarredTasks(tasksForSearchResults(scopedTasks, state.taskSearchResults))
+    : state.taskView === 'review'
+    ? tasksReadyForReview(scopedTasks, {
+      isReadyForReview: (task) => state.projectCompletionNotifications.includes(task.repo_path, task.id),
+    })
     : state.taskView === 'history'
     ? prioritizeStarredTasks(
       tasksInPeriod(scopedTasks, state.historyPeriod, state.historyAnchor)
@@ -8015,6 +8041,7 @@ function renderTasks() {
     renderParallelBatchBar();
     const emptyTitle = searching
       ? state.taskSearchPending ? 'Searching conversations' : state.taskSearchError ? 'Search unavailable' : 'No matching tasks'
+      : state.taskView === 'review' ? 'No tasks ready for review'
       : state.taskView === 'history' ? 'No tasks in this period' : 'The queue is clear';
     const emptyMessage = searching
       ? state.taskSearchPending
@@ -8022,6 +8049,8 @@ function renderTasks() {
         : state.taskSearchError
           ? 'Clear the search or try again after Relay is available.'
           : 'Try fewer words, a task number, or text from the response you remember.'
+      : state.taskView === 'review'
+        ? 'Completed tasks appear here until you open them or mark them reviewed.'
       : state.taskView === 'history'
         ? 'Choose another date or a wider period.'
         : state.activeProjectPath
@@ -8043,7 +8072,7 @@ function renderTasks() {
   }
 
   const historyActive = state.taskView === 'history' && !searching;
-  const operationalQueue = !historyActive && !searching;
+  const operationalQueue = state.taskView === 'queue' && !searching;
   const searchMatches = taskSearchMatches();
   const queuedIds = operationalQueue ? visibleTasks.filter((task) => task.status === 'queued').map((task) => task.id) : [];
   const queuedIdsByStar = {
@@ -8077,7 +8106,7 @@ function renderTasks() {
       : '';
     const dateHeading = (historyActive && starred && previousHistoryDate !== 'starred')
       || (operationalQueue && queueSection === 'starred' && previousQueueSection !== 'starred')
-      || (searching && starred && !searchStarredHeadingShown)
+      || ((searching || state.taskView === 'review') && starred && !searchStarredHeadingShown)
       ? '<div class="queue-date-heading queue-starred-heading" data-period="starred"><span>Starred</span><i></i></div>'
       : historyActive && !starred && historyDate !== previousHistoryDate
       ? `<div class="history-date-heading"><span>${escapeHtml(historyDateHeading(task.created_at))}</span><i></i></div>`
@@ -8088,7 +8117,7 @@ function renderTasks() {
         : '';
     previousHistoryDate = starred ? 'starred' : historyDate;
     previousQueueSection = queueSection;
-    if (searching && starred) searchStarredHeadingShown = true;
+    if ((searching || state.taskView === 'review') && starred) searchStarredHeadingShown = true;
     const queued = queuedIds.includes(task.id);
     const queuedGroupIds = queued
       ? queuedIdsByStar[starred ? 'starred' : 'unstarred']
@@ -8189,7 +8218,6 @@ function renderTasks() {
             ${agentBadgeMarkup(task, 'task-agent-icon')}
             <span class="task-number">#${String(task.id).padStart(3, '0')}</span>
             ${sessionCard ? `<span class="task-session-badge" data-session-state="${escapeHtml(sessionState)}"><i aria-hidden="true"></i>${manualSessionCard ? 'Terminal' : 'Session'} · ${escapeHtml(sessionWord)}</span>` : ''}
-            ${unread && (!operationalQueue || starred) ? '<span class="task-unread-marker">Ready for review</span>' : ''}
             ${task.continued_from_task_id ? `<span class="task-parent-link">↳ #${String(task.continued_from_task_id).padStart(3, '0')}</span>` : ''}
           </span>
           <span class="task-footer-execution" data-provider="${escapeHtml(taskProvider(task))}" title="${escapeHtml(taskRelayLabel(task))}"><span class="task-relay-name ${turboOwner ? turboOwner.className : relayColorClass(task.thread_id)}">${escapeHtml(turboOwner ? `${turboOwner.role} ${turboOwner.label}` : `${providerLabel(taskProvider(task))}${task.thread_id ? ` · ${task.thread_id.slice(0, 7)}` : ''}`)}</span><span aria-hidden="true"> · </span>${escapeHtml(taskCardExecutionLabel(task))}</span>
@@ -8200,6 +8228,7 @@ function renderTasks() {
             <span class="task-status status-${escapeHtml(task.status)}">${escapeHtml(task.status)}</span>
           </span>
         </div>
+        ${unread ? '<span class="task-unread-marker">Ready for review</span>' : ''}
         <div class="task-name-row" data-editing="${Boolean(renameState)}">
 
           ${renameState ? `
@@ -8553,7 +8582,7 @@ function renderParallelBatchBar() {
   const selectedThread = state.threads.find(
     (thread) => thread.id === state.selectedThreadId && threadProvider(thread) === 'codex',
   );
-  elements.parallelBatchBar.hidden = state.taskView === 'history'
+  elements.parallelBatchBar.hidden = state.taskView !== 'queue'
     || taskSearchActive(state.taskSearchQuery)
     || selectedCount === 0;
   elements.parallelSelectionCount.textContent = `${selectedCount} selected`;
@@ -9660,6 +9689,8 @@ function taskDetailSnapshotSignature(task) {
 }
 
 async function selectTask(taskId, { openOriginal = true } = {}) {
+  const restoreReviewFocus = state.taskView === 'review'
+    && document.activeElement?.closest?.('.task-card')?.dataset.taskId === String(taskId);
   const requestSequence = ++state.taskLoadSequence;
   const eventTaskChanged = state.eventTaskId !== taskId;
   if (eventTaskChanged) {
@@ -9711,7 +9742,12 @@ async function selectTask(taskId, { openOriginal = true } = {}) {
         && state.projectCompletionNotifications.acknowledge(task)
       ) {
         renderProjects();
+        renderStatus();
         renderTasks();
+        if (restoreReviewFocus && requestSequence === state.taskLoadSequence
+          && state.taskView === 'review' && document.activeElement === document.body) {
+          (elements.taskList.querySelector('.task-card') || elements.taskReviewFilter).focus({ preventScroll: true });
+        }
       }
     } catch (error) {
       console.warn(`Could not mark task ${task.id} as reviewed.`, error);
@@ -10299,11 +10335,11 @@ async function saveProjectInstanceLimits() {
   const claude = Number(elements.maxClaudeInstances.value);
   const opencode = Number(elements.maxOpenCodeInstances.value);
   if (
-    !Number.isInteger(codex) || codex < 1 || codex > 8
-    || !Number.isInteger(claude) || claude < 1 || claude > 8
-    || !Number.isInteger(opencode) || opencode < 1 || opencode > 8
+    !Number.isInteger(codex) || codex < 1 || codex > MAX_PROJECT_INSTANCES
+    || !Number.isInteger(claude) || claude < 1 || claude > MAX_PROJECT_INSTANCES
+    || !Number.isInteger(opencode) || opencode < 1 || opencode > MAX_PROJECT_INSTANCES
   ) {
-    elements.formMessage.textContent = 'Max instances must be whole numbers from 1 to 8.';
+    elements.formMessage.textContent = `Max instances must be whole numbers from 1 to ${MAX_PROJECT_INSTANCES}.`;
     renderAutomaticTerminalPool();
     return;
   }
@@ -10872,6 +10908,7 @@ async function submitTaskContinuation(event) {
   if (
     !sourceTask
     || !prompt
+    || elements.continuationPasteImage.dataset.reading === 'true'
     || (state.continuationSubmitting && !outbox)
     || (!taskContinuationSession(sourceTask) && !resumableSession && !runningSteeringAvailable)
   ) return;
@@ -12883,6 +12920,7 @@ elements.clearTaskNotificationsButton.addEventListener('click', async () => {
     elements.queueSummary.textContent = `${count} task${count === 1 ? '' : 's'} marked as reviewed`;
   } catch (error) {
     elements.queueSummary.textContent = error.message;
+  } finally {
     elements.clearTaskNotificationsButton.disabled = false;
   }
 });
@@ -12974,6 +13012,7 @@ elements.standupModal.addEventListener('close', resetStandupCopyFeedback);
 for (const button of elements.taskViewButtons) {
   button.addEventListener('click', () => {
     state.taskView = button.dataset.taskView;
+    clearTaskSearch({ render: false });
     localStorage.setItem('relay.taskView', state.taskView);
     state.parallelTaskIds.clear();
     renderStatus();
@@ -13139,67 +13178,13 @@ elements.desktopUpdateModal.addEventListener('click', (event) => {
   if (event.target === elements.desktopUpdateModal) closeDesktopUpdateModal();
 });
 
-function updateTerminalHeightAccessibility(height, maximum) {
-  elements.terminalHeightResizer.setAttribute('aria-valuenow', String(Math.round(height)));
-  elements.terminalHeightResizer.setAttribute('aria-valuemin', '180');
-  elements.terminalHeightResizer.setAttribute('aria-valuemax', String(Math.round(maximum)));
-  elements.terminalHeightResizer.setAttribute('aria-valuetext', `Terminal ${Math.round(height)} pixels high`);
+function applyTerminalHeight() {
+  // Old shared preferences remain readable, but the terminal always fills its pane.
+  state.terminalHeight = null;
+  elements.taskDetail.style.removeProperty('--event-terminal-height');
 }
-
-function applyTerminalHeight({ persist = false } = {}) {
-  if (!elements.taskDetail.clientHeight) {
-    elements.taskDetail.style.removeProperty('--event-terminal-height');
-    return;
-  }
-  const headerHeight = elements.taskDetail.querySelector?.('.detail-header')?.getBoundingClientRect().height || 100;
-  const maximum = Math.max(180, elements.taskDetail.clientHeight - Math.max(100, headerHeight));
-  if (!state.terminalHeight) {
-    elements.taskDetail.style.removeProperty('--event-terminal-height');
-    // Docked in the Terminal window the section sits outside the detail grid, so its
-    // rendered height is the dialog's and says nothing about the resizer's range.
-    if (!terminalWindowIsDocked()) {
-      const renderedHeight = elements.eventsSection.getBoundingClientRect().height;
-      updateTerminalHeightAccessibility(renderedHeight, maximum);
-    }
-    return;
-  }
-  state.terminalHeight = Math.min(maximum, Math.max(180, state.terminalHeight));
-  elements.taskDetail.style.setProperty('--event-terminal-height', `${state.terminalHeight}px`);
-  updateTerminalHeightAccessibility(state.terminalHeight, maximum);
-  if (persist) queueUiPreferencesSave();
-}
-
-elements.terminalHeightResizer.addEventListener('pointerdown', (event) => {
-  event.preventDefault();
-  elements.terminalHeightResizer.setPointerCapture(event.pointerId);
-  document.body.dataset.resizingTerminal = 'true';
-  const move = (moveEvent) => {
-    const bounds = elements.taskDetail.getBoundingClientRect();
-    state.terminalHeight = bounds.bottom - moveEvent.clientY;
-    applyTerminalHeight();
-  };
-  const finish = () => {
-    elements.terminalHeightResizer.removeEventListener('pointermove', move);
-    elements.terminalHeightResizer.removeEventListener('pointerup', finish);
-    elements.terminalHeightResizer.removeEventListener('pointercancel', finish);
-    delete document.body.dataset.resizingTerminal;
-    applyTerminalHeight({ persist: true });
-  };
-  elements.terminalHeightResizer.addEventListener('pointermove', move);
-  elements.terminalHeightResizer.addEventListener('pointerup', finish);
-  elements.terminalHeightResizer.addEventListener('pointercancel', finish);
-});
-
-elements.terminalHeightResizer.addEventListener('keydown', (event) => {
-  if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
-  event.preventDefault();
-  const renderedHeight = elements.eventsSection.getBoundingClientRect().height;
-  state.terminalHeight = (state.terminalHeight || renderedHeight) + (event.key === 'ArrowUp' ? 20 : -20);
-  applyTerminalHeight({ persist: true });
-});
 
 applyTerminalHeight();
-window.addEventListener('resize', () => applyTerminalHeight());
 elements.parallelClearButton.addEventListener('click', () => {
   state.parallelTaskIds.clear();
   renderTasks();
@@ -13484,6 +13469,28 @@ elements.effortSelect.addEventListener('input', () => {
   updateSelectedExecution({ effort });
   renderEffortSelection(selectedModel()?.supportedReasoningEfforts || [], effort);
   renderQuickSkills();
+});
+elements.pasteImage.addEventListener('click', async () => {
+  if (elements.pasteImage.disabled) return;
+  const projectPath = state.activeProjectPath;
+  const attachments = state.attachments;
+  elements.pasteImage.dataset.reading = 'true';
+  setComposerAlert('');
+  renderAttachmentComposer();
+  updateSubmitState();
+  try {
+    const files = await readClipboardImageFiles();
+    if (state.activeProjectPath !== projectPath || state.attachments !== attachments) return;
+    await addImageFiles(files);
+  } catch (error) {
+    if (state.activeProjectPath === projectPath && state.attachments === attachments) {
+      setComposerAlert(error.message, 'validation');
+    }
+  } finally {
+    delete elements.pasteImage.dataset.reading;
+    renderAttachmentComposer();
+    updateSubmitState();
+  }
 });
 elements.attachmentInput.addEventListener('change', async () => {
   await addImageFiles(elements.attachmentInput.files || []);
@@ -14090,6 +14097,11 @@ function renderDesktopZoomControls() {
   const supported = state.status?.capabilities?.desktopZoomControls === true;
   elements.desktopZoomControls.hidden = !supported;
   const percent = Number(state.status?.desktopZoom?.percent);
+  // Native window buttons do not scale with the web contents.
+  document.documentElement.style.setProperty(
+    '--desktop-chrome-scale',
+    String(Number.isFinite(percent) && percent >= 50 && percent <= 200 ? percent / 100 : 1),
+  );
   const label = supported && Number.isFinite(percent) ? `${percent}%` : '--';
   elements.desktopZoomLevel.textContent = label;
   elements.desktopZoomLevel.title = Number.isFinite(percent)
@@ -14226,16 +14238,26 @@ elements.terminalWindowModal.addEventListener('close', () => {
   focusTerminalWindowOpenButton();
 });
 
-elements.thinkingVisibilityButton.addEventListener('click', () => {
-  state.showThinking = !state.showThinking;
-  if (state.selectedTaskForEvents) {
-    renderEventStream(state.selectedTaskEvents, state.selectedTaskForEvents);
-  } else {
-    updateThinkingVisibilityControl();
+elements.continuationForm.addEventListener('submit', submitTaskContinuation);
+elements.continuationPasteImage.addEventListener('click', async () => {
+  if (elements.continuationPasteImage.disabled) return;
+  const task = state.selectedTaskForEvents;
+  if (!task) return;
+  elements.continuationPasteImage.dataset.reading = 'true';
+  renderTaskContinuation(task);
+  try {
+    // Start the read during the click and register it in the task's cancellable merge.
+    await addContinuationImageFiles(() => readClipboardImageFiles());
+  } catch (error) {
+    if (state.selectedTaskForEvents?.id === task.id) {
+      elements.continuationMessage.dataset.kind = 'error';
+      elements.continuationMessage.textContent = error.message;
+    }
+  } finally {
+    delete elements.continuationPasteImage.dataset.reading;
+    if (state.selectedTaskForEvents) renderTaskContinuation(state.selectedTaskForEvents);
   }
 });
-
-elements.continuationForm.addEventListener('submit', submitTaskContinuation);
 elements.continuationAttachmentInput.addEventListener('change', async () => {
   await addContinuationImageFiles(elements.continuationAttachmentInput.files);
   elements.continuationAttachmentInput.value = '';

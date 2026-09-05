@@ -32,7 +32,7 @@ Keep these distinctions accurate throughout the copy and demos:
 - Closing an owned task terminal preserves the task record and supported saved conversation. Retention is an option, not a requirement for conversation history.
 - Local task storage and CLI-managed authentication do not mean that AI inference is offline or that provider requests never leave the computer.
 - macOS is the tested platform. Windows is experimental and Linux is untested. Present availability accurately.
-- Use existing release and license information. Avoid fabricated pricing, testimonials, customer logos, adoption figures, performance benchmarks, or an unrestricted commercial-use promise.
+- Use existing release and license information and the product pricing specified in section 11 and [pricing copy](pricing.md). Avoid fabricated offers, testimonials, customer logos, adoption figures, performance benchmarks, or an unrestricted commercial-use promise.
 
 ## 2. Creative direction: the workspace comes together
 
@@ -65,7 +65,7 @@ Reuse the Crowie mark from `public/favicon.svg` when repository assets are avail
 
 ## 3. Opening and navigation
 
-Use a restrained sticky navigation bar with the CC Relay mark and name, links to Workspace, Sessions, Plan council, and Usage, and a persistent **Download CC Relay** action. On mobile, provide an accessible compact menu.
+Use a restrained sticky navigation bar with the CC Relay mark and name, links to Workspace, Sessions, Plan council, Usage, and Pricing, and a persistent **Download CC Relay** action. On mobile, provide an accessible compact menu.
 
 Use this opening copy as the baseline:
 
@@ -215,7 +215,27 @@ If output speed appears, label it **Average output tokens/s**. Keep it separate 
 
 Use one brief scroll-controlled fill that settles at the labeled sample values. Keep all demo numbers clearly illustrative. The story is visibility and control, without fabricated billing amounts or performance comparisons.
 
-## 11. Closing, FAQ, and conversion
+## 11. Pricing, closing, FAQ, and conversion
+
+Add a naturally scrolling **Pricing** section with an anchor at `#pricing`, before the final invitation. Use the complete [pricing copy and product decisions](pricing.md) as the source for these plans. Currency is USD, assumed from the supplied amounts.
+
+**Headline:** Your workspace. Your choice.
+
+**Body:** Try CC Relay free for 30 days. Then choose monthly, yearly, or lifetime access.
+
+| Plan | Price (USD) | Supporting copy |
+| --- | --- | --- |
+| Monthly | **$7.99 / month** | Billed monthly. Access and automatic updates while subscribed. |
+| Yearly | **$79.99 / year** | Billed yearly. Access and automatic updates while subscribed. Recommended. |
+| Lifetime | **$159.98 once** | One payment. Lifetime access and automatic updates forever. |
+
+Show a shared **30-day free trial** banner above three clearly comparable plan cards. Give Yearly a restrained **Recommended** label without claiming sales popularity. All paid plans include the same core Relay features. Keep all three prices visible at once instead of hiding plans behind a billing toggle. Stack the cards on phones in Monthly, Yearly, Lifetime order. Use readable billing labels, consistent price alignment, visible focus, and no pinned animation in this section.
+
+Below Lifetime, explain: **The price of two annual licenses. Access for life.** The calculation is $79.99 × 2 = $159.98; two years determine the one-time price, not the duration of access. Below the cards, state that provider subscriptions and model usage are separate. Automatic delivery follows supported desktop updater behavior; the portable Windows build requires manual downloads.
+
+When real activation and checkout flows exist, use **Start 30-day trial**, **Choose monthly**, **Choose yearly**, and **Get lifetime access**, connected to the matching verified flow. This repository currently has no trial activation, billing, or paid-license enforcement. Until those exist, visibly label this section **Planned pricing**, explain that paid plans and trial activation are not yet available, and retain **Download CC Relay** as the working release action. Downloading alone must not claim to start a trial. Do not add fake checkout buttons or invent payment destinations.
+
+Do not claim no card required, automatic trial conversion, cancellation or refund terms, included taxes, seat or device allowances, or support guarantees. Those policies are not specified. Preserve the existing source-license note; pricing copy does not replace commercial license terms.
 
 Return to a spacious light layout. Bring a small version of the assembled workspace into alignment beneath the closing copy.
 
@@ -227,7 +247,7 @@ Return to a spacious light layout. Bring a small version of the assembled worksp
 
 **Secondary action:** Read the documentation
 
-Provide a short, accessible FAQ covering what Relay does, supported providers, fresh tasks versus continued sessions, automatic terminal closure, Plan council, platform availability, and local storage. The FAQ should resolve practical questions in plain language, using the accurate claims above.
+Provide a short, accessible FAQ covering what Relay does, supported providers, fresh tasks versus continued sessions, automatic terminal closure, Plan council, platform availability, local storage, the 30-day trial, yearly billing, lifetime access, and separate provider costs. Use the pricing FAQ in `pricing.md`, retaining the planned-offering disclosure until activation and checkout exist. The FAQ should resolve practical questions in plain language, using the accurate claims above.
 
 Link documentation to the repository README and include repository, releases, and license links in the footer. Credit **Crowie s.r.o.** using the existing product identity. Keep installation requirements close to the download action: macOS is tested; configured provider CLIs are required. Reflect the current source-available license and its commercial-use terms accurately through a concise license note and direct link.
 
@@ -285,6 +305,8 @@ Deliver the runnable landing-page source, organized animation code, required loc
 Review browser captures at approximately 1440x900, 1024x768, 768x1024, and 390x844. Inspect the opening and intermediate animation states at 0%, 25%, 50%, 75%, and 100%, then scroll backward. Test direct anchor entry, a mid-page reload, resize across the mobile breakpoint, reduced motion, keyboard navigation, and unavailable animation JavaScript.
 
 Check every demo interaction and outbound link. Confirm that task identity survives the terminal-close and Continue session sequence, the global monitor contains the intended running/open tasks, project queues remain scoped correctly, Standup includes only its selected project, and all demo counters agree.
+
+Verify pricing at desktop and phone widths: 30 trial days, USD $7.99 monthly, USD $79.99 yearly, USD $159.98 once, and the exact lifetime promise of automatic updates forever. Confirm that lifetime never reads as two-year access, plan labels expose billing intervals, provider costs remain separate, the Pricing anchor clears the sticky navigation, and every conversion action matches its real availability. Until checkout and activation are implemented, verify the visible planned-pricing disclosure and working download action.
 
 Perform an extra verification pass after the first complete review. Fix overlapping copy, clipped controls, unreadable UI, inconsistent demo state, motion jumps, broken focus, missing assets, and incorrect product claims. If a browser or measurement tool is unavailable, state exactly what remains unverified and perform the strongest available checks.
 

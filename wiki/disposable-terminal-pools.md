@@ -16,7 +16,7 @@ tags:
 
 New CC Relay work uses a per-project disposable execution pool. The composer chooses a provider and project, not an already open terminal. When the task reaches a runnable queue position and capacity is available, CC Relay opens the required native Claude or Codex terminal window and binds its conversation, or reserves a virtual OpenCode allocation and starts a headless native process. Relay releases the exact allocation when the task reaches a terminal outcome.
 
-The left composer panel exposes **Codex max instances**, **Claude max instances**, and **OpenCode max instances** for the selected Launchpad project. All three default to 1 and accept whole numbers from 1 through 8. The values are stored on `projects.max_codex_instances`, `projects.max_claude_instances`, and `projects.max_opencode_instances`. Capacity is project-local, so a running provider task in one project does not consume another project's limit.
+The left composer panel exposes **Codex max instances**, **Claude max instances**, and **OpenCode max instances** for the selected Launchpad project. All three default to 1 and accept whole numbers from 1 through 20. The values are stored on `projects.max_codex_instances`, `projects.max_claude_instances`, and `projects.max_opencode_instances`. Capacity is project-local, so a running provider task in one project does not consume another project's limit.
 
 `GET /api/status?projectPath=` advertises `capabilities.disposableTerminalPools`, `capabilities.resumableDisposableSessions`, and a `terminalPool` snapshot:
 
@@ -171,3 +171,9 @@ The current composer creates disposable work whenever the backend advertises the
 See [[project-workspaces]], [[task-history]], [[planner]], [[plan-council]], [[opencode-provider-and-token-throughput]], [[claude-terminal-visibility]], [[claude-launch-settings]], and [[terminal-close-review]].
 
 #relay #terminal #codex #claude #opencode #queue #continuation
+
+> [!note]
+> September 5: the provider ceiling increased to 20 in the composer and project API. Saved limits
+> and the default of one stay unchanged. Automatic [[turbo-execution|Turbo]] supports 19 concurrent
+> executions plus one planning slot; legacy live-terminal Turbo retains eight workers. Each saved
+> conversation still has one active owner. See [[provider-concurrency-limit-review]].

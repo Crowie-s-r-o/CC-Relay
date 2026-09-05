@@ -50,7 +50,7 @@ Every task card now has a dedicated lifecycle row with **Started** and **Complet
 
 After any successful composer submission, CC Relay switches to **Queue**, selects the newly created task card, and opens that task in Task Activity. This applies equally to Execute, Plan council, Turbo, normal Enter, and **Run now** submissions. Project-wide visibility ensures idle routing to another CC Relay cannot hide the new task.
 
-Task card selection and completion review are deliberately independent visual states. Selection owns the complete project-colored outline and tinted card surface. An unviewed completion uses a rose left rail, while the operational Queue collects every such card under one rose **Ready for review** divider directly below running work. Search and History preserve their own result order inside the starred and unstarred display groups, so an unviewed card there carries an individual **Ready for review** badge. The unread card background rule is limited to `:not(.selected)` so it cannot replace the stronger selection treatment. Opening the task acknowledges only that completion and immediately returns it to its normal Today or Past position. **Mark reviewed** remains the explicit project-wide bulk acknowledgement.
+Task card selection and completion review are deliberately independent visual states. Selection owns the complete project-colored outline and tinted card surface. Every unviewed completion has a prominent rose **Ready for review** badge and left rail. The operational Queue also groups unstarred unread completions below running work. Search and History preserve their own result order inside the starred and unstarred display groups. The unread card background rule is limited to `:not(.selected)` so it cannot replace the stronger selection treatment. Opening the task acknowledges only that completion and immediately returns it to its normal Today or Past position. The counted **Ready for review** view shows only unread completions across all dates and removes each opened task while keeping its detail visible. **Mark reviewed** remains the explicit project-wide bulk acknowledgement. See [[task-review-visibility]].
 
 The review distinction is persisted on the task row as `completion_reviewed` and exposed as
 `ready_for_review`. Review writes carry the exact displayed `finished_at`, including bulk review,
@@ -60,7 +60,7 @@ imports any still-reachable legacy unread IDs once. See
 [[launchpad-completion-notifications]].
 
 > [!note]
-> The review divider is the Queue view's non-color cue. Keeping the repeated badge out of that already-grouped view prevents the longer label from crowding compact task metadata. The rose rail and accessible card label still identify each member of the group, and light and dark themes use matching review colors.
+> The review divider and the per-card badge both identify unread completions in Queue. The badge has its own line so it remains prominent without crowding task metadata. Light and dark themes use matching review colors in the final Launchpad stylesheet.
 
 ## Starred display group
 

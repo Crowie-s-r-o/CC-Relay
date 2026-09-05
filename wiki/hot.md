@@ -7,6 +7,80 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
+> **September 5: VibeIDE has a separate private account backend.** `backend/` is
+> deployed on the existing server in `vibeide-dev`, with verified operator login,
+> an empty landing file, admin analytics and native authentication APIs. Public
+> DNS/proxy/TLS, Google OAuth and SMTP activation remain outstanding. The desktop
+> client is unchanged. See [[vibeide-backend]] and [[vibeide-backend-review]].
+
+> [!note]
+> **September 5: Fable and Codex 5h are back in the visible monitor.** Both had been moved
+> into Display by Launchpad. All five windows now stay visible, including percentages and reset
+> countdowns at 320px. Codex five-hour-only responses work without weekly data, with no plan-tier
+> assumptions. See [[provider-usage-monitor]] and [[provider-usage-visibility-review]].
+
+> [!note]
+> **September 5: new prompts and follow-ups expose Paste image.** Clipboard reads use the existing
+> image limits and draft cancellation rules. The desktop permission handler now accepts reads only
+> from Relay's exact main-frame origin. Rebuild/restart activates that handler; keyboard paste and
+> the file picker remain available. See [[clipboard-image-paste]].
+
+> [!important]
+> **September 5: Standup now captures direct terminal follow-ups.** A read-only Codex/Claude
+> transcript sync records prompts, replies, and successful execution dates after Relay's active
+> watcher stops. It supports direct tasks and completed Turbo executor conversations, deduplicates
+> queue-owned attempts, preserves selected-day evidence, and refreshes history without changing
+> queue status or provider capacity. Restart the updated backend to activate capture. See
+> [[terminal-follow-up-history]] and [[terminal-follow-up-history-review]].
+
+> [!important]
+> **September 5: task terminal startup no longer disconnects at conversation registration.** Keep the startup target until its task assignment is persisted, then allow one exact socket identity handoff. The emulator is keyed by task and physical launch, so metadata refresh preserves its DOM, focus, and selection. Every pool persistence path must call `confirmTaskTerminalBinding()` immediately after its database write. See [[terminal-startup-continuity]] and [[embedded-original-terminal]].
+
+> [!important]
+> **September 5: finished tasks now reveal Conversation when their terminal is gone.**
+> The terminal pane always fills the remaining height, with no draggable height separator or
+> inset card. Retained live terminals stay visible. See [[terminal-review-full-height]].
+
+> [!note]
+> **September 5: the empty macOS top strip is gone, and the task monitor defaults to Bottom.**
+> The first content bar owns dragging and zoom-adjusted native-button clearance. Explicit saved
+> Top choices still restore. Backend normalization and renderer fallback now agree with first paint.
+> Focused native verification is available through `verify-launchpad.cjs --desktop-chrome`. See
+> [[desktop-chrome-and-monitor-defaults]].
+
+> [!note]
+> **September 5: review completions are prominent and filterable.** Queue, History, and search
+> cards now show a solid rose badge with restored tint and rail in the owning Launchpad stylesheet.
+> The counted **Ready for review** view shows only unread completions across all dates in the
+> selected project. Opening a task updates the count immediately; bulk review remains reusable
+> after new completions arrive. See [[task-review-visibility]] and [[task-review-visibility-review]].
+
+> [!important]
+> **September 5: long terminal lines now fit inside the visible PTY view.** Keep padding on
+> `.embedded-terminal .xterm`, because the fit addon subtracts that element's padding from the
+> outer container size. Padding on the outer border box clipped long lines and overstated rows.
+> `scripts/verify-terminal-rendering.cjs` checks complete text preservation, both themes, compact
+> and expanded views, reconnecting, scrollback, zoom, and repeated resizing in isolated Electron.
+> See [[terminal-long-output-review]].
+
+> [!note]
+> **September 5: bottom task cards now keep their selected width and show the latest message.**
+> Launchpad monitor columns use bounded 230px, 286px, or 360px slots, capped by the rail width.
+> Each 48px card separates metadata, project/title, and the provider-tagged latest response.
+> This supersedes the structural port's stretching 24px single-line cards. Saved rows and position,
+> independent horizontal scrolling, and the existing response feed remain intact. See
+> [[launchpad-v2-design]] and [[compact-task-monitor-review]].
+
+> [!important]
+> **September 5: colored task selection and stable effort dragging are restored.** The unlayered
+> Launchpad stylesheet had replaced both with neutral chrome. Selected Queue/History cards now
+> use their project accent. Effort text lives above the rail, so changing label lengths cannot
+> resize a drag target; stops and the thumb keep fixed sizes. Native pointer/keyboard checks cover
+> both themes, compact widths, and a backend refresh during a drag. The extra pass fixed the
+> single-stop alignment and duplicate focus ring. The Electron fixture now exits nonzero on a
+> failed assertion. See [[task-selection-and-effort-control]].
+
+> [!important]
 > **September 5: task terminals now use real embedded PTYs.** New task-owned Codex and Claude launches render their own CLI inside Relay with direct keyboard input. The former read-only screen was insufficient. Each different task defaults to Original terminal, and an unavailable terminal never silently becomes the event ledger. Existing external sessions stay labeled read-only; new task sessions require the updated backend. See [[embedded-original-terminal]] and [[embedded-terminal-review]].
 
 

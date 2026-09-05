@@ -1,0 +1,6 @@
+Django==5.2.17
+django-allauth[mfa,socialaccount]==65.19.2
+argon2-cffi==25.1.0
+gunicorn==26.2.0
+whitenoise==6.12.0
+redis==8.1.0

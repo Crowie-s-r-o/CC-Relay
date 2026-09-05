@@ -11,8 +11,8 @@ CC Relay persists its global interface layout in the shared configuration databa
 `ui-layout-preferences` setting. The saved record contains:
 
 - Composer and Task queue widths
-- Task Activity terminal height, when the user has explicitly resized it
-- Monitor bar position, `top` or `bottom`
+- Legacy Task Activity terminal height remains readable for compatibility; the renderer clears it and always fills the pane. See [[terminal-review-full-height]].
+- Monitor bar position, `top` or `bottom`, with `bottom` as the default for missing or invalid values. Explicit saved choices are preserved. See [[desktop-chrome-and-monitor-defaults]].
 - Running-task monitor rows, one through three, and card width, Compact, Default, or Wide
 - Terminal window view, the default view the Terminal window opens on
 - Completion sound choice, voice enabled state, selected spoken parts, and task-name word limit
@@ -79,7 +79,7 @@ See [[header-position]], [[interface-layout]], and [[shared-project-configuratio
 
 ## Running-task monitor layout
 
-The running-task layout defaults to two rows and Default 286px card minimums. The renderer caches the
+The running-task layout defaults to two rows and a bounded Default 286px card width. The renderer caches the
 choice under `relay.runningTaskLayout` for first paint, then restores the authoritative shared
 record through `GET /api/ui-preferences`. Backend normalization accepts only rows 1, 2, or 3 and
 widths 230px, 286px, or 360px. Missing or stale values fall back independently to the defaults, so

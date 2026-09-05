@@ -6,6 +6,11 @@ type: design
 
 # Active Project Composer Colors
 
+> [!note]
+> The September 5 selection fix restores the project accent on the current Launchpad effort
+> control and selected task cards. Its progress, fixed thumb/stops, value, and focus ring share
+> the existing resolved project color. See [[task-selection-and-effort-control]].
+
 > [!important]
 > **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
 > owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh

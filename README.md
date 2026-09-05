@@ -31,7 +31,7 @@
 - **Live native token accounting.** The macOS Crowie title bar shows today's all-provider token total. Task Activity shows cumulative provider-reported input and output use, while it and the running-task monitor show average output tokens per attempt second throughout each run.
 - **Searchable history and task-owned diffs.** Search task names, prompts, follow-ups, responses, results, and errors. Changes opens on exact patches reported by the task, with a separate Workspace window for every disk change observed while it ran.
 - **A queue built for real work.** Star any task to keep it at the top, rename titles inline at any stage, reorder waiting work, use Run now for urgent dispatch, and continue completed conversations.
-- **Reference images and local artifacts.** Attach screenshots and other visual context, then keep prompts, plans, events, results, errors, and attachments stored locally with the task.
+- **Reference images and local artifacts.** Use **Paste image** to attach a copied screenshot to a new prompt or follow-up, paste directly with Cmd+V or Ctrl+V, or choose an image file. Prompts, plans, events, results, errors, and attachments stay stored locally with the task.
 - **Local push-to-talk prompting.** Hold a configurable key combination, speak, and release to insert a faster-whisper CPU transcription directly into the task prompt.
 - **One-click saved skills.** Run the built-in Deploy check command with the selected provider, model, and effort without replacing the prompt already being written.
 - **Completion you will not miss.** Choose a sound or spoken announcement, collect finished tasks in a durable Ready for review stack, and mark them reviewed individually or together.
@@ -62,7 +62,7 @@ While work runs:
 
 - **Every project at once.** Several repositories can execute side by side, each with its own queue, limits, and history.
 - **Hear and see the finish.** A sound plays when a task ends, and completed tasks stack up as notifications you can click through and review one by one.
-- **Use the original terminal inside Relay.** New Codex and Claude task terminals run in an embedded PTY with the CLI's own interface, direct typing, shortcuts, and resizing. **Window** expands the same terminal inside Relay. Each selected task starts on Original terminal; Relay activity and conversation filters remain explicit alternate views. Older external sessions have a labeled read-only screen, and headless runs report that no interactive terminal exists. See [embedded terminal behavior](wiki/embedded-original-terminal.md).
+- **Use the original terminal inside Relay.** New Codex and Claude task terminals run in an embedded PTY with the CLI's own interface, direct typing, shortcuts, and resizing. **Window** expands the same terminal inside Relay. The terminal fills its pane without a height divider or inset card. Finished tasks automatically show Conversation once their terminal closes; retained live terminals stay visible. Older external sessions have a labeled read-only screen, and headless runs report that no interactive terminal exists. See [embedded terminal behavior](wiki/embedded-original-terminal.md).
 - **Fresh session per task.** Each execution starts a clean conversation, so context stays uncluttered and token use stays low. Relay saves the native conversation ID for continuation or retry where the provider supports it.
 
 | Workflow | Best for |

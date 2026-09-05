@@ -12,6 +12,11 @@ tags:
 
 # Terminal Window
 
+> [!note]
+> The Thinking toggle was removed on September 5. Relay activity includes provider reasoning
+> without a separate visibility preference. Historical toggle checks below describe the earlier UI.
+> See [[thinking-toggle-removal-review]].
+
 > [!important]
 > **September 5 correction: Original terminal now stays inside CC Relay.**
 > **Show original terminal** opens this dialog with the original terminal screen and the existing
@@ -21,7 +26,7 @@ tags:
 > invariants below still apply.
 
 The task terminal can be opened in a near full-viewport **Terminal window**. A **Window** control sits
-in the events toolbar (`.event-tools`, beside **Thinking** and **Copy log**) and opens
+in the events toolbar (`.event-tools`, beside **Copy log**) and opens
 `<dialog id="terminal-window-modal">`. The control is disabled while no task is selected, or while the
 detail panel is hidden, because the window has nothing to show without a live terminal underneath it.
 
@@ -88,7 +93,7 @@ The window does not duplicate the event ledger. **Two** live nodes are moved on 
 on close:
 
 1. `.events-section` into `#terminal-window-mount`.
-2. `.event-tools` (the **Thinking**, **Copy log**, and **Window** cluster) into the dialog header slot
+2. `.event-tools` (the **Copy log** and **Window** cluster) into the dialog header slot
    `#terminal-window-tools`.
 
 > [!important]
@@ -99,7 +104,7 @@ on close:
 > used only by the Terminal view. Do not render provider events into that surface.
 >
 > The tools fold does not weaken that. The cluster is the same live nodes moved, never a copy, so
-> **Thinking** and **Copy log** keep their existing listeners and their existing `aria-pressed` state.
+> **Copy log** and **Window** keep their existing listeners and state.
 
 ### The toolbar fold
 
@@ -113,8 +118,8 @@ before the first move, so the slot reserves no space and paints no border of its
 
 > [!important]
 > The move is load-bearing on both sides. If the app.js move is ever reverted while
-> `.events-section[data-terminal-window="open"] .event-toolbar { display: none; }` stays, **Thinking**
-> and **Copy log** become unreachable for the whole time the window is open, with no error. Revert the
+> `.events-section[data-terminal-window="open"] .event-toolbar { display: none; }` stays, **Copy log**
+> and **Window** become unreachable for the whole time the window is open, with no error. Revert the
 > CSS in the same change or not at all.
 
 ## The dock record

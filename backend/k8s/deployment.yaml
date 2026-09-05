@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vibeide
+  namespace: vibeide-dev
+  labels: {app: vibeide}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}
+  revisionHistoryLimit: 3
+  selector:
+    matchLabels: {app: vibeide}
+  template:
+    metadata:
+      labels: {app: vibeide}
+    spec:
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 40
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      initContainers:
+        - name: migrate
+          image: localhost:5000/vibeide:RELEASE_TAG
+          command: [python, manage.py, migrate, --noinput]
+          securityContext: &security
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts: &appMounts
+            - {name: config, mountPath: /app/config, readOnly: true}
+            - {name: data, mountPath: /app/.data}
+            - {name: app-tmp, mountPath: /tmp}
+      containers:
+        - name: app
+          image: localhost:5000/vibeide:RELEASE_TAG
+          imagePullPolicy: IfNotPresent
+          securityContext: *security
+          resources:
+            requests: {cpu: 100m, memory: 192Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+          volumeMounts: *appMounts
+          readinessProbe:
+            exec:
+              command: [python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+            initialDelaySeconds: 5
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: [python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+        - name: proxy
+          image: nginxinc/nginx-unprivileged:stable-alpine@sha256:9b87ad3dd9f431c733f19dfb278c7eb3dba9dca381942c79818bb42f1a566a83
+          command: [nginx, -c, /config/nginx.conf, -g, "daemon off;"]
+          ports: [{name: https, containerPort: 8443}]
+          securityContext: *security
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          volumeMounts:
+            - {name: proxy-config, mountPath: /config, readOnly: true}
+            - {name: tls, mountPath: /tls, readOnly: true}
+            - {name: proxy-tmp, mountPath: /tmp}
+          readinessProbe:
+            httpGet: {path: /health, port: https, scheme: HTTPS, httpHeaders: [{name: Host, value: localhost}]}
+            periodSeconds: 15
+            timeoutSeconds: 5
+        - name: rate-limits
+          image: redis:7.4-alpine@sha256:ff02b58f971e7d7d156a1267e283fcbbeee91773b6aa36c49dac28ecfe28eadf
+          command: [redis-server, --bind, "127.0.0.1", --protected-mode, "yes", --save, "", --appendonly, "yes", --dir, /redis, --maxmemory, 64mb, --maxmemory-policy, noeviction]
+          securityContext: *security
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 100m, memory: 128Mi}
+          volumeMounts:
+            - {name: redis-data, mountPath: /redis}
+          readinessProbe:
+            exec: {command: [redis-cli, ping]}
+            periodSeconds: 15
+          livenessProbe:
+            exec: {command: [redis-cli, ping]}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+      volumes:
+        - name: config
+          secret: {secretName: vibeide-config, defaultMode: 0440}
+        - name: tls
+          secret: {secretName: vibeide-tls, defaultMode: 0440}
+        - name: proxy-config
+          configMap: {name: vibeide-proxy}
+        - name: data
+          persistentVolumeClaim: {claimName: vibeide-data}
+        - {name: app-tmp, emptyDir: {sizeLimit: 32Mi}}
+        - {name: proxy-tmp, emptyDir: {sizeLimit: 32Mi}}
+        - {name: redis-data, emptyDir: {sizeLimit: 128Mi}}

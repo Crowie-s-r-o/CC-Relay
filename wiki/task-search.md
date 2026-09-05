@@ -38,7 +38,7 @@ The rounded search rail owns the complete light and dark surface. Its native sea
 
 While a query is active:
 
-- Date filtering and the History statistics ledger are suspended, but the chosen Queue or History preference is preserved for when search clears.
+- Date filtering, the review-only view, and the History statistics ledger are suspended, but the chosen Queue, History, or Ready for review preference is preserved for when search clears. View buttons show no active selection during search; choosing one clears the query and immediately opens that view, invalidating delayed search responses. See [[task-review-visibility]].
 - Starred results appear first; starred and unstarred groups each keep backend relevance order and show the matching source label plus safely escaped highlighted evidence.
 - Cards remain keyboard-selectable and open normal Task Activity.
 - Queue reorder, assignment, drag targets, and parallel-batch selection are hidden so a relevance-ranked subset cannot mutate execution order.

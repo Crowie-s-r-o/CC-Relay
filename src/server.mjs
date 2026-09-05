@@ -23,6 +23,7 @@ import { CodexAppServer } from './codex-app-server.mjs';
 import { readCodexRuntimeStatus } from './codex-runtime-status.mjs';
 import { RelayDatabase } from './database.mjs';
 import { TaskOriginalTerminal } from './task-original-terminal.mjs';
+import { TerminalHistorySync } from './terminal-history.mjs';
 import { DiagnosticLog } from './diagnostics.mjs';
 import { normalizeDesktopUpdateState } from './desktop-update-status.mjs';
 import { desktopZoomStatus } from './desktop-zoom.mjs';
@@ -149,6 +150,8 @@ const claudeHookBridge = new ClaudeHookBridge({
 const database = new RelayDatabase(join(DATA_ROOT, 'relay.sqlite'), {
   projectConfigPath: join(CONFIG_ROOT, 'relay-config.sqlite'),
 });
+const terminalHistory = new TerminalHistorySync({ database, diagnostic, changed: (taskId) => broadcast({ tasks: true, taskId }) });
+let terminalHistoryTimer = null;
 // The desktop app and a standalone `node src/server.mjs` can run at the same time and both
 // discover the same live Codex and Claude sessions. Launch ownership used to be per-process and
 // in memory only, so either backend could adopt and then close a terminal the other one owned.
@@ -624,10 +627,12 @@ function taskIdFromPath(pathname) {
   return match ? Number(match[1]) : null;
 }
 
+const MAX_PROJECT_INSTANCES = 20;
+
 function validateInstanceLimit(value, provider) {
   const limit = Number(value);
-  if (!Number.isInteger(limit) || limit < 1 || limit > 8) {
-    throw new Error(`${provider} max instances must be a whole number from 1 to 8.`);
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PROJECT_INSTANCES) {
+    throw new Error(`${provider} max instances must be a whole number from 1 to ${MAX_PROJECT_INSTANCES}.`);
   }
   return limit;
 }
@@ -916,6 +921,11 @@ function standupRecord(task) {
         finished_at: task.finished_at || null,
         outcome: task.status,
       }];
+  const responses = database.listTaskResponses(task.id);
+  const latestExecution = executions.at(-1);
+  const terminalOutcome = latestExecution?.source === 'terminal' && latestExecution.outcome === 'complete'
+    ? responses.filter((response) => response.execution_started_at === latestExecution.started_at).at(-1)?.text
+    : null;
   return {
     id: task.id,
     title: task.title,
@@ -931,13 +941,14 @@ function standupRecord(task) {
       completedAt: execution.finished_at || null,
       completedLocal: standupLocalTimestamp(execution.finished_at),
       outcome: execution.outcome || null,
+      source: execution.source || 'relay',
       selectedForRange: execution.selectedForRange === true,
     })),
     prompts: database.listTaskPrompts(task.id),
-    responses: database.listTaskResponses(task.id),
-    outcome: task.status === 'failed'
+    responses,
+    outcome: terminalOutcome || (task.status === 'failed'
       ? task.error || task.result || 'No failure details were recorded.'
-      : task.result || task.error || 'No final outcome was recorded.',
+      : task.result || task.error || 'No final outcome was recorded.'),
   };
 }
 
@@ -1546,6 +1557,7 @@ export const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && pathname === '/api/tasks/search') {
+      await terminalHistory.sync();
       const requestedPath = url.searchParams.get('projectPath')?.trim() || '';
       if (!requestedPath) {
         throw new Error('Select a Launchpad project before searching tasks.');
@@ -1604,6 +1616,7 @@ export const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && pathname === '/api/tasks') {
+      await terminalHistory.sync();
       const attemptsByTask = database.taskAttemptsMap();
       const tasks = database.listTaskSummaries().map((task) => {
         const taskWithExecutionDates = {
@@ -1634,6 +1647,7 @@ export const server = createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/standup/generate') {
       const body = await readJson(request, 64 * 1024);
+      await terminalHistory.sync({ refreshPaths: true });
       const source = standupSourceFromRequest(body);
       const availability = await standupProviderAvailability(source.preferredProvider);
       const generated = await standupGenerator.generate(buildStandupPrompt(source.records, {
@@ -1671,6 +1685,7 @@ export const server = createServer(async (request, response) => {
 
     if (request.method === 'POST' && pathname === '/api/standup/follow-up') {
       const body = await readJson(request, 64 * 1024);
+      await terminalHistory.sync({ refreshPaths: true });
       const source = standupSourceFromRequest(body);
       const availability = await standupProviderAvailability(source.preferredProvider);
       const generated = await standupGenerator.answer(buildStandupFollowUpPrompt(source.records, {
@@ -2422,8 +2437,9 @@ export const server = createServer(async (request, response) => {
 
       if (mode === 'turbo') {
         const workerCount = Number(body.workerCount);
-        if (!Number.isInteger(workerCount) || workerCount < 1 || workerCount > 8) {
-          throw new Error('Turbo concurrent execution count must be between 1 and 8.');
+        const workerLimit = disposable ? MAX_PROJECT_INSTANCES - 1 : 8;
+        if (!Number.isInteger(workerCount) || workerCount < 1 || workerCount > workerLimit) {
+          throw new Error(`Turbo concurrent execution count must be between 1 and ${workerLimit}.`);
         }
         const models = await codexAppServer.listModels();
         const planner = validateExecutionSettings({ model: body.plannerModel, effort: body.plannerEffort, models });
@@ -2946,6 +2962,7 @@ export const server = createServer(async (request, response) => {
     }
 
     if (request.method === 'GET' && /^\/api\/tasks\/\d+$/.test(pathname)) {
+      await terminalHistory.sync();
       const taskId = taskIdFromPath(pathname);
       const task = database.getTask(taskId);
       if (!task) {
@@ -3463,6 +3480,9 @@ server.listen(PORT, HOST, () => {
     diagnostic('launch.registry.failed', { operation: 'start', error: error.message });
   });
   queue.start();
+  void terminalHistory.sync();
+  terminalHistoryTimer = setInterval(() => { void terminalHistory.sync(); }, 5_000);
+  terminalHistoryTimer.unref?.();
   // After queue recovery, not before: recoverInterruptedTasks() marks tasks that died with
   // the server as `interrupted` without emitting a queue change, so nothing else would tell
   // a plan run that its steps are gone. An interrupted step is a failure with no scheduled
@@ -3511,6 +3531,9 @@ server.listen(PORT, HOST, () => {
 });
 
 export async function shutdown() {
+  clearInterval(terminalHistoryTimer);
+  terminalHistoryTimer = null;
+  await terminalHistory.stop();
   closeTerminalWebSockets();
   if (manualSessionTerminalCheckTimer) {
     clearInterval(manualSessionTerminalCheckTimer);

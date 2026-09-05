@@ -532,6 +532,7 @@ export class DisposableTerminalPool {
           } : {}),
           turbo_json: JSON.stringify(updatedTurbo),
         });
+        this.launcher.confirmTaskTerminalBinding?.(allocation.launchId, task.id, allocation.threadId);
         if (role !== 'council') this.artifacts.updateTaskAssignment(updated);
       }
       this.database.addEvent(
@@ -716,6 +717,9 @@ export class DisposableTerminalPool {
             author_thread_source: launched.claude.thread.source,
           } : {}),
         });
+        for (const terminal of Object.values(launched)) {
+          this.launcher.confirmTaskTerminalBinding?.(terminal.launchId, task.id, terminal.threadId);
+        }
         this.artifacts.updateTaskAssignment(updated);
         this.artifacts.updateCouncilAuthorAssignment(updated);
         this.database.addEvent(
@@ -774,6 +778,7 @@ export class DisposableTerminalPool {
         thread_name: terminal.thread.title,
         thread_source: terminal.thread.source,
       });
+      this.launcher.confirmTaskTerminalBinding?.(terminal.launchId, task.id, terminal.threadId);
       this.artifacts.updateTaskAssignment(updated);
       this.database.addEvent(
         task.id,

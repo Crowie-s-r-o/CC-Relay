@@ -1011,7 +1011,7 @@ test('event stream folds streamed reasoning summaries into one All entry', () =>
   assert.equal(filterEventEntries(entries, 'all').length, 1);
 });
 
-test('thinking summaries are visible by default and can be removed from any event view', () => {
+test('thinking summaries remain in All while focused views exclude them', () => {
   const entries = groupEventEntries([
     itemEvent('reasoning-visibility', 'completed', 'reasoning', {
       eventId: 1,
@@ -1022,14 +1022,14 @@ test('thinking summaries are visible by default and can be removed from any even
 
   assert.equal(filterEventEntries(entries, 'all').length, 2);
   assert.deepEqual(
-    filterEventEntries(entries, 'all', { showThinking: false })
+    filterEventEntries(entries, 'commands')
       .map((entry) => entryItem(entry)?.type),
     ['commandExecution'],
   );
-  assert.equal(filterEventEntries(entries, 'highlights', { showThinking: false }).length, 1);
+  assert.equal(filterEventEntries(entries, 'highlights').length, 1);
 });
 
-test('OpenCode reasoning stays toggleable telemetry instead of an AI response', () => {
+test('OpenCode reasoning stays activity telemetry instead of an AI response', () => {
   const event = itemEvent('opencode-reasoning', 'completed', 'reasoning', {
     kind: 'opencode',
     item: {
@@ -1044,7 +1044,7 @@ test('OpenCode reasoning stays toggleable telemetry instead of an AI response', 
   assert.equal(eventEntryCategory(entries[0]), 'system');
   assert.equal(eventStreamStats(entries).messages, 0);
   assert.equal(filterEventEntries(entries, 'all').length, 1);
-  assert.equal(filterEventEntries(entries, 'all', { showThinking: false }).length, 0);
+  assert.equal(filterEventEntries(entries, 'commands').length, 0);
   assert.equal(filterEventEntries(entries, 'highlights').length, 0);
 });
 

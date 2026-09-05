@@ -15,7 +15,9 @@ export class EmbeddedTerminalView {
   }
 
   connect({ taskId, threadId, launchId }) {
-    const key = JSON.stringify([taskId, threadId, launchId]);
+    // Conversation registration changes the startup alias, not the underlying
+    // terminal. Keep its DOM, selection, focus, and socket for that exact launch.
+    const key = JSON.stringify([taskId, launchId]);
     if (key === this.key) { this.fit(); return; }
     this.disconnect();
     this.key = key;

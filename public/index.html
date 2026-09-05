@@ -39,9 +39,6 @@
     <link rel="stylesheet" href="/embedded-terminal.css">
   </head>
   <body>
-    <div class="desktop-titlebar">
-
-    </div>
     <header class="app-header">
       <button id="about-button" class="brand-lockup" type="button" aria-haspopup="dialog" aria-controls="about-modal" title="About CC Relay">
         <img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true">
@@ -76,8 +73,18 @@
             <span class="provider-usage-track" role="progressbar" aria-label="Claude weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
             <small class="provider-usage-reset"></small>
           </div>
-
-
+          <div class="provider-usage-meter" data-usage-key="claude-fable" data-provider="claude" data-level="checking">
+            <span>Fable</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Claude Fable weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
+          </div>
+          <div class="provider-usage-meter" data-usage-key="codex-five-hour" data-provider="codex" data-level="checking">
+            <span>Cod 5h</span>
+            <strong>--</strong>
+            <span class="provider-usage-track" role="progressbar" aria-label="Codex 5-hour usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
+            <small class="provider-usage-reset"></small>
+          </div>
           <div class="provider-usage-meter" data-usage-key="codex-weekly" data-provider="codex" data-level="checking">
             <span>Cod Week</span>
             <strong>--</strong>
@@ -91,17 +98,6 @@
           </summary>
           <div class="display-settings-popover">
             <strong>Display</strong>
-            <section class="display-settings-section" aria-label="Additional subscription windows"><span class="display-settings-section-title">Subscription details</span><div class="display-provider-usage">          <div class="provider-usage-meter" data-usage-key="claude-fable" data-provider="claude" data-level="checking">
-            <span>Fable</span>
-            <strong>--</strong>
-            <span class="provider-usage-track" role="progressbar" aria-label="Claude Fable weekly usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
-            <small class="provider-usage-reset"></small>
-          </div>          <div class="provider-usage-meter" data-usage-key="codex-five-hour" data-provider="codex" data-level="checking">
-            <span>Cod 5h</span>
-            <strong>--</strong>
-            <span class="provider-usage-track" role="progressbar" aria-label="Codex 5-hour usage" aria-valuemin="0" aria-valuemax="100"><i></i></span>
-            <small class="provider-usage-reset"></small>
-          </div></div></section>
             <section class="display-settings-section" aria-labelledby="running-task-display-heading">
               <span id="running-task-display-heading" class="display-settings-section-title">Task monitor</span>
               <label for="running-task-rows">Rows
@@ -123,9 +119,9 @@
               <span id="application-display-heading" class="display-settings-section-title">Application</span>
               <div class="display-settings-control">
                 <span>Monitor bar</span>
-                <button id="header-position-toggle" class="header-position-toggle" type="button" aria-label="Move monitor bar to bottom" title="Move monitor bar to bottom" aria-pressed="false">
-                  <span id="header-position-icon" class="header-position-icon" aria-hidden="true">↓</span>
-                  <span id="header-position-label">Bottom</span>
+                <button id="header-position-toggle" class="header-position-toggle" type="button" aria-label="Move monitor bar to top" title="Move monitor bar to top" aria-pressed="true">
+                  <span id="header-position-icon" class="header-position-icon" aria-hidden="true">↑</span>
+                  <span id="header-position-label">Top</span>
                 </button>
               </div>
               <div class="display-settings-control">
@@ -233,7 +229,7 @@
                     <small id="codex-pool-usage" class="agent-pool-usage">0 active</small>
                     <span class="number-stepper">
                       <button type="button" data-step-input="max-codex-instances" data-step="-1" aria-label="Decrease maximum codex instances">−</button>
-                      <input id="max-codex-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Codex instances">
+                      <input id="max-codex-instances" class="agent-tab-pool-input" type="number" min="1" max="20" step="1" value="1" aria-label="Maximum Codex instances">
                       <button type="button" data-step-input="max-codex-instances" data-step="1" aria-label="Increase maximum codex instances">+</button>
                     </span>
                   </div>
@@ -260,7 +256,7 @@
                     <small id="claude-pool-usage" class="agent-pool-usage">0 active</small>
                     <span class="number-stepper">
                       <button type="button" data-step-input="max-claude-instances" data-step="-1" aria-label="Decrease maximum claude instances">−</button>
-                      <input id="max-claude-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Claude instances">
+                      <input id="max-claude-instances" class="agent-tab-pool-input" type="number" min="1" max="20" step="1" value="1" aria-label="Maximum Claude instances">
                       <button type="button" data-step-input="max-claude-instances" data-step="1" aria-label="Increase maximum claude instances">+</button>
                     </span>
                   </div>
@@ -287,7 +283,7 @@
                     <small id="opencode-pool-usage" class="agent-pool-usage">0 active</small>
                     <span class="number-stepper">
                       <button type="button" data-step-input="max-opencode-instances" data-step="-1" aria-label="Decrease maximum opencode instances">−</button>
-                      <input id="max-opencode-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum OpenCode instances">
+                      <input id="max-opencode-instances" class="agent-tab-pool-input" type="number" min="1" max="20" step="1" value="1" aria-label="Maximum OpenCode instances">
                       <button type="button" data-step-input="max-opencode-instances" data-step="1" aria-label="Increase maximum opencode instances">+</button>
                     </span>
                   </div>
@@ -310,14 +306,12 @@
                   <span class="execution-control-index" aria-hidden="true">E</span>
                   <span class="execution-control-copy">
                     <span>Effort</span>
+                    <span id="effort-slider-value">Effort</span>
                     <small id="effort-hint">Select reasoning depth</small>
                   </span>
                   <div class="effort-slider-shell">
                     <input id="effort-select" class="effort-slider" name="effort" type="range" min="0" max="0" step="1" value="0" aria-label="Reasoning effort" aria-describedby="effort-hint effort-slider-value">
-                    <div class="effort-slider-meta">
-                      <span id="effort-slider-value">Effort</span>
-                      <span id="effort-slider-steps" class="effort-slider-steps" aria-hidden="true"></span>
-                    </div>
+                    <span id="effort-slider-steps" class="effort-slider-steps" aria-hidden="true"></span>
                   </div>
                 </div>
               </div>
@@ -650,6 +644,7 @@
                   <small>Choose, drop, or paste PNG, JPEG, or WebP</small>
                 </span>
               </label>
+              <button id="paste-image" class="paste-image-button" type="button" title="Attach a copied image or screenshot. You can also paste directly into the message with Cmd+V or Ctrl+V." disabled>Paste image</button>
               <div id="quick-skill-list" class="quick-skill-list" aria-label="Saved skills">
                 <button class="quick-skill-button" type="button" data-quick-skill="deploy-check">
                   <span class="quick-skill-glyph" aria-hidden="true">&gt;_</span>
@@ -697,13 +692,14 @@
             <h2>Task queue</h2>
           </div>
           <div class="queue-heading-actions">
-            <div class="queue-view-switch" role="group" aria-label="Task view">
-              <button type="button" data-task-view="queue" aria-pressed="true">Queue</button>
-              <button type="button" data-task-view="history" aria-pressed="false">History</button>
-            </div>
             <button id="standup-button" class="queue-heading-button standup-button" type="button" aria-haspopup="dialog" aria-controls="standup-modal" disabled>Standup</button>
             <button id="clear-task-notifications-button" class="queue-heading-button clear-task-notifications-button" type="button" hidden>Mark reviewed</button>
           </div>
+        </div>
+        <div class="queue-view-switch" role="group" aria-label="Task view">
+          <button type="button" data-task-view="queue" aria-pressed="true">Queue</button>
+          <button type="button" data-task-view="history" aria-pressed="false">History</button>
+          <button id="task-review-filter" type="button" data-task-view="review" aria-pressed="false" aria-controls="task-list"><span>Ready for review</span><span id="task-review-count" class="task-review-count">0</span></button>
         </div>
         <div id="task-search" class="task-search" role="search" data-state="idle">
           <label class="sr-only" for="task-search-input">Search task commands and responses</label>
@@ -921,7 +917,6 @@
           </dialog>
           </div>
 
-          <div id="terminal-height-resizer" class="terminal-height-resizer" role="separator" aria-label="Resize task details and terminal" aria-orientation="horizontal" tabindex="0"><span aria-hidden="true"></span></div>
 
           <section class="detail-section events-section" aria-label="Terminal output">
             <details id="event-overview" class="event-overview">
@@ -950,9 +945,6 @@
                 </div></details>
               </div>
               <div class="event-tools">
-                <button id="thinking-visibility-button" class="thinking-visibility-button" type="button" aria-controls="detail-events" aria-pressed="true" aria-label="Hide thinking summaries" title="Hide model-provided thinking summaries">
-                  <span>Thinking</span><i aria-hidden="true"></i>
-                </button>
                 <button id="copy-events-button" type="button">Copy log</button>
                 <button id="terminal-window-open" class="terminal-window-open" type="button"
                         aria-haspopup="dialog" aria-controls="terminal-window-modal"
@@ -996,6 +988,7 @@
                 </label>
                 <button id="task-continuation-send" type="submit"><span>Send</span><kbd>Enter</kbd></button>
               </div>
+              <button id="task-continuation-paste-image" class="paste-image-button" type="button" title="Attach a copied image or screenshot to this follow-up" disabled>Paste image</button>
               <div id="task-continuation-attachments" class="task-continuation-attachments" hidden>
                 <span id="task-continuation-attachment-count">No images attached</span>
                 <button id="task-continuation-clear-images" type="button" hidden>Clear images</button>

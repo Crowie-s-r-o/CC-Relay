@@ -8,11 +8,42 @@ import {
   taskHistoryStats,
   tasksForScope,
   tasksInPeriod,
+  tasksReadyForReview,
 } from '../public/task-history.js';
+import { ProjectCompletionNotifications } from '../public/project-completion-notifications.js';
 
 function localIso(year, month, day, hour = 12) {
   return new Date(year, month, day, hour).toISOString();
 }
+
+test('review view includes only unread completions in the exact project across all dates', () => {
+  const tasks = [
+    { id: 1, status: 'complete', repo_path: '/work/alpha/', ready_for_review: true, starred: true, created_at: localIso(2025, 0, 1) },
+    { id: 2, status: 'complete', repo_path: '/work/alpha', ready_for_review: false },
+    { id: 3, status: 'complete', repo_path: '/work/alpha/nested', ready_for_review: true },
+    { id: 4, status: 'complete', repo_path: '/work/beta', ready_for_review: true },
+    ...['queued', 'running', 'failed', 'cancelled', 'interrupted', 'open'].map((status, index) => ({
+      id: index + 5, status, repo_path: '/work/alpha', ready_for_review: true, position: index,
+    })),
+    { id: 11, status: 'complete', repo_path: '/work/alpha', ready_for_review: true },
+    { id: 12, status: 'complete', repo_path: '/work/alpha', ready_for_review: true },
+  ];
+  const original = structuredClone(tasks);
+  const notifications = new ProjectCompletionNotifications();
+  notifications.observe(tasks);
+  const scoped = tasksForScope(tasks, { projectPath: '/work/alpha' });
+  const options = { isReadyForReview: task => notifications.includes(task.repo_path, task.id) };
+  assert.deepEqual(tasksReadyForReview(scoped, options).map(task => task.id), [1, 12, 11]);
+  assert.equal(notifications.count('/work/alpha'), 3);
+  notifications.acknowledge(tasks[0]);
+  assert.deepEqual(tasksReadyForReview(scoped, options).map(task => task.id), [12, 11]);
+  notifications.acknowledgeProject('/work/alpha');
+  assert.deepEqual(tasksReadyForReview(scoped, options), []);
+  assert.equal(notifications.count('/work/beta'), 1);
+  assert.deepEqual(tasksReadyForReview([], options), []);
+  assert.deepEqual(tasksReadyForReview(scoped), []);
+  assert.deepEqual(tasks, original, 'Review filtering never changes queue positions or task rows');
+});
 
 test('task history periods use local calendar boundaries', () => {
   const anchor = new Date(2026, 6, 16, 12);

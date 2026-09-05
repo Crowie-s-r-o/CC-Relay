@@ -1,0 +1,16 @@
+bind = "127.0.0.1:8000"
+workers = 2
+threads = 1
+timeout = 30
+graceful_timeout = 30
+max_requests = 2000
+max_requests_jitter = 200
+worker_tmp_dir = "/tmp"
+accesslog = None
+errorlog = "-"
+loglevel = "warning"
+limit_request_line = 4094
+limit_request_fields = 40
+limit_request_field_size = 8190
+forwarded_allow_ips = "127.0.0.1"
+control_socket_disable = True

@@ -540,6 +540,10 @@ export class ProjectLauncher {
       launchSettings,
       transport,
       taskId,
+      // Provider registration can precede the pool's task assignment, especially
+      // while a council's second provider starts. Keep its startup target valid
+      // until that assignment is saved, then require the persisted conversation.
+      taskBindingPending: transport === 'pty' && Number.isSafeInteger(taskId) && taskId > 0,
       // Folder trust input is bounded per exact native launch. The coordinator already latches a
       // successful resolution, and this state makes the launcher method itself idempotent too.
       folderTrustResolution: null,
@@ -893,15 +897,25 @@ export class ProjectLauncher {
       provider: terminal.provider,
       path: terminal.path,
       ...(terminal.transport ? { transport: terminal.transport } : {}),
+      ...(terminal.transport === 'pty' ? { taskId: terminal.taskId } : {}),
     };
+  }
+
+  confirmTaskTerminalBinding(launchId, taskId, threadId) {
+    const terminal = this.ownedTerminals.get(launchId);
+    if (terminal?.transport !== 'pty') return;
+    if (terminal.taskId !== taskId || terminal.threadId !== threadId) {
+      throw new Error('The saved task assignment does not match its owned terminal launch.');
+    }
+    terminal.taskBindingPending = false;
   }
 
   pendingEmbeddedTerminalsForTask(task) {
     if (!task || !['running', 'queued'].includes(task.status)) return [];
     const providers = task.mode === 'plan' ? ['codex', 'claude']
-      : task.mode === 'turbo' ? ['codex'] : [task.provider];
+      : task.mode === 'turbo' ? ['codex', 'claude'] : [task.provider];
     return [...this.ownedTerminals.values()].filter((terminal) => terminal.transport === 'pty'
-      && terminal.taskId === task.id && !terminal.threadId && terminal.path === task.repo_path
+      && terminal.taskId === task.id && (!terminal.threadId || terminal.taskBindingPending) && terminal.path === task.repo_path
       && providers.includes(terminal.provider) && this.embeddedTerminalHost.isAlive(terminal.launchId));
   }
 

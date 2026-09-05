@@ -20,8 +20,9 @@ test('task list exposes a capability-gated full conversation search', () => {
 test('task search supersedes date filtering and keeps filtered queue cards read-only', () => {
   assert.match(app, /const searching = taskSearchActive\(state\.taskSearchQuery\)/);
   assert.match(app, /searching\s+\? prioritizeStarredTasks\(tasksForSearchResults\(scopedTasks, state\.taskSearchResults\)\)/);
-  assert.match(app, /const operationalQueue = !historyActive && !searching/);
-  assert.match(app, /button\.disabled = searching/);
+  assert.match(app, /const operationalQueue = state\.taskView === 'queue' && !searching/);
+  assert.match(app, /button\.dataset\.taskView === state\.taskView && !searching/);
+  assert.match(app, /state\.taskView = button\.dataset\.taskView;\s+clearTaskSearch\(\{ render: false \}\)/);
   assert.match(app, /taskSearchMatchMarkup\(searchMatch\)/);
 });
 

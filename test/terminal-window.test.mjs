@@ -89,7 +89,7 @@ test('the terminal screen API is task scoped and delegates to owned native ident
 
 test('the dialog header owns an empty slot the docked tools cluster moves into', () => {
   /*
-   * While docked the .event-toolbar row is hidden, so leaving Thinking and Copy log
+   * While docked the .event-toolbar row is hidden, so leaving Copy log and Window
    * behind would strand them in an otherwise empty strip. The slot is empty markup: the
    * live cluster is MOVED into it, never duplicated, so there is still one of each
    * control in the document and every existing listener keeps its element.
@@ -105,7 +105,7 @@ test('the dialog header owns an empty slot the docked tools cluster moves into',
   assert.ok(viewsIndex >= 0, 'the rail is in the header');
   assert.ok(toolsIndex > viewsIndex, 'the tools slot follows the rail');
   assert.ok(closeIndex > toolsIndex, 'the close button still ends the header');
-  for (const id of ['terminal-window-open', 'thinking-visibility-button', 'copy-events-button']) {
+  for (const id of ['terminal-window-open', 'copy-events-button']) {
     assert.equal(
       [...markup.matchAll(new RegExp(`id="${id}"`, 'g'))].length,
       1,
@@ -233,14 +233,12 @@ test('close replays the inline reading position the dock recorded, not the windo
   );
 });
 
-test('the terminal resize handle never describes the dialog height', () => {
-  const applyHeight = app.slice(app.indexOf('function applyTerminalHeight'), app.indexOf('elements.terminalHeightResizer.addEventListener'));
-  assert.match(
-    applyHeight,
-    /if \(!terminalWindowIsDocked\(\)\) \{\s*const renderedHeight = elements\.eventsSection\.getBoundingClientRect\(\)\.height;\s*updateTerminalHeightAccessibility\(renderedHeight, maximum\);/,
-  );
-  const undock = app.slice(app.indexOf('function undockTerminalWindow()'), app.indexOf('function focusTerminalWindowOpenButton'));
-  assert.match(undock, /applyTerminalHeight\(\);/);
+test('terminal height is automatic and has no draggable or keyboard separator', () => {
+  const applyHeight = app.slice(app.indexOf('function applyTerminalHeight'), app.indexOf('elements.parallelClearButton'));
+  assert.match(applyHeight, /state\.terminalHeight = null/);
+  assert.match(applyHeight, /removeProperty\('--event-terminal-height'\)/);
+  assert.doesNotMatch(markup, /terminal-height-resizer/);
+  assert.doesNotMatch(app, /terminalHeightResizer/);
 });
 
 test('focus returns to the open button only after the dialog has closed', () => {
@@ -278,8 +276,8 @@ test('escape and backdrop close only the terminal window', () => {
 });
 
 test('the window rail reuses the computed filter counts and never recomputes them', () => {
-  assert.match(app, /updateTerminalWindowControls\(filterCounts\);\s*updateThinkingVisibilityControl\(reasoningCount\);/);
-  assert.match(app, /updateEventControls\(filterCounts, reasoningCount\);/);
+  assert.match(app, /updateTerminalWindowControls\(filterCounts\);/);
+  assert.match(app, /updateEventControls\(filterCounts\);/);
   const controls = app.slice(
     app.indexOf('function updateTerminalWindowControls'),
     app.indexOf('function rerenderTerminalWindowStream'),
@@ -386,13 +384,16 @@ function sliceBetween(startMarker, endMarker) {
 
 const viewConstantsSource = sliceBetween('const TERMINAL_WINDOW_VIEWS = [', 'const state = {');
 const terminalWindowSource = sliceBetween(
-  'function updateEventControls(filterCounts = {}, reasoningCount = 0) {',
+  'function updateEventControls(filterCounts = {}) {',
   '// Fills the tmux-style terminal status bar',
 );
-const terminalWindowListenerSource = sliceBetween(
-  "elements.originalTerminalButton.addEventListener('click', useOriginalTerminal);",
-  'elements.thinkingVisibilityButton.addEventListener',
-);
+const terminalWindowListenerStart = app.indexOf("elements.originalTerminalButton.addEventListener('click', useOriginalTerminal);");
+const terminalWindowCloseListener = app.indexOf("elements.terminalWindowModal.addEventListener('close'", terminalWindowListenerStart);
+const terminalWindowListenerEnd = app.indexOf('\n});', terminalWindowCloseListener);
+assert.ok(terminalWindowListenerStart >= 0 && terminalWindowCloseListener > terminalWindowListenerStart
+  && terminalWindowListenerEnd > terminalWindowCloseListener, 'terminal listener boundaries exist');
+// End at the final terminal listener. New continuation controls are outside this DOM harness.
+const terminalWindowListenerSource = app.slice(terminalWindowListenerStart, terminalWindowListenerEnd + '\n});'.length);
 
 let focusLog = [];
 /*
@@ -574,7 +575,6 @@ function buildWorld({
   const nativeTerminalNoticeTitle = new FakeNode('#native-terminal-screen-notice-title');
   const nativeTerminalNoticeDetail = new FakeNode('#native-terminal-screen-notice-detail');
   const openButton = new FakeNode('#terminal-window-open');
-  const thinkingButton = new FakeNode('#thinking-visibility-button');
   const copyButton = new FakeNode('#copy-events-button');
   const closeButton = new FakeNode('#terminal-window-close');
   const title = new FakeNode('#terminal-window-title');
@@ -615,7 +615,6 @@ function buildWorld({
   eventToolbar.append(eventFiltersRail);
   eventToolbar.append(eventTools);
   eventToolbar.append(toolbarText);
-  eventTools.append(thinkingButton);
   eventTools.append(copyButton);
   eventTools.append(openButton);
 
@@ -667,7 +666,6 @@ function buildWorld({
     nativeTerminalScreenState,
     nativeTerminalScreenOutput,
     nativeTerminalScreenNotice,
-    thinkingVisibilityButton: thinkingButton,
     copyEventsButton: copyButton,
   };
 
@@ -755,7 +753,6 @@ function buildWorld({
     'queueUiPreferencesSave',
     'providerLabel',
     'taskProvider',
-    'updateThinkingVisibilityControl',
     'closeTaskDetailModal',
     'window',
     'api',
@@ -780,7 +777,7 @@ function buildWorld({
     function renderEventStream(events, task, options = {}) {
       calls.renders.push({ filter: state.eventFilter, options });
       // The real renderEventStream ends with updateEventControls(...).
-      api.updateEventControls({ all: 10, conversation: 4, mine: 2, ai: 2 }, 1);
+      api.updateEventControls({ all: 10, conversation: 4, mine: 2, ai: 2 });
     },
     () => {},
     () => {},
@@ -789,7 +786,6 @@ function buildWorld({
     () => { calls.preferenceSaves += 1; },
     (provider) => (provider === 'claude' ? 'Claude' : 'Codex'),
     (task) => task.provider || 'codex',
-    () => {},
     function closeTaskDetailModal() {
       if (elements.taskDetailModal.open) elements.taskDetailModal.close();
     },
@@ -1082,7 +1078,6 @@ test('the default view reads the screen inside Relay and schedules only one poll
   assert.equal(world.state.nativeTerminalScreen.state, 'live');
   assert.equal(world.elements.nativeTerminalScreen.hidden, false);
   assert.equal(world.elements.detailEvents.hidden, true);
-  assert.equal(world.elements.thinkingVisibilityButton.hidden, true);
   assert.equal(world.elements.copyEventsButton.hidden, false);
   assert.equal(world.elements.copyEventsButton.textContent, 'Copy screen');
   assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'Synthetic terminal screen <img src=x>');
@@ -1095,7 +1090,6 @@ test('the default view reads the screen inside Relay and schedules only one poll
   assert.equal(world.timers.size, 0);
   assert.equal(world.elements.nativeTerminalScreen.hidden, true);
   assert.equal(world.elements.detailEvents.hidden, false);
-  assert.equal(world.elements.thinkingVisibilityButton.hidden, false);
   assert.equal(world.elements.copyEventsButton.hidden, false);
   assert.equal(world.elements.eventsSection.dataset.terminalSurface, undefined);
 });
@@ -1371,4 +1365,62 @@ test('Escape stays in the focused CLI instead of closing its containing dialog',
   world.state.nativeTerminalScreen.state = 'unavailable';
   world.elements.terminalWindowModal.escape();
   assert.equal(world.elements.terminalWindowModal.open, false);
+});
+
+for (const status of ['complete', 'failed', 'cancelled', 'interrupted']) {
+  for (const expanded of [false, true]) {
+    test(`${status} without a terminal opens conversation (${expanded ? 'expanded' : 'inline'})`, async () => {
+      const world = buildWorld({ nativeScreen: true, terminalResponse: { terminal: { state: 'unavailable', message: 'Closed' } } });
+      world.state.selectedTaskForEvents.status = status;
+      world.state.terminalMode = 'native';
+      if (expanded) world.api.openTerminalWindow();
+      await world.api.refreshNativeTerminalScreen();
+      assert.equal(world.state.eventFilter, 'conversation');
+      assert.equal(world.state.inlineEventFilter, 'conversation');
+      assert.equal(world.state.terminalWindowView, 'conversation');
+      assert.equal(world.elements.detailEvents.hidden, false);
+      assert.equal(world.elements.nativeTerminalScreen.hidden, true);
+      assert.equal(world.timers.size, 0);
+      assert.equal(world.calls.preferenceSaves, 0);
+      if (expanded) {
+        world.api.closeTerminalWindow();
+        assert.equal(world.state.eventFilter, 'conversation');
+        assert.equal(world.elements.detailEvents.hidden, false);
+      }
+    });
+  }
+}
+
+test('terminal disappearance before completion switches only once completion arrives', async () => {
+  const world = buildWorld({ nativeScreen: true, terminalResponse: { terminal: { state: 'unavailable' } } });
+  world.state.terminalMode = 'native';
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(world.elements.detailEvents.hidden, true);
+  world.state.selectedTaskForEvents.status = 'complete';
+  world.api.rerenderTerminalWindowStream();
+  assert.equal(world.state.eventFilter, 'conversation');
+  world.state.eventFilter = 'ai';
+  world.state.inlineEventFilter = 'ai';
+  world.api.rerenderTerminalWindowStream();
+  assert.equal(world.state.eventFilter, 'ai');
+});
+
+test('a retained live terminal remains primary after completion', async () => {
+  const world = buildWorld({ nativeScreen: true, terminalResponse: { terminal: { state: 'live', text: 'Still open' } } });
+  world.state.selectedTaskForEvents.status = 'complete';
+  world.state.terminalMode = 'native';
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(world.state.terminalMode, 'native');
+  assert.equal(world.elements.detailEvents.hidden, true);
+});
+
+test('completed legacy screen read failures retain the last proven screen', async () => {
+  const world = buildWorld({ nativeScreen: true });
+  world.state.terminalMode = 'native';
+  await world.api.refreshNativeTerminalScreen();
+  world.state.selectedTaskForEvents.status = 'complete';
+  world.setTerminalResponse({ terminal: { state: 'unavailable', transport: 'legacy-screen' } });
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(world.state.nativeTerminalScreen.state, 'stale');
+  assert.equal(world.state.terminalMode, 'native');
 });

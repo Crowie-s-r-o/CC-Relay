@@ -1,3 +1,33 @@
+// One file per clipboard item: alternate MIME representations describe the same image.
+export async function readClipboardImageFiles(clipboard = globalThis.navigator?.clipboard) {
+  const fallback = 'Paste directly into the message with Cmd+V or Ctrl+V, or choose an image file.';
+  if (typeof clipboard?.read !== 'function') {
+    throw new Error(`Clipboard image access is unavailable. ${fallback}`);
+  }
+  let items;
+  try {
+    items = await clipboard.read();
+  } catch {
+    throw new Error(`Could not read the clipboard. ${fallback}`);
+  }
+  const files = [];
+  for (const item of items) {
+    const type = ['image/png', 'image/jpeg', 'image/webp'].find((value) => item.types.includes(value));
+    if (!type) continue;
+    try {
+      const blob = await item.getType(type);
+      const extension = type === 'image/jpeg' ? 'jpg' : type.split('/')[1];
+      files.push(new File([blob], `clipboard-${globalThis.crypto.randomUUID()}.${extension}`, { type }));
+    } catch {
+      throw new Error(`Could not read the clipboard image. ${fallback}`);
+    }
+  }
+  if (files.length === 0) {
+    throw new Error('No PNG, JPEG, or WebP image on the clipboard. Copy an image or screenshot first.');
+  }
+  return files;
+}
+
 export function clipboardImageFiles(clipboardData) {
   const files = [...(clipboardData?.files || [])]
     .filter((file) => file.type?.startsWith('image/'));

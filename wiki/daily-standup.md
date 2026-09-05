@@ -73,6 +73,8 @@ The backend reloads source data from SQLite:
 
 This keeps generation grounded in actual saved conversations, including the one-task, one-conversation continuation history described in [[same-task-session-continuation]], while keeping each execution on the day it actually ran.
 
+Direct terminal follow-ups are also included through [[terminal-follow-up-history]]. Before generation or Q&A, the backend refreshes the provider transcript index and imports exact task-owned Codex and Claude conversation evidence. Uncovered successful native turns contribute their execution start dates; turns already covered by Relay attempts are not counted twice. Native messages retain source and execution timestamps, and the latest successful terminal response can supersede an older task-row result. Source truncation prioritizes messages belonging to selected executions over unrelated later conversation history.
+
 ## Shared changelog contract
 
 `src/changelog-notes.mjs` is the shared deterministic boundary for Standup and `scripts/deploy.mjs`. Both use the same section order, JSON Schema, sentence limit, deduplication, plain-text validation, and Markdown formatter.

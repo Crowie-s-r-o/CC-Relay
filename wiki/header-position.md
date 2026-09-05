@@ -14,7 +14,7 @@ tags: [relay, ui, header, monitoring, accessibility]
 > below are historical where they conflict; saved layout choices and execution contracts remain.
 
 
-The complete CC Relay monitor bar can be placed at the top or bottom of the application. The
+The complete CC Relay monitor bar defaults to the bottom and can be placed at the top or bottom of the application. Missing or invalid placement values use Bottom in the early HTML bootstrap, renderer restore, and backend normalization. Explicitly saved Top and Bottom values remain authoritative. See [[desktop-chrome-and-monitor-defaults]]. The
 control lives inside the rightmost **Display** cog and always describes the available move,
 **Bottom** or **Top**.
 

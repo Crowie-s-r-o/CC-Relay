@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const markup = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const launchpad = readFileSync(new URL('../public/launchpad.css', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 
 function sourceBetween(source, start, end) {
@@ -28,7 +29,7 @@ test('the compact inspector opens every full task surface in one modal', () => {
     assert.match(modal, new RegExp(`id="${id}"`));
   }
   assert.ok(markup.indexOf('id="session-strip"') < markup.indexOf('<dialog id="task-detail-modal"'));
-  assert.ok(markup.indexOf('</dialog>') < markup.indexOf('id="terminal-height-resizer"'));
+  assert.ok(markup.indexOf('</dialog>') < markup.indexOf('<section class="detail-section events-section"'));
 });
 
 test('task detail modal wiring supports normal tasks, council tasks, and backdrop close', () => {
@@ -43,14 +44,10 @@ test('task detail modal wiring supports normal tasks, council tasks, and backdro
   assert.match(app, /function revealPlanExecution\(\) \{[\s\S]*?openTaskDetailModal\(\);/);
 });
 
-test('the terminal is taller by default and new inspector geometry uses em units', () => {
-  assert.match(
-    style,
-    /\.detail-panel #task-detail \{\s*grid-template-rows: minmax\(7\.5em, 1fr\) \.4375em minmax\(11\.25em, var\(--event-terminal-height, min\(84%, calc\(100% - 9\.375em\)\)\)\);/,
-  );
-  assert.match(style, /#task-detail:has\(\.session-strip:not\(\[hidden\]\)\)[^{]*\{[\s\S]*?72%/);
-  assert.match(app, /state\.terminalHeight \|\| renderedHeight/);
-  assert.doesNotMatch(app, /state\.terminalHeight \|\| elements\.taskDetail\.clientHeight \/ 2/);
+test('the terminal fills the inspector and full details keep their modal geometry', () => {
+  assert.match(launchpad, /#task-detail \{[^}]*display: flex;[^}]*flex-direction: column;[^}]*height: 100%;/);
+  assert.match(launchpad, /\.events-section:not\(\[data-terminal-window="open"\]\) \{[^}]*flex: 1;[^}]*min-height: 0;[^}]*padding: 0;/);
+  assert.doesNotMatch(launchpad, /--event-terminal-height|terminal-height-resizer/);
   assert.match(style, /\.task-detail-modal \{\s*width: min\(72em, calc\(100vw - 2em\)\);/);
   assert.match(style, /\.task-detail-modal-body \{[\s\S]*?padding: 1\.25em 1\.5em 1\.75em;/);
   assert.match(style, /html\[data-theme="dark"\] \.task-detail-modal \.plan-stage\[data-state="complete"\]/);

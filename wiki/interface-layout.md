@@ -7,9 +7,17 @@ type: architecture
 # Interface Layout
 
 > [!important]
+> **September 5: finished tasks now reveal Conversation when their terminal is gone.**
+> The terminal pane always fills the remaining height, with no draggable height separator or
+> inset card. Retained live terminals stay visible. See [[terminal-review-full-height]].
+
+> [!note]
+> The macOS empty top strip is removed. The first content bar carries window dragging and native-button clearance, and task monitoring defaults to Bottom throughout startup and durable preferences. See [[desktop-chrome-and-monitor-defaults]].
+
+> [!important]
 > **September 5: [[launchpad-v2-design]] is the current design contract.** The application entry
 > stylesheet layers legacy rules beneath the structural reference port: 51px dock, 420/440px fresh
-> columns, shared prompt toolbar, council/Turbo tables, and two 24px Bottom monitor rows. Older visual descriptions
+> columns, shared prompt toolbar, council/Turbo tables, and two 48px Bottom monitor rows with latest-message previews. Older visual descriptions
 > below are historical where they conflict; saved layout choices and execution contracts remain.
 
 
@@ -104,14 +112,14 @@ The header no longer exposes queue pause or resume. Project pause state and back
 The task activity console renders as a realistic terminal on a near-black Tokyo Night background rather than a card ledger. Its palette is defined through `--term-*` variables scoped to `.events-section`, so the dark surface and syntax colors never leak into the rest of the light app, and semantic failure still reads as red. Its hierarchy is:
 
 1. An expanded-by-default execution manifest (runtime, average native output tokens per task second, exact input/output totals, current plan steps, sub-agent assignments, and compact telemetry)
-2. A filter toolbar (All, Highlights, Commands, Conversation, My messages, AI messages) with an independent **Thinking** switch, Copy log, and a **Window** control that opens the terminal full screen
+2. A filter toolbar (All, Highlights, Commands, Conversation, My messages, AI messages) with Copy log and a **Window** control that opens the terminal full screen
 3. The scrollback: one numbered line per grouped signal
 4. The follow-up input prompt line
 5. A tmux-style status bar of solid colored segments
 
 Each signal renders in a terminal-idiomatic shape instead of a bordered card. Commands render as a shell prompt line, `~/workspace ❯ <syntax-highlighted command>`, followed by a `✓/✗ exit N · duration · time` meta line and a `▸ N lines` output disclosure with a left-border block. A JavaScript tokenizer (`highlightCommand`) colors the command into program, arguments, flags, numbers, strings, and operators; every token is escaped first. Reasoning renders as `┊ provider reasoned for Xs` when done or `┊ provider thinking▍` with a blinking block cursor while streaming, plus an optional muted italic preview. File changes use `+` create and `~` modify glyphs with the patch behind a disclosure. Final Codex, Claude, or OpenCode responses render as a prominent, comfortably sized response block. Commands, file changes, failures, and final messages stay visually loud; queue, protocol, reasoning, token telemetry, and session-lifecycle lines stay dim. Errors and Claude session-busy waiting stay red with output expanded by default. Provider is never the only status cue: kind, glyph, and text differ as well.
 
-The tmux status bar is built inside `renderEventStream` from real task state: a LIVE segment from the session state (only pulsing while actually running), the visible/total signal count, the complete provider and model, the complete effort, and the live task duration (kept current every second through `refreshTaskDurations`). Model and effort stay adjacent on the right. The bar omits the redundant CC Relay identity and follow-live label. Scroll position still controls automatic following: moving away from the bottom preserves the inspected position, and returning to the bottom resumes following. Unknown effort values hide rather than inventing a value. The six view filters, the separate **Thinking** switch, Copy log, and the **Window** control keep their ids and `aria-pressed` behavior intact at all times, but they do not all stay in the toolbar. While the terminal is docked in the Terminal window the entire `.event-toolbar` row is hidden: the window's own four-view rail replaces the inline `#event-filters` rail, and the live `.event-tools` cluster holding **Thinking**, Copy log, and the **Window** control is MOVED into the dialog header slot `#terminal-window-tools` so it stays reachable rather than being stranded in a dead strip. Every one of those nodes is the same live node with the same listeners and the same state, and all of them return to the toolbar on close.
+The tmux status bar is built inside `renderEventStream` from real task state: a LIVE segment from the session state (only pulsing while actually running), the visible/total signal count, the complete provider and model, the complete effort, and the live task duration (kept current every second through `refreshTaskDurations`). Model and effort stay adjacent on the right. The bar omits the redundant CC Relay identity and follow-live label. Scroll position still controls automatic following: moving away from the bottom preserves the inspected position, and returning to the bottom resumes following. Unknown effort values hide rather than inventing a value. The six view filters, Copy log, and the **Window** control keep their ids and `aria-pressed` behavior intact at all times, but they do not all stay in the toolbar. While the terminal is docked in the Terminal window the entire `.event-toolbar` row is hidden: the window's own four-view rail replaces the inline `#event-filters` rail, and the live `.event-tools` cluster holding Copy log and the **Window** control is MOVED into the dialog header slot `#terminal-window-tools` so it stays reachable rather than being stranded in a dead strip. Every one of those nodes is the same live node with the same listeners and the same state, and all of them return to the toolbar on close.
 
 The **Window** control opens the terminal in a near full-viewport dialog for reading. It moves the live `.events-section` node into the dialog rather than rendering a second copy, so there is exactly one render target and live refresh, disclosures, follow-to-bottom, the continuation composer, and Copy log all keep working. The dialog is a child of `#task-detail`, so `hideTaskDetailPanel()` is the only route allowed to hide the detail panel: it closes the terminal window and the task detail modal first, because an open modal inside a `display: none` ancestor wedges the app. See [[terminal-window]].
 
@@ -166,7 +174,7 @@ Prompt, Result, Claude draft, Codex review, and Final revised plan each expose a
 > [!note]
 > A control placed after a `<summary>` is hidden by the browser whenever its `<details>` is closed, even when CSS positions it over the summary. Directly available disclosure actions must live inside the summary action group.
 
-The terminal defaults to the **All** filter so the complete task activity is visible when a task opens. All includes Codex reasoning summaries while they stream and completed OpenCode reasoning blocks when its native CLI exposes them. The independent **Thinking** switch is on for every fresh renderer and can remove either provider's reasoning entries without changing the active view filter. Its state follows task selections for the current renderer session but is not persisted. Hiding thinking updates the All count, visible-versus-total status, empty state, and Copy log from the same filtered entry set, while original signal numbers remain stable. CC Relay consumes Codex `item/reasoning/summaryTextDelta`, accumulates each summary part by item ID, and publishes `item/updated` snapshots that the browser folds into one live reasoning entry. OpenCode runs with its explicit `--thinking` option because its non-interactive default suppresses reasoning records, then normalizes each completed native `reasoning` part into the same item shape. Reasoning remains excluded from Highlights to keep that optional view compact. A rendered reasoning preview is capped at 50,000 characters so repeated live refreshes stay bounded, while the stored event and Copy log remain complete. CC Relay displays only reasoning text that the provider CLI explicitly returns; private hidden reasoning remains unavailable.
+The terminal defaults to the **All** filter so the complete task activity is visible when a task opens. All includes Codex reasoning summaries while they stream and completed OpenCode reasoning blocks when its native CLI exposes them. The Thinking toggle has been removed. Reasoning stays visible in All, and the selected view alone determines counts, empty states, and Copy log. Original signal numbers remain stable. CC Relay consumes Codex `item/reasoning/summaryTextDelta`, accumulates each summary part by item ID, and publishes `item/updated` snapshots that the browser folds into one live reasoning entry. OpenCode runs with its explicit `--thinking` option because its non-interactive default suppresses reasoning records, then normalizes each completed native `reasoning` part into the same item shape. Reasoning remains excluded from Highlights to keep that optional view compact. A rendered reasoning preview is capped at 50,000 characters so repeated live refreshes stay bounded, while the stored event and Copy log remain complete. CC Relay displays only reasoning text that the provider CLI explicitly returns; private hidden reasoning remains unavailable.
 
 Codex `thread/tokenUsage/updated` notifications and normalized OpenCode step statistics feed the console's explicit **thinking tokens** metric. This numeric usage telemetry is separate from visible reasoning text and does not expose private hidden reasoning. Relay preserves a provider-reported zero even when that provider exposes a reasoning block, because estimating tokens from text would be misleading. Older completed tasks recorded before normalized usage support show zero when their persisted events contain no usable token snapshot.
 
@@ -229,7 +237,13 @@ Direct execution presents Model and Effort as compact horizontal controls below 
 > [!note]
 > In the two-column execution row, Effort receives exactly 20px more width than Model. The asymmetric tracks keep the selected effort label and all dynamic step markers inside the compact card. At the existing 760px breakpoint the controls still stack into equal full-width rows.
 
-The slider footer shows only the current effort name on the left and one compact dot per supported effort on the right. Do not render every effort name across the footer because six-value model catalogs overflow the compact card. Each dot may expose its name as a title, while the range input reports the selected name through `aria-valuetext`.
+The current Launchpad slider places its effort name beside the Effort heading and uses the full
+32px shell width for a stable rail. One fixed-size dot per supported effort sits below the track,
+aligned with the native thumb positions; a single supported effort has one centered dot. Do not
+place variable-width labels beside the rail or change a marker's width when active: either can
+move the target while dragging. The value, progress, thumb, active stop, and focus ring use the
+project accent. Each dot exposes its name as a title, while the range reports the selected name
+through `aria-valuetext`. See [[task-selection-and-effort-control]].
 
 > [!important]
 > Never infer a fixed effort scale in CSS or markup. Models expose different effort lists, so `renderExecutionControls()` must rebuild the slider maximum and its index-to-value mapping whenever the provider, terminal, or model changes. Never submit the numeric range value as effort.

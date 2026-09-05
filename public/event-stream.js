@@ -964,11 +964,7 @@ export function isEventEntryHighlight(entry) {
   return true;
 }
 
-export function isReasoningEntry(entry) {
-  return entryItem(entry)?.type === 'reasoning';
-}
-
-export function filterEventEntries(entries, filter, { showThinking = true } = {}) {
+export function filterEventEntries(entries, filter) {
   let visible;
   if (filter === 'highlights') {
     visible = entries.filter(isEventEntryHighlight);
@@ -983,7 +979,7 @@ export function filterEventEntries(entries, filter, { showThinking = true } = {}
   } else {
     visible = [...entries];
   }
-  return showThinking ? visible : visible.filter((entry) => !isReasoningEntry(entry));
+  return visible;
 }
 
 // True for a sub-agent launch signal and for a standalone finish notification that has no

@@ -62,8 +62,8 @@ hold cancellation indefinitely.
 The JSON stream is authoritative during the run:
 
 - `text` becomes an OpenCode assistant message.
-- `reasoning` becomes a completed provider-exposed reasoning entry controlled by the Task Activity
-  **Thinking** switch.
+- `reasoning` becomes a completed provider-exposed reasoning entry visible in the Task Activity
+  **All** view.
 - `tool_use` becomes a provider tool lifecycle item.
 - `step_finish` contributes native token usage.
 - `error` becomes a task-level provider error.
@@ -119,8 +119,8 @@ native tokens reported as used. Rate calculation deliberately selects only its o
 
 Reasoning text and reasoning-token accounting are independent provider signals. The verified
 `ninfer-salad/qwen3.8-27b` session exposed a non-empty native reasoning part while its OpenCode
-`step-finish` and session totals both reported `reasoning: 0`. Relay shows the text through the
-Thinking switch and keeps the numeric thinking-token metric at zero. It does not estimate tokens
+`step-finish` and session totals both reported `reasoning: 0`. Relay shows the text in Relay
+activity and keeps the numeric thinking-token metric at zero. It does not estimate tokens
 from text or relabel ordinary output tokens as reasoning.
 
 ## Speed calculation

@@ -201,13 +201,12 @@ test('the light view rail clears AA contrast and the dark companion still overri
 test('the toolbar open control matches its neighbours and declares a disabled state', () => {
   const rules = windowRules();
   // It sits in .event-tools and inherits the shared terminal button geometry, so the rule
-  // adds identity only. The shared rule is what makes it read like Copy log and Thinking.
+  // adds identity only. The shared rule is what makes it read like Copy log.
   assert.match(style, /\.event-filters button,\n\.event-tools button \{/);
   /*
    * The identity rules must stay scoped under .event-tools. `.event-tools button` ends in an
    * element selector, so it outranks a bare `.terminal-window-open` and the color, border and
-   * background below would never paint. `.event-tools .thinking-visibility-button` is scoped
-   * for exactly the same reason.
+   * background below would never paint.
    */
   assert.match(rules, /\.event-tools \.terminal-window-open \{[^}]*color: var\(--term-tap-hover\);/s);
   assert.doesNotMatch(rules, /^\.terminal-window-open(:|\s*\{)/m);
@@ -251,8 +250,7 @@ test('the docked toolbar folds into the dialog header', () => {
   /*
    * The cluster arrives wearing the ledger's chrome, which is illegible on the --paper
    * header (--term-muted2 on a 55% navy wash). It is restated as the same white, --line
-   * bordered chip the close control already is, and Thinking's default aria-pressed state
-   * moves off the ledger's violet, which would paint #eadfff on white.
+   * bordered chip the close control already is.
    */
   assert.match(
     rules,
@@ -261,10 +259,6 @@ test('the docked toolbar folds into the dialog header', () => {
   assert.match(
     rules,
     /#terminal-window-tools\.terminal-window-tools \.event-tools button\[aria-pressed="true"\] \{[^}]*color: #2239c9;/s,
-  );
-  assert.match(
-    rules,
-    /#terminal-window-tools\.terminal-window-tools \.thinking-visibility-button\[aria-pressed="true"\] i::after \{[^}]*background: #2239c9;/s,
   );
   /*
    * The ledger focus ring is --term-blue, 2.31:1 on this white header. The window's own
@@ -368,7 +362,6 @@ test('dark theme rules accompany every themed light rule', () => {
     '#terminal-window-tools.terminal-window-tools .event-tools button',
     '#terminal-window-tools.terminal-window-tools .event-tools button:hover:not(:disabled)',
     '#terminal-window-tools.terminal-window-tools .event-tools button[aria-pressed="true"]',
-    '#terminal-window-tools.terminal-window-tools .thinking-visibility-button i',
     '.terminal-window-close',
     '.terminal-window-close:hover',
   ]) {
