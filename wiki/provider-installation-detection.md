@@ -47,6 +47,23 @@ Claude and OpenCode refresh their cached runtime status every 15 seconds. Codex 
 
 When a later Codex probe becomes installed and authenticated, CC Relay starts or reconnects the shared Codex app-server and warms the model catalog. This covers installing or signing into Codex while CC Relay is already running.
 
+## Codex catalog fallback
+
+The connected Codex app-server remains authoritative for execution. `model/list` supplies the
+account's visible models and supported reasoning efforts, and every submission is validated against
+that live catalog. The renderer keeps a startup fallback so model controls can paint before the
+first successful round trip and remain usable through a transient catalog read failure.
+
+As of September 5, 2026, that fallback includes `gpt-6-astra` as **GPT-6 Astra** with `low`,
+`medium`, `high`, `xhigh`, and `max` effort. It is intentionally not marked as the fallback default:
+GPT-5.6 Sol keeps that role so adding model support does not migrate saved selections or alter
+existing workflow defaults. A current Codex CLI and eligible account must still advertise Astra
+before the backend will execute it.
+
+> [!important]
+> A renderer-only fallback entry is not execution authority. Do not weaken server-side live catalog
+> validation to make a newly announced model runnable on an account or CLI that does not expose it.
+
 ## Files and coverage
 
 - `src/codex-runtime-status.mjs`

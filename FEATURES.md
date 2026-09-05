@@ -50,6 +50,13 @@ The project's Codex, Claude, and OpenCode limits control how many independent di
 
 **Output:** the completed task result, a live execution trace, and locally stored task artifacts.
 
+Codex model choices come from the connected Codex CLI and are validated against that live account
+catalog before execution. The startup fallback catalog includes GPT-6 Astra with low through max
+reasoning effort, while GPT-5.6 Sol remains the existing fallback default. This makes Astra
+selectable during startup or a transient catalog read failure without silently changing saved or
+default workflow choices. Actual execution still requires the installed Codex CLI and account to
+advertise `gpt-6-astra`.
+
 ### Optional Plan council in Execute
 
 Plan council creates a reviewed implementation plan without changing the project.

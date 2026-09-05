@@ -168,6 +168,24 @@ test('Plan council controls render safely during the initial paint', () => {
   assert.doesNotMatch(renderSource, /settings\.reviewerModel/);
 });
 
+test('fallback Codex models support GPT-6 Astra without changing the existing default', () => {
+  const catalogStart = composerApp.indexOf('const FALLBACK_MODELS = {');
+  const claudeStart = composerApp.indexOf('\n  claude: [', catalogStart);
+  const codexCatalog = composerApp.slice(catalogStart, claudeStart);
+  const astraDeclaration = codexCatalog.match(/^\s*catalogModel\('gpt-6-astra'[^\n]*$/m)?.[0] || '';
+
+  assert.ok(catalogStart >= 0 && claudeStart > catalogStart);
+  assert.match(
+    astraDeclaration,
+    /catalogModel\('gpt-6-astra', 'GPT-6 Astra'.*defaultEffort: 'high'.*efforts: \['low', 'medium', 'high', 'xhigh', 'max'\]/,
+  );
+  assert.doesNotMatch(astraDeclaration, /isDefault: true/);
+  assert.match(
+    codexCatalog,
+    /catalogModel\('gpt-5\.6-sol'[^\n]*isDefault: true/,
+  );
+});
+
 test('automatic terminal controls render safely before a project is selected', () => {
   const renderStart = composerApp.indexOf('function renderAutomaticTerminalPool()');
   const renderEnd = composerApp.indexOf('\nasync function saveProjectInstanceLimits()', renderStart);

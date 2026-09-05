@@ -7,6 +7,13 @@ type: hot
 # Current CC Relay Notes
 
 > [!note]
+> **September 5: the Codex startup catalog now includes GPT-6 Astra.** The fallback exposes
+> `gpt-6-astra` with low through max reasoning effort, but GPT-5.6 Sol remains the fallback default
+> so existing direct, Plan council, and Turbo choices do not migrate. The connected Codex
+> app-server catalog remains authoritative at submission time, so the installed CLI and account
+> must advertise Astra before Relay will execute it. See [[provider-installation-detection]].
+
+> [!note]
 > **September 4: the desktop splash is now a left-aligned 376 by 376 tile with segmented progress.**
 > The Crowie mark sits at the top left in a 112 box, a flexible spacer pushes the `CC Relay`
 > wordmark, the `AI work, one task at a time` tagline, a six-segment CSS progress bar, the status
