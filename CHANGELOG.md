@@ -2,6 +2,13 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.38] - 2026-09-05
+
+### Changed
+
+- Terminal screens now stay inside Relay.
+- Modernized the Launchpad workspace.
+
 ## [0.2.37] - 2026-09-05
 
 ### Changed
