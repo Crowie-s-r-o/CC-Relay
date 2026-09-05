@@ -2,6 +2,15 @@
 
 All notable CC Relay changes are recorded here. Releases follow Semantic Versioning and are generated from Git history by the local AI-assisted deploy command.
 
+## [0.2.39] - 2026-09-05
+
+### Added
+
+- Added backend services.
+- Added production container and Kubernetes deployment configuration for the backend.
+- Added pricing documentation.
+- Added terminal continuity support.
+
 ## [0.2.38] - 2026-09-05
 
 ### Changed
