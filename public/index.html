@@ -21,7 +21,7 @@
           document.documentElement.dataset.desktopTitlebar = 'true';
         }
         document.documentElement.dataset.headerPosition =
-          localStorage.getItem('relay.headerPosition') === 'bottom' ? 'bottom' : 'top';
+          localStorage.getItem('relay.headerPosition') === 'top' ? 'top' : 'bottom';
         try {
           const runningTaskLayout = JSON.parse(localStorage.getItem('relay.runningTaskLayout') || '{}');
           document.documentElement.dataset.runningTaskRows = [1, 2, 3].includes(runningTaskLayout.rows)
@@ -35,6 +35,7 @@
       })();
     </script>
     <link rel="stylesheet" href="/style.css">
+    <link rel="stylesheet" href="/launchpad.css">
   </head>
   <body>
     <div class="desktop-titlebar">
@@ -205,80 +206,112 @@
               maximum instances. The stepper is never nested inside the button, so clicking,
               focusing, typing, or using its spinner never changes the selected provider.
             -->
-            <div id="provider-tabs" class="agent-tabs">
-              <div class="agent-tab-shell" data-provider="codex">
-                <button
-                  id="provider-codex"
-                  class="agent-tab selected"
-                  type="button"
-                  role="tab"
-                  aria-selected="true"
-                  aria-controls="terminal-panel"
-                  data-provider="codex"
-                >
-                  <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
-                  <span class="agent-tab-copy">
-                    <strong>Codex</strong>
-                    <small id="provider-codex-count">Checking</small>
-                  </span>
-                  <span class="agent-availability" aria-hidden="true"></span>
-                </button>
-                <div class="agent-tab-pool">
-                  <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
-                  <input id="max-codex-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Codex instances">
-                  <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
-                  <small id="codex-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+            <div class="agent-settings">
+              <div class="agent-settings-heading">Agent</div>
+              <div id="provider-tabs" class="agent-tabs">
+                <div class="agent-tab-shell" data-provider="codex">
+                  <button
+                    id="provider-codex"
+                    class="agent-tab selected"
+                    type="button"
+                    role="tab"
+                    aria-selected="true"
+                    aria-controls="terminal-panel"
+                    data-provider="codex"
+                  >
+                    <span class="agent-icon agent-icon-codex" aria-hidden="true">&gt;_</span>
+                    <span class="agent-tab-copy">
+                      <strong>Codex</strong>
+                      <small id="provider-codex-count">Checking</small>
+                    </span>
+                    <span class="agent-availability" aria-hidden="true"></span>
+                  </button>
+                  <div class="agent-tab-pool">
+                    <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
+                    <input id="max-codex-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Codex instances">
+                    <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
+                    <small id="codex-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                  </div>
+                </div>
+                <div class="agent-tab-shell" data-provider="claude">
+                  <button
+                    id="provider-claude"
+                    class="agent-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="terminal-panel"
+                    tabindex="-1"
+                    data-provider="claude"
+                  >
+                    <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
+                    <span class="agent-tab-copy">
+                      <strong>Claude</strong>
+                      <small id="provider-claude-count">Not connected</small>
+                    </span>
+                    <span class="agent-availability" aria-hidden="true"></span>
+                  </button>
+                  <div class="agent-tab-pool">
+                    <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
+                    <input id="max-claude-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Claude instances">
+                    <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
+                    <small id="claude-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                  </div>
+                </div>
+                <div class="agent-tab-shell" data-provider="opencode">
+                  <button
+                    id="provider-opencode"
+                    class="agent-tab"
+                    type="button"
+                    role="tab"
+                    aria-selected="false"
+                    aria-controls="terminal-panel"
+                    tabindex="-1"
+                    data-provider="opencode"
+                  >
+                    <span class="agent-icon agent-icon-opencode" aria-hidden="true">OC</span>
+                    <span class="agent-tab-copy">
+                      <strong>OpenCode</strong>
+                      <small id="provider-opencode-count">Checking</small>
+                    </span>
+                    <span class="agent-availability" aria-hidden="true"></span>
+                  </button>
+                  <div class="agent-tab-pool">
+                    <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
+                    <input id="max-opencode-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum OpenCode instances">
+                    <small id="opencode-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                  </div>
                 </div>
               </div>
-              <div class="agent-tab-shell" data-provider="claude">
-                <button
-                  id="provider-claude"
-                  class="agent-tab"
-                  type="button"
-                  role="tab"
-                  aria-selected="false"
-                  aria-controls="terminal-panel"
-                  tabindex="-1"
-                  data-provider="claude"
-                >
-                  <span class="agent-icon agent-icon-claude" aria-hidden="true">✳</span>
-                  <span class="agent-tab-copy">
-                    <strong>Claude</strong>
-                    <small id="provider-claude-count">Not connected</small>
+
+              <div id="execution-controls" class="execution-controls" data-provider="codex" aria-label="Model and reasoning settings">
+                <label class="execution-control" for="model-select">
+                  <span class="execution-control-index" aria-hidden="true">M</span>
+                  <span class="execution-control-copy">
+                    <span>Model</span>
+                    <small id="model-hint">Loading available models</small>
                   </span>
-                  <span class="agent-availability" aria-hidden="true"></span>
-                </button>
-                <div class="agent-tab-pool">
-                  <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
-                  <input id="max-claude-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum Claude instances">
-                  <!-- Kept for renderAutomaticTerminalPool in public/app.js. The visible usage count lives in the tab. -->
-                  <small id="claude-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
+                  <span class="model-select-shell">
+                    <select id="model-select" name="model" aria-describedby="model-hint"></select>
+                    <span class="model-select-chevron" aria-hidden="true"></span>
+                  </span>
+                </label>
+                <div class="execution-control execution-control-effort">
+                  <span class="execution-control-index" aria-hidden="true">E</span>
+                  <span class="execution-control-copy">
+                    <span>Effort</span>
+                    <small id="effort-hint">Select reasoning depth</small>
+                  </span>
+                  <div class="effort-slider-shell">
+                    <input id="effort-select" class="effort-slider" name="effort" type="range" min="0" max="0" step="1" value="0" aria-label="Reasoning effort" aria-describedby="effort-hint effort-slider-value">
+                    <div class="effort-slider-meta">
+                      <span id="effort-slider-value">Effort</span>
+                      <span id="effort-slider-steps" class="effort-slider-steps" aria-hidden="true"></span>
+                    </div>
+                  </div>
                 </div>
               </div>
-              <div class="agent-tab-shell" data-provider="opencode">
-                <button
-                  id="provider-opencode"
-                  class="agent-tab"
-                  type="button"
-                  role="tab"
-                  aria-selected="false"
-                  aria-controls="terminal-panel"
-                  tabindex="-1"
-                  data-provider="opencode"
-                >
-                  <span class="agent-icon agent-icon-opencode" aria-hidden="true">OC</span>
-                  <span class="agent-tab-copy">
-                    <strong>OpenCode</strong>
-                    <small id="provider-opencode-count">Checking</small>
-                  </span>
-                  <span class="agent-availability" aria-hidden="true"></span>
-                </button>
-                <div class="agent-tab-pool">
-                  <span class="agent-tab-pool-label" aria-hidden="true">Max</span>
-                  <input id="max-opencode-instances" class="agent-tab-pool-input" type="number" min="1" max="8" step="1" value="1" aria-label="Maximum OpenCode instances">
-                  <small id="opencode-pool-usage" class="sr-only" aria-hidden="true">0 active</small>
-                </div>
-              </div>
+
             </div>
 
             <section id="plan-config" class="council-config execute-council-config" aria-labelledby="council-config-title">
@@ -456,34 +489,6 @@
             </div>
           </fieldset>
 
-          <div id="execution-controls" class="execution-controls" data-provider="codex" aria-label="Model and reasoning settings">
-            <label class="execution-control" for="model-select">
-              <span class="execution-control-index" aria-hidden="true">M</span>
-              <span class="execution-control-copy">
-                <span>Model</span>
-                <small id="model-hint">Loading available models</small>
-              </span>
-              <span class="model-select-shell">
-                <select id="model-select" name="model" aria-describedby="model-hint"></select>
-                <span class="model-select-chevron" aria-hidden="true"></span>
-              </span>
-            </label>
-            <div class="execution-control execution-control-effort">
-              <span class="execution-control-index" aria-hidden="true">E</span>
-              <span class="execution-control-copy">
-                <span>Effort</span>
-                <small id="effort-hint">Select reasoning depth</small>
-              </span>
-              <div class="effort-slider-shell">
-                <input id="effort-select" class="effort-slider" name="effort" type="range" min="0" max="0" step="1" value="0" aria-label="Reasoning effort" aria-describedby="effort-hint effort-slider-value">
-                <div class="effort-slider-meta">
-                  <span id="effort-slider-value">Effort</span>
-                  <span id="effort-slider-steps" class="effort-slider-steps" aria-hidden="true"></span>
-                </div>
-              </div>
-            </div>
-          </div>
-
           <dialog id="terminal-settings-modal" class="terminal-settings-modal" aria-labelledby="connection-help-title">
             <div class="terminal-settings-card">
               <div class="terminal-settings-header">
@@ -606,7 +611,7 @@
               <strong>Task name</strong>
               <small>Optional. CC Relay uses the request when this is blank.</small>
             </span>
-            <input id="task-name" name="title" type="text" maxlength="120" autocomplete="off" placeholder="Give this task a short, recognizable name">
+            <input id="task-name" name="title" type="text" maxlength="120" autocomplete="off" placeholder="Optional">
           </label>
 
           <div class="prompt-field">
@@ -638,6 +643,25 @@
                 </button>
               </div>
             </div>
+            <section class="attachment-composer" aria-labelledby="attachment-heading">
+              <div class="attachment-heading-row">
+                <div>
+                  <span id="attachment-heading">Reference images</span>
+                  <small id="attachment-route">Sent to the selected AI with the prompt.</small>
+                </div>
+                <span id="attachment-count">0 / 99</span>
+              </div>
+              <label id="attachment-dropzone" class="attachment-dropzone" for="image-input" tabindex="0">
+                <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+                <span class="attachment-add-icon" aria-hidden="true">＋</span>
+                <span>
+                  <strong>Add images</strong>
+                  <small>Choose, drop, or paste PNG, JPEG, or WebP</small>
+                </span>
+              </label>
+              <div id="attachment-list" class="attachment-list" aria-live="polite"></div>
+              <p class="attachment-limits">Up to 99 images, 5 MB each, 20 MB total.</p>
+            </section>
           </div>
 
           <section id="task-references" class="task-references" aria-labelledby="task-references-heading" hidden>
@@ -649,26 +673,6 @@
               <span id="task-reference-count">0 tasks</span>
             </div>
             <div id="task-reference-list" class="task-reference-list" aria-live="polite"></div>
-          </section>
-
-          <section class="attachment-composer" aria-labelledby="attachment-heading">
-            <div class="attachment-heading-row">
-              <div>
-                <span id="attachment-heading">Reference images</span>
-                <small id="attachment-route">Sent to the selected AI with the prompt.</small>
-              </div>
-              <span id="attachment-count">0 / 99</span>
-            </div>
-            <label id="attachment-dropzone" class="attachment-dropzone" for="image-input" tabindex="0">
-              <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
-              <span class="attachment-add-icon" aria-hidden="true">＋</span>
-              <span>
-                <strong>Add images</strong>
-                <small>Choose, drop, or paste PNG, JPEG, or WebP</small>
-              </span>
-            </label>
-            <div id="attachment-list" class="attachment-list" aria-live="polite"></div>
-            <p class="attachment-limits">Up to 99 images, 5 MB each, 20 MB total.</p>
           </section>
 
           <p id="composer-alert" class="composer-alert" role="status" aria-live="polite" hidden></p>
@@ -928,7 +932,7 @@
             </details>
             <div class="event-toolbar">
               <div id="event-filters" class="event-filters" role="group" aria-label="Terminal and activity views">
-                <button id="original-terminal-view" type="button" aria-pressed="true"><span class="event-filter-label">Original terminal</span><i aria-hidden="true">↗</i></button>
+                <button id="original-terminal-view" type="button" aria-pressed="true"><span class="event-filter-label">Original terminal</span></button>
                 <button type="button" data-event-filter="all" aria-pressed="false"><span class="event-filter-label">Relay activity</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="highlights" aria-pressed="false"><span class="event-filter-label">Highlights</span><b data-event-filter-count aria-hidden="true">0</b></button>
                 <button type="button" data-event-filter="commands" aria-pressed="false"><span class="event-filter-label">Commands</span><b data-event-filter-count aria-hidden="true">0</b></button>
@@ -951,16 +955,17 @@
             <div id="native-terminal-screen" class="native-terminal-screen" data-state="ready" aria-busy="false" hidden>
               <div class="native-terminal-screen-bar">
                 <strong id="native-terminal-screen-title">Original terminal</strong>
-                <span id="native-terminal-screen-state" role="status" aria-live="polite">Native CLI</span>
+                <span id="native-terminal-screen-state" role="status" aria-live="polite">Connecting</span>
               </div>
+              <pre id="native-terminal-screen-output" tabindex="0" role="region" aria-label="Original terminal screen" aria-live="off" hidden></pre>
               <div id="native-terminal-screen-notice" class="native-terminal-screen-notice">
-                <strong>Use the original terminal</strong>
-                <span>Work in the CLI's own window. Your conversation stays available in Relay.</span>
+                <strong>Connecting to the original terminal</strong>
+                <span>The terminal screen appears here in CC Relay. Send follow-ups using the composer below.</span>
+              </div>
+              <div class="native-terminal-screen-actions original-terminal-actions">
                 <div id="original-terminal-targets" class="original-terminal-actions"></div>
-                <div class="original-terminal-actions">
-                  <button id="original-terminal-open" type="button">Show original terminal ↗</button>
-                  <button id="original-terminal-fallback" type="button">Use Relay activity</button>
-                </div>
+                <button id="original-terminal-open" type="button" aria-controls="terminal-window-modal">Show original terminal</button>
+                <button id="original-terminal-fallback" type="button">Use Relay activity</button>
               </div>
             </div>
             <div id="detail-events" class="event-list" role="log" aria-live="polite" aria-relevant="additions"></div>
@@ -1009,7 +1014,7 @@
                   <p id="terminal-window-subtitle">Full session output.</p>
                 </div>
                 <div id="terminal-window-views" class="terminal-window-views" role="group" aria-label="Terminal window view">
-                  <button type="button" data-terminal-window-view="all" aria-pressed="true"><span class="terminal-window-view-label">Original terminal</span><b class="terminal-window-live-badge" aria-hidden="true">↗</b></button>
+                  <button type="button" data-terminal-window-view="all" aria-pressed="true"><span class="terminal-window-view-label">Original terminal</span></button>
                   <button type="button" data-terminal-window-view="activity" aria-pressed="false"><span class="terminal-window-view-label">Relay activity</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
                   <button type="button" data-terminal-window-view="conversation" aria-pressed="false"><span class="terminal-window-view-label">Conversation</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>
                   <button type="button" data-terminal-window-view="mine" aria-pressed="false"><span class="terminal-window-view-label">My messages</span><b data-terminal-window-view-count aria-hidden="true">0</b></button>

@@ -6,6 +6,13 @@ type: design
 
 # Dark Mode
 
+> [!important]
+> **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
+> owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh
+> columns, Bottom monitor default, and accessible light/dark palette. Older visual descriptions
+> below are historical where they conflict; saved layout choices and execution contracts remain.
+
+
 CC Relay has a locally persisted light and dark appearance. The theme toggle in the rightmost
 **Display** cog writes `relay.theme` to browser `localStorage`; on a first visit, the app follows
 `prefers-color-scheme`. A small

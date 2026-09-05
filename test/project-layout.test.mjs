@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
+const launchpad = readFileSync(new URL('../public/launchpad.css', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
 const markup = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 
@@ -137,16 +138,16 @@ test('task queue header controls remain readable at compact desktop density', ()
   );
 });
 
-test('desktop defaults widen the composer while keeping the queue compact', () => {
+test('Launchpad defaults prioritize activity while respecting saved panel widths', () => {
   assert.match(
-    style,
-    /grid-template-columns: var\(--composer-width, 580px\) 14px var\(--queue-width, 500px\) 14px minmax\(420px, 1fr\);/,
+    launchpad,
+    /grid-template-columns: var\(--composer-width, 420px\) 8px var\(--queue-width, 440px\) 8px minmax\(420px, 1fr\);/,
   );
-  assert.match(app, /composer: Number\.isFinite\(saved\.composer\) \? saved\.composer : 580/);
+  assert.match(app, /composer: Number\.isFinite\(saved\.composer\) \? saved\.composer : 420/);
   assert.match(app, /queue: Number\.isFinite\(saved\.queue\) \? saved\.queue : null/);
   assert.match(app, /const minimumComposer = 400/);
   assert.match(app, /composerQueueResizer\.setAttribute\('aria-valuemin', '400'\)/);
-  assert.match(app, /: 500;[\s\S]*?constrainPanelWidths\(state\.panelWidths\.composer, state\.panelWidths\.queue\)/);
+  assert.match(app, /: 440;[\s\S]*?constrainPanelWidths\(state\.panelWidths\.composer, state\.panelWidths\.queue\)/);
   assert.match(app, /Task queue \$\{Math\.round\(state\.panelWidths\.queue\)\} pixels wide/);
 });
 

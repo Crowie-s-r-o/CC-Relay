@@ -1,0 +1,449 @@
+/* Launchpad v2: continuous workspace surfaces, grouped settings, quiet utility chrome.
+   Loaded after the legacy component sheet so this file owns the application design. */
+@font-face {
+  font-family: "Space Grotesk";
+  src: url("/fonts/space-grotesk-latin.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/ibm-plex-mono-latin-400.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/ibm-plex-mono-latin-500.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/ibm-plex-mono-latin-600.woff2") format("woff2");
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+}
+
+:root {
+  --font-display: "Space Grotesk", -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Space Grotesk", -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", Consolas, monospace;
+  --lp-canvas: #f5f7fa;
+  --lp-panel: #ffffff;
+  --lp-surface: #f0f3f7;
+  --lp-control: #e8edf3;
+  --lp-line: #d3dbe5;
+  --lp-edge: #b3c0cf;
+  --lp-text: #202c3b;
+  --lp-body: #3e5064;
+  --lp-muted: #596b7f;
+  --lp-accent: #7050d8;
+  --lp-action-ink: #ffffff;
+  --ink: var(--lp-text);
+  --graphite: var(--lp-body);
+  --slate: var(--lp-muted);
+  --mist: var(--lp-canvas);
+  --paper: var(--lp-panel);
+  --line: var(--lp-line);
+}
+
+html[data-theme="dark"] {
+  --lp-canvas: #0b0e12;
+  --lp-panel: #0d1116;
+  --lp-surface: #10151b;
+  --lp-control: #151b22;
+  --lp-line: #27313d;
+  --lp-edge: #3d4b5d;
+  --lp-text: #e7edf4;
+  --lp-body: #b6c2ce;
+  --lp-muted: #8b9aab;
+  --lp-accent: #9d83ff;
+  --lp-action-ink: #100b23;
+  --ink: var(--lp-text);
+  --graphite: var(--lp-body);
+  --slate: var(--lp-muted);
+  --mist: var(--lp-canvas);
+  --paper: var(--lp-panel);
+  --line: var(--lp-line);
+  --app-well: var(--lp-canvas);
+  --app-panel: var(--lp-panel);
+  --app-control: var(--lp-control);
+  --app-border: var(--lp-line);
+  --app-border-strong: var(--lp-edge);
+  --app-text: var(--lp-text);
+  --app-text-body: var(--lp-body);
+  --app-text-muted: var(--lp-muted);
+  --app-text-quiet: var(--lp-muted);
+}
+
+html[data-theme] body { background: var(--lp-canvas); }
+html[data-theme] .workspace {
+  padding: 0;
+  gap: 0;
+  background: var(--lp-canvas);
+  grid-template-columns: var(--composer-width, 420px) 8px var(--queue-width, 440px) 8px minmax(420px, 1fr);
+}
+html[data-theme] .workspace > .panel {
+  padding: 16px;
+  border: 0;
+  border-radius: 0;
+  background: var(--lp-canvas);
+  box-shadow: none;
+}
+html[data-theme] .workspace > .composer { background: var(--lp-panel); }
+html[data-theme] .workspace-resizer {
+  min-width: 8px;
+  background: linear-gradient(90deg, transparent 3px, var(--lp-line) 3px, var(--lp-line) 4px, transparent 4px);
+}
+html[data-theme] .workspace-resizer span { width: 2px; background: var(--lp-edge); }
+html[data-theme] .section-heading { margin-bottom: 12px; }
+html[data-theme] .section-heading h2, html[data-theme] .detail-header h2, html[data-theme] .empty-detail h2 {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -.035em;
+}
+html[data-theme] .eyebrow { color: var(--lp-muted); font-size: 9px; letter-spacing: .17em; }
+html[data-theme] .app-header {
+  background: var(--lp-panel);
+  border-color: var(--lp-line);
+  color: var(--lp-text);
+  box-shadow: none;
+}
+html[data-theme] .app-header h1 { font-family: var(--font-body); font-size: 14px; font-weight: 600; }
+html[data-theme] .app-header p { color: var(--lp-muted); }
+html[data-theme] .brand-mark { width: 24px; height: 24px; flex-basis: 24px; }
+html[data-theme] .header-running-task, html[data-theme] .header-running-empty {
+  border-color: var(--lp-line);
+  background: var(--lp-surface);
+  box-shadow: none;
+  border-radius: 6px;
+}
+html[data-theme] .header-running-task.selected { border-color: var(--lp-edge); background: var(--lp-control); box-shadow: none; }
+html[data-theme] .header-running-task:hover { border-color: var(--lp-edge); background: var(--lp-control); }
+html[data-theme] .header-running-empty, html[data-theme] .header-running-response { color: var(--lp-muted); }
+html[data-theme] .header-running-prompt { color: var(--lp-text); }
+html[data-theme] .provider-usage, html[data-theme] .display-settings > summary {
+  background: var(--lp-control);
+  border-color: var(--lp-line);
+  box-shadow: none;
+}
+html[data-theme][data-desktop-titlebar="true"] .desktop-titlebar {
+  border-color: var(--lp-line);
+  color: var(--lp-muted);
+  background: var(--lp-panel);
+  box-shadow: none;
+}
+
+/* Content-sized project tabs leave room for more workspaces. Full names and state
+   remain in the accessible label, and the activity word remains visible. */
+html[data-theme] .project-dock { background: var(--lp-panel); border-color: var(--lp-line); }
+html[data-theme] .project-dock-heading { padding-right: 12px; border-right: 1px solid var(--lp-line); }
+html[data-theme] .project-dock-heading strong { font-family: var(--font-body); font-size: 14px; }
+html[data-theme] .project-list { gap: 6px; }
+html[data-theme] .project-chip {
+  flex: 0 0 auto;
+  width: max-content;
+  min-width: 110px;
+  max-width: 230px;
+  height: 30px;
+  padding: 0 7px;
+  border-radius: 7px;
+  box-shadow: none;
+}
+html[data-theme] .project-chip[class*="project-color-"] {
+  border-color: var(--lp-line);
+  background: var(--lp-surface);
+  box-shadow: none;
+}
+html[data-theme] .project-chip[class*="project-color-"]:hover { border-color: var(--lp-edge); background: var(--lp-control); }
+html[data-theme] .project-chip[class*="project-color-"].selected {
+  border-color: var(--project-accent);
+  background: color-mix(in srgb, var(--project-accent) 12%, var(--lp-panel));
+  box-shadow: none;
+}
+html[data-theme] .project-chip[class*="project-color-"].selected:hover {
+  border-color: var(--project-accent);
+  background: color-mix(in srgb, var(--project-accent) 16%, var(--lp-panel));
+}
+html[data-theme] .project-chip[class*="project-color-"] .project-copy strong { color: var(--lp-body); font-size: 12px; }
+html[data-theme] .project-chip[class*="project-color-"].selected .project-copy strong { color: var(--lp-text); }
+html[data-theme] .project-activity i { box-shadow: none; }
+html[data-theme] .project-dock-actions .button.primary {
+  min-height: 30px;
+  padding-inline: 11px;
+  color: var(--lp-body);
+  background: var(--lp-control);
+  border-color: var(--lp-edge);
+  box-shadow: none;
+}
+
+/* Compact workflow rail and one provider/model settings group. */
+html[data-theme] .composer { display: flex; flex-direction: column; }
+html[data-theme] #task-form { display: flex; flex: 1; flex-direction: column; gap: 10px; min-height: auto; }
+html[data-theme] .composer .mode-selector { flex-shrink: 0; margin: 0; padding: 3px; border-radius: 8px; border-color: var(--lp-line); background: var(--lp-canvas); box-shadow: none; }
+html[data-theme] .mode-selector-heading { display: none; }
+html[data-theme] .mode-tabs { grid-template-columns: 1fr 1.25fr; gap: 3px; }
+html[data-theme] .mode-tab {
+  min-height: 32px;
+  padding: 6px;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  box-shadow: none;
+}
+html[data-theme] .mode-tab small { display: none; }
+html[data-theme] .mode-tab strong { color: var(--lp-muted); font-size: 11px; font-weight: 500; }
+html[data-theme] .mode-tab .mode-tab-index { width: 18px; height: 18px; min-width: 18px; color: var(--lp-muted); background: transparent; border: 0; box-shadow: none; font-size: 9px; }
+html[data-theme] .mode-tab.selected, html[data-theme] .mode-tab.selected:hover {
+  border-color: var(--lp-edge);
+  color: var(--lp-text);
+  background: var(--lp-control);
+  box-shadow: none;
+}
+html[data-theme] .mode-tab.selected strong { color: var(--lp-text); font-weight: 600; }
+html[data-theme] .mode-tab:hover { background: var(--lp-surface); }
+html[data-theme] .agent-selector { margin: 0; }
+html[data-theme] .agent-settings { border: 1px solid var(--lp-line); border-radius: 10px; background: var(--lp-surface); overflow: hidden; }
+html[data-theme] .agent-settings-heading { padding: 9px 11px 0; color: var(--lp-text); font-size: 12px; font-weight: 600; }
+html[data-theme] .agent-settings .agent-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 5px; padding: 8px 10px 10px; margin: 0; }
+html[data-theme] .agent-settings .agent-tab-shell { grid-template-columns: minmax(0, 1fr); border-color: var(--lp-line); border-radius: 7px; background: var(--lp-control); }
+html[data-theme] .agent-settings .agent-tab { padding: 6px; gap: 4px; grid-template-columns: 15px minmax(0, 1fr) 5px; border-radius: 6px; background: transparent; box-shadow: none; }
+html[data-theme] .agent-settings .agent-tab .agent-icon { width: 15px; height: 18px; border: 0; font-size: 9px; background: transparent; }
+html[data-theme] .agent-settings .agent-tab-copy strong { font-size: 11px; color: var(--lp-body); }
+html[data-theme] .agent-settings .agent-tab-copy small { font-size: 8px; color: var(--lp-muted); }
+html[data-theme] .agent-settings .agent-tab-pool { display: flex; justify-content: flex-end; gap: 5px; padding: 0 6px 5px; border: 0; }
+html[data-theme] .agent-settings .agent-tab-pool-input { width: 44px; height: 22px; padding: 1px 0 1px 4px; font-size: 10px; border-radius: 4px; border-color: var(--lp-edge); color: var(--lp-text); background: var(--lp-canvas); }
+html[data-theme] .agent-settings .agent-tab-shell:has(.agent-tab.selected) { border-color: var(--signal); background: color-mix(in srgb, var(--signal) 10%, var(--lp-panel)); }
+html[data-theme] .agent-settings .agent-tab-shell:has(.agent-tab.selected[data-provider="claude"]) { border-color: var(--claude); background: color-mix(in srgb, var(--claude) 10%, var(--lp-panel)); }
+html[data-theme] .agent-settings .agent-tab-shell:has(.agent-tab.selected[data-provider="opencode"]) { border-color: var(--opencode); background: color-mix(in srgb, var(--opencode) 10%, var(--lp-panel)); }
+html[data-theme] .agent-settings .agent-tab.selected .agent-tab-copy strong { color: var(--lp-text); }
+html[data-theme] .agent-settings .execution-controls { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; margin: 0; border-top: 1px solid var(--lp-line); }
+html[data-theme] .agent-settings .execution-control { grid-template-areas: "copy" "select"; padding: 9px 11px; border: 0; border-radius: 0; background: transparent; box-shadow: none; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+html[data-theme] .agent-settings .execution-control + .execution-control { border-left: 1px solid var(--lp-line); }
+html[data-theme] .execution-control-index { display: none; }
+html[data-theme] .execution-control-copy { grid-column: 1; }
+html[data-theme] .execution-control-copy > span { color: var(--lp-muted); font: 500 9px var(--font-mono); letter-spacing: .1em; }
+html[data-theme] .execution-control-copy small { display: none; }
+html[data-theme] .execution-control .model-select-shell, html[data-theme] .execution-control .effort-slider-shell { grid-column: 1; width: 100%; min-width: 0; }
+html[data-theme] .execution-control .model-select-shell select { height: 32px; min-height: 32px; border-color: var(--lp-edge); border-radius: 6px; color: var(--lp-text); background: var(--lp-canvas); font-size: 11px; }
+html[data-theme] .execution-control .effort-slider-shell { padding: 5px 8px; border: 1px solid var(--lp-edge); border-radius: 6px; background: var(--lp-canvas); }
+
+/* Workflow options are quiet grouped rows, with provider color limited to identity. */
+html[data-theme] .composer .council-config {
+  --council-ink: var(--lp-text);
+  --council-muted: var(--lp-muted);
+  --council-line: var(--lp-line);
+  margin: 10px 0 0;
+  padding: 10px;
+  border-color: var(--lp-line);
+  border-radius: 9px;
+  background: var(--lp-surface);
+  box-shadow: none;
+}
+html[data-theme] .execute-council-config > .council-heading { display: none; }
+html[data-theme] .composer .plan-council-option { margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
+html[data-theme] .composer .plan-council-toggle { padding: 0; border: 0; color: var(--lp-text); background: transparent; box-shadow: none; }
+html[data-theme] .composer .plan-council-toggle strong { color: var(--lp-text); font-size: 11px; }
+html[data-theme] .composer .plan-council-toggle small { color: var(--lp-muted); font-size: 10px; }
+html[data-theme] .composer .council-node { border-color: var(--lp-line); background: var(--lp-control); border-radius: 6px; box-shadow: none; }
+html[data-theme] .composer .council-node select, html[data-theme] .composer .turbo-settings select, html[data-theme] .composer .turbo-settings input { border-color: var(--lp-edge); background: var(--lp-canvas); color: var(--lp-text); border-radius: 5px; }
+html[data-theme] .composer .council-return { background: transparent; border-color: var(--lp-line); }
+html[data-theme] .composer .terminal-fieldset { margin: 0; border-color: var(--lp-line); border-radius: 8px; background: var(--lp-surface); box-shadow: none; }
+html[data-theme] .composer .terminal-keep-open-option { border-color: var(--lp-edge); background: var(--lp-control); box-shadow: none; }
+html[data-theme] .composer .terminal-legend { color: var(--lp-text); font-size: 10px; }
+html[data-theme] .composer .terminal-status-line p { color: var(--lp-muted); }
+html[data-theme] .composer .turbo-config { margin: 0; padding: 0; background: transparent; border: 0; box-shadow: none; }
+html[data-theme] .composer .turbo-settings { border-color: var(--lp-line); background: var(--lp-surface); }
+
+/* The prompt is the flexible writing surface. Supporting tools retain their original
+   DOM and event ownership, including image paste, dropping, and keyboard submission. */
+html[data-theme] .composer .task-name-field { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 10px; margin: 0; padding: 6px 10px; border: 1px solid var(--lp-line); border-radius: 8px; background: var(--lp-surface); }
+html[data-theme] .task-name-field > span { margin: 0; }
+html[data-theme] .task-name-field strong { font-size: 11px; color: var(--lp-muted); }
+html[data-theme] .task-name-field small { display: none; }
+html[data-theme] .task-name-field input { min-height: 26px; padding: 4px 0; border: 0; border-radius: 0; color: var(--lp-text); background: transparent; box-shadow: none; font-size: 11px; }
+html[data-theme] .composer .prompt-field { flex-shrink: 0; display: flex; flex: 1; flex-direction: column; min-height: 240px; margin: 0; border: 1px solid var(--lp-line); border-radius: 9px; background: var(--lp-surface); overflow: hidden; }
+html[data-theme] .prompt-label-row { flex: 0 0 auto; margin: 0; padding: 8px 11px 0; gap: 6px; flex-wrap: wrap; }
+html[data-theme] .prompt-label-row label { color: var(--lp-muted); font-size: 10px; }
+html[data-theme] #prompt-shortcut { gap: 7px; color: var(--lp-muted); font-size: 8px; }
+html[data-theme] #task-prompt { flex: 1 1 0; width: 100%; min-height: 156px; margin: 0; padding: 11px; resize: vertical; border: 0; border-radius: 0; background: transparent; color: var(--lp-text); box-shadow: none; font-family: var(--font-body); font-size: 13px; line-height: 1.6; }
+html[data-theme] #task-prompt::placeholder, html[data-theme] .task-name-field input::placeholder { color: var(--lp-muted); opacity: 1; }
+html[data-theme] .composer-quick-actions { min-height: 0; margin: 0; padding: 6px 10px; border-top: 1px solid var(--lp-line); gap: 6px; }
+html[data-theme] .quick-skill-button, html[data-theme] .voice-input-hold { border-color: var(--lp-edge); color: var(--lp-body); background: var(--lp-control); box-shadow: none; border-radius: 5px; }
+html[data-theme] .quick-skill-button { min-height: 27px; padding: 5px 7px; }
+html[data-theme] .quick-skill-copy strong { font-size: 10px; }
+html[data-theme] .quick-skill-copy small { display: none; }
+html[data-theme] .prompt-field .attachment-composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; margin: 0; padding: 6px 10px; border: 0; border-top: 1px solid var(--lp-line); background: transparent; }
+html[data-theme] .attachment-heading-row { margin: 0; gap: 8px; }
+html[data-theme] .attachment-heading-row span { font-size: 10px; color: var(--lp-muted); }
+html[data-theme] .attachment-heading-row small { display: none; }
+html[data-theme] .prompt-field .attachment-dropzone { display: flex; gap: 4px; min-height: 27px; padding: 4px 7px; border: 1px solid var(--lp-edge); border-radius: 5px; color: var(--lp-body); background: var(--lp-control); box-shadow: none; }
+html[data-theme] .attachment-dropzone .attachment-add-icon { width: auto; height: auto; border: 0; background: transparent; font-size: 14px; }
+html[data-theme] .attachment-dropzone strong { color: var(--lp-body); font-size: 10px; }
+html[data-theme] .attachment-dropzone small { display: none; }
+html[data-theme] .attachment-list, html[data-theme] .attachment-limits { grid-column: 1 / -1; }
+html[data-theme] .attachment-list:empty { display: none; }
+html[data-theme] .attachment-limits { margin: 0; font-size: 9px; color: var(--lp-muted); }
+html[data-theme] .form-footer { display: flex; flex-direction: column; align-items: stretch; gap: 6px; margin: 0; padding: 0; border: 0; }
+html[data-theme] #form-message:empty { display: none; }
+html[data-theme] #task-submit-button { width: 100%; min-height: 38px; border: 1px solid var(--lp-accent); border-radius: 7px; background: var(--lp-accent); color: var(--lp-action-ink); box-shadow: none; font-size: 12px; font-weight: 600; }
+html[data-theme] #task-submit-button:hover:not(:disabled) { filter: brightness(1.08); transform: none; box-shadow: none; }
+
+/* Queue and inspector share the same surface hierarchy and compact evidence rhythm. */
+html[data-theme] .queue-panel > .section-heading { border-color: var(--lp-line); padding-bottom: 12px; }
+html[data-theme] .queue-panel > .section-heading h2 { font-size: 20px; }
+html[data-theme] .queue-panel #queue-summary { color: var(--lp-muted); font-size: 10px; }
+html[data-theme] .queue-heading-button, html[data-theme] .queue-view-switch, html[data-theme] .queue-view-switch button { color: var(--lp-body); border-color: var(--lp-line); background: var(--lp-surface); box-shadow: none; border-radius: 6px; }
+html[data-theme] .queue-view-switch button[aria-pressed="true"] { background: var(--lp-control); color: var(--lp-text); box-shadow: none; }
+html[data-theme] .task-search { border-color: var(--lp-line); background: var(--lp-surface); border-radius: 7px; box-shadow: none; }
+html[data-theme] .task-search input { color: var(--lp-text); font-family: var(--font-body); font-size: 12px; }
+html[data-theme] .task-search input::placeholder { color: var(--lp-muted); }
+html[data-theme] .task-card { border-color: var(--lp-line); border-radius: 9px; background: var(--lp-surface); box-shadow: none; }
+html[data-theme] .task-card:hover { border-color: var(--lp-edge); background: var(--lp-control); }
+html[data-theme] .task-card.selected, html[data-theme] .task-card.selected:hover { border-color: var(--lp-edge); background: var(--lp-control); box-shadow: inset 2px 0 var(--lp-accent); }
+html[data-theme] .task-name { color: var(--lp-text); font-size: 13px; font-weight: 500; line-height: 1.45; }
+html[data-theme] .task-prompt { color: var(--lp-body); }
+html[data-theme] .task-footer { border-color: var(--lp-line); color: var(--lp-muted); }
+html[data-theme] .task-footer-dates { border-color: var(--lp-line); }
+html[data-theme] .detail-panel .detail-header { padding-bottom: 12px; border-color: var(--lp-line); background: transparent; }
+html[data-theme] .detail-panel .detail-task-name { font-family: var(--font-body); color: var(--lp-text); }
+html[data-theme] .detail-panel .detail-execution-profile { color: var(--lp-muted); }
+html[data-theme] .detail-panel .detail-header .button { border-color: var(--lp-edge); border-radius: 6px; background: var(--lp-control); color: var(--lp-body); box-shadow: none; }
+html[data-theme] .detail-panel .detail-header .button.danger { color: var(--danger); }
+html[data-theme] .detail-panel .task-overview { background: transparent; border-color: var(--lp-line); box-shadow: none; }
+html[data-theme] .terminal-settings-card { background: var(--lp-panel); border-color: var(--lp-line); border-radius: 12px; }
+html[data-theme] .terminal-settings-header, html[data-theme] .terminal-settings-section { background: var(--lp-surface); border-color: var(--lp-line); box-shadow: none; }
+html[data-theme] .terminal-settings-header h2 { font-family: var(--font-body); font-weight: 600; }
+html[data-theme] .terminal-settings-section { border-radius: 8px; }
+html[data-theme] .terminal-settings-body { padding: 14px; gap: 12px; }
+
+/* Override the former project-colored composer at its original ownership boundary.
+   Project color continues to identify projects; workflow selection is neutral,
+   provider selection uses provider color, and the primary action uses violet. */
+html[data-theme] #task-form[class*="project-color-"] {
+  --composer-accent: var(--lp-accent);
+  --composer-accent-soft: var(--lp-control);
+  --composer-control-soft: var(--lp-canvas);
+}
+html[data-theme] #task-form[class*="project-color-"] .mode-tab.selected {
+  border-color: var(--lp-edge);
+  background: var(--lp-control);
+  box-shadow: none;
+}
+html[data-theme] #task-form[class*="project-color-"] .mode-tab.selected .mode-tab-index {
+  color: var(--lp-muted);
+  background: transparent;
+}
+html[data-theme] #task-form[class*="project-color-"] .agent-tab-shell:has(.agent-tab.selected) {
+  border-color: var(--signal);
+  background: color-mix(in srgb, var(--signal) 10%, var(--lp-panel));
+  box-shadow: none;
+}
+html[data-theme] #task-form[class*="project-color-"] .agent-tab-shell:has(.agent-tab.selected[data-provider="claude"]) {
+  border-color: var(--claude);
+  background: color-mix(in srgb, var(--claude) 10%, var(--lp-panel));
+}
+html[data-theme] #task-form[class*="project-color-"] .agent-tab-shell:has(.agent-tab.selected[data-provider="opencode"]) {
+  border-color: var(--opencode);
+  background: color-mix(in srgb, var(--opencode) 10%, var(--lp-panel));
+}
+html[data-theme] #task-form[class*="project-color-"] .agent-tab.selected .agent-tab-copy strong { color: var(--lp-text); }
+html[data-theme] #task-form[class*="project-color-"] .execution-control .model-select-shell select,
+html[data-theme] #task-form[class*="project-color-"] select { border-color: var(--lp-edge); background: var(--lp-canvas); box-shadow: none; }
+html[data-theme] #task-form[class*="project-color-"] #task-submit-button,
+html[data-theme] #task-form[class*="project-color-"] #task-submit-button:disabled,
+html[data-theme] #task-form[class*="project-color-"] #task-submit-button:hover:not(:disabled) {
+  color: var(--lp-action-ink);
+  border-color: var(--lp-accent);
+  background: var(--lp-accent);
+  box-shadow: none;
+}
+html[data-theme] .task-card[class*="project-color-"].selected,
+html[data-theme] .task-card[class*="project-color-"].selected:hover {
+  border-color: var(--lp-edge);
+  background: var(--lp-control);
+  box-shadow: inset 2px 0 var(--lp-accent);
+}
+html[data-theme] .agent-settings .execution-control-copy > span { display: block; color: var(--lp-muted); }
+html[data-theme] .agent-settings .execution-control .execution-control-copy { position: static; }
+html[data-theme] #composer-quick-actions .quick-skill-button { min-height: 27px; padding: 4px 7px; }
+html[data-theme] #composer-quick-actions .quick-skill-glyph { width: 16px; height: 16px; font-size: 9px; background: transparent; border: 0; }
+html[data-theme] #quick-skill-list { justify-content: flex-end; }
+html[data-theme] #composer-quick-actions .quick-skill-button { width: auto; }
+html[data-theme] #execute-config:has(#plan-council-enabled:checked) .agent-settings { display: none; }
+html[data-theme] .composer .execute-council-route { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; }
+html[data-theme] .composer .execute-council-route .council-connector { display: none; }
+html[data-theme] .composer .execute-council-route .council-node { grid-column: auto; grid-row: auto; padding: 10px; border-radius: 0; border-top: 1px solid var(--lp-line); }
+html[data-theme] .composer .execute-council-route .council-node label { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; }
+html[data-theme] .composer .execute-council-route .council-node label select { width: 100%; font-size: 10px; }
+html[data-theme] .composer .execute-council-route .council-node > small { min-height: 42px; }
+html[data-theme] .composer .execute-council-route .council-return { margin-top: 0; border-radius: 0; }
+
+html[data-theme] .composer .execute-council-route[data-first="claude"] .execute-council-provider-claude,
+html[data-theme] .composer .execute-council-route[data-first="codex"] .execute-council-provider-codex { grid-column: 1; grid-row: 1; }
+html[data-theme] .composer .execute-council-route[data-first="claude"] .execute-council-provider-codex,
+html[data-theme] .composer .execute-council-route[data-first="codex"] .execute-council-provider-claude { grid-column: 2; grid-row: 1; }
+
+html[data-theme] .composer .terminal-empty {
+  border-color: var(--lp-line);
+  border-radius: 7px;
+  color: var(--lp-body);
+  background: var(--lp-control);
+}
+html[data-theme] .composer .terminal-empty strong { color: var(--lp-text); }
+html[data-theme] .composer .terminal-empty p { color: var(--lp-muted); }
+
+/* Focus stays visible on the flat controls without introducing hover movement. */
+html[data-theme] .workspace :is(button, input, textarea, select, [tabindex="0"]):focus-visible {
+  outline: 2px solid var(--lp-accent);
+  outline-offset: -2px;
+}
+
+@media (max-width: 1344px) {
+  html[data-theme] .workspace { grid-template-columns: minmax(300px, .9fr) minmax(320px, 1fr) minmax(380px, 1.25fr); }
+  html[data-theme] .workspace > .panel { padding: 12px; border-right: 1px solid var(--lp-line); }
+}
+@media (max-width: 1100px) {
+  html[data-theme] .workspace { display: block; }
+  html[data-theme] .workspace > .panel { height: auto; min-height: 0; border-right: 0; border-bottom: 1px solid var(--lp-line); }
+  html[data-theme] .composer .prompt-field { min-height: 300px; }
+  html[data-theme] .workspace > .detail-panel { height: 700px; min-height: 600px; }
+  html[data-theme][data-desktop-titlebar="true"] .workspace { grid-auto-rows: auto; }
+}
+@media (max-width: 760px) {
+  html[data-theme] .workspace { display: block; padding: 0; }
+  html[data-theme] .workspace > .panel { margin: 0; padding: 14px; }
+  html[data-theme] .project-chip { flex-basis: auto; }
+  html[data-theme] .mode-tabs { grid-template-columns: 1fr 1.25fr; }
+  html[data-theme] .project-dock { padding-block: 8px; }
+  html[data-theme] .queue-panel > .section-heading { flex-wrap: wrap; gap: 10px; }
+  html[data-theme] .queue-heading-actions { flex-wrap: wrap; }
+}
+@media (max-width: 760px) {
+  html[data-theme] .app-header { display: flex; flex-direction: row; flex-wrap: wrap; height: auto; min-height: 0; align-items: center; gap: 8px; }
+  html[data-theme] .header-running-monitor { height: auto; margin: 0; order: 2; flex: 1 0 100%; width: 100%; min-width: 0; }
+  html[data-theme] .header-running-primary { min-width: 0; }
+  html[data-theme] .header-actions { flex-direction: row; flex-wrap: nowrap; height: auto; order: 3; flex: 1 0 100%; width: 100%; min-width: 0; }
+  html[data-theme] .provider-usage { flex: 1; width: auto; height: 42px; min-width: 0; }
+  html[data-theme] .header-running-tasks { max-width: 100%; }
+  html[data-theme] .composer { overflow: visible; }
+  html[data-theme] .workspace > .queue-panel { overflow: visible; }
+}
+@media (max-width: 380px) {
+  html[data-theme] .agent-settings .agent-tabs { gap: 3px; padding-inline: 5px; }
+  html[data-theme] .agent-settings .agent-tab { grid-template-columns: minmax(0, 1fr) 5px; }
+  html[data-theme] .agent-settings .agent-tab .agent-icon { display: none; }
+  html[data-theme] .mode-tab strong { font-size: 10px; }
+  html[data-theme] .terminal-heading-row { flex-wrap: wrap; }
+  html[data-theme] .composer .task-name-field { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  html[data-theme] .workspace *, html[data-theme] .project-dock *, html[data-theme] .app-header * { scroll-behavior: auto; transition: none; }
+}

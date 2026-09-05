@@ -7,6 +7,13 @@ tags: [relay, ui, header, monitoring, accessibility]
 
 # Monitor bar position
 
+> [!important]
+> **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
+> owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh
+> columns, Bottom monitor default, and accessible light/dark palette. Older visual descriptions
+> below are historical where they conflict; saved layout choices and execution contracts remain.
+
+
 The complete CC Relay monitor bar can be placed at the top or bottom of the application. The
 control lives inside the rightmost **Display** cog and always describes the available move,
 **Bottom** or **Top**.

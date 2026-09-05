@@ -7,6 +7,9 @@ tags: [relay, terminal, review, windows, macos]
 
 # Original Terminal Review
 
+> [!note]
+> Historical review of the external-window handoff. The later September 5 correction keeps the terminal inside CC Relay; see [[original-terminal-default]] and [[in-app-terminal-review]].
+
 ## Executive Summary
 
 **Ticket confidence: Medium.** The original CLI window is now the default task handoff and the existing conversation UI remains switchable. The implementation does not embed a native window inside Electron. macOS native opening was exercised live; Windows creation-time and native-window logic is covered by deterministic tests and still needs the existing real-machine release gate. OpenCode and Windows Claude execution use the explicit headless fallback.

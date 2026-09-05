@@ -20,3 +20,10 @@ Voice input is not bundled in the CC Relay installer. When the user explicitly c
 | Systran faster-whisper base model | Multilingual local speech model | MIT, [model repository](https://huggingface.co/Systran/faster-whisper-base) |
 
 The isolated Python environment retains each installed distribution's package metadata. Removing Relay's application data removes this optional runtime and model cache.
+
+## Launchpad interface fonts
+
+- Space Grotesk: Copyright 2020 The Space Grotesk Project Authors. SIL Open Font License 1.1, bundled in `public/fonts/licenses/Space-Grotesk-OFL.txt`.
+- IBM Plex Mono: Copyright 2017 IBM Corp., reserved font name Plex. SIL Open Font License 1.1, bundled in `public/fonts/licenses/IBM-Plex-Mono-OFL.txt`.
+
+The unmodified Latin WOFF2 assets come from the supplied CC Relay Launchpad v2 design bundle. Both families load locally without a network dependency.

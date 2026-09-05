@@ -40,9 +40,13 @@ test('a duplicate server start does not recover or dispatch queued work before b
       directory,
       '--relay-config-dir',
       directory,
-    ], { stdio: 'ignore' });
-    const [exitCode] = await once(child, 'exit');
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    const [exitCode] = await once(child, 'close');
     assert.equal(exitCode, 1);
+    assert.match(stderr, /EADDRINUSE/, 'must reach the port bind, not fail during initialization');
 
     const reopened = new RelayDatabase(join(directory, 'relay.sqlite'));
     assert.equal(reopened.getTask(task.id).status, 'running');

@@ -40,6 +40,55 @@ export class TaskOriginalTerminal {
     });
   }
 
+  async read(taskId, requestedThreadId = null, { isRequested = () => true } = {}) {
+    const unavailable = (message) => ({ state: 'unavailable', text: '', busy: false, message });
+    const task = this.database.getTask(taskId);
+    if (!task) return unavailable('This task no longer exists.');
+    if (this.platform !== 'darwin') {
+      return unavailable('The original terminal screen is unavailable on this platform. Use Relay activity below.');
+    }
+    const targets = this.targets(task);
+    if (!targets.length) {
+      if (!taskTerminalCandidates(task).length && ['queued', 'running'].includes(task.status)) {
+        return { state: 'connecting', text: '', busy: false, message: 'Waiting for this task’s terminal to connect.' };
+      }
+      return unavailable('This task has no verified interactive terminal. Its conversation and activity are available below.');
+    }
+    const target = requestedThreadId
+      ? targets.find((item) => item.id === requestedThreadId)
+      : targets.length === 1 ? targets[0] : null;
+    if (!target) {
+      return requestedThreadId
+        ? unavailable('That terminal is no longer part of this task.')
+        : { state: 'choose', text: '', busy: false, targets: targets.map(({ id, provider, label }) => ({ id, provider, label })) };
+    }
+    const launchId = this.launcher.terminalForThread(target.id)?.launchId;
+    const isCurrent = () => {
+      const latest = this.database.getTask(taskId);
+      return isRequested() && latest?.repo_path === task.repo_path && latest.provider === task.provider
+        && latest.mode === task.mode
+        && this.targets(latest).some((item) => item.id === target.id && item.provider === target.provider)
+        && this.launcher.terminalForThread(target.id)?.launchId === launchId;
+    };
+    try {
+      if (!isCurrent()) return unavailable('The task terminal changed before it could be read.');
+      const terminal = await this.launcher.readTerminalScreen(target.id, { ...this.knownThread(target), ...target });
+      if (!isCurrent()) return unavailable('The task terminal changed while it was being read.');
+      return {
+        ...terminal,
+        taskId,
+        threadId: target.id,
+        provider: target.provider,
+        source: 'Terminal.app',
+        capturedAt: new Date().toISOString(),
+        targets: targets.length > 1 ? targets.map(({ id, provider, label }) => ({ id, provider, label })) : [],
+        message: terminal.state === 'live' ? '' : 'The original terminal screen is temporarily unavailable. You can use Relay activity.',
+      };
+    } catch {
+      return unavailable('Could not read the original terminal screen. You can use Relay activity.');
+    }
+  }
+
   async open(taskId, requestedThreadId = null, { isRequested = () => true } = {}) {
     const task = this.database.getTask(taskId);
     if (!task) return { state: 'unavailable', message: 'This task no longer exists.' };

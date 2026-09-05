@@ -6,6 +6,13 @@ type: design
 
 # Compact Interface Density
 
+> [!important]
+> **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
+> owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh
+> columns, Bottom monitor default, and accessible light/dark palette. Older visual descriptions
+> below are historical where they conflict; saved layout choices and execution contracts remain.
+
+
 CC Relay uses a high-density desktop shell that keeps monitoring and project selection visible without taking space from active work.
 
 The macOS Electron title bar uses a `32px` renderer row with a centered `20px` Crowie mark. This is intentionally only a modest reduction from the original `36px` row so the native traffic lights retain comfortable surrounding space while the workspace gains four pixels of height. Browser and non-macOS shells do not receive this row. See [[interface-layout]] and [[packaged-renderer-startup]].

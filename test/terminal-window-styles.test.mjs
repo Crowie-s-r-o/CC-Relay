@@ -61,16 +61,18 @@ test('the card is a fixed header over a mount that owns all remaining height', (
   assert.match(rules, /\.terminal-window-close \{[^}]*cursor: pointer;/s);
 });
 
-test('the original terminal handoff replaces the screen replica in the default view', () => {
+test('the original terminal screen and composer fill the in-app default view', () => {
   const rules = windowRules();
   assert.match(
     rules,
-    /\.native-terminal-screen \{[^}]*display: grid;[^}]*grid-template-rows: auto minmax\(0, 1fr\);[^}]*overflow: hidden;/s,
+    /\.native-terminal-screen \{[^}]*display: grid;[^}]*grid-template-rows: auto minmax\(0, 1fr\) auto;[^}]*overflow: hidden;/s,
   );
-  assert.doesNotMatch(rules, /#native-terminal-screen-output/);
+  assert.match(rules, /#native-terminal-screen-output \{[^}]*max-height: none;[^}]*overflow: auto;/s);
+  assert.match(rules, /#native-terminal-screen-output:focus-visible/);
+  assert.doesNotMatch(style, /native-terminal-hidden/);
   assert.match(
     rules,
-    /#terminal-window-mount > \.events-section\[data-terminal-window="open"\]\[data-terminal-surface="native"\] \{\s*grid-template-rows: minmax\(0, 1fr\) auto;\s*\}/,
+    /#terminal-window-mount > \.events-section\[data-terminal-window="open"\]\[data-terminal-surface="native"\] \{\s*grid-template-rows: minmax\(0, 1fr\) auto auto;\s*\}/,
   );
   assert.match(
     rules,
@@ -503,4 +505,7 @@ test('no em dash characters reach the terminal window sources', () => {
 test('the inline original terminal cannot expand its grid beyond the available pane', () => {
   assert.match(style, /\.detail-panel #task-detail \.events-section\[data-terminal-surface\] \{\s*grid-template-columns: minmax\(0, 1fr\);/);
   assert.match(style, /\.native-terminal-screen-notice \{\s*min-width: 0;\s*grid-template-columns: minmax\(0, 560px\);/);
+  // This later rule ties the docked grid on specificity unless it excludes the dock.
+  // Applying four inline rows inside the three-row dialog collapses the composer.
+  assert.match(style, /\.detail-panel #task-detail \.events-section\[data-terminal-surface="native"\]:not\(\[data-terminal-window="open"\]\) \{\s*grid-template-rows: auto minmax\(0, 1fr\) auto auto;/);
 });

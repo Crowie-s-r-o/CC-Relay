@@ -493,12 +493,12 @@ const state = {
     try {
       const saved = JSON.parse(localStorage.getItem('relay.panelWidths') || '{}');
       return {
-        composer: Number.isFinite(saved.composer) ? saved.composer : 580,
+        composer: Number.isFinite(saved.composer) ? saved.composer : 420,
         queue: Number.isFinite(saved.queue) ? saved.queue : null,
         legacyDetail: Number.isFinite(saved.detail) ? saved.detail : null,
       };
     } catch {
-      return { composer: 580, queue: null, legacyDetail: null };
+      return { composer: 420, queue: null, legacyDetail: null };
     }
   })(),
   terminalHeight: (() => {
@@ -578,7 +578,8 @@ const state = {
   // reparented .events-section returns to, and its presence means the window is docked.
   inlineEventFilter: 'all',
   terminalWindowDock: null,
-  nativeTerminalScreen: { taskId: null, state: 'ready', message: '', targets: [] },
+  nativeTerminalScreen: { taskId: null, threadId: null, requestedThreadId: null, state: 'ready', text: '', message: '', targets: [] },
+  nativeTerminalScreenTimer: null,
   originalTerminalAbort: null,
   nativeTerminalScreenPending: false,
   nativeTerminalScreenSequence: 0,
@@ -950,6 +951,7 @@ const elements = {
   nativeTerminalScreenTitle: document.querySelector('#native-terminal-screen-title'),
   nativeTerminalScreenState: document.querySelector('#native-terminal-screen-state'),
   nativeTerminalScreenNotice: document.querySelector('#native-terminal-screen-notice'),
+  nativeTerminalScreenOutput: document.querySelector('#native-terminal-screen-output'),
   continuationForm: document.querySelector('#task-continuation-form'),
   continuationLabel: document.querySelector('#task-continuation-label'),
   continuationContext: document.querySelector('#task-continuation-context'),
@@ -4273,7 +4275,7 @@ const TERMINAL_WINDOW_VIEW_TITLES = {
 };
 
 const TERMINAL_WINDOW_VIEW_SUMMARIES = {
-  all: 'Use the original CLI in its own terminal window.',
+  all: 'The original terminal screen inside CC Relay. Send follow-ups below.',
   activity: 'All recorded task activity.',
   conversation: 'Your messages and AI responses in order.',
   mine: 'Only the messages you sent.',
@@ -4295,11 +4297,13 @@ function nativeTerminalViewIsActive() {
 }
 
 function nativeTerminalCopyLabel() {
-  return 'Copy log';
+  return nativeTerminalViewIsActive() && ['live', 'stale'].includes(state.nativeTerminalScreen.state)
+    ? 'Copy screen' : 'Copy log';
 }
 
 function stopNativeTerminalScreenPolling() {
-  // Invalidates a pending open response. No output scraping or background focus polling.
+  window.clearTimeout(state.nativeTerminalScreenTimer);
+  state.nativeTerminalScreenTimer = null;
   state.nativeTerminalScreenSequence += 1;
   state.originalTerminalAbort?.abort();
   state.originalTerminalAbort = null;
@@ -4307,24 +4311,52 @@ function stopNativeTerminalScreenPolling() {
 }
 
 function resetNativeTerminalScreen(taskId) {
-  state.nativeTerminalScreen = { taskId, state: 'ready', message: '', targets: [] };
+  state.nativeTerminalScreen = { taskId, threadId: null, requestedThreadId: null, state: 'ready', text: '', message: '', targets: [] };
+  elements.nativeTerminalScreenOutput.textContent = '';
+  elements.nativeTerminalScreenOutput.scrollTop = 0;
+  elements.nativeTerminalScreenOutput.scrollLeft = 0;
+}
+
+function scheduleNativeTerminalScreenPolling() {
+  if (!nativeTerminalViewIsActive() || document.hidden || state.nativeTerminalScreenPending
+    || state.nativeTerminalScreenTimer !== null || state.status?.capabilities?.nativeTerminalScreen !== true
+    || state.nativeTerminalScreen.state === 'choose') return;
+  const delay = state.nativeTerminalScreen.state === 'ready' ? 0
+    : state.nativeTerminalScreen.state === 'live' ? 1000 : 5000;
+  state.nativeTerminalScreenTimer = window.setTimeout(() => {
+    state.nativeTerminalScreenTimer = null;
+    void refreshNativeTerminalScreen();
+  }, delay);
 }
 
 function renderNativeTerminalScreen() {
   const screen = state.nativeTerminalScreen;
-  const provider = providerLabel(taskProvider(state.selectedTaskForEvents || {}));
-  const fallback = screen.state === 'unavailable';
+  const provider = providerLabel(screen.provider || taskProvider(state.selectedTaskForEvents || {}));
+  const hasScreen = ['live', 'stale'].includes(screen.state);
+  const output = elements.nativeTerminalScreenOutput;
   elements.nativeTerminalScreen.dataset.state = screen.state;
-  elements.nativeTerminalScreen.setAttribute('aria-busy', String(state.nativeTerminalScreenPending));
+  elements.nativeTerminalScreen.setAttribute('aria-busy', String(state.nativeTerminalScreenPending && !hasScreen));
   elements.nativeTerminalScreenTitle.textContent = `${provider} · Original terminal`;
-  elements.nativeTerminalScreenState.textContent = state.nativeTerminalScreenPending
-    ? 'Opening original terminal' : fallback ? 'Relay activity fallback' : 'Native CLI';
-  elements.nativeTerminalScreenNotice.querySelector('strong').textContent = fallback
-    ? 'Using Relay activity' : screen.state === 'choose' ? 'Choose this task’s terminal'
-      : screen.state === 'opened' ? 'Original terminal opened' : 'Use the original terminal';
+  elements.nativeTerminalScreenState.textContent = screen.state === 'live' ? 'Live screen'
+    : screen.state === 'stale' ? 'Last screen · reconnecting'
+      : screen.state === 'unavailable' ? 'Relay activity fallback'
+        : screen.state === 'choose' ? 'Choose terminal' : 'Connecting';
+  output.hidden = !hasScreen;
+  if (hasScreen && output.textContent !== screen.text && !textSelectionGuard.isActive()) {
+    const follow = output.scrollHeight - output.clientHeight - output.scrollTop < 32;
+    const scrollTop = output.scrollTop;
+    output.textContent = screen.text;
+    output.scrollTop = follow ? output.scrollHeight : scrollTop;
+  }
+  elements.nativeTerminalScreenNotice.hidden = hasScreen;
+  elements.nativeTerminalScreenNotice.querySelector('strong').textContent = screen.state === 'unavailable'
+    ? 'Using Relay activity' : screen.state === 'choose' ? 'Choose this task’s terminal' : 'Connecting to the original terminal';
   elements.nativeTerminalScreenNotice.querySelector('span').textContent = screen.message
-    || 'Work in the CLI’s own window with its keyboard shortcuts, menus, and full controls. Switch to Relay activity or messages here anytime.';
-  if (elements.originalTerminalOpen) elements.originalTerminalOpen.disabled = state.nativeTerminalScreenPending;
+    || 'The terminal screen appears here in CC Relay. Use the composer below to send a follow-up.';
+  if (elements.originalTerminalOpen) {
+    elements.originalTerminalOpen.textContent = terminalWindowIsDocked() ? 'Refresh screen' : 'Show original terminal';
+    elements.originalTerminalOpen.disabled = terminalWindowIsDocked() && state.nativeTerminalScreenPending;
+  }
   const targetSignature = JSON.stringify(screen.targets || []);
   if (elements.nativeTerminalTargets && elements.nativeTerminalTargets.dataset.signature !== targetSignature) {
     elements.nativeTerminalTargets.dataset.signature = targetSignature;
@@ -4332,39 +4364,66 @@ function renderNativeTerminalScreen() {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = `${providerLabel(target.provider)} · ${target.label}`;
+      button.setAttribute('aria-pressed', String(target.id === screen.threadId));
       button.addEventListener('click', () => void refreshNativeTerminalScreen(target.id));
       return button;
     }));
   }
+  for (const [index, button] of Array.from(elements.nativeTerminalTargets?.children || []).entries()) {
+    button.setAttribute('aria-pressed', String(screen.targets[index]?.id === screen.threadId));
+  }
 }
 
 async function refreshNativeTerminalScreen(threadId = null) {
-  if (!nativeTerminalViewIsActive() || state.nativeTerminalScreenPending) return;
+  if (!nativeTerminalViewIsActive() || document.hidden) return;
+  if (threadId && threadId !== state.nativeTerminalScreen.threadId) {
+    stopNativeTerminalScreenPolling();
+    resetNativeTerminalScreen(state.selectedTaskId);
+    state.nativeTerminalScreen.threadId = threadId;
+    state.nativeTerminalScreen.requestedThreadId = threadId;
+  }
+  if (state.nativeTerminalScreenPending) return;
+  window.clearTimeout(state.nativeTerminalScreenTimer);
+  state.nativeTerminalScreenTimer = null;
   const taskId = state.selectedTaskId;
+  if (state.nativeTerminalScreen.taskId !== taskId) resetNativeTerminalScreen(taskId);
+  const previous = state.nativeTerminalScreen;
+  // Only pin a conversation after an explicit workflow choice. A direct task can acquire
+  // a fresh terminal on retry, so automatic reads must resolve its current owned session.
+  const selectedThreadId = threadId || previous.requestedThreadId;
   const sequence = ++state.nativeTerminalScreenSequence;
   const controller = new AbortController();
   state.originalTerminalAbort = controller;
   state.nativeTerminalScreenPending = true;
-  resetNativeTerminalScreen(taskId);
   renderNativeTerminalScreen();
   try {
-    if (state.status?.capabilities?.originalTerminal !== true) {
-      state.nativeTerminalScreen = { taskId, state: 'unavailable', message: 'Original terminal opening is unavailable. Use Relay activity below, or restart Relay after updating.' };
+    if (state.status?.capabilities?.nativeTerminalScreen !== true) {
+      state.nativeTerminalScreen = { ...previous, state: 'unavailable', text: '', message: 'The original terminal screen is unavailable. Use Relay activity below.' };
       return;
     }
-    const { terminal } = await api(`/api/tasks/${taskId}/terminal/open`, {
-      method: 'POST', body: JSON.stringify({ threadId }), timeoutMs: 20_000, signal: controller.signal,
+    const query = selectedThreadId ? `?threadId=${encodeURIComponent(selectedThreadId)}` : '';
+    const { terminal } = await api(`/api/tasks/${taskId}/terminal-screen${query}`, {
+      timeoutMs: 10_000, signal: controller.signal,
     });
     if (sequence !== state.nativeTerminalScreenSequence || state.selectedTaskId !== taskId || !nativeTerminalViewIsActive()) return;
+    const live = terminal?.state === 'live' && typeof terminal.text === 'string';
+    const stale = !live && terminal?.state !== 'choose' && ['live', 'stale'].includes(previous.state);
     state.nativeTerminalScreen = {
       taskId,
-      state: ['opened', 'choose', 'unavailable'].includes(terminal?.state) ? terminal.state : 'unavailable',
+      threadId: terminal?.threadId || selectedThreadId,
+      requestedThreadId: selectedThreadId,
+      state: live ? 'live' : stale ? 'stale'
+        : ['choose', 'connecting'].includes(terminal?.state) ? terminal.state : 'unavailable',
+      text: live ? terminal.text.slice(-250_000) : stale ? previous.text : '',
+      provider: terminal?.provider || previous.provider,
       message: typeof terminal?.message === 'string' ? terminal.message : '',
       targets: Array.isArray(terminal?.targets) ? terminal.targets : [],
     };
   } catch (error) {
     if (sequence !== state.nativeTerminalScreenSequence || state.selectedTaskId !== taskId) return;
-    state.nativeTerminalScreen = { taskId, state: 'unavailable', message: `${error.message} Use Relay activity below.` };
+    state.nativeTerminalScreen = { ...previous,
+      state: ['live', 'stale'].includes(previous.state) ? 'stale' : 'unavailable',
+      message: `${error.message} Use Relay activity below.` };
   } finally {
     if (sequence === state.nativeTerminalScreenSequence) {
       state.originalTerminalAbort = null;
@@ -4380,6 +4439,11 @@ function syncTerminalWindowSurface() {
     stopNativeTerminalScreenPolling();
     resetNativeTerminalScreen(state.selectedTaskId);
   }
+  if (native && state.status && state.status.capabilities?.nativeTerminalScreen !== true) {
+    stopNativeTerminalScreenPolling();
+    state.nativeTerminalScreen = { ...state.nativeTerminalScreen, state: 'unavailable', text: '',
+      message: 'The original terminal screen is unavailable. Use Relay activity below.' };
+  }
   const fallback = native && state.nativeTerminalScreen.state === 'unavailable';
   if (native) elements.eventsSection.dataset.terminalSurface = fallback ? 'fallback' : 'native';
   else delete elements.eventsSection.dataset.terminalSurface;
@@ -4387,15 +4451,16 @@ function syncTerminalWindowSurface() {
   elements.detailEvents.hidden = native && !fallback;
   elements.eventOverview.hidden = native;
   elements.thinkingVisibilityButton.hidden = native && !fallback;
-  elements.copyEventsButton.hidden = native && !fallback;
-  elements.copyEventsButton.textContent = 'Copy log';
-  elements.copyEventsButton.disabled = state.visibleEventEntries.length === 0;
-  // All interactive CLI input happens in the native window. The existing composer stays in
-  // the activity and message views; switching surfaces never clears its draft or attachments.
-  if (elements.continuationForm) elements.continuationForm.classList.toggle('native-terminal-hidden', native && !fallback);
+  elements.copyEventsButton.hidden = false;
+  elements.copyEventsButton.textContent = nativeTerminalCopyLabel();
+  elements.copyEventsButton.disabled = native && !fallback
+    ? !state.nativeTerminalScreen.text : state.visibleEventEntries.length === 0;
+  // The same task composer stays available in the in-app screen and the activity views.
   elements.originalTerminalButton?.setAttribute('aria-pressed', String(state.terminalMode === 'native'));
-  if (native) renderNativeTerminalScreen();
-  else if (state.nativeTerminalScreenPending) stopNativeTerminalScreenPolling();
+  if (native) {
+    renderNativeTerminalScreen();
+    scheduleNativeTerminalScreenPolling();
+  } else stopNativeTerminalScreenPolling();
 }
 
 function useOriginalTerminal() {
@@ -4406,6 +4471,19 @@ function useOriginalTerminal() {
   if (terminalWindowIsDocked()) setTerminalWindowView('all');
   else rerenderTerminalWindowStream();
   void refreshNativeTerminalScreen();
+}
+
+function showOriginalTerminal() {
+  if (!state.selectedTaskId || elements.taskDetail.hidden) return;
+  setTerminalWindowView('all', { render: false });
+  if (terminalWindowIsDocked()) {
+    if (['unavailable', 'stale'].includes(state.nativeTerminalScreen.state)) {
+      stopNativeTerminalScreenPolling();
+      resetNativeTerminalScreen(state.selectedTaskId);
+    }
+    syncTerminalWindowSurface();
+    void refreshNativeTerminalScreen();
+  } else openTerminalWindow();
 }
 
 function useRelayActivity() {
@@ -4442,7 +4520,7 @@ function updateTerminalWindowControls(filterCounts = {}) {
     button.setAttribute('aria-pressed', String(view === state.terminalWindowView));
     button.setAttribute(
       'aria-label',
-      view === 'all' ? 'Open the original CLI terminal' : `${text}: ${count} signal${count === 1 ? '' : 's'}`,
+      view === 'all' ? 'Show the original terminal inside CC Relay' : `${text}: ${count} signal${count === 1 ? '' : 's'}`,
     );
     const counter = button.querySelector('[data-terminal-window-view-count]');
     if (counter) counter.textContent = count.toLocaleString();
@@ -4497,6 +4575,10 @@ function openTerminalWindow() {
     toolsNextSibling: elements.eventTools.nextSibling,
     scrollTop: elements.detailEvents.scrollTop,
     follow: state.eventFollow,
+    nativeScrollTop: elements.nativeTerminalScreenOutput.scrollTop,
+    nativeScrollLeft: elements.nativeTerminalScreenOutput.scrollLeft,
+    nativeFollow: elements.nativeTerminalScreenOutput.scrollHeight
+      - elements.nativeTerminalScreenOutput.clientHeight - elements.nativeTerminalScreenOutput.scrollTop < 32,
   };
   const follow = state.eventFollow;
   const restoreScrollTop = state.terminalWindowDock.scrollTop;
@@ -4517,12 +4599,19 @@ function openTerminalWindow() {
   elements.terminalWindowModal.showModal();
   restoreEventOutputScroll();
   rerenderTerminalWindowStream({ forceBottom: follow });
+  restoreNativeTerminalScreenScroll(state.terminalWindowDock);
   if (!follow) elements.detailEvents.scrollTop = restoreScrollTop;
   const pressed = elements.terminalWindowViews.find(
     (button) => button.dataset.terminalWindowView === state.terminalWindowView,
   ) || elements.terminalWindowViews[0];
   pressed?.focus();
   if (nativeTerminalViewIsActive()) void refreshNativeTerminalScreen();
+}
+
+function restoreNativeTerminalScreenScroll(dock) {
+  const output = elements.nativeTerminalScreenOutput;
+  output.scrollTop = dock.nativeFollow ? output.scrollHeight : dock.nativeScrollTop;
+  output.scrollLeft = dock.nativeScrollLeft;
 }
 
 /*
@@ -4566,6 +4655,7 @@ function undockTerminalWindow() {
   state.eventFollow = dock.follow;
   restoreEventOutputScroll();
   rerenderTerminalWindowStream({ forceBottom: dock.follow });
+  restoreNativeTerminalScreenScroll(dock);
   if (!dock.follow) elements.detailEvents.scrollTop = dock.scrollTop;
   // The section is back inside the detail grid, so the resize handle can describe it again.
   applyTerminalHeight();
@@ -4630,6 +4720,7 @@ function hideTaskDetailPanel() {
   closeTerminalWindow();
   closeTaskDetailModal();
   elements.taskDetail.hidden = true;
+  stopNativeTerminalScreenPolling();
   elements.emptyDetail.hidden = false;
   /*
    * A real dialog fires close on a queued task, so its own handler already lands on the
@@ -12849,7 +12940,7 @@ elements.historyNext.addEventListener('click', () => {
   renderTasks();
 });
 function constrainPanelWidths(composer, queue) {
-  const available = Math.max(elements.workspace.clientWidth - 64, 0);
+  const available = Math.max(elements.workspace.clientWidth - 16, 0);
   const minimumQueue = 360;
   const minimumComposer = 400;
   const minimumDetail = 420;
@@ -12865,10 +12956,10 @@ function constrainPanelWidths(composer, queue) {
 
 function applyPanelWidths({ persist = false } = {}) {
   if (!Number.isFinite(state.panelWidths.queue)) {
-    const available = Math.max(elements.workspace.clientWidth - 64, 0);
+    const available = Math.max(elements.workspace.clientWidth - 16, 0);
     state.panelWidths.queue = Number.isFinite(state.panelWidths.legacyDetail)
-      ? available - state.panelWidths.composer - state.panelWidths.legacyDetail
-      : 500;
+      ? available - 48 - state.panelWidths.composer - state.panelWidths.legacyDetail
+      : 440;
   }
   state.panelWidths = constrainPanelWidths(state.panelWidths.composer, state.panelWidths.queue);
   elements.workspace.style.setProperty('--composer-width', `${state.panelWidths.composer}px`);
@@ -12876,10 +12967,10 @@ function applyPanelWidths({ persist = false } = {}) {
   elements.composerQueueResizer.setAttribute('aria-valuenow', String(Math.round(state.panelWidths.composer)));
   elements.queueDetailResizer.setAttribute('aria-valuenow', String(Math.round(state.panelWidths.queue)));
   elements.composerQueueResizer.setAttribute('aria-valuemin', '400');
-  elements.composerQueueResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(400, elements.workspace.clientWidth - state.panelWidths.queue - 484))));
+  elements.composerQueueResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(400, elements.workspace.clientWidth - state.panelWidths.queue - 436))));
   elements.composerQueueResizer.setAttribute('aria-valuetext', `Prompt panel ${Math.round(state.panelWidths.composer)} pixels wide`);
   elements.queueDetailResizer.setAttribute('aria-valuemin', '360');
-  elements.queueDetailResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(360, elements.workspace.clientWidth - state.panelWidths.composer - 484))));
+  elements.queueDetailResizer.setAttribute('aria-valuemax', String(Math.round(Math.max(360, elements.workspace.clientWidth - state.panelWidths.composer - 436))));
   elements.queueDetailResizer.setAttribute('aria-valuetext', `Task queue ${Math.round(state.panelWidths.queue)} pixels wide`);
   if (persist) {
     queueUiPreferencesSave();
@@ -13805,9 +13896,10 @@ window.addEventListener('blur', () => {
 });
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') {
+    stopNativeTerminalScreenPolling();
     state.activeVoiceShortcut = null;
     voiceRecorder?.release();
-  }
+  } else if (nativeTerminalViewIsActive()) void refreshNativeTerminalScreen();
 });
 elements.taskEditClose.addEventListener('click', closeTaskEditor);
 elements.taskEditCancel.addEventListener('click', closeTaskEditor);
@@ -14010,7 +14102,7 @@ for (const button of elements.eventFilters) {
 }
 
 elements.originalTerminalButton.addEventListener('click', useOriginalTerminal);
-elements.originalTerminalOpen.addEventListener('click', () => void refreshNativeTerminalScreen());
+elements.originalTerminalOpen.addEventListener('click', showOriginalTerminal);
 elements.originalTerminalFallback.addEventListener('click', useRelayActivity);
 elements.terminalWindowOpenButton.addEventListener('click', openTerminalWindow);
 elements.terminalWindowClose.addEventListener('click', closeTerminalWindow);
@@ -14080,7 +14172,8 @@ elements.continuationInput.addEventListener('keydown', (event) => {
 });
 
 elements.copyEventsButton.addEventListener('click', async () => {
-  const text = state.visibleEventEntries
+  const text = nativeTerminalCopyLabel() === 'Copy screen'
+    ? elements.nativeTerminalScreenOutput.textContent : state.visibleEventEntries
       .map((entry) => eventCopyText(entry, state.selectedTaskForEvents))
       .join('\n\n');
   try {

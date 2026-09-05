@@ -72,6 +72,8 @@ try {
     throw new Error('README must not describe the PolyForm-licensed project as open source.');
   }
   for (const [fontName, licensePath] of [
+    ['Space Grotesk', 'public/fonts/licenses/Space-Grotesk-OFL.txt'],
+    ['IBM Plex Mono', 'public/fonts/licenses/IBM-Plex-Mono-OFL.txt'],
     ['Instrument Sans', 'public/fonts/licenses/Instrument-Sans-OFL.txt'],
     ['JetBrains Mono', 'public/fonts/licenses/JetBrains-Mono-OFL.txt'],
     ['Source Serif 4', 'public/fonts/licenses/Source-Serif-OFL.txt'],

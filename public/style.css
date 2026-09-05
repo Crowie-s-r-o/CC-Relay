@@ -19200,11 +19200,11 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   background: #08090d;
 }
 
-/* The Original terminal view hands control to the task's existing native CLI window. */
+/* The original terminal screen stays inside the task's Relay panel and dialog. */
 .native-terminal-screen {
   position: relative;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -19213,8 +19213,32 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
 }
 
 .native-terminal-screen[hidden],
+.native-terminal-screen #native-terminal-screen-output[hidden],
 .native-terminal-screen-notice[hidden] {
   display: none;
+}
+
+#native-terminal-screen-output {
+  grid-row: 2;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  margin: 0;
+  padding: 14px 16px;
+  overflow: auto;
+  border: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  font: 12px/1.5 var(--font-mono);
+  white-space: pre;
+  overflow-wrap: normal;
+  scrollbar-width: thin;
+}
+
+#native-terminal-screen-output:focus-visible {
+  outline: 2px solid #7aa2f7;
+  outline-offset: -2px;
 }
 
 .native-terminal-screen-bar {
@@ -19296,9 +19320,9 @@ html[data-theme="dark"] .project-close-actions .button.danger:hover:not(:disable
   box-shadow: none;
 }
 
-/* Original-terminal input belongs to the native window; the status stays in Relay. */
+/* The in-app screen, continuation composer, and status share the docked pane. */
 #terminal-window-mount > .events-section[data-terminal-window="open"][data-terminal-surface="native"] {
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(0, 1fr) auto auto;
 }
 
 .events-section[data-terminal-window="open"][data-terminal-surface="native"] .event-overview,
@@ -19584,8 +19608,8 @@ html[data-theme="dark"] .terminal-window-close:hover {
 .detail-panel #task-detail .events-section[data-terminal-surface] {
   grid-template-columns: minmax(0, 1fr);
 }
-.detail-panel #task-detail .events-section[data-terminal-surface="native"] {
-  grid-template-rows: auto minmax(0, 1fr) auto;
+.detail-panel #task-detail .events-section[data-terminal-surface="native"]:not([data-terminal-window="open"]) {
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
 }
 .detail-panel #task-detail .events-section[data-terminal-surface="fallback"] {
   grid-template-rows: auto auto minmax(0, 1fr) auto auto;
@@ -19593,7 +19617,6 @@ html[data-theme="dark"] .terminal-window-close:hover {
 #terminal-window-mount > .events-section[data-terminal-window="open"][data-terminal-surface="fallback"] {
   grid-template-rows: auto minmax(0, 1fr) auto auto;
 }
-.native-terminal-hidden,
 .events-section[data-terminal-surface] #detail-events[hidden],
 .events-section[data-terminal-surface] .event-overview[hidden],
 .event-tools button[hidden] {
@@ -19618,6 +19641,13 @@ html[data-theme="dark"] .terminal-window-close:hover {
   margin-top: 10px;
 }
 .original-terminal-actions:empty { display: none; }
+.native-terminal-screen-actions {
+  grid-row: 3;
+  justify-content: flex-start;
+  margin: 0;
+  padding: 8px 12px;
+}
+.native-terminal-screen-actions .original-terminal-actions { margin: 0; }
 .original-terminal-actions button {
   min-height: 34px;
   padding: 7px 12px;
@@ -19661,6 +19691,7 @@ html:not([data-theme="dark"]) .original-terminal-actions button {
   background: #fff;
 }
 html:not([data-theme="dark"]) .original-terminal-actions button:focus-visible { outline-color: #2455ad; }
+html:not([data-theme="dark"]) #native-terminal-screen-output:focus-visible { outline-color: #2455ad; }
 @media (max-width: 640px) {
   .native-terminal-screen-notice { padding: 12px; }
   .original-terminal-actions { gap: 6px; }

@@ -6,6 +6,13 @@ type: design
 
 # Active Project Composer Colors
 
+> [!important]
+> **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
+> owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh
+> columns, Bottom monitor default, and accessible light/dark palette. Older visual descriptions
+> below are historical where they conflict; saved layout choices and execution contracts remain.
+
+
 The prompt composer now carries the same collision-resolved `project-color-N` class as the selected
 Launchpad project. `renderComposerProjectIdentity()` applies the class to `#task-form` whenever
 projects render, including after active-project changes and project-list collision resolution.

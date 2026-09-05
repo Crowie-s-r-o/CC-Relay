@@ -13,7 +13,7 @@ test('monitor bar position is restored before the stylesheet paints', () => {
   assert.ok(initializer < stylesheet);
   assert.match(
     html,
-    /dataset\.headerPosition =[\s\S]*?=== 'bottom' \? 'bottom' : 'top'/,
+    /dataset\.headerPosition =[\s\S]*?=== 'top' \? 'top' : 'bottom'/,
   );
 });
 

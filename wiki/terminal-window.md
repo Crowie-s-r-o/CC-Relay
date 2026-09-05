@@ -13,18 +13,19 @@ tags:
 # Terminal Window
 
 > [!important]
-> **September 5: the default now opens the original CLI window on macOS and Windows.**
-> The text mirror described in the historical sections below has been replaced by the native
-> handoff in [[original-terminal-default]]. The current rail is Original terminal, Relay activity,
-> Conversation, My messages, and provider messages. The two-node dock and focus invariants remain
-> binding. Headless and unavailable terminals show the activity fallback.
+> **September 5 correction: Original terminal now stays inside CC Relay.**
+> **Show original terminal** opens this dialog with the original terminal screen and the existing
+> continuation composer. It never foregrounds Terminal.app. See [[original-terminal-default]] and
+> [[in-app-terminal-review]] for the current polling, ownership, fallback, and three-row native
+> layout contracts. Earlier native handoff notes are historical. The two-node dock and focus
+> invariants below still apply.
 
 The task terminal can be opened in a near full-viewport **Terminal window**. A **Window** control sits
 in the events toolbar (`.event-tools`, beside **Thinking** and **Copy log**) and opens
 `<dialog id="terminal-window-modal">`. The control is disabled while no task is selected, or while the
 detail panel is hidden, because the window has nothing to show without a live terminal underneath it.
 
-The window opens the task's original CLI window by default and offers a five-view rail
+The window displays the task's original terminal screen inside Relay by default and offers a five-view rail
 (`#terminal-window-views`) so the operator can switch to Relay's structured conversation without
 leaving the window. The view the operator selects becomes the default the window opens on next time,
 for any task, across restarts. See [[terminal-conversation-filters]] for the event-ledger role
@@ -34,7 +35,7 @@ contract and [[interface-layout]] for the surrounding execution ledger.
 
 | View id | Rail label | Meaning |
 | --- | --- | --- |
-| `all` | **Original terminal** | opens the exact existing native CLI window |
+| `all` | **Original terminal** | shows the exact original terminal screen inside Relay |
 | `activity` | **Relay activity** | all recorded Relay events and the continuation composer |
 | `conversation` | **Conversation** | the inline `conversation` filter |
 | `mine` | **My messages** | the inline `mine` filter |

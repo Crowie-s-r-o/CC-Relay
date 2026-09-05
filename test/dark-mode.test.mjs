@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const html = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
 const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const launchpad = readFileSync(new URL('../public/launchpad.css', import.meta.url), 'utf8');
 const style = readFileSync(new URL('../public/style.css', import.meta.url), 'utf8');
 
 test('theme is restored before the stylesheet paints', () => {
@@ -49,31 +50,33 @@ function contrast(left, right) {
   return (values[0] + 0.05) / (values[1] + 0.05);
 }
 
-test('terminal-derived dark text tokens meet WCAG contrast on raised controls', () => {
-  for (const foreground of ['#e9ebef', '#d3d6dc', '#9ca2ad', '#858b96']) {
-    assert.ok(
-      contrast(foreground, '#1b1d22') >= 4.5,
-      `${foreground} must remain readable on the raised terminal surface`,
-    );
+function launchpadColor(theme, token) {
+  const selector = theme === 'dark' ? 'html[data-theme="dark"] {' : ':root {';
+  const start = launchpad.indexOf(selector);
+  const block = launchpad.slice(start, launchpad.indexOf('}', start));
+  const value = block.match(new RegExp(`${token}: (#[0-9a-f]{6});`))?.[1];
+  assert.ok(value, `${theme} defines ${token}`);
+  return value;
+}
+
+test('Launchpad text and primary action meet AA contrast in both themes', () => {
+  for (const theme of ['light', 'dark']) {
+    for (const token of ['--lp-text', '--lp-body', '--lp-muted']) {
+      for (const surface of ['--lp-canvas', '--lp-panel', '--lp-surface', '--lp-control']) {
+        assert.ok(contrast(launchpadColor(theme, token), launchpadColor(theme, surface)) >= 4.5,
+          `${theme} ${token} must be readable on ${surface}`);
+      }
+    }
+    assert.ok(contrast(launchpadColor(theme, '--lp-action-ink'), launchpadColor(theme, '--lp-accent')) >= 4.5);
   }
-  assert.ok(contrast('#071021', '#7aa2f7') >= 4.5);
 });
 
-test('the dark shell is neutral rather than navy', () => {
-  const block = style.slice(
-    style.indexOf('html[data-theme="dark"] {'),
-    style.indexOf('html[data-theme="dark"] body'),
-  );
-  const surfaces = ['--app-well', '--app-panel', '--app-control', '--app-border', '--app-text'];
-  for (const name of surfaces) {
-    const hex = block.match(new RegExp(`${name}: (#[0-9a-f]{6});`))?.[1];
-    assert.ok(hex, `${name} must be declared in the dark token block`);
-    const [red, green, blue] = channels(hex);
-    assert.ok(
-      Math.max(red, green, blue) - Math.min(red, green, blue) <= 14,
-      `${name} (${hex}) must stay a neutral grey, not a tinted navy`,
-    );
-  }
+test('Launchpad owns final chrome tokens after the legacy stylesheet', () => {
+  assert.ok(html.indexOf('href="/launchpad.css"') > html.indexOf('href="/style.css"'));
+  assert.match(launchpad, /--app-panel: var\(--lp-panel\);/);
+  assert.match(launchpad, /--app-text-quiet: var\(--lp-muted\);/);
+  assert.equal(launchpadColor('dark', '--lp-canvas'), '#0b0e12');
+  assert.equal(launchpadColor('dark', '--lp-panel'), '#0d1116');
 });
 
 test('dark task evidence overrides higher-specificity light document surfaces', () => {

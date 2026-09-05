@@ -210,14 +210,6 @@ const claudeExecution = new ClaudeExecutionRunner({
   diagnostic,
 });
 const opencodeRuntime = new OpenCodeRuntimeStatus();
-const taskOriginalTerminal = new TaskOriginalTerminal({
-  database,
-  launcher: projectLauncher,
-  knownThread: (thread) => thread.provider === 'claude'
-    ? claudeSessions.knownSession(thread.id)
-    : codexAppServer.knownThread(thread.id),
-  claudeMode: (threadId) => claudeExecution.activeBySession.get(threadId)?.executionMode,
-});
 const opencodeRunner = new OpenCodeRunner({ command: () => opencodeRuntime.command });
 const planCouncil = new PlanCouncilRunner({
   claude: PLAN_COUNCIL_TERMINAL_EXECUTION ? claudeExecution : claudeRunner,
@@ -274,6 +266,14 @@ const projectLauncher = new ProjectLauncher({
   reserveCodexLaunch: (path, launchId) => codexAppServer.reserveLaunchClient(path, launchId),
   codexClientForThread: (threadId) => codexAppServer.runtimeClientForThread(threadId),
   claudeSettingsForSession: (sessionId) => claudeHookBridge.settingsForSession(sessionId),
+});
+const taskOriginalTerminal = new TaskOriginalTerminal({
+  database,
+  launcher: projectLauncher,
+  knownThread: (thread) => thread.provider === 'claude'
+    ? claudeSessions.knownSession(thread.id)
+    : codexAppServer.knownThread(thread.id),
+  claudeMode: (threadId) => claudeExecution.activeBySession.get(threadId)?.executionMode,
 });
 codexAppServer.on('userInputRequested', ({ threadId, method }) => {
   void (async () => {
@@ -2871,41 +2871,15 @@ export const server = createServer(async (request, response) => {
         sendError(response, 404, 'Task not found.');
         return;
       }
-      if (!task.thread_id) {
-        sendJson(response, 200, {
-          terminal: {
-            state: ['queued', 'running'].includes(task.status) ? 'connecting' : 'unavailable',
-            reason: 'session-not-established',
-            text: '',
-            busy: false,
-            taskId,
-            provider: task.provider,
-            source: 'Terminal.app',
-          },
-        });
+      const threadId = url.searchParams.get('threadId');
+      if (url.searchParams.getAll('threadId').length > 1 || (threadId != null && (!threadId || threadId.length > 512))) {
+        sendError(response, 400, 'Invalid task terminal.');
         return;
       }
-      const knownTerminalThread = task.provider === 'claude'
-        ? claudeSessions.knownSession(task.thread_id)
-        : task.provider === 'codex'
-          ? codexAppServer.knownThread(task.thread_id)
-          : null;
-      const terminalThread = {
-        ...(knownTerminalThread || {}),
-        id: task.thread_id,
-        provider: task.provider,
-        cwd: task.repo_path,
-      };
-      const terminal = await projectLauncher.readTerminalScreen(task.thread_id, terminalThread);
-      sendJson(response, 200, {
-        terminal: {
-          ...terminal,
-          taskId,
-          provider: terminal.provider || task.provider,
-          source: terminal.source || 'Terminal.app',
-          capturedAt: new Date().toISOString(),
-        },
+      const terminal = await taskOriginalTerminal.read(taskId, threadId, {
+        isRequested: () => !response.destroyed,
       });
+      if (!response.destroyed) sendJson(response, 200, { terminal });
       return;
     }
 

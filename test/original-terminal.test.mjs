@@ -78,6 +78,81 @@ function taskWorld({ platform = 'darwin', provider = 'codex', mode = 'execute' }
     setClaudeMode: (value) => { claudeMode = value; } };
 }
 
+test('in-app screen reads only the task-owned terminal and never foregrounds it', async () => {
+  const world = taskWorld();
+  const reads = [];
+  world.launcher.readTerminalScreen = async (id, thread) => {
+    reads.push({ id, thread });
+    return { state: 'live', text: 'Original screen', busy: true };
+  };
+  const result = await world.service.read(4);
+  assert.equal(result.state, 'live');
+  assert.equal(result.text, 'Original screen');
+  assert.equal(result.threadId, 'session-a');
+  assert.equal(reads[0].thread.cwd, '/synthetic/project');
+  assert.equal(reads[0].thread.provider, 'codex');
+  assert.equal(reads[0].thread.pid, 400);
+  assert.equal(world.calls.length, 0);
+  assert.equal((await world.service.read(4, 'foreign-session')).state, 'unavailable');
+  assert.equal(reads.length, 1);
+});
+
+for (const scenario of ['task', 'project', 'launch', 'headless', 'request']) {
+  test(`screen read discards output if ${scenario} ownership changes during the read`, async () => {
+    const world = taskWorld({ provider: 'claude' });
+    let requested = true;
+    world.launcher.readTerminalScreen = async () => {
+      if (scenario === 'task') world.setTask({ ...world.task(), thread_id: 'other-task-session' });
+      if (scenario === 'project') world.setTask({ ...world.task(), repo_path: '/synthetic/other' });
+      if (scenario === 'launch') world.owned.set('session-a', { ...world.owned.get('session-a'), launchId: 'replacement' });
+      if (scenario === 'headless') world.setClaudeMode('headless');
+      if (scenario === 'request') requested = false;
+      return { state: 'live', text: 'Must not escape' };
+    };
+    const result = await world.service.read(4, null, { isRequested: () => requested });
+    assert.equal(result.state, 'unavailable');
+    assert.equal(result.text, '');
+  });
+}
+
+test('in-app screen rejects headless and unsupported execution without reading a companion terminal', async () => {
+  for (const options of [{ provider: 'opencode' }, { provider: 'claude' }, { platform: 'win32' }, { platform: 'linux' }]) {
+    const world = taskWorld(options);
+    world.setClaudeMode('headless');
+    world.launcher.readTerminalScreen = () => assert.fail('must not read');
+    const result = await world.service.read(4);
+    assert.equal(result.state, 'unavailable');
+    assert.equal(result.text, '');
+    assert.equal(world.calls.length, 0);
+  }
+});
+
+test('in-app council screen requires an explicit conversation choice and keeps both choices available', async () => {
+  const world = taskWorld({ mode: 'plan', provider: 'council' });
+  world.setTask({ ...world.task(), author_thread_id: 'claude-author' });
+  world.owned.set('session-a', { provider: 'codex', path: '/synthetic/project', launchId: 'codex-launch' });
+  world.owned.set('claude-author', { provider: 'claude', path: '/synthetic/project', launchId: 'claude-launch' });
+  world.launcher.readTerminalScreen = async (id) => ({ state: 'live', text: id });
+  const choice = await world.service.read(4);
+  assert.equal(choice.state, 'choose');
+  assert.deepEqual(choice.targets.map((target) => target.id), ['session-a', 'claude-author']);
+  const selected = await world.service.read(4, 'claude-author');
+  assert.equal(selected.text, 'claude-author');
+  assert.equal(selected.provider, 'claude');
+  assert.equal(selected.targets.length, 2);
+});
+
+test('in-app screen waits for a fresh task and returns a bounded message for read failures', async () => {
+  const world = taskWorld();
+  world.setTask({ ...world.task(), thread_id: null });
+  assert.equal((await world.service.read(4)).state, 'connecting');
+  world.setTask({ ...world.task(), thread_id: 'session-a' });
+  world.launcher.readTerminalScreen = async () => { throw new Error('Private OS invocation'); };
+  const result = await world.service.read(4);
+  assert.equal(result.state, 'unavailable');
+  assert.doesNotMatch(result.message, /Private OS invocation/);
+});
+
 test('task-scoped open uses stored provider, project, conversation and known process metadata', async () => {
   const world = taskWorld();
   assert.equal((await world.service.open(4)).state, 'opened');

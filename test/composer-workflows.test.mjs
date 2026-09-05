@@ -405,13 +405,13 @@ test('completed Plan council promotes execution as the next visible step', () =>
   assert.match(composerApp, /function revealPlanExecution\(\)[\s\S]*planExecutionPanel\.scrollIntoView/);
 });
 
-test('direct execution settings render below the CC Relay picker', () => {
-  const terminalList = composer.indexOf('id="terminal-list"');
-  const terminalPanelEnd = composer.indexOf('</fieldset>', terminalList);
+test('direct execution settings are grouped with their provider before workflow options', () => {
+  const group = composer.indexOf('class="agent-settings"');
+  const providerTabs = composer.indexOf('id="provider-tabs"');
   const executionControls = composer.indexOf('id="execution-controls"');
-
-  assert.ok(terminalList >= 0 && terminalPanelEnd > terminalList);
-  assert.ok(executionControls > terminalPanelEnd);
+  const council = composer.indexOf('id="plan-config"');
+  assert.ok(group > 0 && providerTabs > group);
+  assert.ok(executionControls > providerTabs && executionControls < council);
   assert.match(composerApp, /elements\.executionControls\.hidden = state\.taskMode !== 'execute' \|\| isExecuteCouncilEnabled\(\)/);
 });
 

@@ -350,6 +350,29 @@ test('project launcher discards a terminal screen if ownership changes during th
   }
 });
 
+for (const field of ['terminalWindowId', 'terminalTty']) {
+  test(`screen reads reject in-place ${field} changes while awaiting the native reader`, async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'relay-screen-identity-'));
+    const launcher = new ProjectLauncher({ platform: 'darwin', terminalScreenReader: {
+      read: async () => {
+        const owned = launcher.ownedTerminals.get('screen-identity-launch');
+        owned[field] = field === 'terminalWindowId' ? 912 : '/dev/ttys099';
+        return { state: 'live', text: 'Stale identity output', busy: false };
+      },
+    } });
+    try {
+      launcher.trackOwnedTerminal({ launchId: 'screen-identity-launch', provider: 'codex',
+        path: validateProjectPath(directory).path, terminalWindowId: 911, terminalTty: '/dev/ttys098' });
+      launcher.bindOwnedTerminal('screen-identity-launch', { id: 'screen-identity-thread', provider: 'codex', cwd: directory });
+      const result = await launcher.readTerminalScreen('screen-identity-thread');
+      assert.equal(result.reason, 'ownership-changed');
+      assert.equal(result.text, '');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+}
+
 test('project launcher can initialize a saved Claude UUID without resuming it', async () => {
   const directory = mkdtempSync(join(tmpdir(), 'relay-initialize-claude-'));
   const launcher = new ProjectLauncher({

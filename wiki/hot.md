@@ -7,13 +7,26 @@ type: hot
 # Current CC Relay Notes
 
 > [!important]
-> **September 5: Original terminal replaces the read-only screen mirror and is the inline default.**
-> Explicit task selection and the Original terminal control foreground the exact owned CLI window.
-> Background refresh never requests focus. Relay activity, Conversation, My messages, and AI
-> messages remain available; headless or unverifiable windows show the activity fallback.
-> macOS verifies process, window and TTY; Windows uses a dedicated console host with PID creation
-> time and native window checks. No new CLI is launched by the open action. See
-> [[original-terminal-default]] and [[original-terminal-review]].
+> **September 5: Launchpad v2 owns the application design.** `public/launchpad.css` loads last,
+> using bundled Space Grotesk and IBM Plex Mono, continuous graphite/light surfaces, compact
+> content-sized project tabs, and grouped provider settings. Fresh columns are 420/440px with
+> Bottom monitoring; durable user preferences win. Compact workspace block flow and explicit row
+> flex direction in the monitor are required to avoid squeezed panels and horizontal overflow.
+> See [[launchpad-v2-design]] and [[launchpad-v2-design-review]].
+
+
+> [!important]
+> **September 5: fixed the projectLauncher startup ReferenceError.** The Original terminal service
+> must be constructed after its launcher. The duplicate-start test now requires EADDRINUSE instead
+> of accepting any exit code 1, which previously hid this crash. See [[project-launcher-startup-review]].
+
+> [!important]
+> **September 5 correction: Show original terminal stays inside CC Relay.** The action opens the
+> existing in-app dialog with the actual macOS terminal screen and the same follow-up composer.
+> The renderer only calls the task-scoped GET screen route, never the native foreground POST.
+> Polling preserves selection, scroll, drafts, and task ownership. Unsupported/headless tasks use
+> activity. The later inline native grid rule must exclude the docked dialog or it collapses the
+> composer. See [[original-terminal-default]] and [[in-app-terminal-review]].
 
 > [!note]
 > **September 5: the Codex startup catalog now includes GPT-6 Astra.** The fallback exposes

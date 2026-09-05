@@ -955,16 +955,17 @@ export class ProjectLauncher {
       return { state: 'unavailable', reason: 'identity-unverified', text: '', busy: false };
     }
 
-    const snapshot = await this.terminalScreenReader.read({
+    const identity = {
       terminalWindowId: terminal.terminalWindowId,
       terminalTty: terminal.terminalTty,
-    });
+    };
+    const snapshot = await this.terminalScreenReader.read(identity);
     const current = this.ownedTerminals.get(terminal.launchId);
     if (
       current !== terminal
       || current.threadId !== threadId
-      || current.terminalWindowId !== terminal.terminalWindowId
-      || current.terminalTty !== terminal.terminalTty
+      || current.terminalWindowId !== identity.terminalWindowId
+      || current.terminalTty !== identity.terminalTty
     ) {
       return { state: 'unavailable', reason: 'ownership-changed', text: '', busy: false };
     }
@@ -979,8 +980,8 @@ export class ProjectLauncher {
     if (
       final !== terminal
       || final.threadId !== threadId
-      || final.terminalWindowId !== terminal.terminalWindowId
-      || final.terminalTty !== terminal.terminalTty
+      || final.terminalWindowId !== identity.terminalWindowId
+      || final.terminalTty !== identity.terminalTty
     ) {
       return { state: 'unavailable', reason: 'ownership-changed', text: '', busy: false };
     }

@@ -6,6 +6,13 @@ type: architecture
 
 # Interface Layout
 
+> [!important]
+> **September 5: [[launchpad-v2-design]] is the current design contract.** The new stylesheet
+> owns the connected workspace surfaces, local reference fonts, grouped composer, 420/440px fresh
+> columns, Bottom monitor default, and accessible light/dark palette. Older visual descriptions
+> below are historical where they conflict; saved layout choices and execution contracts remain.
+
+
 > [!note]
 > Queue and History always show every CC Relay in the selected Launchpad project. The obsolete **All Relays** queue-header button and renderer scope state were removed. See [[task-history]].
 

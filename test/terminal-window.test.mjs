@@ -49,7 +49,7 @@ test('the window rail exposes the native terminal plus three counted conversatio
   assert.match(terminalWindowDialog, /data-terminal-window-view="conversation"[\s\S]*?>Conversation</);
   assert.match(terminalWindowDialog, /data-terminal-window-view="mine"[\s\S]*?>My messages</);
   assert.match(terminalWindowDialog, /data-terminal-window-view="ai"[\s\S]*?>AI messages</);
-  assert.match(terminalWindowDialog, /data-terminal-window-view="all"[\s\S]*?class="terminal-window-live-badge"[\s\S]*?>↗</);
+  assert.doesNotMatch(terminalWindowDialog, /↗/);
   assert.doesNotMatch(
     terminalWindowDialog.match(/data-terminal-window-view="all"[\s\S]*?<\/button>/)?.[0] || '',
     /data-terminal-window-view-count/,
@@ -64,29 +64,27 @@ test('the window rail exposes the native terminal plus three counted conversatio
   assert.match(terminalWindowDialog, /role="group" aria-label="Terminal window view"/);
 });
 
-test('the default view opens the original CLI and does not scrape a replica', () => {
+test('the original terminal button opens the in-app dialog and only reads its screen', () => {
   assert.match(markup, /id="original-terminal-view"[\s\S]*?aria-pressed="true"/);
-  assert.match(markup, /id="original-terminal-open"/);
-  assert.match(markup, /id="original-terminal-fallback"/);
-  assert.doesNotMatch(markup, /id="native-terminal-screen-output"/);
-  assert.match(app, /api\(`\/api\/tasks\/\$\{taskId\}\/terminal\/open`/);
-  assert.doesNotMatch(app, /api\(`\/api\/tasks\/\$\{taskId\}\/terminal-screen`/);
-  assert.match(app, /openOriginal && nativeTerminalViewIsActive\(\)/);
+  assert.match(markup, /id="native-terminal-screen-output"[\s\S]*?tabindex="0"/);
+  assert.match(app, /elements\.originalTerminalOpen\.addEventListener\('click', showOriginalTerminal\)/);
+  assert.match(app, /api\(`\/api\/tasks\/\$\{taskId\}\/terminal-screen\$\{query\}`/);
+  assert.doesNotMatch(app, /\/terminal\/open|native-terminal-hidden/);
 });
 
 test('the terminal screen API is task scoped and delegates to owned native identity', () => {
   assert.match(server, /nativeTerminalScreen: process\.platform === 'darwin'/);
   const routeStart = server.indexOf("/^\\/api\\/tasks\\/\\d+\\/terminal-screen$/");
   const routeEnd = server.indexOf("/^\\/api\\/tasks\\/\\d+\\/plan$/", routeStart);
-  assert.ok(routeStart >= 0 && routeEnd > routeStart, 'the task terminal screen route exists');
+  assert.ok(routeStart >= 0 && routeEnd > routeStart);
   const route = server.slice(routeStart, routeEnd);
-  assert.match(route, /const task = database\.getTask\(taskId\)/);
-  assert.match(route, /if \(!task\.thread_id\)/);
-  assert.match(route, /\.\.\.\(knownTerminalThread \|\| \{\}\),\s*id: task\.thread_id,\s*provider: task\.provider,\s*cwd: task\.repo_path,/);
-  assert.match(route, /await projectLauncher\.readTerminalScreen\(task\.thread_id, terminalThread\)/);
-  assert.match(route, /provider: terminal\.provider \|\| task\.provider/);
-  assert.match(route, /source: terminal\.source \|\| 'Terminal\.app'/);
-  assert.doesNotMatch(route, /terminalWindowId|terminalTty/, 'the browser cannot select native identity');
+  assert.match(route, /database\.getTask\(taskId\)/);
+  assert.match(route, /url\.searchParams\.get\('threadId'\)/);
+  assert.match(route, /getAll\('threadId'\)\.length > 1/);
+  assert.match(route, /threadId\.length > 512/);
+  assert.match(route, /await taskOriginalTerminal\.read\(taskId, threadId/);
+  assert.match(route, /isRequested: \(\) => !response\.destroyed/);
+  assert.doesNotMatch(route, /terminalWindowId|terminalTty|\.open\(/);
 });
 
 test('the dialog header owns an empty slot the docked tools cluster moves into', () => {
@@ -152,7 +150,7 @@ test('opening the window reparents the live section and applies the persisted vi
   const open = app.slice(app.indexOf('function openTerminalWindow()'), app.indexOf('function undockTerminalWindow'));
   assert.match(open, /state\.inlineEventFilter = state\.eventFilter;/);
   // One record holds both slots, so one re-entrancy guard and one clear cover both moves.
-  assert.match(open, /state\.terminalWindowDock = \{\s*parent: elements\.eventsSection\.parentNode,\s*nextSibling: elements\.eventsSection\.nextSibling,\s*toolsParent: elements\.eventTools\.parentNode,\s*toolsNextSibling: elements\.eventTools\.nextSibling,\s*scrollTop: elements\.detailEvents\.scrollTop,\s*follow: state\.eventFollow,\s*\}/);
+  assert.match(open, /state\.terminalWindowDock = \{\s*parent: elements\.eventsSection\.parentNode,\s*nextSibling: elements\.eventsSection\.nextSibling,\s*toolsParent: elements\.eventTools\.parentNode,\s*toolsNextSibling: elements\.eventTools\.nextSibling,\s*scrollTop: elements\.detailEvents\.scrollTop,\s*follow: state\.eventFollow,\s*nativeScrollTop: elements\.nativeTerminalScreenOutput\.scrollTop,/);
   assert.match(open, /elements\.terminalWindowMount\.append\(elements\.eventsSection\)/);
   assert.match(open, /elements\.eventsSection\.dataset\.terminalWindow = 'open'/);
   assert.match(open, /elements\.terminalWindowTools\.append\(elements\.eventTools\)/);
@@ -349,7 +347,7 @@ test('one guarded route owns hiding the detail panel', () => {
     app.indexOf('function hideTaskDetailPanel()'),
     app.indexOf('// Fills the tmux-style terminal status bar'),
   );
-  assert.match(hide, /closeTerminalWindow\(\);\s*closeTaskDetailModal\(\);\s*elements\.taskDetail\.hidden = true;\s*elements\.emptyDetail\.hidden = false;/);
+  assert.match(hide, /closeTerminalWindow\(\);\s*closeTaskDetailModal\(\);\s*elements\.taskDetail\.hidden = true;\s*stopNativeTerminalScreenPolling\(\);\s*elements\.emptyDetail\.hidden = false;/);
   assert.match(hide, /if \(dialogHadFocus\) focusTaskDetailLandmark\(\);/);
   // Every route that used to hide the panel inline now goes through it. Each search is
   // bounded at the next top level declaration, so a concurrent edit that grows one of
@@ -392,7 +390,7 @@ const terminalWindowSource = sliceBetween(
   '// Fills the tmux-style terminal status bar',
 );
 const terminalWindowListenerSource = sliceBetween(
-  "elements.terminalWindowOpenButton.addEventListener('click', openTerminalWindow);",
+  "elements.originalTerminalButton.addEventListener('click', useOriginalTerminal);",
   'elements.thinkingVisibilityButton.addEventListener',
 );
 
@@ -535,7 +533,9 @@ function buildWorld({
   nativeScreen = false,
   terminalResponse = {
     terminal: {
-      state: 'opened',
+      state: 'live',
+      text: 'Synthetic terminal screen <img src=x>',
+      threadId: 'session-a',
       busy: true,
       provider: 'claude',
       capturedAt: '2026-09-04T12:00:00.000Z',
@@ -657,6 +657,10 @@ function buildWorld({
     terminalWindowSubtitle: subtitle,
     terminalWindowClose: closeButton,
     terminalWindowViews: viewButtons,
+    originalTerminalButton: new FakeNode('#original-terminal-view'),
+    originalTerminalOpen: new FakeNode('#original-terminal-open'),
+    originalTerminalFallback: new FakeNode('#original-terminal-fallback'),
+    continuationForm: new FakeNode('#task-continuation-form'),
     nativeTerminalScreen,
     nativeTerminalScreenTitle,
     nativeTerminalScreenState,
@@ -675,7 +679,7 @@ function buildWorld({
     terminalWindowDock: null,
     terminalWindowView: 'all',
     eventFollow: true,
-    status: { capabilities: { originalTerminal: nativeScreen } },
+    status: { capabilities: { nativeTerminalScreen: nativeScreen } },
     nativeTerminalScreen: {
       taskId: null,
       state: 'idle',
@@ -740,6 +744,7 @@ function buildWorld({
 
   const factory = new Function(
     'state',
+    'document',
     'elements',
     'renderEventStream',
     'rememberEventDisclosures',
@@ -763,12 +768,13 @@ function buildWorld({
       + ' updateTerminalWindowAvailability, updateTerminalWindowControls, updateEventControls,'
       + ' setTerminalWindowView, terminalWindowIsDocked, normalizeTerminalWindowView,'
       + ' rerenderTerminalWindowStream, focusTerminalWindowOpenButton, focusTaskDetailLandmark,'
-      + ' hideTaskDetailPanel, refreshNativeTerminalScreen, syncTerminalWindowSurface, useOriginalTerminal };',
+      + ' hideTaskDetailPanel, refreshNativeTerminalScreen, syncTerminalWindowSurface, useOriginalTerminal, showOriginalTerminal, nativeTerminalCopyLabel };',
   );
 
   let api;
   api = factory(
     state,
+    document,
     elements,
     function renderEventStream(events, task, options = {}) {
       calls.renders.push({ filter: state.eventFilter, options });
@@ -792,7 +798,7 @@ function buildWorld({
       return terminalResponse;
     },
     {
-      waitForClear: async () => { calls.selectionWaits += 1; },
+      isActive: () => calls.selectionActive === true,
     },
     () => '12:00:00',
     700,
@@ -806,9 +812,11 @@ function buildWorld({
 
   return {
     elements,
+    document,
     state,
     api,
     calls,
+    setTerminalResponse: (response) => { terminalResponse = response; },
     viewButtons,
     filterButtons,
     eventToolbar,
@@ -1063,24 +1071,27 @@ test('a reopen uses the persisted window view while the inline rail keeps its ow
   );
 });
 
-test('the default view opens the original terminal once and refresh never steals focus', async () => {
+test('the default view reads the screen inside Relay and schedules only one poll', async () => {
   const world = buildWorld({ nativeScreen: true });
   world.api.openTerminalWindow();
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(world.calls.screenRequests.length, 1);
-  assert.equal(world.calls.screenRequests[0].path, '/api/tasks/7/terminal/open');
-  assert.equal(world.calls.screenRequests[0].options.method, 'POST');
-  assert.equal(world.state.nativeTerminalScreen.state, 'opened');
+  assert.equal(world.calls.screenRequests[0].path, '/api/tasks/7/terminal-screen');
+  assert.equal(world.calls.screenRequests[0].options.method, undefined);
+  assert.equal(world.state.nativeTerminalScreen.state, 'live');
   assert.equal(world.elements.nativeTerminalScreen.hidden, false);
   assert.equal(world.elements.detailEvents.hidden, true);
   assert.equal(world.elements.thinkingVisibilityButton.hidden, true);
-  assert.equal(world.elements.copyEventsButton.hidden, true);
+  assert.equal(world.elements.copyEventsButton.hidden, false);
+  assert.equal(world.elements.copyEventsButton.textContent, 'Copy screen');
+  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'Synthetic terminal screen <img src=x>');
   assert.equal(world.elements.eventsSection.dataset.terminalSurface, 'native');
   world.api.rerenderTerminalWindowStream();
   world.api.rerenderTerminalWindowStream();
   assert.equal(world.calls.screenRequests.length, 1);
-  assert.equal(world.timers.size, 0);
+  assert.equal(world.timers.size, 1);
   world.api.setTerminalWindowView('conversation');
+  assert.equal(world.timers.size, 0);
   assert.equal(world.elements.nativeTerminalScreen.hidden, true);
   assert.equal(world.elements.detailEvents.hidden, false);
   assert.equal(world.elements.thinkingVisibilityButton.hidden, false);
@@ -1180,10 +1191,10 @@ test('switching to messages aborts a delayed open and ignores its response', asy
   const signal = world.calls.screenRequests[0].options.signal;
   world.api.setTerminalWindowView('conversation');
   assert.equal(signal.aborted, true);
-  finish({ terminal: { state: 'opened' } });
+  finish({ terminal: { state: 'live', text: 'Late screen' } });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(world.state.terminalWindowView, 'conversation');
-  assert.notEqual(world.state.nativeTerminalScreen.state, 'opened');
+  assert.notEqual(world.state.nativeTerminalScreen.state, 'live');
   assert.equal(world.elements.detailEvents.hidden, false);
 });
 
@@ -1217,4 +1228,131 @@ test('native fallback shows all activity after switching from an AI-only inline 
   assert.equal(world.state.eventFilter, 'all');
   assert.equal(world.state.inlineEventFilter, 'all');
   assert.equal(world.elements.detailEvents.hidden, false);
+});
+
+test('Show original terminal opens the in-app dialog even while the screen request is pending', async () => {
+  let finish;
+  const response = new Promise((resolve) => { finish = resolve; });
+  const world = buildWorld({ nativeScreen: true, terminalResponse: response });
+  world.state.terminalMode = 'native';
+  const reading = world.api.refreshNativeTerminalScreen();
+  world.elements.originalTerminalOpen.fire('click');
+  assert.equal(world.elements.terminalWindowModal.open, true);
+  assert.equal(world.elements.eventsSection.parentNode, world.elements.terminalWindowMount);
+  assert.equal(world.calls.screenRequests.length, 1);
+  finish({ terminal: { state: 'live', text: 'Original CLI screen' } });
+  await reading;
+  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'Original CLI screen');
+  assert.equal(world.elements.originalTerminalOpen.textContent, 'Refresh screen');
+  assert.equal(world.elements.copyEventsButton.textContent, 'Copy screen');
+  assert.equal(world.elements.continuationForm.hidden, false);
+});
+
+test('screen refresh preserves selection and manual scroll, then catches up without focus changes', async () => {
+  const world = buildWorld({ nativeScreen: true });
+  world.api.openTerminalWindow();
+  await new Promise((resolve) => setImmediate(resolve));
+  const output = world.elements.nativeTerminalScreenOutput;
+  output.scrollHeight = 2000;
+  output.clientHeight = 400;
+  output.scrollTop = 220;
+  output.scrollLeft = 90;
+  const focuses = world.focusLog().length;
+  const original = output.textContent;
+  world.calls.selectionActive = true;
+  world.setTerminalResponse({ terminal: { state: 'live', text: 'New screen', threadId: 'session-a' } });
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(output.textContent, original);
+  world.calls.selectionActive = false;
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(output.textContent, 'New screen');
+  assert.equal(output.scrollTop, 220);
+  assert.equal(output.scrollLeft, 90);
+  assert.equal(world.focusLog().length, focuses);
+  assert.equal(world.calls.screenRequests.at(-1).path, '/api/tasks/7/terminal-screen');
+  assert.equal(world.timers.size, 1);
+});
+
+test('unreadable refresh keeps the last proven screen marked stale and can recover', async () => {
+  const world = buildWorld({ nativeScreen: true });
+  world.api.openTerminalWindow();
+  await new Promise((resolve) => setImmediate(resolve));
+  const text = world.elements.nativeTerminalScreenOutput.textContent;
+  world.setTerminalResponse({ terminal: { state: 'unavailable', message: 'Screen read failed' } });
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(world.state.nativeTerminalScreen.state, 'stale');
+  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, text);
+  assert.match(world.elements.nativeTerminalScreenState.textContent, /Last screen/);
+  world.setTerminalResponse({ terminal: { state: 'live', text: 'Recovered screen' } });
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(world.state.nativeTerminalScreen.state, 'live');
+  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'Recovered screen');
+});
+
+test('changing the selected workflow terminal cancels the old read and clears its text', async () => {
+  let finish;
+  const response = new Promise((resolve) => { finish = resolve; });
+  const world = buildWorld({ nativeScreen: true, terminalResponse: response });
+  world.api.openTerminalWindow();
+  const signal = world.calls.screenRequests[0].options.signal;
+  world.setTerminalResponse({ terminal: { state: 'live', text: 'Worker screen', threadId: 'worker/2' } });
+  await world.api.refreshNativeTerminalScreen('worker/2');
+  assert.equal(signal.aborted, true);
+  assert.equal(world.calls.screenRequests.at(-1).path, '/api/tasks/7/terminal-screen?threadId=worker%2F2');
+  finish({ terminal: { state: 'live', text: 'Old planner screen' } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'Worker screen');
+});
+
+test('screen polling stops for a hidden document, hidden task, and closed activity dock', async () => {
+  const world = buildWorld({ nativeScreen: true });
+  world.api.openTerminalWindow();
+  await new Promise((resolve) => setImmediate(resolve));
+  world.document.hidden = true;
+  const count = world.calls.screenRequests.length;
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(world.calls.screenRequests.length, count);
+  world.api.hideTaskDetailPanel();
+  assert.equal(world.timers.size, 0);
+  assert.equal(world.state.nativeTerminalScreenPending, false);
+});
+
+test('opening and closing the in-app dialog preserve the inline native scroll position', async () => {
+  const world = buildWorld({ nativeScreen: true });
+  world.state.terminalMode = 'native';
+  await world.api.refreshNativeTerminalScreen();
+  const output = world.elements.nativeTerminalScreenOutput;
+  output.scrollHeight = 1800;
+  output.clientHeight = 400;
+  output.scrollTop = 230;
+  output.scrollLeft = 60;
+  world.api.showOriginalTerminal();
+  assert.equal(output.scrollTop, 230);
+  assert.equal(output.scrollLeft, 60);
+  output.scrollTop = 700;
+  output.scrollLeft = 120;
+  world.api.closeTerminalWindow();
+  assert.equal(output.scrollTop, 230);
+  assert.equal(output.scrollLeft, 60);
+});
+
+test('automatic reads follow a direct task retry instead of pinning its old conversation', async () => {
+  const world = buildWorld({ nativeScreen: true });
+  world.api.openTerminalWindow();
+  await new Promise((resolve) => setImmediate(resolve));
+  world.setTerminalResponse({ terminal: { state: 'live', threadId: 'retry-session', text: 'Retry terminal' } });
+  await world.api.refreshNativeTerminalScreen();
+  assert.equal(world.calls.screenRequests.at(-1).path, '/api/tasks/7/terminal-screen');
+  assert.equal(world.state.nativeTerminalScreen.threadId, 'retry-session');
+  assert.equal(world.elements.nativeTerminalScreenOutput.textContent, 'Retry terminal');
+});
+
+test('background rendering on an unsupported server shows activity without a screen request', () => {
+  const world = buildWorld();
+  world.state.terminalMode = 'native';
+  world.api.syncTerminalWindowSurface();
+  assert.equal(world.state.nativeTerminalScreen.state, 'unavailable');
+  assert.equal(world.elements.detailEvents.hidden, false);
+  assert.equal(world.calls.screenRequests.length, 0);
+  assert.equal(world.timers.size, 0);
 });
